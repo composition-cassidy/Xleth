@@ -50,7 +50,9 @@
 //   * Depth caps the reduction smoothly: R = r / (1 + (r / Rmax)^p)^(1/p), Rmax = depth x 12 dB (Soft,
 //     p = 2) or depth x 24 dB (Hard, p = 6).
 //   * Per-band one-pole attack / release in dB at the frame rate (DspPrimitives onePoleStep convention),
-//     then a [1 2 1] / 4 smoothing across bands, then the stereo link (blend towards max(L, R)).
+//     then a [1 2 1] / 4 smoothing across bands (Params::sharpness: 0.5 = exactly this; 1 = none; 0 = [1 2 1]^4),
+//     then the stereo link (blend towards max(L, R)), then the optional per-band weight curve (RS weighting semantics).
+//   * Visualization tap / meters: after the weight curve, once per hop (emitViz, lastMaxReductionDb).
 //   * G(f): the band curve (dB) is interpolated linearly on the ERB axis to every bin and applied as a
 //     real, zero-phase gain.
 
@@ -455,6 +457,8 @@ void Core::release()
     fftSize_ = hop_ = numChannels_ = hopFill_ = numBands_ = 0;
     hopOffset_ = 0;
     frames_ = 0;
+    for (auto& m : meterCh_) m.store(0.0f, std::memory_order_relaxed);
+    meterAll_.store(0.0f, std::memory_order_relaxed);
 }
 
 void Core::reset() noexcept
@@ -471,6 +475,8 @@ void Core::reset() noexcept
     frames_ = 0;
     emaAn_ = 1.0;
     emaAnF_ = 1.0;
+    for (auto& m : meterCh_) m.store(0.0f, std::memory_order_relaxed);
+    meterAll_.store(0.0f, std::memory_order_relaxed);
 }
 
 void Core::process(float* const* channels, int numChannels, int numSamples, const Params& p) noexcept
@@ -549,7 +555,40 @@ void Core::processFrame(int numCh, const Params& p) noexcept
         float* in = ch.inFifo.data();
         std::memmove(in, in + H, sizeof(float) * static_cast<size_t>(N - H));
     }
+    if (vizSink_ != nullptr) emitViz(numCh);
     ++frames_;
+}
+
+// One VizFrame per processed channel, filled in place (no allocation), handed to the sink synchronously.
+void Core::emitViz(int numCh) noexcept
+{
+    VizFrame& f = vizFrame_;
+    const bool fast = fastTauMs_ > 0.0f;
+    const auto bytes = sizeof(float) * static_cast<size_t>(numBands_);
+    for (int c = 0; c < numCh; ++c)
+    {
+        const auto& ch = ch_[c];
+        f.hopIndex = frames_;
+        f.channel = c;
+        f.numBands = numBands_;
+        f.hopSize = hop_;
+        f.maxReductionDb = meterCh_[c].load(std::memory_order_relaxed);
+        std::memcpy(f.levelDb, fast ? ch.levelFDb.data() : ch.levelDb.data(), bytes);
+        std::memcpy(f.baselineDb, fast ? ch.baseFDb.data() : ch.baseDb.data(), bytes);
+        std::memcpy(f.reductionDb, ch.outDb.data(), bytes);
+        vizSink_->onResonanceFrame(f);
+    }
+}
+
+int Core::hopPhaseOffsetForInstance(int instanceIndex, int hop) noexcept
+{
+    if (instanceIndex <= 0 || hop <= 1) return 0;
+    // Base-2 van der Corput: mirror the binary digits of the index around the binary point (1 -> .1, 2 -> .01, 3 -> .11, 4 -> .001, ...).
+    double v = 0.0, digit = 0.5;
+    for (unsigned i = static_cast<unsigned>(instanceIndex); i != 0u; i >>= 1, digit *= 0.5)
+        if ((i & 1u) != 0u) v += digit;
+    const int off = static_cast<int>(std::floor(v * hop));
+    return std::clamp(off, 0, hop - 1);
 }
 
 float Core::median(const int* idx, int n, const float* values) noexcept
@@ -726,6 +765,13 @@ bool Core::computeGains(int numCh, const Params& p) noexcept
     const float aAtt  = xleth::dsp::onePoleStep(std::clamp(p.attackMs, 0.1f, 1000.0f) * 1.0e-3, frameRate);
     const float aRel  = xleth::dsp::onePoleStep(std::clamp(p.releaseMs, 1.0f, 10000.0f) * 1.0e-3, frameRate);
     const float link  = std::clamp(p.stereoLink, 0.0f, 1.0f);
+    // Sharpness -> cross-band smoothing (NaN = the default 0.5). [sa sc sa] with sa = 0.25 at 0.5 (exactly the historical [1 2 1] / 4: sa = 0.25f and
+    // sc = 1 - 2 sa = 0.5f are exact in float, so the default path computes the very same expression), fading to [0 1 0] at 1. Below 0.5 the result is
+    // blended towards three further [1 2 1] / 4 passes ([1 2 1]^4 / 256 at 0).
+    const float sharp   = p.sharpness >= 0.0f ? std::min(p.sharpness, 1.0f) : (p.sharpness < 0.0f ? 0.0f : 0.5f);
+    const float sa      = sharp > 0.5f ? 0.5f * (1.0f - sharp) : 0.25f;
+    const float sc      = 1.0f - 2.0f * sa;
+    const float broaden = sharp < 0.5f ? 2.0f * (0.5f - sharp) : 0.0f;
 
     // ---- detector ----
     emaAn_ *= static_cast<double>(emaA_);
@@ -806,12 +852,26 @@ bool Core::computeGains(int numCh, const Params& p) noexcept
             v += (target > v ? aAtt : aRel) * (target - v);
             r[b] = v < 1.0e-7f ? 0.0f : v;
         }
-        // Smoothing across frequency: [1 2 1] / 4, edges replicated.
+        // Smoothing across frequency: [sa sc sa] ([1 2 1] / 4 at the default sharpness 0.5), edges replicated.
         float* sm = ch.smoothDb.data();
         for (int b = 0; b < B; ++b)
         {
             const float lo = r[b > 0 ? b - 1 : 0], hi = r[b < B - 1 ? b + 1 : B - 1];
-            sm[b] = 0.25f * lo + 0.5f * r[b] + 0.25f * hi;
+            sm[b] = sa * lo + sc * r[b] + sa * hi;
+        }
+        if (broaden > 0.0f)
+        {
+            // Sharpness below 0.5: blend towards three further [1 2 1] / 4 passes. The per-band scratch arrays are free here (kb was consumed above,
+            // the median scratch by the detector).
+            auto pass = [B](const float* src, float* dst) noexcept
+            {
+                for (int b = 0; b < B; ++b)
+                    dst[b] = 0.25f * src[b > 0 ? b - 1 : 0] + 0.5f * src[b] + 0.25f * src[b < B - 1 ? b + 1 : B - 1];
+            };
+            float* wa = tmpBand_.data();
+            float* wb = scratch_.data();
+            pass(sm, wa); pass(wa, wb); pass(wb, wa);
+            for (int b = 0; b < B; ++b) sm[b] += broaden * (wa[b] - sm[b]);
         }
     }
 
@@ -823,6 +883,41 @@ bool Core::computeGains(int numCh, const Params& p) noexcept
         if (numCh < 2 || link <= 0.0f) { std::memcpy(out, own, sizeof(float) * static_cast<size_t>(B)); continue; }
         const float* other = ch_[1 - c].smoothDb.data();
         for (int b = 0; b < B; ++b) out[b] = own[b] + link * (std::max(own[b], other[b]) - own[b]);
+    }
+
+    // ---- weight curve (RS weighting semantics): w <= 1 scales the reduction, w > 1 deepens it up to the depth ceiling, never beyond (and never
+    //      below the unweighted value, which may exceed a just-lowered ceiling while it releases). nullptr = flat 1: the loop is skipped. ----
+    if (p.weightCurve != nullptr)
+    {
+        const float* wc = p.weightCurve;
+        for (int c = 0; c < numCh; ++c)
+        {
+            float* out = ch_[c].outDb.data();
+            for (int b = 0; b < B; ++b)
+            {
+                const float wr = wc[b];
+                const float w = wr > 0.0f ? (wr < kMaxWeight ? wr : kMaxWeight) : 0.0f;   // NaN / negative -> 0
+                const float v = out[b];
+                out[b] = w <= 1.0f ? w * v : std::min(w * v, std::max(rMax, v));
+            }
+        }
+    }
+
+    // ---- meters: max applied band reduction of this frame ----
+    {
+        float all = 0.0f;
+        for (int c = 0; c < kMaxChannels; ++c)
+        {
+            float m = 0.0f;
+            if (c < numCh)
+            {
+                const float* out = ch_[c].outDb.data();
+                for (int b = 0; b < B; ++b) m = std::max(m, out[b]);
+            }
+            meterCh_[c].store(m, std::memory_order_relaxed);
+            all = std::max(all, m);
+        }
+        meterAll_.store(all, std::memory_order_relaxed);
     }
 
     // ---- G(f): band curve -> bins, real zero-phase gain ----

@@ -26,8 +26,9 @@
 //   (not in dB): the false-trigger rate on noise is set by statistics. A band uses the slow estimate while the fast one agrees with it; it switches to the
 //   fast one on an onset (fast above slow by more than kSwitchUpSigmas fast sigmas) and, through a hysteresis latch, on a release (slow above fast by more
 //   than kVetoSetSigmas, latched until the two are within kVetoClearSigmas again). The excess above threshold (sensitivity) is mapped through a salience
-//   knee to a target reduction (whole excess, capped by depth), smoothed per band by attack / release, across bands by [1 2 1] / 4, optionally linked
-//   between channels, interpolated to the bins and applied as a real, zero-phase gain.
+//   knee to a target reduction (whole excess, capped by depth), smoothed per band by attack / release, across bands by [1 2 1] / 4 (Params::sharpness
+//   narrows / broadens this; 0.5 = exactly [1 2 1] / 4), optionally linked between channels, scaled by the optional per-band weight curve, interpolated to the bins
+//   and applied as a real, zero-phase gain.
 //
 // Every time constant is in milliseconds and independent of N and of the sample rate (converted with the hop duration in prepare()); only the analysis
 // window itself (10.7 / 21.3 / 42.7 ms for the three frame tiers at <= 50 kHz) scales with N.
@@ -45,10 +46,12 @@
 // Threading: a Core is NOT thread-safe and owns no thread. One instance per audio chain; prepare(), release(), setFrameTier(), setDetectorTimeConstantMs(),
 // setFastTimeConstantMs() and setHopPhaseOffset() are called on a non-audio thread while the instance is not processing (the setters are structural and take effect at the next
 // prepare()). process(), reset() and the introspection accessors belong to the audio (processing) thread. Params is passed by value to every process() call and may
-// change freely between calls (tests T4 / T6 run with parameters swept every block, without allocation).
+// change freely between calls (tests T4 / T6 / P1 run with parameters swept every block, without allocation). setVizSink() belongs to the processing thread (between
+// process() calls) or to a non-audio thread while the instance is not processing. lastMaxReductionDb() is the only accessor that may be read from any thread.
 
 #include <juce_dsp/juce_dsp.h>
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -77,9 +80,45 @@ struct Params
     bool  hardKnee    = false;
     // stereoLink: 0..1. Blend of each channel's reduction towards max(L, R): 0 = channels independent, 1 = both channels get the larger of the two reductions.
     float stereoLink  = 0.0f;
+    // sharpness: 0..1. Narrowness of the applied cut: the cross-band smoothing of the band reduction curve. 0.5 (default) = the [1 2 1] / 4 smoothing (the historical
+    //        behaviour, bit-identical); towards 1 the smoothing fades out (1 = none, the narrowest cut); towards 0 three further [1 2 1] / 4 passes are blended in
+    //        (0 = [1 2 1]^4 / 256, the broadest). Monotonic: lower = broader. Detection is not affected. Applied per frame, after attack / release.
+    float sharpness   = 0.5f;
+    // weightCurve: nullptr = flat 1 (the historical behaviour). Otherwise numBands() floats on the core's band grid (centres: Core::bandCentreHz(i)), each clamped to
+    //        [0, kMaxWeight] (NaN / negative = 0). It scales the applied reduction of its band, the Resonance Suppressor's weighting semantics: w <= 1 gives w x R (0 = the band
+    //        is never cut), w > 1 gives min(w x R, max(Rmax, R)) (deeper, up to the depth ceiling Rmax; it never creates a cut where nothing was detected). Applied per frame
+    //        after attack / release and the stereo link (both channels use the same curve). The array is read during process() only; it must stay valid for that call.
+    const float* weightCurve = nullptr;
+};
 
-    // HOOK (not implemented in stage 1, ignored): per-grid-band focus / sensitivity weight, length numBands().
-    const float* focusWeight = nullptr;
+constexpr float kMaxWeight = 2.5f;   // upper clamp of Params::weightCurve (the RS weighting range is [0, 2.5])
+
+// Visualization tap. Once per hop and per processed channel the processing thread fills one VizFrame (a member of the Core: no allocation) and calls
+// VizSink::onResonanceFrame() synchronously, from inside process(), after the gains of that frame are final. The frame is valid only during the call; the sink must
+// copy what it needs, must not block, lock, allocate or log (it runs on the audio thread), and must not call back into the Core.
+struct VizFrame
+{
+    long long hopIndex = 0;    // 0-based index of this frame (== framesProcessed() before it); both channels of one hop share it
+    int   channel      = 0;    // 0 .. processed channels - 1 (Mid / Side: whatever the caller fed as that channel)
+    int   numBands     = 0;    // == Core::numBands() (kGridBands); entries [numBands, kGridBands) are unused
+    int   hopSize      = 0;    // samples per hop; the frame's input ends hopSize x (hopIndex + 1) - hopPhaseOffset() samples into the stream
+    float maxReductionDb = 0.0f;   // max over bands of reductionDb (this channel)
+    // Per band, on the core's grid (centres Core::bandCentreHz(i)):
+    //   levelDb:    the detector's input level, 10 log10 of the bias-corrected, per-octave weighted average of |X_k|^2 (the 40 ms fast estimate; the 200 ms slow one when the
+    //               fast path is off). Pink noise reads flat. It is NOT dBFS: a constant offset that depends on N separates it from any calibrated scale; differences are exact dB.
+    //   baselineDb: the flank baseline of that estimate (levelDb - baselineDb = the band's excess, the quantity the detector thresholds).
+    //   reductionDb: the applied reduction (>= 0 dB), after attack / release, sharpness, stereo link and weightCurve: exactly what G(f) is built from.
+    float levelDb[kGridBands]     = {};
+    float baselineDb[kGridBands]  = {};
+    float reductionDb[kGridBands] = {};
+};
+
+class VizSink
+{
+public:
+    virtual void onResonanceFrame(const VizFrame& frame) noexcept = 0;
+protected:
+    ~VizSink() = default;
 };
 
 // HOOK (not implemented in stage 1): per-region output. Stage 1 has exactly one full-band region and
@@ -120,6 +159,24 @@ public:
     // offset i x hop / n, so their hops (all of the FFT / detector / gain work) complete in different blocks instead of all in the same one (ResonanceCore.md, "Multi-instance bursts").
     void setHopPhaseOffset(int samples) noexcept { hopPhaseOffset_ = samples; }
     int hopPhaseOffset() const noexcept { return hopOffset_; }   // the applied offset, in [0, hop), valid after prepare()
+    // The offset for instance `instanceIndex` (0, 1, 2, ...) of any number of instances in one thread: the base-2 van der Corput sequence (bit reversal of the index)
+    // times the hop, floored: 0, hop/2, hop/4, 3 hop/4, hop/8, 5 hop/8, 3 hop/8, 7 hop/8, hop/16, ... Every prefix of n instances is spread as evenly as a dyadic
+    // grid allows, so instances can be added without re-spacing the others. Result in [0, hop); 0 for instanceIndex <= 0 or hop <= 1.
+    static int hopPhaseOffsetForInstance(int instanceIndex, int hop) noexcept;
+
+    // Visualization tap (see VizFrame / VizSink). nullptr (default) = off; the cost of the off state is one pointer test per hop. Set it on the processing thread
+    // between process() calls, or on another thread while the instance is not processing; the sink must outlive its use.
+    void setVizSink(VizSink* sink) noexcept { vizSink_ = sink; }
+    VizSink* vizSink() const noexcept { return vizSink_; }
+
+    // Meter: the largest applied band reduction (dB, >= 0) of the LAST completed frame, after every stage (exactly what reductionDb / bandReductionDb hold).
+    // channel 0 / 1: that channel; -1 (default): the max over the channels that frame processed. Updated once per hop on the processing thread with relaxed atomic
+    // stores; readable from any thread. 0 after prepare() / reset().
+    float lastMaxReductionDb(int channel = -1) const noexcept
+    {
+        if (channel < 0) return meterAll_.load(std::memory_order_relaxed);
+        return channel < kMaxChannels ? meterCh_[channel].load(std::memory_order_relaxed) : 0.0f;
+    }
 
     // In place. Channels [0, min(numChannels, prepared channels)) are processed; any others are untouched.
     // numSamples may be any value >= 0 (it is NOT limited to the prepared maxBlockSize).
@@ -135,8 +192,11 @@ public:
     int numBins() const noexcept { return fftSize_ / 2 + 1; }
     double sampleRate() const noexcept { return sampleRate_; }
     long long framesProcessed() const noexcept { return frames_; }
+    // Band grid (valid after prepare()): numBands() bands (kGridBands), centres ERB-rate spaced from 20 Hz to min(0.45 fs, 20 kHz). Params::weightCurve and every
+    // per-band array use this indexing. The grid depends on the sample rate only (not on the frame tier).
     int numBands() const noexcept { return numBands_; }
-    float bandHz(int b) const noexcept { return bandHz_[static_cast<size_t>(b)]; }
+    float bandCentreHz(int b) const noexcept { return bandHz_[static_cast<size_t>(b)]; }
+    float bandHz(int b) const noexcept { return bandHz_[static_cast<size_t>(b)]; }   // alias of bandCentreHz
     // Last frame's per-band values (dB), length numBands().
     const float* bandLevelDb(int c) const noexcept    { return ch_[c].levelDb.data(); }    // averaged level, per-octave units
     const float* bandBaselineDb(int c) const noexcept { return ch_[c].baseDb.data(); }     // robust flank baseline
@@ -218,6 +278,7 @@ private:
     void updateSigma() noexcept;
     void updateSigmaFor(const std::vector<double>& vfTime, long long frames, std::vector<float>& sigmaOut) noexcept;
     void processFrame(int numCh, const Params& p) noexcept;
+    void emitViz(int numCh) noexcept;
     // Detector + gain computer: writes Channel::binGain for channels [0, numCh). Returns false when every
     // gain is exactly 1 (the multiply is then skipped).
     bool computeGains(int numCh, const Params& p) noexcept;
@@ -277,6 +338,11 @@ private:
     std::vector<float> scratch_;          // median scratch
     std::vector<float> tmpBand_;          // per band scratch
     std::vector<float> estBand_;          // per band: the excess estimate (dB) the gain computer reduces by
+    // ---- visualization tap and meters ----
+    VizSink* vizSink_ = nullptr;
+    VizFrame vizFrame_;                   // filled in place once per hop and channel while a sink is set
+    std::atomic<float> meterCh_[kMaxChannels] = {};
+    std::atomic<float> meterAll_ { 0.0f };
 };
 
 } // namespace xleth::dsp::resonance

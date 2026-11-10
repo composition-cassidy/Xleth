@@ -18,6 +18,17 @@
 //                   by >= 7 dB at f0 and nothing an octave away; right-only resonance leaves L alone at link 0 and
 //                   is mirrored at link 1; the threshold's predicted sigma_E matches the measured std on noise
 //   D1 dynamics     (v6) step response and release in MILLISECONDS (onset t50, time for the cut to fall <= 1 dB), at 48 and 96 kHz
+//   --- RS High Quality surface (every default bit-identical to before) ---
+//   W0-W4 weights   grid exposure (numBands / bandCentreHz); weightCurve of 1.0 == nullptr; exact RS semantics frame by frame against an
+//                   unweighted twin (w <= 1 scales, w > 1 deepens to the ceiling, clamps, NaN); weight 0 never cuts a planted resonance
+//   S1-S2 sharpness -3 dB width of the cut of a Q8 resonance strictly decreasing over sharpness 0 / 0.5 / 1; clamping
+//   M1-M4 channels  mono == stereo ch 0 at link 0; Mid / Side wrappers (1-channel core + aligned dry) reconstruct at depth 0 and cut only
+//                   their own component; M + S as two channels == two mono cores
+//   V1-V4 viz tap   one frame per hop and channel, consistent with the core's state; output unchanged; zero allocations; null-sink cost
+//   E1 meters       lastMaxReductionDb per channel / combined, reset, mono
+//   P1 params       depth / sensitivity / sharpness / weightCurve / stereoLink at random extremes before every block: max sample step and
+//                   second difference within 1.25x of steady runs, no NaN / Inf, no allocation
+//   H1-H3 hop phase hopPhaseOffsetForInstance (van der Corput); 8 instances at hop 256: <= 2 frame boundaries per 64-sample block
 //
 // The allocation counter hooks operator new / new[] on the measuring thread only (the same approach as
 // test_effect_processblock_alloc.cpp). Output prefix: [ResCore].
@@ -28,13 +39,17 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
+#include <cstddef>
+#include <limits>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <new>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 // --- Counting allocator (measuring thread only, armed around process()) ----------------------------
@@ -757,6 +772,601 @@ void testDynamics()
     }
 }
 
+// ===================================================================================================
+// RS High Quality surface (after f2d825d): grid + weight curve (W), sharpness (S), 1 / 2 channels and Mid / Side (M),
+// visualization tap (V), meters (E), parameter-change safety (P), instance hop-phase helper (H).
+
+// Mean applied reduction per band of a MONO stream (channel 0 of a core), hop-sized blocks, after skipSec.
+std::vector<double> monoBandMean(Core& c, const std::vector<float>& x, const Params& p, double skipSec)
+{
+    const int H = c.hopSize(), B = c.numBands();
+    std::vector<double> m(static_cast<size_t>(B), 0.0);
+    std::vector<float> buf(static_cast<size_t>(H));
+    float* ptrs[1] = { buf.data() };
+    const int skip = static_cast<int>(skipSec * c.sampleRate()) / H;
+    long long n = 0;
+    for (int pos = 0, f = 0; pos + H <= static_cast<int>(x.size()); pos += H, ++f)
+    {
+        std::memcpy(buf.data(), x.data() + pos, sizeof(float) * static_cast<size_t>(H));
+        c.process(ptrs, 1, H, p);
+        if (f < skip) continue;
+        for (int b = 0; b < B; ++b) m[static_cast<size_t>(b)] += c.bandReductionDb(0)[b];
+        ++n;
+    }
+    for (auto& v : m) v /= static_cast<double>(std::max<long long>(n, 1));
+    return m;
+}
+
+void testWeightCurve()
+{
+    const double sr = 48000.0;
+    // W0: grid exposure. numBands() == kGridBands, centres strictly increasing from 20 Hz to min(0.45 fs, 20 kHz), bandCentreHz == bandHz.
+    for (double r : { 44100.0, 48000.0, 96000.0 })
+    {
+        Core c; c.prepare(r, 512, 2);
+        bool inc = true;
+        for (int b = 1; b < c.numBands(); ++b) inc = inc && c.bandCentreHz(b) > c.bandCentreHz(b - 1) && c.bandCentreHz(b) == c.bandHz(b);
+        const double lo = c.bandCentreHz(0), hi = c.bandCentreHz(c.numBands() - 1), hiExp = std::min(0.45 * r, 20000.0);
+        char buf[220];
+        std::snprintf(buf, sizeof buf, "W0 grid @%d: numBands %d (== %d), centres increasing %d, first %.3f Hz (20), last %.2f Hz (%.0f)",
+                      static_cast<int>(r), c.numBands(), xleth::dsp::resonance::kGridBands, inc ? 1 : 0, lo, hi, hiExp);
+        check(c.numBands() == xleth::dsp::resonance::kGridBands && inc && std::abs(lo - 20.0) < 0.01 && std::abs(hi - hiExp) < 0.5, buf);
+    }
+
+    Params cap; cap.depth = 1.0f; cap.hardKnee = true;   // C1c
+    const Stereo in = resonantPink(sr, 6.0, 2500.0, 81);
+    const int B = xleth::dsp::resonance::kGridBands;
+
+    // W1: a curve of 1.0 everywhere is bit-identical to nullptr.
+    {
+        std::vector<float> ones(static_cast<size_t>(B), 1.0f);
+        Params pw = cap; pw.weightCurve = ones.data();
+        Core a, b; a.prepare(sr, 512, 2); b.prepare(sr, 512, 2);
+        const Diff d = sameDiff(render(a, in, { 64, 333 }, cap), render(b, in, { 64, 333 }, pw));
+        check(d.maxAbs == 0.0, "W1 weightCurve of 1.0 == nullptr: bit-identical output (C1c, 2.5 kHz resonance, blocks 64/333), max |diff| " + std::to_string(d.maxAbs));
+    }
+
+    // W2: exact semantics against an unweighted twin, frame by frame: w <= 1 -> w x R, w > 1 -> min(w x R, max(Rmax, R)), clamp [0, 2.5], NaN / negative -> 0.
+    //     C1 (depth 0.5, Soft: ceiling 6 dB) so weights above 1 reach the ceiling; link 0.5 and a right-only resonance exercise the stereo link.
+    {
+        Stereo x = makePink(static_cast<int>(6.0 * sr), -20.0, 82);
+        applyPeak(x.ch[0], sr, 2500.0, 8.0, 12.0); applyPeak(x.ch[1], sr, 2500.0, 8.0, 12.0); applyPeak(x.ch[1], sr, 800.0, 8.0, 12.0);
+        const float nanv = std::numeric_limits<float>::quiet_NaN();
+        const float pat[8] = { 0.0f, 0.3f, 1.0f, 1.7f, 2.5f, 4.0f, -1.0f, nanv };
+        std::vector<float> w(static_cast<size_t>(B));
+        for (int b = 0; b < B; ++b) w[static_cast<size_t>(b)] = pat[b % 8];
+        Params pu; pu.stereoLink = 0.5f;
+        Params pw = pu; pw.weightCurve = w.data();
+        const float rMax = pu.depth * 12.0f;
+        Core cu, cw; cu.prepare(sr, 512, 2); cw.prepare(sr, 512, 2);
+        const int H = cu.hopSize();
+        std::vector<float> l(static_cast<size_t>(H)), r(static_cast<size_t>(H)), l2 = l, r2 = r;
+        float* pU[2] = { l.data(), r.data() };
+        float* pW[2] = { l2.data(), r2.data() };
+        long long mismatch = 0, checked = 0, atCeiling = 0, deeper = 0, zeroed = 0;
+        for (int pos = 0; pos + H <= x.size(); pos += H)
+        {
+            std::memcpy(l.data(), x.ch[0].data() + pos, sizeof(float) * static_cast<size_t>(H)); l2 = l;
+            std::memcpy(r.data(), x.ch[1].data() + pos, sizeof(float) * static_cast<size_t>(H)); r2 = r;
+            cu.process(pU, 2, H, pu);
+            cw.process(pW, 2, H, pw);
+            for (int ch = 0; ch < 2; ++ch)
+                for (int b = 0; b < B; ++b)
+                {
+                    const float u = cu.bandReductionDb(ch)[b], v = cw.bandReductionDb(ch)[b];
+                    const float wr = w[static_cast<size_t>(b)];
+                    const float ww = wr > 0.0f ? std::min(wr, 2.5f) : 0.0f;
+                    const float expect = ww <= 1.0f ? ww * u : std::min(ww * u, std::max(rMax, u));
+                    if (v != expect) ++mismatch;
+                    ++checked;
+                    if (ww > 1.0f && u > 0.0f && v == rMax) ++atCeiling;
+                    if (v > u) ++deeper;
+                    if (ww == 0.0f && u > 1.0f && v == 0.0f) ++zeroed;
+                }
+        }
+        char buf[260];
+        std::snprintf(buf, sizeof buf, "W2 weight semantics vs unweighted twin (C1, link 0.5, weights {0,.3,1,1.7,2.5,4->2.5,-1->0,NaN->0}): %lld / %lld band values differ; "
+                      "deeper than unweighted %lld, at the 6 dB ceiling %lld, cut > 1 dB zeroed %lld", mismatch, checked, deeper, atCeiling, zeroed);
+        check(mismatch == 0 && deeper > 0 && atCeiling > 0 && zeroed > 0, buf);
+    }
+
+    // W3: weight 0 over +-1/2 octave around a planted resonance: those bands are never cut (every frame, both channels), every weight-1 band is
+    //     exactly the unweighted core, and the unweighted core does cut the resonance.
+    {
+        std::vector<float> notch(static_cast<size_t>(B), 1.0f);
+        Core probe; probe.prepare(sr, 512, 2);
+        int nZero = 0;
+        for (int b = 0; b < B; ++b)
+            if (std::abs(std::log2(probe.bandCentreHz(b) / 2500.0)) <= 0.5) { notch[static_cast<size_t>(b)] = 0.0f; ++nZero; }
+        Params pw = cap; pw.weightCurve = notch.data();
+        Core ref, c; ref.prepare(sr, 512, 2); c.prepare(sr, 512, 2);
+        const BandStats sRef = bandStats(ref, in, cap, 0.0), sW = bandStats(c, in, pw, 0.0);
+        const int b0 = nearestBand(c, 2500.0);
+        double zMax = 0.0; bool othersSame = true;
+        for (int ch = 0; ch < 2; ++ch)
+            for (int b = 0; b < B; ++b)
+            {
+                if (notch[static_cast<size_t>(b)] == 0.0f) zMax = std::max(zMax, sW.maxRed[ch][static_cast<size_t>(b)]);
+                else othersSame = othersSame && sW.red[ch][static_cast<size_t>(b)] == sRef.red[ch][static_cast<size_t>(b)];
+            }
+        char buf[260];
+        std::snprintf(buf, sizeof buf, "W3 weight 0 on %d bands within +-1/2 oct of 2.5 kHz: max cut there %.3g dB over every frame (== 0), unweighted cut at f0 %.2f dB (>= 7), weight-1 bands identical %d",
+                      nZero, zMax, sRef.red[0][static_cast<size_t>(b0)], othersSame ? 1 : 0);
+        check(zMax == 0.0 && sRef.red[0][static_cast<size_t>(b0)] >= 7.0 && othersSame, buf);
+    }
+
+    // W4: weights above 1 deepen what was detected, up to the depth ceiling and never beyond (C1: depth 0.5 Soft, ceiling 6 dB); they create no cut on plain noise.
+    {
+        double cut[3] = { 0, 0, 0 };
+        const float ws[3] = { 1.0f, 1.5f, 2.5f };
+        double peakMax = 0.0;
+        for (int i = 0; i < 3; ++i)
+        {
+            std::vector<float> flat(static_cast<size_t>(B), ws[i]);
+            Params pw; pw.weightCurve = flat.data();
+            Core c; c.prepare(sr, 512, 2);
+            const BandStats s = bandStats(c, in, pw, 2.0);
+            cut[i] = s.red[0][static_cast<size_t>(nearestBand(c, 2500.0))];
+            for (int b = 0; b < B; ++b) peakMax = std::max(peakMax, s.maxRed[0][static_cast<size_t>(b)]);
+        }
+        std::vector<float> flat25(static_cast<size_t>(B), 2.5f);
+        Params pn; pn.weightCurve = flat25.data();
+        Core cn; cn.prepare(sr, 512, 2);
+        const BandStats sn = bandStats(cn, makePink(static_cast<int>(6.0 * sr), -20.0, 83), pn, 2.0);
+        double noiseMean = 0.0; int nb = 0;
+        for (int b = 0; b < B; ++b) if (cn.bandCentreHz(b) >= 100.0) { noiseMean += sn.red[0][static_cast<size_t>(b)]; ++nb; }
+        noiseMean /= std::max(nb, 1);
+        char buf[260];
+        std::snprintf(buf, sizeof buf, "W4 flat weight 1 / 1.5 / 2.5 (C1, ceiling 6 dB): mean cut at f0 %.2f / %.2f / %.2f dB (increasing), max band cut %.3f dB (<= 6), plain pink at 2.5: mean %.3f dB (<= 0.3)",
+                      cut[0], cut[1], cut[2], peakMax, noiseMean);
+        check(cut[1] >= cut[0] + 0.5 && cut[2] >= cut[1] && peakMax <= 6.0 + 1e-6 && noiseMean <= 0.3, buf);
+    }
+}
+
+// -3 dB width (octaves) of the cut around f0: the span where the mean applied band reduction is >= levelDb, crossings interpolated on log2 f.
+double cutWidthOct(const Core& c, const std::vector<double>& red, double f0, double levelDb, double& peak)
+{
+    const int B = c.numBands(), b0 = nearestBand(c, f0);
+    int bp = b0;
+    for (int b = std::max(0, b0 - 3); b <= std::min(B - 1, b0 + 3); ++b) if (red[static_cast<size_t>(b)] > red[static_cast<size_t>(bp)]) bp = b;
+    peak = red[static_cast<size_t>(bp)];
+    if (peak < levelDb) return 0.0;
+    auto x = [&](int b) { return std::log2(static_cast<double>(c.bandCentreHz(b))); };
+    auto R = [&](int b) { return red[static_cast<size_t>(b)]; };
+    int lo = bp, hi = bp;
+    while (lo > 0 && R(lo - 1) >= levelDb) --lo;
+    while (hi < B - 1 && R(hi + 1) >= levelDb) ++hi;
+    double xl = x(lo), xh = x(hi);
+    if (lo > 0)     { const double t = (levelDb - R(lo - 1)) / (R(lo) - R(lo - 1)); xl = x(lo - 1) + t * (x(lo) - x(lo - 1)); }
+    if (hi < B - 1) { const double t = (R(hi) - levelDb) / (R(hi) - R(hi + 1)); xh = x(hi) + t * (x(hi + 1) - x(hi)); }
+    return xh - xl;
+}
+
+void testSharpness()
+{
+    const double sr = 48000.0;
+    Params cap; cap.depth = 1.0f; cap.hardKnee = true;   // C1c
+    for (double f0 : { 1000.0, 2500.0 })
+    {
+        const Stereo in = resonantPink(sr, 8.0, f0, f0 > 2000.0 ? 85 : 86);
+        double w[3] = { 0, 0, 0 }, pk[3] = { 0, 0, 0 };
+        const float sh[3] = { 0.0f, 0.5f, 1.0f };
+        for (int i = 0; i < 3; ++i)
+        {
+            Params p = cap; p.sharpness = sh[i];
+            Core c; c.prepare(sr, 512, 2);
+            const BandStats s = bandStats(c, in, p, 2.0);
+            w[i] = cutWidthOct(c, s.red[0], f0, 3.0, pk[i]);
+        }
+        char buf[260];
+        std::snprintf(buf, sizeof buf, "S1 sharpness 0 / 0.5 / 1, Q8 +12 dB at %.0f Hz (C1c): -3 dB width of the cut %.3f / %.3f / %.3f oct (%.0f / %.0f / %.0f Hz; strictly narrower), peak cut %.2f / %.2f / %.2f dB",
+                      f0, w[0], w[1], w[2], f0 * (std::exp2(w[0] / 2) - std::exp2(-w[0] / 2)), f0 * (std::exp2(w[1] / 2) - std::exp2(-w[1] / 2)),
+                      f0 * (std::exp2(w[2] / 2) - std::exp2(-w[2] / 2)), pk[0], pk[1], pk[2]);
+        check(w[0] > w[1] && w[1] > w[2] && w[2] > 0.0, buf);
+    }
+    // S2: the default (0.5) and an explicit 0.5 are the same thing; values outside 0..1 clamp (NaN = default) - bit-identical outputs.
+    {
+        const Stereo in = resonantPink(sr, 3.0, 2500.0, 87);
+        Params pNaN = cap; pNaN.sharpness = std::numeric_limits<float>::quiet_NaN();
+        Params pBig = cap; pBig.sharpness = 7.0f;
+        Params pOne = cap; pOne.sharpness = 1.0f;
+        Core a, b, c, d; a.prepare(sr, 512, 2); b.prepare(sr, 512, 2); c.prepare(sr, 512, 2); d.prepare(sr, 512, 2);
+        const bool nanSame = sameDiff(render(a, in, { 256 }, cap), render(b, in, { 256 }, pNaN)).maxAbs == 0.0;
+        const bool bigSame = sameDiff(render(c, in, { 256 }, pOne), render(d, in, { 256 }, pBig)).maxAbs == 0.0;
+        check(nanSame && bigSame, "S2 sharpness NaN == default 0.5 and 7.0 == 1.0 (bit-identical outputs)");
+    }
+}
+
+// Effect-side Mid / Side wrapper exactly as the RS HQ path does it (processHighQualityMidMode / SideMode): the chosen component (M = (L + R) / 2 or
+// S = (L - R) / 2) goes through a 1-channel core, the other one through a dry delay of exactly the core latency, then L = M + S, R = M - S.
+Stereo renderMidSide(Core& core, const Stereo& in, bool side, const Params& p, int block)
+{
+    const int n = in.size(), lat = core.currentLatency();
+    std::vector<float> comp(static_cast<size_t>(n)), other(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i)
+    {
+        const float m = 0.5f * (in.ch[0][static_cast<size_t>(i)] + in.ch[1][static_cast<size_t>(i)]);
+        const float s = 0.5f * (in.ch[0][static_cast<size_t>(i)] - in.ch[1][static_cast<size_t>(i)]);
+        comp[static_cast<size_t>(i)] = side ? s : m;
+        other[static_cast<size_t>(i)] = side ? m : s;
+    }
+    for (int pos = 0; pos < n; pos += block)
+    {
+        float* ptr[1] = { comp.data() + pos };
+        core.process(ptr, 1, std::min(block, n - pos), p);
+    }
+    Stereo out; out.resize(n);
+    for (int i = 0; i < n; ++i)
+    {
+        const float od = i >= lat ? other[static_cast<size_t>(i - lat)] : 0.0f;
+        const float mid = side ? od : comp[static_cast<size_t>(i)];
+        const float sd  = side ? comp[static_cast<size_t>(i)] : od;
+        out.ch[0][static_cast<size_t>(i)] = mid + sd;
+        out.ch[1][static_cast<size_t>(i)] = mid - sd;
+    }
+    return out;
+}
+
+void testChannelModes()
+{
+    const double sr = 48000.0;
+    Params cap; cap.depth = 1.0f; cap.hardKnee = true;
+    // M1: a 1-channel core == channel 0 of a 2-channel core at link 0, and a 2-channel-prepared core processing 1 channel == the 1-channel core (bit-identical).
+    {
+        Stereo in = makePink(static_cast<int>(4.0 * sr), -20.0, 91);
+        applyPeak(in.ch[0], sr, 1100.0, 8.0, 12.0); applyPeak(in.ch[1], sr, 3300.0, 8.0, 12.0);
+        Core c2, c1, c21; c2.prepare(sr, 512, 2); c1.prepare(sr, 512, 1); c21.prepare(sr, 512, 2);
+        const Stereo o2 = render(c2, in, { 100 }, cap), o1 = render(c1, in, { 100 }, cap, 1), o21 = render(c21, in, { 100 }, cap, 1);
+        const bool sameAs2 = o1.ch[0] == o2.ch[0], same21 = o21.ch[0] == o1.ch[0] && o21.ch[1] == in.ch[1];
+        check(sameAs2 && same21, std::string("M1 mono core == ch 0 of a stereo core at link 0: ") + (sameAs2 ? "bit-identical" : "DIFFERS")
+                                  + "; 2-ch core run with 1 channel == mono core, ch 1 untouched: " + (same21 ? "yes" : "NO"));
+    }
+    // Mid / Side material: M = pink + a 1.5 kHz resonance, S = pink (-6 dB) + a 4 kHz resonance; L = M + S, R = M - S.
+    Stereo ms;
+    {
+        Stereo a = makePink(static_cast<int>(8.0 * sr), -20.0, 92);
+        applyPeak(a.ch[0], sr, 1500.0, 8.0, 12.0);
+        applyPeak(a.ch[1], sr, 4000.0, 8.0, 12.0);
+        ms.resize(a.size());
+        for (int i = 0; i < a.size(); ++i)
+        {
+            const float m = a.ch[0][static_cast<size_t>(i)], s = 0.5f * a.ch[1][static_cast<size_t>(i)];
+            ms.ch[0][static_cast<size_t>(i)] = m + s;
+            ms.ch[1][static_cast<size_t>(i)] = m - s;
+        }
+    }
+    // M2: the Mid and the Side wrapper reconstruct the latency-aligned input at depth 0.
+    for (int side = 0; side < 2; ++side)
+    {
+        Core c; c.prepare(sr, 512, 1);
+        const Stereo out = renderMidSide(c, ms, side == 1, depth0(), 100);
+        const Diff d = alignedDiff(ms, out, c.currentLatency());
+        char buf[200];
+        std::snprintf(buf, sizeof buf, "M2 %s wrapper (1-channel core + latency-aligned dry of the other component), depth 0: rms %.1f dBFS, max |diff| %.2e",
+                      side ? "Side" : "Mid", d.rmsDb, d.maxAbs);
+        check(d.rmsDb <= -120.0 && d.maxAbs <= kMaxAbsAt120, buf);
+    }
+    // M3: Mid mode cuts the Mid resonance and not the Side one; Side mode the reverse (C1c, the 1-channel core's band reductions).
+    for (int side = 0; side < 2; ++side)
+    {
+        std::vector<float> comp(static_cast<size_t>(ms.size()));
+        for (int i = 0; i < ms.size(); ++i)
+            comp[static_cast<size_t>(i)] = side ? 0.5f * (ms.ch[0][static_cast<size_t>(i)] - ms.ch[1][static_cast<size_t>(i)])
+                                                : 0.5f * (ms.ch[0][static_cast<size_t>(i)] + ms.ch[1][static_cast<size_t>(i)]);
+        Core c; c.prepare(sr, 512, 1);
+        const std::vector<double> m = monoBandMean(c, comp, cap, 2.0);
+        const double own = m[static_cast<size_t>(nearestBand(c, side ? 4000.0 : 1500.0))], foreign = m[static_cast<size_t>(nearestBand(c, side ? 1500.0 : 4000.0))];
+        char buf[200];
+        std::snprintf(buf, sizeof buf, "M3 %s mode: cut at its own resonance (%s) %.2f dB (>= 7), at the other component's (%s) %.3f dB (<= 0.3)",
+                      side ? "Side" : "Mid", side ? "4 kHz" : "1.5 kHz", own, side ? "1.5 kHz" : "4 kHz", foreign);
+        check(own >= 7.0 && foreign <= 0.3, buf);
+    }
+    // M4: M and S as the two channels of one core at link 0 == two separate 1-channel cores (bit-identical): an "M + S" mode costs one core.
+    {
+        Stereo msIn; msIn.resize(ms.size());
+        for (int i = 0; i < ms.size(); ++i)
+        {
+            msIn.ch[0][static_cast<size_t>(i)] = 0.5f * (ms.ch[0][static_cast<size_t>(i)] + ms.ch[1][static_cast<size_t>(i)]);
+            msIn.ch[1][static_cast<size_t>(i)] = 0.5f * (ms.ch[0][static_cast<size_t>(i)] - ms.ch[1][static_cast<size_t>(i)]);
+        }
+        Core both, cm, cs; both.prepare(sr, 512, 2); cm.prepare(sr, 512, 1); cs.prepare(sr, 512, 1);
+        const Stereo ob = render(both, msIn, { 64 }, cap);
+        Stereo sOnly; sOnly.resize(msIn.size()); sOnly.ch[0] = msIn.ch[1];
+        const Stereo om = render(cm, msIn, { 64 }, cap, 1), os = render(cs, sOnly, { 64 }, cap, 1);
+        check(ob.ch[0] == om.ch[0] && ob.ch[1] == os.ch[0], "M4 M and S as the two channels of one core (link 0) == two 1-channel cores (bit-identical)");
+    }
+}
+
+using xleth::dsp::resonance::VizFrame;
+using xleth::dsp::resonance::VizSink;
+
+// The frame layout documented in ResonanceCore.md section 8.4.
+static_assert(std::is_trivially_copyable<VizFrame>::value && std::is_standard_layout<VizFrame>::value, "VizFrame must be POD-like");
+static_assert(alignof(VizFrame) == 8 && sizeof(VizFrame) == 24 + 3 * sizeof(float) * xleth::dsp::resonance::kGridBands, "VizFrame layout (1176 bytes)");
+static_assert(offsetof(VizFrame, channel) == 8 && offsetof(VizFrame, numBands) == 12 && offsetof(VizFrame, hopSize) == 16 && offsetof(VizFrame, maxReductionDb) == 20
+              && offsetof(VizFrame, levelDb) == 24 && offsetof(VizFrame, baselineDb) == 408 && offsetof(VizFrame, reductionDb) == 792, "VizFrame field offsets");
+
+// Checks every frame against the core's own introspection at the moment of the call.
+struct CheckingSink final : VizSink
+{
+    const Core* core = nullptr;
+    int numCh = 2;
+    long long frames[2] = { 0, 0 }, nextHop[2] = { 0, 0 }, bad = 0;
+    int lastChannel = -1;
+    void onResonanceFrame(const VizFrame& f) noexcept override
+    {
+        if (f.channel < 0 || f.channel >= numCh) { ++bad; return; }
+        const int c = f.channel, B = core->numBands();
+        if (f.hopIndex != nextHop[c] || f.hopIndex != core->framesProcessed()) ++bad;
+        if (c != (lastChannel + 1) % numCh) ++bad;
+        if (f.numBands != B || f.hopSize != core->hopSize()) ++bad;
+        float m = 0.0f;
+        for (int b = 0; b < B; ++b) m = std::max(m, f.reductionDb[b]);
+        if (m != f.maxReductionDb) ++bad;
+        const size_t bytes = sizeof(float) * static_cast<size_t>(B);
+        if (std::memcmp(f.reductionDb, core->bandReductionDb(c), bytes) != 0) ++bad;
+        if (std::memcmp(f.levelDb, core->bandFastLevelDb(c), bytes) != 0) ++bad;
+        if (std::memcmp(f.baselineDb, core->bandFastBaselineDb(c), bytes) != 0) ++bad;
+        nextHop[c] = f.hopIndex + 1; ++frames[c]; lastChannel = c;
+    }
+};
+
+struct NoopSink final : VizSink
+{
+    float acc = 0.0f;
+    void onResonanceFrame(const VizFrame& f) noexcept override { acc += f.maxReductionDb; }
+};
+
+void testVizTap()
+{
+    const double sr = 48000.0;
+    Params cap; cap.depth = 1.0f; cap.hardKnee = true;
+    Stereo in = resonantPink(sr, 4.0, 2500.0, 95);
+    applyPeak(in.ch[1], sr, 700.0, 8.0, 12.0);
+    // V1 / V2: frames at the hop rate, per channel, in order, equal to the core's own state; the output is bit-identical to a run without a sink.
+    {
+        Core c; c.prepare(sr, 512, 2);
+        CheckingSink sink; sink.core = &c;
+        c.setVizSink(&sink);
+        const Stereo withSink = render(c, in, { 100 }, cap);
+        Core ref; ref.prepare(sr, 512, 2);
+        const Stereo noSink = render(ref, in, { 100 }, cap);
+        const double secs = static_cast<double>(in.size()) / sr;
+        const long long expectFrames = (in.size() + c.hopPhaseOffset()) / c.hopSize();
+        char buf[260];
+        std::snprintf(buf, sizeof buf, "V1 viz tap, block 100: frames L %lld R %lld (expected %lld == framesProcessed %lld), %.2f frames/s per channel (sr / hop = %.2f), inconsistent frames %lld",
+                      sink.frames[0], sink.frames[1], expectFrames, c.framesProcessed(), sink.frames[0] / secs, sr / c.hopSize(), sink.bad);
+        check(sink.frames[0] == expectFrames && sink.frames[1] == expectFrames && c.framesProcessed() == expectFrames && sink.bad == 0, buf);
+        check(sameDiff(withSink, noSink).maxAbs == 0.0, "V2 output with a viz sink == without (bit-identical)");
+        // mono: one frame per hop, channel 0 only
+        Core cm; cm.prepare(sr, 512, 2);
+        CheckingSink sm; sm.core = &cm; sm.numCh = 1;
+        cm.setVizSink(&sm);
+        (void) render(cm, in, { 64 }, cap, 1);
+        check(sm.frames[0] == cm.framesProcessed() && sm.frames[1] == 0 && sm.bad == 0, "V1 mono: one frame per hop on channel 0 only (" + std::to_string(sm.frames[0]) + " frames)");
+    }
+    // V3: zero operator new in process() with a sink set (cold pass from the first block, parameters swept every block).
+    {
+        Core c; c.prepare(sr, 1024, 2);
+        NoopSink sink; c.setVizSink(&sink);
+        const long long n = countAllocs(c, in, 64, 0, 1500, true, true);
+        check(n == 0, "V3 zero operator new in process() with a viz sink (block 64, cold, params swept every block): count " + std::to_string(n));
+    }
+    // V4: cost. The null sink does strictly less work than a sink; the paired timing ratio null / no-op sink (median of 9 interleaved repetitions,
+    //     3 s stereo at block 64) must not exceed 1.10. The no-op sink's own overhead is reported. Cost against the pre-change build: bench CPU (ResonanceCore.md).
+    {
+        const Stereo x = resonantPink(sr, 3.0, 2500.0, 96);
+        std::vector<double> ratio, over;
+        double tN = 0.0, tS = 0.0;
+        for (int rep = 0; rep < 9; ++rep)
+        {
+            double t[2] = { 0.0, 0.0 };
+            for (int k = 0; k < 2; ++k)
+            {
+                const int mode = (rep & 1) ? 1 - k : k;   // alternate the order
+                Core c; c.prepare(sr, 64, 2);
+                NoopSink sink;
+                if (mode == 1) c.setVizSink(&sink);
+                Stereo buf = x;
+                const auto t0 = std::chrono::steady_clock::now();
+                for (int pos = 0; pos + 64 <= buf.size(); pos += 64)
+                {
+                    float* ptrs[2] = { buf.ch[0].data() + pos, buf.ch[1].data() + pos };
+                    c.process(ptrs, 2, 64, cap);
+                }
+                t[mode] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            }
+            ratio.push_back(t[0] / t[1]);
+            over.push_back(t[1] / t[0] - 1.0);
+            tN += t[0]; tS += t[1];
+        }
+        std::sort(ratio.begin(), ratio.end()); std::sort(over.begin(), over.end());
+        char buf[220];
+        std::snprintf(buf, sizeof buf, "V4 cost: null / no-op sink paired ratio median %.3f (<= 1.10); no-op sink overhead median %+.2f %%; mean %.1f / %.1f ms per 3 s stereo",
+                      ratio[ratio.size() / 2], 100.0 * over[over.size() / 2], tN / 9.0, tS / 9.0);
+        check(ratio[ratio.size() / 2] <= 1.10, buf);
+    }
+}
+
+void testMeters()
+{
+    const double sr = 48000.0;
+    static_assert(std::atomic<float>::is_always_lock_free, "lastMaxReductionDb must be lock-free");
+    Params cap; cap.depth = 1.0f; cap.hardKnee = true;
+    Stereo in = makePink(static_cast<int>(4.0 * sr), -20.0, 97);
+    applyPeak(in.ch[1], sr, 1800.0, 8.0, 12.0);   // right only: the channels differ
+    Core c; c.prepare(sr, 512, 2);
+    const bool zeroAtStart = c.lastMaxReductionDb() == 0.0f && c.lastMaxReductionDb(0) == 0.0f && c.lastMaxReductionDb(1) == 0.0f;
+    const int H = c.hopSize();
+    std::vector<float> l(static_cast<size_t>(H)), r(static_cast<size_t>(H));
+    float* ptrs[2] = { l.data(), r.data() };
+    long long bad = 0; float peakR = 0.0f, peakL = 0.0f;
+    for (int pos = 0; pos + H <= in.size(); pos += H)
+    {
+        std::memcpy(l.data(), in.ch[0].data() + pos, sizeof(float) * static_cast<size_t>(H));
+        std::memcpy(r.data(), in.ch[1].data() + pos, sizeof(float) * static_cast<size_t>(H));
+        c.process(ptrs, 2, H, cap);
+        float m[2] = { 0.0f, 0.0f };
+        for (int ch = 0; ch < 2; ++ch) for (int b = 0; b < c.numBands(); ++b) m[ch] = std::max(m[ch], c.bandReductionDb(ch)[b]);
+        if (c.lastMaxReductionDb(0) != m[0] || c.lastMaxReductionDb(1) != m[1] || c.lastMaxReductionDb() != std::max(m[0], m[1])) ++bad;
+        peakL = std::max(peakL, m[0]); peakR = std::max(peakR, m[1]);
+    }
+    c.reset();
+    const bool zeroAfterReset = c.lastMaxReductionDb() == 0.0f && c.lastMaxReductionDb(1) == 0.0f;
+    // mono processing on a 2-channel core: channel 1 reads 0, combined == channel 0
+    Core cm; cm.prepare(sr, 512, 2);
+    (void) render(cm, in, { 256 }, cap, 1);
+    const bool monoOk = cm.lastMaxReductionDb(1) == 0.0f && cm.lastMaxReductionDb() == cm.lastMaxReductionDb(0);
+    char buf[260];
+    std::snprintf(buf, sizeof buf, "E1 lastMaxReductionDb: == max band reduction per channel / combined after every hop (%lld mismatches), peak L %.2f R %.2f dB, 0 at start %d / after reset %d, mono run ch1 0 %d",
+                  bad, peakL, peakR, zeroAtStart ? 1 : 0, zeroAfterReset ? 1 : 0, monoOk ? 1 : 0);
+    check(bad == 0 && zeroAtStart && zeroAfterReset && monoOk && peakR >= 7.0f, buf);
+}
+
+// Largest first and second differences over [skip, n) of both channels, and the count of non-finite samples.
+struct StepStats { double d1 = 0.0, d2 = 0.0; long long nonFinite = 0; };
+StepStats stepStats(const Stereo& y, int skip)
+{
+    StepStats s;
+    for (int c = 0; c < 2; ++c)
+        for (int i = 0; i < y.size(); ++i)
+        {
+            const float v = y.ch[c][static_cast<size_t>(i)];
+            if (!std::isfinite(v)) { ++s.nonFinite; continue; }
+            if (i < skip || i < 2) continue;
+            const double a = y.ch[c][static_cast<size_t>(i - 1)], b = y.ch[c][static_cast<size_t>(i - 2)];
+            s.d1 = std::max(s.d1, std::abs(v - a));
+            s.d2 = std::max(s.d2, std::abs(v - 2.0 * a + b));
+        }
+    return s;
+}
+
+void testParamChangeSafety()
+{
+    const double sr = 48000.0;
+    const int n = static_cast<int>(6.0 * sr);
+    // Moderate-level material: pink -26 dBFS with a planted +12 dB / Q8 bell at 1.2 kHz, a 2.5 kHz tone (-22 dBFS) in both channels and a 700 Hz tone in R.
+    Stereo x = makePink(n, -26.0, 101);
+    for (int c = 0; c < 2; ++c) applyPeak(x.ch[c], sr, 1200.0, 8.0, 12.0);
+    for (int i = 0; i < n; ++i)
+    {
+        const double t = i / sr;
+        x.ch[0][static_cast<size_t>(i)] += static_cast<float>(0.08 * std::sin(2.0 * juce::MathConstants<double>::pi * 2500.0 * t));
+        x.ch[1][static_cast<size_t>(i)] += static_cast<float>(0.08 * std::sin(2.0 * juce::MathConstants<double>::pi * 2500.0 * t + 0.7)
+                                                              + 0.05 * std::sin(2.0 * juce::MathConstants<double>::pi * 700.0 * t));
+    }
+    const int B = xleth::dsp::resonance::kGridBands;
+    std::vector<float> w0(static_cast<size_t>(B), 0.0f), w25(static_cast<size_t>(B), 2.5f);
+    Params lo; lo.depth = 0.0f; lo.sensitivity = 0.0f; lo.sharpness = 0.0f; lo.weightCurve = w0.data();  lo.stereoLink = 0.0f; lo.hardKnee = true;
+    Params hi; hi.depth = 1.0f; hi.sensitivity = 1.0f; hi.sharpness = 1.0f; hi.weightCurve = w25.data(); hi.stereoLink = 1.0f; hi.hardKnee = true;
+    Params cap; cap.depth = 1.0f; cap.hardKnee = true;
+    Params hiFlat = hi; hiFlat.weightCurve = nullptr; hiFlat.sharpness = 0.0f;
+    const int skip = Core::latencyFor(sr) + static_cast<int>(0.5 * sr);
+
+    // Steady references: every extreme held for the whole run.
+    StepStats ref;
+    for (const Params* p : { &lo, &hi, &cap, &hiFlat })
+    {
+        Core c; c.prepare(sr, 64, 2);
+        const StepStats s = stepStats(render(c, x, { 64 }, *p), skip);
+        ref.d1 = std::max(ref.d1, s.d1); ref.d2 = std::max(ref.d2, s.d2); ref.nonFinite += s.nonFinite;
+    }
+    // Stress: before EVERY block each of depth, sensitivity, sharpness, weightCurve (nullptr / all 0 / all 2.5) and stereoLink jumps to a random extreme.
+    const double kBound = 1.25;
+    for (int block : { 64, 100 })
+    {
+        Core c; c.prepare(sr, block, 2);
+        Stereo y = x;
+        uint64_t st = 0x5DEECE66Dull + static_cast<uint64_t>(block);
+        long long allocs = 0;
+        t_isMeasuringThread = true;
+        for (int pos = 0; pos < n; pos += block)
+        {
+            st = st * 6364136223846793005ull + 1442695040888963407ull;
+            const uint64_t bits = st >> 33;
+            Params p;
+            p.hardKnee    = true;
+            p.depth       = (bits & 1u) ? 1.0f : 0.0f;
+            p.sensitivity = (bits & 2u) ? 1.0f : 0.0f;
+            p.sharpness   = (bits & 4u) ? 1.0f : 0.0f;
+            p.stereoLink  = (bits & 8u) ? 1.0f : 0.0f;
+            const int wsel = static_cast<int>((bits >> 4) % 3u);
+            p.weightCurve = wsel == 0 ? nullptr : (wsel == 1 ? w0.data() : w25.data());
+            const int b = std::min(block, n - pos);
+            float* ptrs[2] = { y.ch[0].data() + pos, y.ch[1].data() + pos };
+            g_allocCount.store(0); g_allocArmed.store(true);
+            c.process(ptrs, 2, b, p);
+            g_allocArmed.store(false); allocs += g_allocCount.load();
+        }
+        t_isMeasuringThread = false;
+        const StepStats s = stepStats(y, skip);
+        char buf[300];
+        std::snprintf(buf, sizeof buf, "P1 params at random extremes before every block (%d): max |step| %.4f vs steady %.4f (ratio %.3f <= %.2f), max |2nd diff| %.4f vs %.4f (ratio %.3f <= %.2f), non-finite %lld, allocations %lld",
+                      block, s.d1, ref.d1, s.d1 / ref.d1, kBound, s.d2, ref.d2, s.d2 / ref.d2, kBound, s.nonFinite + ref.nonFinite, allocs);
+        check(s.d1 <= kBound * ref.d1 && s.d2 <= kBound * ref.d2 && s.nonFinite == 0 && ref.nonFinite == 0 && allocs == 0, buf);
+    }
+}
+
+void testHopPhaseHelper()
+{
+    // H1: the sequence at hop 256 (Normal tier, 48 kHz) and its scaling with the hop.
+    {
+        const int expect[8] = { 0, 128, 64, 192, 32, 160, 96, 224 };
+        bool ok = true;
+        std::string got;
+        for (int i = 0; i < 8; ++i)
+        {
+            const int v = Core::hopPhaseOffsetForInstance(i, 256);
+            ok = ok && v == expect[i] && Core::hopPhaseOffsetForInstance(i, 512) == 2 * expect[i];
+            got += (i ? "," : "") + std::to_string(v);
+        }
+        ok = ok && Core::hopPhaseOffsetForInstance(-3, 256) == 0 && Core::hopPhaseOffsetForInstance(5, 1) == 0 && Core::hopPhaseOffsetForInstance(5, 0) == 0;
+        check(ok, "H1 hopPhaseOffsetForInstance(0..7, 256) = {" + got + "} (bit reversal x hop; x2 at hop 512; 0 for index <= 0 or hop <= 1)");
+    }
+    // H2: instances 0 .. hop-1 at a power-of-two hop are a permutation of 0 .. hop-1; any hop gives values in [0, hop).
+    {
+        std::vector<int> seen(256, 0);
+        bool perm = true;
+        for (int i = 0; i < 256; ++i) { const int v = Core::hopPhaseOffsetForInstance(i, 256); if (v < 0 || v >= 256 || seen[static_cast<size_t>(v)]++) perm = false; }
+        bool range = true;
+        for (int hop : { 2, 3, 100, 192, 1000 })
+            for (int i = 0; i < 300; ++i) { const int v = Core::hopPhaseOffsetForInstance(i, hop); range = range && v >= 0 && v < hop; }
+        check(perm && range, "H2 instances 0..255 at hop 256 are a permutation of 0..255; values in [0, hop) for hops 2 / 3 / 100 / 192 / 1000");
+    }
+    // H3: 8 real instances (48 kHz, Normal, hop 256) prepared with the helper's offsets, 64-sample blocks: count the frame boundaries per block over all 8.
+    for (int staggered = 1; staggered >= 0; --staggered)
+    {
+        const double sr = 48000.0;
+        const int hop = Core::fftSizeFor(sr) / 4;
+        const Stereo in = makePink(static_cast<int>(2.0 * sr), -20.0, 111);
+        Core cores[8];
+        for (int i = 0; i < 8; ++i) { cores[i].setHopPhaseOffset(staggered ? Core::hopPhaseOffsetForInstance(i, hop) : 0); cores[i].prepare(sr, 64, 2); }
+        std::vector<float> l(64), r(64);
+        float* ptrs[2] = { l.data(), r.data() };
+        int maxPerBlock = 0;
+        long long hist[9] = { 0 };
+        for (int pos = 0; pos + 64 <= in.size(); pos += 64)
+        {
+            int frames = 0;
+            for (auto& c : cores)
+            {
+                std::memcpy(l.data(), in.ch[0].data() + pos, sizeof(float) * 64);
+                std::memcpy(r.data(), in.ch[1].data() + pos, sizeof(float) * 64);
+                const long long before = c.framesProcessed();
+                c.process(ptrs, 2, 64, Params{});
+                frames += static_cast<int>(c.framesProcessed() - before);
+            }
+            maxPerBlock = std::max(maxPerBlock, frames);
+            ++hist[std::min(frames, 8)];
+        }
+        char buf[260];
+        std::snprintf(buf, sizeof buf, "H3 8 instances, hop %d, block 64, %s: max frame boundaries per block %d (%s); blocks with 0/1/2/8 frames: %lld/%lld/%lld/%lld",
+                      hop, staggered ? "hopPhaseOffsetForInstance(i)" : "all offset 0 (control)", maxPerBlock, staggered ? "<= 2" : "control: == 8",
+                      hist[0], hist[1], hist[2], hist[8]);
+        check(staggered ? maxPerBlock <= 2 : maxPerBlock == 8, buf);
+    }
+}
+
 } // namespace
 
 int main()
@@ -773,6 +1383,13 @@ int main()
     testHopPhaseOffset();
     testDetectorFunction();
     testDynamics();
+    testWeightCurve();
+    testSharpness();
+    testChannelModes();
+    testVizTap();
+    testMeters();
+    testParamChangeSafety();
+    testHopPhaseHelper();
     std::printf("[ResCore] --- %d passed, %d failed ---\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
