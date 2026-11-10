@@ -587,43 +587,6 @@ private:
         XlethResonanceSuppressorEffect& owner;
     };
 
-    // Per core frame (audio thread, inside core_.process): the Classic meter-2
-    // quantity, mean of the 12 largest band reductions / 24, max over the block.
-    void onCoreVizFrame(const xleth::dsp::resonance::VizFrame& frame) noexcept
-    {
-        const int bands = std::clamp(frame.numBands, 0, xleth::dsp::resonance::kGridBands);
-
-        std::array<float, 12> top {};
-        for (int b = 0; b < bands; ++b)
-        {
-            const float v = frame.reductionDb[b];
-            if (!(v > top.back()))
-                continue;
-            top.back() = v;
-            for (int i = static_cast<int>(top.size()) - 1; i > 0; --i)
-            {
-                if (top[static_cast<std::size_t>(i)] <= top[static_cast<std::size_t>(i - 1)])
-                    break;
-                std::swap(top[static_cast<std::size_t>(i)], top[static_cast<std::size_t>(i - 1)]);
-            }
-        }
-        float topSum = 0.0f;
-        int topCount = 0;
-        for (float v : top)
-        {
-            if (v <= 0.0f)
-                break;
-            topSum += v;
-            ++topCount;
-        }
-        float activity = topCount > 0
-            ? std::clamp(topSum / static_cast<float>(topCount) / 24.0f, 0.0f, 1.0f)
-            : 0.0f;
-        if (!std::isfinite(activity))
-            activity = 0.0f;
-        coreBlockActivity_ = std::max(coreBlockActivity_, activity);
-    }
-
     static bool sameStructure(const Structure& a, const Structure& b) noexcept
     {
         if (a.mode != b.mode)
@@ -915,6 +878,7 @@ private:
         coreDryMono_.assign(static_cast<std::size_t>(cap), 0.0f);
         coreAuxIn_.assign(static_cast<std::size_t>(cap), 0.0f);
         coreAuxOut_.assign(static_cast<std::size_t>(cap), 0.0f);
+        prepareCoreVizTables();
         coreWeightsValid_ = false;
     }
 
@@ -2582,6 +2546,151 @@ private:
         std::array<std::array<BandState, kNumBands>, 2> channels_ {};
     };
 
+    // ── New engine visualization (schema v3 ResonanceBucket, unchanged) ─────
+    //
+    // The core hands one VizFrame per hop and channel (96 ERB-spaced bands). It
+    // is resampled to the existing 128 log-frequency buckets: bucket i is
+    // centred at 20 Hz x 1000^(i / 127) (20 Hz .. 20 kHz, the painter's axis),
+    // linearly interpolated between the two neighbouring band centres on log f
+    // (96 < 128: interpolate, never max-pool, or buckets would stay empty).
+    //   spectrum  = (levelDb + offset(N) + 120) / 120, clamped 0..1. levelDb is
+    //               the core's 40 ms AVERAGED level in per-octave units (pink
+    //               noise reads flat), uncalibrated: it carries the unnormalised
+    //               FFT gain 10 log10(N / 2) and the per-octave weight f. The
+    //               offset, calibrated once per tier, is -10 log10(N / 2) -
+    //               10 log10(1000 Hz): white noise of RMS r reads 20 log10(r)
+    //               dBFS in the 1 kHz bucket at every tier. The Classic display
+    //               is the INSTANTANEOUS per-bin |X|^2 of one frame (white noise
+    //               flat), uncalibrated (about 10 log10(N / 2) dB hotter: +27 dB
+    //               at Normal, so it sits at 1.0 on most program material) and
+    //               max-pooled per bucket. The New spectrum is smoother, lower
+    //               and does not change level with the quality.
+    //   reduction = reductionDb / 24 (the applied cut after every stage).
+    //   weighting = the focus curve evaluated at the bucket centre.
+    //   activity  = mean of the 12 largest band reductions / 24 (Classic meaning).
+    //   sampleClock = hopIndex x hop (frames of the tier in use), bucketSamples
+    //               = hop, fftSize = 4 x hop, qualityIndex = that tier.
+    // Audio thread, inside core_.process(): no allocation, no lock, no log.
+
+    void prepareCoreVizTables() noexcept
+    {
+        const int bands = core_.numBands();
+        const float lo = 20.0f;
+        const float ratio = 1000.0f;
+        const auto n = coreVizBucketHz_.size();
+        for (std::size_t i = 0; i < n; ++i)
+        {
+            const float f = lo * std::pow(ratio, static_cast<float>(i) / static_cast<float>(n - 1));
+            coreVizBucketHz_[i] = f;
+
+            int idx = 0;
+            float frac = 0.0f;
+            if (bands >= 2)
+            {
+                if (f <= core_.bandCentreHz(0))
+                {
+                    idx = 0; frac = 0.0f;
+                }
+                else if (f >= core_.bandCentreHz(bands - 1))
+                {
+                    idx = bands - 2; frac = 1.0f;
+                }
+                else
+                {
+                    int b = 0;
+                    while (b < bands - 2 && core_.bandCentreHz(b + 1) <= f)
+                        ++b;
+                    const float a = std::log2(core_.bandCentreHz(b));
+                    const float c = std::log2(core_.bandCentreHz(b + 1));
+                    idx = b;
+                    frac = c > a ? std::clamp((std::log2(f) - a) / (c - a), 0.0f, 1.0f) : 0.0f;
+                }
+            }
+            coreVizBandIdx_[i] = idx;
+            coreVizBandFrac_[i] = frac;
+        }
+
+        for (int t = 0; t < 3; ++t)
+        {
+            const int fft = xleth::dsp::resonance::Core::fftSizeFor(sampleRate_, tierForQuality(t));
+            coreTierFftSize_[static_cast<std::size_t>(t)] = fft;
+            coreTierLevelOffsetDb_[static_cast<std::size_t>(t)] = static_cast<float>(
+                -10.0 * std::log10(0.5 * static_cast<double>(std::max(2, fft))) - 30.0);
+        }
+    }
+
+    void onCoreVizFrame(const xleth::dsp::resonance::VizFrame& frame) noexcept
+    {
+        const int bands = std::clamp(frame.numBands, 0, xleth::dsp::resonance::kGridBands);
+
+        std::array<float, 12> top {};
+        for (int b = 0; b < bands; ++b)
+        {
+            const float v = frame.reductionDb[b];
+            if (!(v > top.back()))
+                continue;
+            top.back() = v;
+            for (int i = static_cast<int>(top.size()) - 1; i > 0; --i)
+            {
+                if (top[static_cast<std::size_t>(i)] <= top[static_cast<std::size_t>(i - 1)])
+                    break;
+                std::swap(top[static_cast<std::size_t>(i)], top[static_cast<std::size_t>(i - 1)]);
+            }
+        }
+        float topSum = 0.0f;
+        int topCount = 0;
+        for (float v : top)
+        {
+            if (v <= 0.0f)
+                break;
+            topSum += v;
+            ++topCount;
+        }
+        float activity = topCount > 0 ? std::clamp(topSum / static_cast<float>(topCount) / 24.0f, 0.0f, 1.0f) : 0.0f;
+        if (!std::isfinite(activity))
+            activity = 0.0f;
+        coreBlockActivity_ = std::max(coreBlockActivity_, activity);
+
+        auto* collector = coreVizCollector_;
+        if (collector == nullptr || bands < 2)
+            return;
+
+        xleth::viz::ResonanceBucket bucket {};
+        const int hop = std::max(1, frame.hopSize);
+        const int fft = hop * 4;
+        bucket.hdr.sampleClock = static_cast<std::uint64_t>(std::max<long long>(0, frame.hopIndex))
+                               * static_cast<std::uint64_t>(hop);
+        bucket.hdr.bucketSamples = static_cast<std::uint32_t>(hop);
+        bucket.hdr.flags = 0;
+        bucket.sampleRate = static_cast<float>(sampleRate_);
+        bucket.fftSize = static_cast<float>(fft);
+        int quality = 1;
+        for (int t = 0; t < 3; ++t)
+            if (coreTierFftSize_[static_cast<std::size_t>(t)] == fft)
+                quality = t;
+        bucket.qualityIndex = static_cast<float>(quality);
+        const float levelOffsetDb = coreTierLevelOffsetDb_[static_cast<std::size_t>(quality)];
+        bucket.stereoMode = static_cast<float>(active_.stereo);
+        bucket.activity = activity;
+        bucket.bucketCount = static_cast<float>(xleth::viz::kResonanceVizBucketCount);
+        bucket.maxReductionDb = coreVizCeilingDb_;
+
+        for (std::size_t i = 0; i < xleth::viz::kResonanceVizBucketCount; ++i)
+        {
+            const int b0 = std::clamp(coreVizBandIdx_[i], 0, bands - 2);
+            const float t = coreVizBandFrac_[i];
+            const float level = frame.levelDb[b0] + t * (frame.levelDb[b0 + 1] - frame.levelDb[b0]);
+            const float red = frame.reductionDb[b0] + t * (frame.reductionDb[b0 + 1] - frame.reductionDb[b0]);
+            const float spectrum = (level + levelOffsetDb + 120.0f) * (1.0f / 120.0f);
+            const float reduction = red * (1.0f / 24.0f);
+            bucket.spectrum[i] = std::isfinite(spectrum) ? std::clamp(spectrum, 0.0f, 1.0f) : 0.0f;
+            bucket.reduction[i] = std::isfinite(reduction) ? std::clamp(reduction, 0.0f, 1.0f) : 0.0f;
+            bucket.weighting[i] = std::clamp(coreVizWeights_[i], 0.0f, 2.5f);
+        }
+
+        collector->push(bucket);
+    }
+
     // ── New engine processing (audio thread) ────────────────────────────────
 
     static float finiteOr(float v, float fallback) noexcept
@@ -2621,6 +2730,9 @@ private:
         for (int b = 0; b < bands; ++b)
             coreWeights_[static_cast<std::size_t>(b)] =
                 WolaProcessor::weightingForFrequencyImpl(settings, sampleRate_, core_.bandCentreHz(b));
+        for (std::size_t i = 0; i < coreVizWeights_.size(); ++i)
+            coreVizWeights_[i] =
+                WolaProcessor::weightingForFrequencyImpl(settings, sampleRate_, coreVizBucketHz_[i]);
 
         coreWeightSettings_ = settings;
         coreWeightsValid_ = true;
@@ -2672,6 +2784,10 @@ private:
         float* auxOut = coreAuxOut_.data();
         float* dryMono = coreDryMono_.data();
         const int stereoMode = active_.stereo;
+
+        // Telemetry: the New engine's own section, next to the Classic "rs_wola".
+        const bool timeCore = isRealtimeTimingEnabled();
+        const std::uint64_t coreStartNs = timeCore ? realtimeNowNs() : 0;
 
         if (processedChannels == 2 && stereoMode == 1)
         {
@@ -2741,6 +2857,9 @@ private:
                 core_.process(ch, 1, numSamples, params, dry);
             }
         }
+
+        if (timeCore)
+            recordRealtimeSection("rs_core", realtimeNowNs() - coreStartNs);
 
         if (dryOnlyTarget)
         {
@@ -3255,6 +3374,10 @@ private:
     std::array<float, xleth::dsp::resonance::kGridBands> coreWeights_ {};
     std::array<float, xleth::viz::kResonanceVizBucketCount> coreVizWeights_ {};
     std::array<float, xleth::viz::kResonanceVizBucketCount> coreVizBucketHz_ {};
+    std::array<int, xleth::viz::kResonanceVizBucketCount> coreVizBandIdx_ {};
+    std::array<float, xleth::viz::kResonanceVizBucketCount> coreVizBandFrac_ {};
+    std::array<int, 3> coreTierFftSize_ {};
+    std::array<float, 3> coreTierLevelOffsetDb_ {};
     ProcessorSettings coreWeightSettings_;
     xleth::viz::DynamicsVizCollector<xleth::viz::ResonanceBucket>* coreVizCollector_ = nullptr;
     float coreVizCeilingDb_ = 0.0f;
