@@ -55,6 +55,15 @@
 //   * Visualization tap / meters: after the weight curve, once per hop (emitViz, lastMaxReductionDb).
 //   * G(f): the band curve (dB) is interpolated linearly on the ERB axis to every bin and applied as a
 //     real, zero-phase gain.
+// Live tier switching (ResonanceCore.md section 9)
+//   * One Engine per tier, all built in prepare(); the input ring is shared and is every engine's analysis FIFO (a frame ending at stream
+//     position e reads ring[e - N, e)), so an engine that starts mid-stream already has its history. A frame grid is (e + offset) % H == 0
+//     on the stream clock pos_.
+//   * Adoption (start of a process() call, no transition running): the new engine takes the old one's state (transferState), processes
+//     the frame at its last grid point <= pos_ from the ring, then runs on its grid next to the old one. Its overlap-add output is complete
+//     3 hops after that first frame (`valid`); until then the output, the meters and the introspection stay on the old engine. From `valid`
+//     the output crossfades old -> new over fadeLen_ samples (linear, (k + 1) / F like the EQ restart fade-in), the aligned dry crossfades
+//     between the two delays with the same gains; then the old engine stops.
 
 namespace xleth::dsp::resonance
 {
@@ -89,6 +98,18 @@ inline float smoothstep01(float x) noexcept
     x = std::clamp(x, 0.0f, 1.0f);
     return x * x * (3.0f - 2.0f * x);
 }
+
+// Finite test on the bit pattern: independent of the floating-point model the target is compiled with.
+inline bool finiteF(float v) noexcept
+{
+    uint32_t u; std::memcpy(&u, &v, sizeof u);
+    return (u & 0x7F800000u) != 0x7F800000u;
+}
+
+inline float sane(float v, float def, float lo, float hi) noexcept
+{
+    return finiteF(v) ? std::clamp(v, lo, hi) : def;
+}
 } // namespace
 
 Core::Core() = default;
@@ -97,101 +118,153 @@ Core::~Core() = default;
 int Core::fftSizeFor(double sampleRate, FrameTier tier) noexcept
 {
     // Normal: ~21 ms frame, 1024 up to 50 kHz, then doubled per sample-rate octave. Fast / High: half / double.
-    int n = 512 << static_cast<int>(tier);
+    int t = static_cast<int>(tier);
+    t = t < 0 ? 0 : (t > 2 ? 2 : t);
+    int n = 512 << t;
     double sr = sampleRate;
     while (sr > 50000.0 && n < 16384) { sr *= 0.5; n *= 2; }
     return n;
 }
 
+Params Core::sanitizeParams(const Params& in) noexcept
+{
+    // Defaults are the Params defaults; ranges are the documented ones (the attack / release floors are the ones computeGains() clamps to).
+    Params p = in;
+    p.depth       = sane(in.depth,       0.5f,   0.0f, 1.0f);
+    p.sensitivity = sane(in.sensitivity, 0.5f,   0.0f, 1.0f);
+    p.attackMs    = sane(in.attackMs,    15.0f,  0.1f, 1000.0f);
+    p.releaseMs   = sane(in.releaseMs,   200.0f, 1.0f, 10000.0f);
+    p.stereoLink  = sane(in.stereoLink,  0.0f,   0.0f, 1.0f);
+    p.sharpness   = sane(in.sharpness,   0.5f,   0.0f, 1.0f);
+    return p;
+}
+
+int Core::hopOffsetFor(int hop) const noexcept
+{
+    // The stored fraction hopOffset0_ / hop0_ applied to `hop`, floored. Exact for the prepare-time tier and for every larger hop.
+    return static_cast<int>((static_cast<long long>(hopOffset0_) * hop) / hop0_);
+}
+
+int Core::hopPhaseOffset() const noexcept
+{
+    return prepared_ ? eng_[active_].hopOffset : 0;
+}
+
 void Core::prepare(double sampleRate, int /*maxBlockSize*/, int numChannels)
 {
     sampleRate_  = sampleRate > 0.0 ? sampleRate : 48000.0;
-    fftSize_     = fftSizeFor(sampleRate_, tier_);
-    hop_         = fftSize_ / 4;
-    hopOffset_   = ((hopPhaseOffset_ % hop_) + hop_) % hop_;
-    {
-        // Baseline refresh intervals are defined in ms and converted to whole frames (N = 1024 at 48 kHz: 4 and 2 frames).
-        const double hopMs = 1000.0 * hop_ / sampleRate_;
-        slowPeriod_ = std::clamp(static_cast<int>(std::lround(kSlowBaselineRefreshMs / hopMs)), 1, 32);
-        fastPeriod_ = std::clamp(static_cast<int>(std::lround(kFastBaselineRefreshMs / hopMs)), 1, 32);
-    }
     numChannels_ = std::clamp(numChannels, 1, kMaxChannels);
+    target_      = std::clamp(target_, 0, 2);
 
-    int order = 0;
-    while ((1 << order) < fftSize_) ++order;
-    fft_ = std::make_unique<juce::dsp::FFT>(order);
+    buildSharedGrid();
+    for (int t = 0; t < 3; ++t) buildEngine(eng_[t], static_cast<FrameTier>(t));
 
-    // sqrt of the periodic Hann window, used for analysis and (with the normalisation) synthesis.
-    window_.assign(static_cast<size_t>(fftSize_), 0.0f);
-    synthesis_.assign(static_cast<size_t>(fftSize_), 0.0f);
-    const double twoPi = 2.0 * juce::MathConstants<double>::pi;
-    for (int n = 0; n < fftSize_; ++n)
-    {
-        const double hann = 0.5 - 0.5 * std::cos(twoPi * n / fftSize_);
-        window_[static_cast<size_t>(n)] = static_cast<float>(std::sqrt(std::max(hann, 0.0)));
-    }
-    // Per-hop-phase COLA normalisation 1 / sum_k w^2(phase + kH) (the RS WolaProcessor scheme). For the
-    // periodic Hann at hop N/4 the sum is exactly 2; computing it keeps the reconstruction exact in float.
-    for (int phase = 0; phase < hop_; ++phase)
-    {
-        double sum = 0.0;
-        for (int n = phase; n < fftSize_; n += hop_)
-            sum += static_cast<double>(window_[static_cast<size_t>(n)]) * window_[static_cast<size_t>(n)];
-        const double norm = sum > 1.0e-8 ? 1.0 / sum : 1.0;
-        for (int n = phase; n < fftSize_; n += hop_)
-            synthesis_[static_cast<size_t>(n)] = static_cast<float>(window_[static_cast<size_t>(n)] * norm);
-    }
+    // The hop phase offset of the prepare-time tier, kept as a fraction of that tier's hop.
+    hop0_       = eng_[target_].H;
+    hopOffset0_ = ((hopPhaseOffset_ % hop0_) + hop0_) % hop0_;
+    for (auto& e : eng_) e.hopOffset = hopOffsetFor(e.H);
 
-    buildGrid();
+    // Input ring: >= 2 x the largest N (a frame of the largest tier plus a hop of history, and the dry read at the largest latency).
+    const int nMax = eng_[2].N;
+    size_t ringLen = 1;
+    while (ringLen < static_cast<size_t>(2 * nMax)) ringLen <<= 1;
+    ringMask_ = static_cast<long long>(ringLen) - 1;
+    for (auto& r : ring_) r.assign(ringLen, 0.0f);
+    auxRing_.assign(ringLen, 0.0f);
 
-    const int nb = fftSize_ / 2 + 1;
+    const int nbMax = nMax / 2 + 1;
     const auto B = static_cast<size_t>(numBands_);
-    for (int c = 0; c < kMaxChannels; ++c)
-    {
-        auto& ch = ch_[c];
-        ch.inFifo.assign(static_cast<size_t>(fftSize_), 0.0f);
-        ch.outAcc.assign(static_cast<size_t>(fftSize_), 0.0f);
-        ch.outFifo.assign(static_cast<size_t>(hop_), 0.0f);
-        ch.fftBuf.assign(static_cast<size_t>(fftSize_) * 2, 0.0f);
-        ch.binGain.assign(static_cast<size_t>(nb), 1.0f);
-        ch.powAvg.assign(static_cast<size_t>(nb), 0.0f);
-        ch.powAvgF.assign(static_cast<size_t>(nb), 0.0f);
-        ch.levelDb.assign(B, 0.0f);
-        ch.baseDb.assign(B, 0.0f);
-        ch.levelFDb.assign(B, 0.0f);
-        ch.baseFDb.assign(B, 0.0f);
-        ch.fastOwns.assign(B, 0);
-        ch.redDb.assign(B, 0.0f);
-        ch.smoothDb.assign(B, 0.0f);
-        ch.outDb.assign(B, 0.0f);
-        ch.exAdjDb.assign(B, 0.0f);
-    }
-    binX_.assign(static_cast<size_t>(nb), 0.0f);
-    binF_.assign(static_cast<size_t>(nb), 1.0f);
-    sigmaE_.assign(B, 0.0f);
-    sigmaEF_.assign(B, 0.0f);
+    binX_.assign(static_cast<size_t>(nbMax), 0.0f);
+    binF_.assign(static_cast<size_t>(nbMax), 1.0f);
     scratch_.assign(B, 0.0f);
     tmpBand_.assign(B, 0.0f);
     estBand_.assign(B, 0.0f);
+    fadeLen_ = std::max(1, static_cast<int>(std::lround(sampleRate_ * kTierCrossfadeMs * 1.0e-3)));
+    switches_.store(0, std::memory_order_relaxed);
+    prepared_ = true;
     reset();
 }
 
-// Everything frequency-dependent the detector needs, computed once per prepare().
-void Core::buildGrid()
+// Tier-independent part of the grid: band centres on the ERB axis, log2 f, and the wideband tilt range. Depends on the sample rate only.
+void Core::buildSharedGrid()
 {
-    const int N = fftSize_, H = hop_, nb = N / 2 + 1;
-    const double sr = sampleRate_, binHz = sr / N;
+    const double sr = sampleRate_;
     const int B = kGridBands;
     numBands_ = B;
+    const double fLo = 20.0, fHi = std::min(0.45 * sr, 20000.0);
+    erbLo_ = erbRate(fLo);
+    erbStep_ = (erbRate(fHi) - erbLo_) / (B - 1);
+    bandHz_.assign(static_cast<size_t>(B), 0.0f);
+    for (int b = 0; b < B; ++b) bandHz_[static_cast<size_t>(b)] = static_cast<float>(erbToHz(erbLo_ + b * erbStep_));
+    bandX_.assign(static_cast<size_t>(B), 0.0f);
+    for (int b = 0; b < B; ++b) bandX_[static_cast<size_t>(b)] = static_cast<float>(std::log2(static_cast<double>(bandHz_[static_cast<size_t>(b)])));
+    // Wideband tilt fit range for one-sided flanks (edges of the grid): bands between 200 Hz and 10 kHz.
+    slopeLo_ = 0; slopeHi_ = -1;
+    for (int b = 0; b < B; ++b)
+    {
+        const double f = bandHz_[static_cast<size_t>(b)];
+        if (f < 200.0) slopeLo_ = b + 1;
+        if (f <= std::min(10000.0, fHi)) slopeHi_ = b;
+    }
+    {
+        double sx = 0.0, n = 0.0;
+        for (int b = slopeLo_; b <= slopeHi_; ++b) { sx += bandX_[static_cast<size_t>(b)]; n += 1.0; }
+        slopeXMean_ = n > 0.0 ? sx / n : 0.0;
+        double sxx = 0.0;
+        for (int b = slopeLo_; b <= slopeHi_; ++b) { const double d = bandX_[static_cast<size_t>(b)] - slopeXMean_; sxx += d * d; }
+        slopeSxx_ = std::max(sxx, 1.0e-9);
+    }
+}
+
+// Everything frequency-dependent one tier's detector and renderer need, computed once per prepare().
+void Core::buildEngine(Engine& e, FrameTier tier)
+{
+    e.N = fftSizeFor(sampleRate_, tier);
+    e.H = e.N / 4;
+    {
+        // Baseline refresh intervals are defined in ms and converted to whole frames (N = 1024 at 48 kHz: 4 and 2 frames).
+        const double hopMs = 1000.0 * e.H / sampleRate_;
+        e.slowPeriod = std::clamp(static_cast<int>(std::lround(kSlowBaselineRefreshMs / hopMs)), 1, 32);
+        e.fastPeriod = std::clamp(static_cast<int>(std::lround(kFastBaselineRefreshMs / hopMs)), 1, 32);
+    }
+    int order = 0;
+    while ((1 << order) < e.N) ++order;
+    e.fft = std::make_unique<juce::dsp::FFT>(order);
+
+    const int N = e.N, H = e.H, nb = N / 2 + 1;
+    // sqrt of the periodic Hann window, used for analysis and (with the normalisation) synthesis.
+    e.window.assign(static_cast<size_t>(N), 0.0f);
+    e.synthesis.assign(static_cast<size_t>(N), 0.0f);
+    const double twoPi = 2.0 * juce::MathConstants<double>::pi;
+    for (int n = 0; n < N; ++n)
+    {
+        const double hann = 0.5 - 0.5 * std::cos(twoPi * n / N);
+        e.window[static_cast<size_t>(n)] = static_cast<float>(std::sqrt(std::max(hann, 0.0)));
+    }
+    // Per-hop-phase COLA normalisation 1 / sum_k w^2(phase + kH) (the RS WolaProcessor scheme). For the
+    // periodic Hann at hop N/4 the sum is exactly 2; computing it keeps the reconstruction exact in float.
+    for (int phase = 0; phase < H; ++phase)
+    {
+        double sum = 0.0;
+        for (int n = phase; n < N; n += H)
+            sum += static_cast<double>(e.window[static_cast<size_t>(n)]) * e.window[static_cast<size_t>(n)];
+        const double norm = sum > 1.0e-8 ? 1.0 / sum : 1.0;
+        for (int n = phase; n < N; n += H)
+            e.synthesis[static_cast<size_t>(n)] = static_cast<float>(e.window[static_cast<size_t>(n)] * norm);
+    }
+
+    const double sr = sampleRate_, binHz = sr / N;
+    const int B = numBands_;
+    const std::vector<float>& window = e.window;
 
     // --- window statistics: frame-overlap and bin correlations of |X|^2 for white noise ---
     double sumW2 = 0.0;
-    for (int n = 0; n < N; ++n) sumW2 += static_cast<double>(window_[static_cast<size_t>(n)]) * window_[static_cast<size_t>(n)];
+    for (int n = 0; n < N; ++n) sumW2 += static_cast<double>(window[static_cast<size_t>(n)]) * window[static_cast<size_t>(n)];
     double rhoTime[4] = { 1.0, 0.0, 0.0, 0.0 };   // lag in hops
     for (int L = 1; L < 4; ++L)
     {
         double s = 0.0;
-        for (int n = 0; n + L * H < N; ++n) s += static_cast<double>(window_[static_cast<size_t>(n)]) * window_[static_cast<size_t>(n + L * H)];
+        for (int n = 0; n + L * H < N; ++n) s += static_cast<double>(window[static_cast<size_t>(n)]) * window[static_cast<size_t>(n + L * H)];
         rhoTime[L] = (s * s) / (sumW2 * sumW2);
     }
     double rhoBin[4] = { 1.0, 0.0, 0.0, 0.0 };    // lag in bins
@@ -199,7 +272,7 @@ void Core::buildGrid()
     {
         double s = 0.0;
         for (int n = 0; n < N; ++n)
-            s += static_cast<double>(window_[static_cast<size_t>(n)]) * window_[static_cast<size_t>(n)]
+            s += static_cast<double>(window[static_cast<size_t>(n)]) * window[static_cast<size_t>(n)]
                  * std::cos(2.0 * juce::MathConstants<double>::pi * d * n / N);
         rhoBin[d] = (s * s) / (sumW2 * sumW2);
     }
@@ -228,21 +301,14 @@ void Core::buildGrid()
             vfOut[static_cast<size_t>(n - 1)] = vf;
         }
     };
-    buildAverage(static_cast<double>(detectorTauMs_), emaA_, emaB_, vfTime_);
-    if (fastTauMs_ > 0.0f) buildAverage(static_cast<double>(fastTauMs_), emaAF_, emaBF_, vfTimeF_);
-    else { emaAF_ = 0.0f; emaBF_ = 1.0f; vfTimeF_.assign(1, 1.0); }
-
-    // --- band centres, uniform on the ERB-rate axis ---
-    const double fLo = 20.0, fHi = std::min(0.45 * sr, 20000.0);
-    erbLo_ = erbRate(fLo);
-    erbStep_ = (erbRate(fHi) - erbLo_) / (B - 1);
-    bandHz_.assign(static_cast<size_t>(B), 0.0f);
-    for (int b = 0; b < B; ++b) bandHz_[static_cast<size_t>(b)] = static_cast<float>(erbToHz(erbLo_ + b * erbStep_));
+    buildAverage(static_cast<double>(detectorTauMs_), e.emaA, e.emaB, e.vfTime);
+    if (fastTauMs_ > 0.0f) buildAverage(static_cast<double>(fastTauMs_), e.emaAF, e.emaBF, e.vfTimeF);
+    else { e.emaAF = 0.0f; e.emaBF = 1.0f; e.vfTimeF.assign(1, 1.0); }
 
     // --- band <- bin weights (CSR). Weight stored = u_k * f_k (per-octave level); vfBin from u_k ---
-    bwStart_.assign(static_cast<size_t>(B) + 1, 0);
-    bwBin_.clear(); bwW_.clear();
-    vfBin_.assign(static_cast<size_t>(B), 1.0f);
+    e.bwStart.assign(static_cast<size_t>(B) + 1, 0);
+    e.bwBin.clear(); e.bwW.clear();
+    e.vfBin.assign(static_cast<size_t>(B), 1.0f);
     std::vector<int> ks; std::vector<double> ws;
     for (int b = 0; b < B; ++b)
     {
@@ -276,43 +342,25 @@ void Core::buildGrid()
                 const int d = std::abs(ks[i] - ks[j]);
                 if (d < 4) vf += ui * (ws[j] / sw) * rhoBin[d];
             }
-            bwBin_.push_back(ks[i]);
-            bwW_.push_back(static_cast<float>(ui * ks[i] * binHz));
+            e.bwBin.push_back(ks[i]);
+            e.bwW.push_back(static_cast<float>(ui * ks[i] * binHz));
         }
-        vfBin_[static_cast<size_t>(b)] = static_cast<float>(vf);
-        bwStart_[static_cast<size_t>(b) + 1] = static_cast<int>(bwBin_.size());
+        e.vfBin[static_cast<size_t>(b)] = static_cast<float>(vf);
+        e.bwStart[static_cast<size_t>(b) + 1] = static_cast<int>(e.bwBin.size());
     }
 
     // --- flank band lists per side, outside the main-lobe exclusion ---
     const double gapUp = std::pow(2.0, static_cast<double>(kGapOct)), flank = std::pow(2.0, static_cast<double>(kFlankOct));
-    bandX_.assign(static_cast<size_t>(B), 0.0f);
-    for (int b = 0; b < B; ++b) bandX_[static_cast<size_t>(b)] = static_cast<float>(std::log2(static_cast<double>(bandHz_[static_cast<size_t>(b)])));
     for (int s = 0; s < 2; ++s)
     {
-        flStart_[s].assign(static_cast<size_t>(B) + 1, 0);
-        fl_[s].clear();
-        sideX_[s].assign(static_cast<size_t>(B), 0.0f);
-        sideVf_[s].assign(static_cast<size_t>(B), 1.0f);
-        sideNeff_[s].assign(static_cast<size_t>(B), 1.0f);
+        e.flStart[s].assign(static_cast<size_t>(B) + 1, 0);
+        e.fl[s].clear();
+        e.sideX[s].assign(static_cast<size_t>(B), 0.0f);
+        e.sideVf[s].assign(static_cast<size_t>(B), 1.0f);
+        e.sideNeff[s].assign(static_cast<size_t>(B), 1.0f);
     }
-    // Wideband tilt fit range for one-sided flanks (edges of the grid): bands between 200 Hz and 10 kHz.
-    slopeLo_ = 0; slopeHi_ = -1;
-    for (int b = 0; b < B; ++b)
-    {
-        const double f = bandHz_[static_cast<size_t>(b)];
-        if (f < 200.0) slopeLo_ = b + 1;
-        if (f <= std::min(10000.0, fHi)) slopeHi_ = b;
-    }
-    {
-        double sx = 0.0, n = 0.0;
-        for (int b = slopeLo_; b <= slopeHi_; ++b) { sx += bandX_[static_cast<size_t>(b)]; n += 1.0; }
-        slopeXMean_ = n > 0.0 ? sx / n : 0.0;
-        double sxx = 0.0;
-        for (int b = slopeLo_; b <= slopeHi_; ++b) { const double d = bandX_[static_cast<size_t>(b)] - slopeXMean_; sxx += d * d; }
-        slopeSxx_ = std::max(sxx, 1.0e-9);
-    }
-    lobeLo_.assign(static_cast<size_t>(B), 0);
-    lobeHi_.assign(static_cast<size_t>(B), 0);
+    e.lobeLo.assign(static_cast<size_t>(B), 0);
+    e.lobeHi.assign(static_cast<size_t>(B), 0);
     for (int b = 0; b < B; ++b)
     {
         const double fb = bandHz_[static_cast<size_t>(b)];
@@ -322,8 +370,8 @@ void Core::buildGrid()
         int lo = b, hi = b;
         while (lo > 0 && bandHz_[static_cast<size_t>(lo - 1)] > exDn) --lo;
         while (hi < B - 1 && bandHz_[static_cast<size_t>(hi + 1)] < exUp) ++hi;
-        lobeLo_[static_cast<size_t>(b)] = lo;
-        lobeHi_[static_cast<size_t>(b)] = hi;
+        e.lobeLo[static_cast<size_t>(b)] = lo;
+        e.lobeHi[static_cast<size_t>(b)] = hi;
         for (int s = 0; s < 2; ++s)
         {
             double fMin = 1.0e30, fMax = 0.0, vfSum = 0.0, xSum = 0.0;
@@ -333,22 +381,22 @@ void Core::buildGrid()
                 const double fj = bandHz_[static_cast<size_t>(j)];
                 const bool in = s == 0 ? (exDn > 0.0 && fj <= exDn && fj >= outDn) : (fj >= exUp && fj <= outUp);
                 if (!in) continue;
-                fl_[s].push_back(j);
+                e.fl[s].push_back(j);
                 fMin = std::min(fMin, fj); fMax = std::max(fMax, fj);
-                vfSum += vfBin_[static_cast<size_t>(j)];
+                vfSum += e.vfBin[static_cast<size_t>(j)];
                 xSum += bandX_[static_cast<size_t>(j)];
                 ++count;
             }
-            flStart_[s][static_cast<size_t>(b) + 1] = static_cast<int>(fl_[s].size());
+            e.flStart[s][static_cast<size_t>(b) + 1] = static_cast<int>(e.fl[s].size());
             if (count > 0)
             {
-                sideX_[s][static_cast<size_t>(b)] = static_cast<float>(xSum / count);
-                sideVf_[s][static_cast<size_t>(b)] = static_cast<float>(vfSum / count);
+                e.sideX[s][static_cast<size_t>(b)] = static_cast<float>(xSum / count);
+                e.sideVf[s][static_cast<size_t>(b)] = static_cast<float>(vfSum / count);
                 // Independent information on this flank: the bins it spans (adjacent bins correlate, hence
                 // the 1.5) divided by the effective bins per band level, capped at the band count.
                 const double effBins = ((fMax - fMin) / binHz + 2.0) / 1.5;
                 const double binsPerBand = 1.0 / std::max(vfSum / count, 1.0e-6);
-                sideNeff_[s][static_cast<size_t>(b)] = static_cast<float>(std::clamp(effBins / binsPerBand, 1.0, static_cast<double>(count)));
+                e.sideNeff[s][static_cast<size_t>(b)] = static_cast<float>(std::clamp(effBins / binsPerBand, 1.0, static_cast<double>(count)));
             }
         }
     }
@@ -357,21 +405,21 @@ void Core::buildGrid()
     //     moment a narrowband source shows over +/-2 bins around its peak bin (averaged over sub-bin offsets) ---
     {
         double sw = 0.0;
-        for (int n = 0; n < N; ++n) sw += window_[static_cast<size_t>(n)];
+        for (int n = 0; n < N; ++n) sw += window[static_cast<size_t>(n)];
         const double enbwBins = N * sumW2 / (sw * sw);
         auto erbHz = [](double f) { return 24.7 * (4.37 * f / 1000.0 + 1.0); };
-        kLowMax_ = 0;
-        for (int k = 1; k < nb - 3; ++k) if (erbHz(k * binHz) < enbwBins * binHz) kLowMax_ = k;
-        erbBins_.assign(static_cast<size_t>(nb), 1.0f);
-        for (int k = 0; k < nb; ++k) erbBins_[static_cast<size_t>(k)] = static_cast<float>(erbHz(k * binHz) / binHz);
+        e.kLowMax = 0;
+        for (int k = 1; k < nb - 3; ++k) if (erbHz(k * binHz) < enbwBins * binHz) e.kLowMax = k;
+        e.erbBins.assign(static_cast<size_t>(nb), 1.0f);
+        for (int k = 0; k < nb; ++k) e.erbBins[static_cast<size_t>(k)] = static_cast<float>(erbHz(k * binHz) / binHz);
         auto kernel = [&](double f)   // |W(f)|^2 / |W(0)|^2, f in bins
         {
             double re = 0.0, im = 0.0;
             for (int n = 0; n < N; ++n)
             {
                 const double ph = -2.0 * juce::MathConstants<double>::pi * f * n / N;
-                re += window_[static_cast<size_t>(n)] * std::cos(ph);
-                im += window_[static_cast<size_t>(n)] * std::sin(ph);
+                re += window[static_cast<size_t>(n)] * std::cos(ph);
+                im += window[static_cast<size_t>(n)] * std::sin(ph);
             }
             return (re * re + im * im) / (sw * sw);
         };
@@ -389,12 +437,12 @@ void Core::buildGrid()
             for (int j = std::max(0, k0 - 2); j <= std::min(8, k0 + 2); ++j) v += (j - c) * (j - c) * x[j];
             varSum += v / m; ++cnt;
         }
-        kernelVar_ = static_cast<float>(varSum / cnt);
+        e.kernelVar = static_cast<float>(varSum / cnt);
     }
 
     // --- bin -> band interpolation (ERB axis) for G(f) ---
-    binBand_.assign(static_cast<size_t>(nb), 0);
-    binFrac_.assign(static_cast<size_t>(nb), 0.0f);
+    e.binBand.assign(static_cast<size_t>(nb), 0);
+    e.binFrac.assign(static_cast<size_t>(nb), 0.0f);
     for (int k = 0; k < nb; ++k)
     {
         const double x = (erbRate(k * binHz) - erbLo_) / erbStep_;
@@ -402,41 +450,65 @@ void Core::buildGrid()
         if (x <= 0.0) { j = 0; t = 0.0; }
         else if (x >= B - 1) { j = B - 2; t = 1.0; }
         else { j = static_cast<int>(std::floor(x)); t = x - j; }
-        binBand_[static_cast<size_t>(k)] = j;
-        binFrac_[static_cast<size_t>(k)] = static_cast<float>(t);
+        e.binBand[static_cast<size_t>(k)] = j;
+        e.binFrac[static_cast<size_t>(k)] = static_cast<float>(t);
     }
+
+    // --- per-channel state and per-band statistics ---
+    const auto Bs = static_cast<size_t>(B);
+    for (int c = 0; c < kMaxChannels; ++c)
+    {
+        auto& ch = e.ch[c];
+        ch.outAcc.assign(static_cast<size_t>(N), 0.0f);
+        ch.outFifo.assign(static_cast<size_t>(H), 0.0f);
+        ch.fftBuf.assign(static_cast<size_t>(N) * 2, 0.0f);
+        ch.binGain.assign(static_cast<size_t>(nb), 1.0f);
+        ch.powAvg.assign(static_cast<size_t>(nb), 0.0f);
+        ch.powAvgF.assign(static_cast<size_t>(nb), 0.0f);
+        ch.levelDb.assign(Bs, 0.0f);
+        ch.baseDb.assign(Bs, 0.0f);
+        ch.levelFDb.assign(Bs, 0.0f);
+        ch.baseFDb.assign(Bs, 0.0f);
+        ch.fastOwns.assign(Bs, 0);
+        ch.redDb.assign(Bs, 0.0f);
+        ch.smoothDb.assign(Bs, 0.0f);
+        ch.outDb.assign(Bs, 0.0f);
+        ch.exAdjDb.assign(Bs, 0.0f);
+    }
+    e.sigmaE.assign(Bs, 0.0f);
+    e.sigmaEF.assign(Bs, 0.0f);
 }
 
-// sigma_E per band for the current number of averaged frames.
-void Core::updateSigma() noexcept
+// sigma_E per band for the engine's current number of averaged frames.
+void Core::updateSigma(Engine& e) noexcept
 {
-    updateSigmaFor(vfTime_, frames_, sigmaE_);
-    if (fastTauMs_ > 0.0f) updateSigmaFor(vfTimeF_, frames_, sigmaEF_);
+    updateSigmaFor(e, e.vfTime, e.frames, e.sigmaE);
+    if (fastTauMs_ > 0.0f) updateSigmaFor(e, e.vfTimeF, e.frames, e.sigmaEF);
 }
 
-void Core::updateSigmaFor(const std::vector<double>& vfTime, long long frames, std::vector<float>& sigmaOut) noexcept
+void Core::updateSigmaFor(const Engine& e, const std::vector<double>& vfTime, long long frames, std::vector<float>& sigmaOut) noexcept
 {
     const auto nMax = static_cast<long long>(vfTime.size());
     const double vt = vfTime[static_cast<size_t>(std::clamp<long long>(frames + 1, 1, nMax) - 1)];
     const double halfPi = 0.5 * juce::MathConstants<double>::pi;
     for (int b = 0; b < numBands_; ++b)
     {
-        const double sL = levelSigmaDb(vt * vfBin_[static_cast<size_t>(b)]);
+        const double sL = levelSigmaDb(vt * e.vfBin[static_cast<size_t>(b)]);
         // Baseline = w0 m0 + w1 m1 (line through the flank medians); var(median) ~ (pi/2) sigma^2 / n_eff.
         const auto bi = static_cast<size_t>(b);
-        const bool has0 = flStart_[0][bi + 1] > flStart_[0][bi], has1 = flStart_[1][bi + 1] > flStart_[1][bi];
+        const bool has0 = e.flStart[0][bi + 1] > e.flStart[0][bi], has1 = e.flStart[1][bi + 1] > e.flStart[1][bi];
         double w[2] = { has0 ? 1.0 : 0.0, has1 ? 1.0 : 0.0 };
         if (has0 && has1)
         {
-            w[0] = (sideX_[1][bi] - bandX_[bi]) / (sideX_[1][bi] - sideX_[0][bi]);
+            w[0] = (e.sideX[1][bi] - bandX_[bi]) / (e.sideX[1][bi] - e.sideX[0][bi]);
             w[1] = 1.0 - w[0];
         }
         double varBase = 0.0;
         for (int s = 0; s < 2; ++s)
         {
             if (w[s] == 0.0) continue;
-            const double sv = levelSigmaDb(vt * sideVf_[s][bi]);
-            varBase += w[s] * w[s] * halfPi * sv * sv / sideNeff_[s][bi];
+            const double sv = levelSigmaDb(vt * e.sideVf[s][bi]);
+            varBase += w[s] * w[s] * halfPi * sv * sv / e.sideNeff[s][bi];
         }
         sigmaOut[static_cast<size_t>(b)] = static_cast<float>(std::sqrt(sL * sL + varBase));
     }
@@ -444,92 +516,365 @@ void Core::updateSigmaFor(const std::vector<double>& vfTime, long long frames, s
 
 void Core::release()
 {
-    fft_.reset();
-    window_.clear(); window_.shrink_to_fit();
-    synthesis_.clear(); synthesis_.shrink_to_fit();
-    for (auto& ch : ch_)
+    for (auto& e : eng_)
     {
-        for (auto* v : { &ch.inFifo, &ch.outAcc, &ch.outFifo, &ch.fftBuf, &ch.binGain, &ch.powAvg, &ch.powAvgF,
-                         &ch.levelDb, &ch.baseDb, &ch.levelFDb, &ch.baseFDb, &ch.redDb, &ch.smoothDb, &ch.outDb, &ch.exAdjDb })
+        e.fft.reset();
+        for (auto* v : { &e.window, &e.synthesis, &e.bwW, &e.vfBin, &e.binFrac, &e.sideX[0], &e.sideX[1], &e.sideVf[0], &e.sideVf[1],
+                         &e.sideNeff[0], &e.sideNeff[1], &e.sigmaE, &e.sigmaEF, &e.erbBins })
         { v->clear(); v->shrink_to_fit(); }
-        ch.fastOwns.clear(); ch.fastOwns.shrink_to_fit();
+        for (auto* v : { &e.bwStart, &e.bwBin, &e.flStart[0], &e.flStart[1], &e.fl[0], &e.fl[1], &e.lobeLo, &e.lobeHi, &e.binBand })
+        { v->clear(); v->shrink_to_fit(); }
+        e.vfTime.clear(); e.vfTime.shrink_to_fit();
+        e.vfTimeF.clear(); e.vfTimeF.shrink_to_fit();
+        for (auto& ch : e.ch)
+        {
+            for (auto* v : { &ch.outAcc, &ch.outFifo, &ch.fftBuf, &ch.binGain, &ch.powAvg, &ch.powAvgF,
+                             &ch.levelDb, &ch.baseDb, &ch.levelFDb, &ch.baseFDb, &ch.redDb, &ch.smoothDb, &ch.outDb, &ch.exAdjDb })
+            { v->clear(); v->shrink_to_fit(); }
+            ch.fastOwns.clear(); ch.fastOwns.shrink_to_fit();
+        }
+        e.N = e.H = 0;
+        e.hopOffset = 0;
+        e.frames = 0;
     }
-    fftSize_ = hop_ = numChannels_ = hopFill_ = numBands_ = 0;
-    hopOffset_ = 0;
+    for (auto& r : ring_) { r.clear(); r.shrink_to_fit(); }
+    auxRing_.clear(); auxRing_.shrink_to_fit();
+    for (auto* v : { &binX_, &binF_, &scratch_, &tmpBand_, &estBand_, &bandHz_, &bandX_ }) { v->clear(); v->shrink_to_fit(); }
+    prepared_ = false;
+    trans_ = Transition{};
+    numChannels_ = numBands_ = 0;
     frames_ = 0;
+    pos_ = 0;
+    latency_.store(0, std::memory_order_relaxed);
     for (auto& m : meterCh_) m.store(0.0f, std::memory_order_relaxed);
     meterAll_.store(0.0f, std::memory_order_relaxed);
 }
 
-void Core::reset() noexcept
+void Core::resetEngine(Engine& e) noexcept
 {
-    for (auto& ch : ch_)
+    for (auto& ch : e.ch)
     {
-        for (auto* v : { &ch.inFifo, &ch.outAcc, &ch.outFifo, &ch.fftBuf, &ch.powAvg, &ch.powAvgF,
+        for (auto* v : { &ch.outAcc, &ch.outFifo, &ch.fftBuf, &ch.powAvg, &ch.powAvgF,
                          &ch.levelDb, &ch.baseDb, &ch.levelFDb, &ch.baseFDb, &ch.redDb, &ch.smoothDb, &ch.outDb, &ch.exAdjDb })
             std::fill(v->begin(), v->end(), 0.0f);
         std::fill(ch.binGain.begin(), ch.binGain.end(), 1.0f);
         std::fill(ch.fastOwns.begin(), ch.fastOwns.end(), static_cast<unsigned char>(0));
+        ch.refMeanS = ch.refMeanF = 0.0f;
     }
-    hopFill_ = hopOffset_;   // 0 unless setHopPhaseOffset() was used before prepare()
+    std::fill(e.sigmaE.begin(), e.sigmaE.end(), 0.0f);
+    std::fill(e.sigmaEF.begin(), e.sigmaEF.end(), 0.0f);
+    e.frames = 0;
+    e.emaAn = 1.0;
+    e.emaAnF = 1.0;
+    e.forceRefresh = false;
+    // The first frame completes after H - offset input samples (0 unless setHopPhaseOffset() was used before prepare()).
+    e.nextEnd = e.H - e.hopOffset;
+}
+
+void Core::reset() noexcept
+{
+    if (!prepared_) return;
+    // A transition in progress completes at once: the core continues on the requested tier, as a fresh instance of that tier would.
+    trans_ = Transition{};
+    active_ = target_;
+    for (auto& e : eng_) resetEngine(e);
+    for (auto& r : ring_) std::fill(r.begin(), r.end(), 0.0f);
+    std::fill(auxRing_.begin(), auxRing_.end(), 0.0f);
+    pos_ = 0;
     frames_ = 0;
-    emaAn_ = 1.0;
-    emaAnF_ = 1.0;
+    activeTier_.store(active_, std::memory_order_relaxed);
+    latency_.store(eng_[active_].N, std::memory_order_relaxed);
     for (auto& m : meterCh_) m.store(0.0f, std::memory_order_relaxed);
     meterAll_.store(0.0f, std::memory_order_relaxed);
 }
 
-void Core::process(float* const* channels, int numChannels, int numSamples, const Params& p) noexcept
+void Core::ringWrite(float* r, long long at, const float* src, int n) const noexcept
 {
-    if (fftSize_ <= 0 || channels == nullptr || numSamples <= 0) return;
+    const auto len = static_cast<int>(ringMask_ + 1);
+    const int i0 = static_cast<int>(at & ringMask_);
+    const int first = std::min(n, len - i0);
+    std::memcpy(r + i0, src, sizeof(float) * static_cast<size_t>(first));
+    if (n > first) std::memcpy(r, src + first, sizeof(float) * static_cast<size_t>(n - first));
+}
+
+void Core::ringRead(const float* r, long long at, float* dst, int n) const noexcept
+{
+    const auto len = static_cast<int>(ringMask_ + 1);
+    const int i0 = static_cast<int>(at & ringMask_);
+    const int first = std::min(n, len - i0);
+    std::memcpy(dst, r + i0, sizeof(float) * static_cast<size_t>(first));
+    if (n > first) std::memcpy(dst + first, r, sizeof(float) * static_cast<size_t>(n - first));
+}
+
+void Core::process(float* const* channels, int numChannels, int numSamples, const Params& pIn, float* const* dryOut, const float* auxIn, float* auxOut) noexcept
+{
+    if (!prepared_ || channels == nullptr || numSamples <= 0) return;
     const int nCh = std::min(numChannels, numChannels_);
     if (nCh <= 0) return;
 
-    const int N = fftSize_, H = hop_;
+    const Params p = sanitizeParams(pIn);
+    if (!trans_.active) adoptPendingTier(nCh, p);
+
+    const Io io { channels, dryOut, auxIn, auxIn != nullptr ? auxOut : nullptr };
     int pos = 0;
     while (pos < numSamples)
+        pos += trans_.active ? processTransition(io, nCh, pos, numSamples - pos, p)
+                             : processSteady(io, nCh, pos, numSamples - pos, p);
+}
+
+// One chunk on the engine in use, up to its next frame boundary. Input first (in-place buffers): it goes into the ring, then the output that
+// was finished one hop ago is handed out. Output time t leaves at real time t + N.
+int Core::processSteady(const Io& io, int nCh, int offset, int n, const Params& p) noexcept
+{
+    Engine& e = eng_[active_];
+    const int toEnd = static_cast<int>(e.nextEnd - pos_);   // 1 .. H
+    const int k = std::min(n, toEnd);
+    const int fill = e.H - toEnd;
+    for (int c = 0; c < nCh; ++c)
     {
-        const int k = std::min(numSamples - pos, H - hopFill_);
-        for (int c = 0; c < nCh; ++c)
+        float* x = io.channels[c] + offset;
+        ringWrite(ring_[c].data(), pos_, x, k);
+        std::memcpy(x, e.ch[c].outFifo.data() + fill, sizeof(float) * static_cast<size_t>(k));
+        if (io.dryOut != nullptr && io.dryOut[c] != nullptr) ringRead(ring_[c].data(), pos_ - e.N, io.dryOut[c] + offset, k);
+    }
+    if (io.auxIn != nullptr)
+    {
+        ringWrite(auxRing_.data(), pos_, io.auxIn + offset, k);
+        if (io.auxOut != nullptr) ringRead(auxRing_.data(), pos_ - e.N, io.auxOut + offset, k);
+    }
+    pos_ += k;
+    if (pos_ == e.nextEnd)
+    {
+        processFrame(e, e.nextEnd, nCh, p, true);
+        e.nextEnd += e.H;
+    }
+    return k;
+}
+
+// One chunk of a transition, up to the next frame boundary of either engine (the crossfade start is a frame boundary of the new engine).
+//   pos_ <  valid: the output, the meters and the introspection are the old engine's (bit-identical to steady state); the new engine warms up unpublished.
+//   pos_ >= valid: y = A + r (B - A), dry = x[t - N_A] + r (x[t - N_B] - x[t - N_A]), r = min(1, (t - valid + 1) / F); the new engine publishes.
+int Core::processTransition(const Io& io, int nCh, int offset, int n, const Params& p) noexcept
+{
+    Engine& A = eng_[trans_.from];
+    Engine& B = eng_[trans_.to];
+    const int toA = static_cast<int>(A.nextEnd - pos_), toB = static_cast<int>(B.nextEnd - pos_);
+    const int k = std::min(n, std::min(toA, toB));
+    const int fillA = A.H - toA, fillB = B.H - toB;
+    const bool fading = pos_ >= trans_.valid;
+    const float invF = 1.0f / static_cast<float>(fadeLen_);
+    for (int c = 0; c < nCh; ++c)
+    {
+        float* x = io.channels[c] + offset;
+        const float* ring = ring_[c].data();
+        ringWrite(ring_[c].data(), pos_, x, k);
+        const float* a = A.ch[c].outFifo.data() + fillA;
+        float* d = (io.dryOut != nullptr) ? io.dryOut[c] : nullptr;
+        if (!fading)
         {
-            float* x = channels[c] + pos;
-            auto& ch = ch_[c];
-            // Input first (in-place buffers): the newest hop of the analysis FIFO, then hand out output that
-            // was finished one hop ago. Output time t leaves at real time t + N.
-            std::memcpy(ch.inFifo.data() + (N - H + hopFill_), x, sizeof(float) * static_cast<size_t>(k));
-            std::memcpy(x, ch.outFifo.data() + hopFill_, sizeof(float) * static_cast<size_t>(k));
+            std::memcpy(x, a, sizeof(float) * static_cast<size_t>(k));
+            if (d != nullptr) ringRead(ring, pos_ - A.N, d + offset, k);
+            continue;
         }
-        hopFill_ += k;
-        pos += k;
-        if (hopFill_ == H)
+        const float* b = B.ch[c].outFifo.data() + fillB;
+        for (int i = 0; i < k; ++i)
         {
-            processFrame(nCh, p);
-            hopFill_ = 0;
+            const long long t = pos_ + i;
+            const long long since = t - trans_.valid + 1;
+            if (since >= fadeLen_)
+            {
+                // Crossfade complete: exactly the new engine (and the new delay).
+                x[i] = b[i];
+                if (d != nullptr) d[offset + i] = ringAt(ring, t - B.N);
+                continue;
+            }
+            const float r = static_cast<float>(since) * invF;
+            x[i] = a[i] + r * (b[i] - a[i]);
+            if (d != nullptr)
+            {
+                const float da = ringAt(ring, t - A.N), db = ringAt(ring, t - B.N);
+                d[offset + i] = da + r * (db - da);
+            }
+        }
+    }
+    if (io.auxIn != nullptr)
+    {
+        // The delay-only channel: the dry timeline, nothing else.
+        const float* ring = auxRing_.data();
+        ringWrite(auxRing_.data(), pos_, io.auxIn + offset, k);
+        if (io.auxOut != nullptr)
+        {
+            float* d = io.auxOut + offset;
+            if (!fading) ringRead(ring, pos_ - A.N, d, k);
+            else
+                for (int i = 0; i < k; ++i)
+                {
+                    const long long t = pos_ + i;
+                    const long long since = t - trans_.valid + 1;
+                    const float db = ringAt(ring, t - B.N);
+                    if (since >= fadeLen_) { d[i] = db; continue; }
+                    const float da = ringAt(ring, t - A.N);
+                    d[i] = da + static_cast<float>(since) * invF * (db - da);
+                }
+        }
+    }
+    pos_ += k;
+    if (pos_ == A.nextEnd)
+    {
+        processFrame(A, A.nextEnd, nCh, p, A.nextEnd < trans_.valid);   // the old engine publishes until the crossfade starts
+        A.nextEnd += A.H;
+    }
+    if (pos_ == B.nextEnd)
+    {
+        if (B.nextEnd == trans_.valid)
+        {
+            // The new engine's first complete output starts here: the output timeline (and everything that describes it) moves to the new tier.
+            active_ = trans_.to;
+            activeTier_.store(trans_.to, std::memory_order_relaxed);
+            latency_.store(B.N, std::memory_order_relaxed);
+        }
+        processFrame(B, B.nextEnd, nCh, p, B.nextEnd >= trans_.valid);
+        B.nextEnd += B.H;
+    }
+    if (pos_ >= trans_.valid + fadeLen_) trans_.active = false;    // r reached 1: the old engine stops
+    return k;
+}
+
+// Start of a process() call, no transition running: adopt a pending request.
+void Core::adoptPendingTier(int nCh, const Params& p) noexcept
+{
+    if (pendingTier_.load(std::memory_order_relaxed) < 0) return;   // common case: one relaxed load per call
+    const int req = pendingTier_.exchange(-1, std::memory_order_acquire);
+    if (req < 0 || req > 2 || req == active_) return;               // nothing new (the same tier is consumed and ignored)
+
+    Engine& A = eng_[active_];
+    Engine& B = eng_[req];
+    for (auto& ch : B.ch)
+    {
+        std::fill(ch.outAcc.begin(), ch.outAcc.end(), 0.0f);
+        std::fill(ch.outFifo.begin(), ch.outFifo.end(), 0.0f);
+    }
+    if (keepState_) transferState(A, B, nCh);
+    else
+    {
+        resetEngine(B);
+    }
+    // B's grid: frames end at e with (e + offset) % H == 0. Its first frame is the last grid point <= pos_, computed now from the ring (the input
+    // up to it is there); its output is complete from 3 hops later on.
+    const long long m = ((pos_ + B.hopOffset) / B.H) * B.H - B.hopOffset;
+    processFrame(B, m, nCh, p, false);
+    B.nextEnd = m + B.H;
+    trans_.active = true;
+    trans_.from = active_;
+    trans_.to = req;
+    trans_.valid = m + 3LL * B.H;
+    target_ = req;
+    switches_.fetch_add(1, std::memory_order_relaxed);
+}
+
+// Grid-domain state (per-band reductions, release latches) is copied; the bin-domain power averages are remapped to the new bins with the
+// |X|^2 scaling of a noise-like input (x N_to / N_from); the bias-correction products a^n are the same function of time at every tier (a^n =
+// exp(-t / tau)) and are copied; the frame count is converted through time (sigma tables, stagger); every baseline is recomputed on the
+// next frame. Measured in test T-C (ResonanceCore.md 9.4).
+void Core::transferState(const Engine& from, Engine& to, int nCh) noexcept
+{
+    const auto bytes = sizeof(float) * static_cast<size_t>(numBands_);
+    for (int c = 0; c < kMaxChannels; ++c)
+    {
+        const Channel& s = from.ch[c];
+        Channel& d = to.ch[c];
+        if (c < nCh)
+        {
+            remapPower(from, to, s.powAvg.data(), d.powAvg.data());
+            remapPower(from, to, s.powAvgF.data(), d.powAvgF.data());
+        }
+        else
+        {
+            std::fill(d.powAvg.begin(), d.powAvg.end(), 0.0f);
+            std::fill(d.powAvgF.begin(), d.powAvgF.end(), 0.0f);
+        }
+        std::memcpy(d.redDb.data(), s.redDb.data(), bytes);
+        std::memcpy(d.smoothDb.data(), s.smoothDb.data(), bytes);
+        std::memcpy(d.outDb.data(), s.outDb.data(), bytes);
+        std::memcpy(d.levelDb.data(), s.levelDb.data(), bytes);
+        std::memcpy(d.baseDb.data(), s.baseDb.data(), bytes);
+        std::memcpy(d.levelFDb.data(), s.levelFDb.data(), bytes);
+        std::memcpy(d.baseFDb.data(), s.baseFDb.data(), bytes);
+        std::memcpy(d.exAdjDb.data(), s.exAdjDb.data(), bytes);
+        std::memcpy(d.fastOwns.data(), s.fastOwns.data(), static_cast<size_t>(numBands_));
+        d.refMeanS = s.refMeanS;
+        d.refMeanF = s.refMeanF;
+    }
+    to.emaAn = from.emaAn;
+    to.emaAnF = from.emaAnF;
+    to.frames = static_cast<long long>(std::llround(static_cast<double>(from.frames) * from.H / to.H));
+    to.forceRefresh = true;
+    updateSigma(to);
+}
+
+// dst (bins of `to`) from src (bins of `from`), scaled by N_to / N_from. Finer target: linear interpolation at the target bin's frequency.
+// Coarser target (r = N_from / N_to = 2 or 4): triangular average over the source bins within +-r of it (a source peak between two target bins
+// is shared, not dropped).
+void Core::remapPower(const Engine& from, const Engine& to, const float* src, float* dst) noexcept
+{
+    const int nbF = from.N / 2 + 1, nbT = to.N / 2 + 1;
+    const double scale = static_cast<double>(to.N) / from.N;
+    if (to.N >= from.N)
+    {
+        const int r = to.N / from.N;   // 1, 2 or 4
+        for (int k = 0; k < nbT; ++k)
+        {
+            const int k0 = k / r;
+            const int k1 = std::min(k0 + 1, nbF - 1);
+            const double t = static_cast<double>(k - k0 * r) / r;
+            dst[k] = static_cast<float>(scale * (src[k0] + t * (static_cast<double>(src[k1]) - src[k0])));
+        }
+    }
+    else
+    {
+        const int r = from.N / to.N;   // 2 or 4
+        for (int k = 0; k < nbT; ++k)
+        {
+            const int centre = k * r;
+            double acc = 0.0, wsum = 0.0;
+            for (int j = centre - r + 1; j <= centre + r - 1; ++j)
+            {
+                if (j < 0 || j >= nbF) continue;
+                const double w = 1.0 - std::abs(j - centre) / static_cast<double>(r);
+                acc += w * src[j];
+                wsum += w;
+            }
+            dst[k] = static_cast<float>(scale * (wsum > 0.0 ? acc / wsum : 0.0));
         }
     }
 }
 
-void Core::processFrame(int numCh, const Params& p) noexcept
+void Core::processFrame(Engine& e, long long end, int numCh, const Params& p, bool publish) noexcept
 {
-    const int N = fftSize_, H = hop_;
+    const int N = e.N, H = e.H;
     const int nb = N / 2 + 1;
 
+    // Analysis: the window ending at `end`, read from the input ring (positions before the stream start are zeros).
+    const auto len = static_cast<int>(ringMask_ + 1);
+    const int i0 = static_cast<int>((end - N) & ringMask_);
+    const int first = std::min(N, len - i0);
     for (int c = 0; c < numCh; ++c)
     {
-        auto& ch = ch_[c];
+        auto& ch = e.ch[c];
         float* buf = ch.fftBuf.data();
-        const float* in = ch.inFifo.data();
-        const float* w = window_.data();
-        for (int n = 0; n < N; ++n) buf[n] = in[n] * w[n];
+        const float* in = ring_[c].data();
+        const float* w = e.window.data();
+        for (int n = 0; n < first; ++n) buf[n] = in[i0 + n] * w[n];
+        for (int n = first; n < N; ++n) buf[n] = in[n - first] * w[n];
         std::fill(buf + N, buf + 2 * N, 0.0f);
-        fft_->performRealOnlyForwardTransform(buf, true);
+        e.fft->performRealOnlyForwardTransform(buf, true);
     }
 
-    const bool applyGain = computeGains(numCh, p);
+    const bool applyGain = computeGains(e, numCh, p, publish);
 
     for (int c = 0; c < numCh; ++c)
     {
-        auto& ch = ch_[c];
+        auto& ch = e.ch[c];
         float* buf = ch.fftBuf.data();
         if (applyGain)
         {
@@ -540,38 +885,38 @@ void Core::processFrame(int numCh, const Params& p) noexcept
                 buf[2 * k + 1] *= g[k];
             }
         }
-        fft_->performRealOnlyInverseTransform(buf);
+        e.fft->performRealOnlyInverseTransform(buf);
 
         // Overlap-add: drop the hop that was handed out, append an empty hop, add this frame.
         float* acc = ch.outAcc.data();
         std::memmove(acc, acc + H, sizeof(float) * static_cast<size_t>(N - H));
         std::fill(acc + (N - H), acc + N, 0.0f);
-        const float* sw = synthesis_.data();
+        const float* sw = e.synthesis.data();
         for (int n = 0; n < N; ++n) acc[n] += buf[n] * sw[n];
         // acc[0, H) has now received all N/H overlapping frames: it is final.
         std::memcpy(ch.outFifo.data(), acc, sizeof(float) * static_cast<size_t>(H));
-
-        // Advance the analysis FIFO by one hop.
-        float* in = ch.inFifo.data();
-        std::memmove(in, in + H, sizeof(float) * static_cast<size_t>(N - H));
     }
-    if (vizSink_ != nullptr) emitViz(numCh);
-    ++frames_;
+    if (publish)
+    {
+        if (vizSink_ != nullptr) emitViz(e, numCh);
+        ++frames_;
+    }
+    ++e.frames;
 }
 
 // One VizFrame per processed channel, filled in place (no allocation), handed to the sink synchronously.
-void Core::emitViz(int numCh) noexcept
+void Core::emitViz(const Engine& e, int numCh) noexcept
 {
     VizFrame& f = vizFrame_;
     const bool fast = fastTauMs_ > 0.0f;
     const auto bytes = sizeof(float) * static_cast<size_t>(numBands_);
     for (int c = 0; c < numCh; ++c)
     {
-        const auto& ch = ch_[c];
+        const auto& ch = e.ch[c];
         f.hopIndex = frames_;
         f.channel = c;
         f.numBands = numBands_;
-        f.hopSize = hop_;
+        f.hopSize = e.H;
         f.maxReductionDb = meterCh_[c].load(std::memory_order_relaxed);
         std::memcpy(f.levelDb, fast ? ch.levelFDb.data() : ch.levelDb.data(), bytes);
         std::memcpy(f.baselineDb, fast ? ch.baseFDb.data() : ch.baseDb.data(), bytes);
@@ -603,23 +948,23 @@ float Core::median(const int* idx, int n, const float* values) noexcept
     return 0.5f * (lo + hi);
 }
 
-void Core::detectChannel(Channel& ch, double biasCorr, double biasCorrFast) noexcept
+void Core::detectChannel(Engine& e, Channel& ch, double biasCorr, double biasCorrFast) noexcept
 {
-    const int nb = fftSize_ / 2 + 1;
+    const int nb = e.N / 2 + 1;
     const float* X = ch.fftBuf.data();
     float* S = ch.powAvg.data();
-    const float ea = emaA_, eb = emaB_;
+    const float ea = e.emaA, eb = e.emaB;
     if (fastTauMs_ > 0.0f)
     {
         float* SF = ch.powAvgF.data();
-        const float fa = emaAF_, fb = emaBF_;
+        const float fa = e.emaAF, fb = e.emaBF;
         for (int k = 0; k < nb; ++k)
         {
             const float re = X[2 * k], im = X[2 * k + 1], pw = re * re + im * im;
             S[k]  = ea * S[k]  + eb * pw;
             SF[k] = fa * SF[k] + fb * pw;
         }
-        bandLevelsAndBaseline(SF, ch.levelFDb.data(), ch.baseFDb.data(), biasCorrFast, fastPeriod_, ch.refMeanF);
+        bandLevelsAndBaseline(e, SF, ch.levelFDb.data(), ch.baseFDb.data(), biasCorrFast, e.fastPeriod, ch.refMeanF);
     }
     else
     {
@@ -629,17 +974,17 @@ void Core::detectChannel(Channel& ch, double biasCorr, double biasCorrFast) noex
             S[k] = ea * S[k] + eb * (re * re + im * im);
         }
     }
-    bandLevelsAndBaseline(S, ch.levelDb.data(), ch.baseDb.data(), biasCorr, slowPeriod_, ch.refMeanS);
+    bandLevelsAndBaseline(e, S, ch.levelDb.data(), ch.baseDb.data(), biasCorr, e.slowPeriod, ch.refMeanS);
 }
 
 // Band levels (dB, per octave) of the averaged bin powers S and their flank baseline.
-void Core::bandLevelsAndBaseline(const float* S, float* L, float* base, double biasCorr, int refreshPeriod, float& refMean) noexcept
+void Core::bandLevelsAndBaseline(const Engine& e, const float* S, float* L, float* base, double biasCorr, int refreshPeriod, float& refMean) noexcept
 {
     for (int band = 0; band < numBands_; ++band)
     {
         double acc = 0.0;
-        for (int i = bwStart_[static_cast<size_t>(band)]; i < bwStart_[static_cast<size_t>(band) + 1]; ++i)
-            acc += static_cast<double>(bwW_[static_cast<size_t>(i)]) * S[bwBin_[static_cast<size_t>(i)]];
+        for (int i = e.bwStart[static_cast<size_t>(band)]; i < e.bwStart[static_cast<size_t>(band) + 1]; ++i)
+            acc += static_cast<double>(e.bwW[static_cast<size_t>(i)]) * S[e.bwBin[static_cast<size_t>(i)]];
         L[band] = static_cast<float>(10.0 * std::log10(acc * biasCorr + 1.0e-30));
     }
 
@@ -662,30 +1007,31 @@ void Core::bandLevelsAndBaseline(const float* S, float* L, float* base, double b
     float meanL = 0.0f;
     for (int b = 0; b < numBands_; ++b) meanL += L[b];
     meanL /= static_cast<float>(numBands_);
-    const bool all = frames_ < refreshPeriod || std::abs(meanL - refMean) > kBaselineJumpDb;
+    const long long frames = e.frames;
+    const bool all = frames < refreshPeriod || e.forceRefresh || std::abs(meanL - refMean) > kBaselineJumpDb;
     if (all) refMean = meanL;
     for (int band = 0; band < numBands_; ++band)
     {
-        if (!all && ((band + static_cast<int>(frames_ % refreshPeriod)) % refreshPeriod) != 0) continue;   // keep the last refresh
+        if (!all && ((band + static_cast<int>(frames % refreshPeriod)) % refreshPeriod) != 0) continue;   // keep the last refresh
         const auto bi = static_cast<size_t>(band);
         float m[2] = { 0.0f, 0.0f }; bool has[2] = { false, false };
         for (int s = 0; s < 2; ++s)
         {
-            const int i0 = flStart_[s][bi], i1 = flStart_[s][bi + 1];
+            const int i0 = e.flStart[s][bi], i1 = e.flStart[s][bi + 1];
             if (i1 <= i0) continue;
-            m[s] = median(fl_[s].data() + i0, i1 - i0, L);
+            m[s] = median(e.fl[s].data() + i0, i1 - i0, L);
             has[s] = true;
         }
         const float x = bandX_[bi];
         if (has[0] && has[1])
         {
-            const float x0 = sideX_[0][bi], x1 = sideX_[1][bi];
+            const float x0 = e.sideX[0][bi], x1 = e.sideX[1][bi];
             base[band] = m[0] + (m[1] - m[0]) * (x - x0) / (x1 - x0);
         }
         else if (has[0] || has[1])
         {
             const int s = has[0] ? 0 : 1;
-            base[band] = m[s] + static_cast<float>(slope) * (x - sideX_[s][bi]);
+            base[band] = m[s] + static_cast<float>(slope) * (x - e.sideX[s][bi]);
         }
         else base[band] = L[band];
     }
@@ -697,32 +1043,32 @@ void Core::bandLevelsAndBaseline(const float* S, float* L, float* base, double b
 // moment with the kernel's own moment removed, and the excess an auditory filter centred on it would see,
 // x_aud = M / max(ERB, W_src). Never lowers an estimate; broad humps (W_src >= ERB) are unchanged. The detection
 // decision stays on the uncorrected (statistically calibrated) excess; only the depth of the cut uses this.
-void Core::subBinCorrection(Channel& ch, double biasCorr) noexcept
+void Core::subBinCorrection(const Engine& e, Channel& ch, double biasCorr) noexcept
 {
     const int B = numBands_;
     const float* L = ch.levelDb.data();
     const float* base = ch.baseDb.data();
     float* adj = ch.exAdjDb.data();
     for (int b = 0; b < B; ++b) adj[b] = L[b] - base[b];
-    if (kLowMax_ < 1) return;
+    if (e.kLowMax < 1) return;
 
-    const int nb = fftSize_ / 2 + 1;
-    const int kMax = std::min(kLowMax_ + 2, nb - 1);
-    const double binHz = sampleRate_ / fftSize_;
+    const int nb = e.N / 2 + 1;
+    const int kMax = std::min(e.kLowMax + 2, nb - 1);
+    const double binHz = sampleRate_ / e.N;
     const float* S = ch.powAvg.data();
     float* x = binX_.data();
     float* F = binF_.data();
     for (int k = 1; k <= kMax; ++k)
     {
-        const int j = binBand_[static_cast<size_t>(k)];
-        const float t = binFrac_[static_cast<size_t>(k)];
+        const int j = e.binBand[static_cast<size_t>(k)];
+        const float t = e.binFrac[static_cast<size_t>(k)];
         const float bk = base[j] + t * (base[j + 1] - base[j]);
         const double lev = 10.0 * std::log10(static_cast<double>(S[k]) * k * binHz * biasCorr + 1.0e-30);
         x[k] = std::max(static_cast<float>(std::pow(10.0, (lev - bk) * 0.1)) - 1.0f, 0.0f);
         F[k] = 1.0f;
     }
     x[0] = 0.0f;
-    for (int k0 = 1; k0 <= kLowMax_; ++k0)
+    for (int k0 = 1; k0 <= e.kLowMax; ++k0)
     {
         if (!(x[k0] > 0.0f) || x[k0] < x[k0 - 1] || x[k0] < x[k0 + 1]) continue;
         const int j0 = std::max(1, k0 - 2), j1 = std::min(kMax, k0 + 2);
@@ -732,8 +1078,8 @@ void Core::subBinCorrection(Channel& ch, double biasCorr) noexcept
         float v = 0.0f;
         for (int j = j0; j <= j1; ++j) v += (static_cast<float>(j) - c) * (static_cast<float>(j) - c) * x[j];
         v /= m;
-        const float wSrc = std::sqrt(12.0f * std::max(v - kernelVar_, 0.0f));
-        const float xAud = m / std::max(erbBins_[static_cast<size_t>(k0)], wSrc);
+        const float wSrc = std::sqrt(12.0f * std::max(v - e.kernelVar, 0.0f));
+        const float xAud = m / std::max(e.erbBins[static_cast<size_t>(k0)], wSrc);
         const float f = std::max(1.0f, xAud / x[k0]);
         for (int j = std::max(1, k0 - 1); j <= std::min(kMax, k0 + 1); ++j) F[j] = std::max(F[j], f);
     }
@@ -753,7 +1099,7 @@ void Core::subBinCorrection(Channel& ch, double biasCorr) noexcept
     }
 }
 
-bool Core::computeGains(int numCh, const Params& p) noexcept
+bool Core::computeGains(Engine& e, int numCh, const Params& p, bool publish) noexcept
 {
     // ---- per-frame derived parameters (a handful of transcendental calls) ----
     const float depth = std::clamp(p.depth, 0.0f, 1.0f);
@@ -761,7 +1107,7 @@ bool Core::computeGains(int numCh, const Params& p) noexcept
     const float z     = thresholdSigmas(p.sensitivity);     // threshold in sigma_E: 6 (sens 0) .. 4 (default) .. 2 (sens 1)
     const float kappa = hard ? 1.5f : 3.0f;                 // knee width in sigma_E
     const float rMax  = depth * (hard ? 24.0f : 12.0f);
-    const double frameRate = sampleRate_ / hop_;
+    const double frameRate = sampleRate_ / e.H;
     const float aAtt  = xleth::dsp::onePoleStep(std::clamp(p.attackMs, 0.1f, 1000.0f) * 1.0e-3, frameRate);
     const float aRel  = xleth::dsp::onePoleStep(std::clamp(p.releaseMs, 1.0f, 10000.0f) * 1.0e-3, frameRate);
     const float link  = std::clamp(p.stereoLink, 0.0f, 1.0f);
@@ -774,24 +1120,24 @@ bool Core::computeGains(int numCh, const Params& p) noexcept
     const float broaden = sharp < 0.5f ? 2.0f * (0.5f - sharp) : 0.0f;
 
     // ---- detector ----
-    emaAn_ *= static_cast<double>(emaA_);
-    const double biasCorr = 1.0 / std::max(1.0 - emaAn_, 1.0e-12);
+    e.emaAn *= static_cast<double>(e.emaA);
+    const double biasCorr = 1.0 / std::max(1.0 - e.emaAn, 1.0e-12);
     const bool fastOn = fastTauMs_ > 0.0f;
     double biasCorrFast = 1.0;
     if (fastOn)
     {
-        emaAnF_ *= static_cast<double>(emaAF_);
-        biasCorrFast = 1.0 / std::max(1.0 - emaAnF_, 1.0e-12);
+        e.emaAnF *= static_cast<double>(e.emaAF);
+        biasCorrFast = 1.0 / std::max(1.0 - e.emaAnF, 1.0e-12);
     }
     // Both variance tables are indexed by the frame count; sigma is frozen once the longer (slow) one is in steady state.
-    if (frames_ < static_cast<long long>(vfTime_.size())) updateSigma();
+    if (e.frames < static_cast<long long>(e.vfTime.size())) updateSigma(e);
 
     const int B = numBands_;
     for (int c = 0; c < numCh; ++c)
     {
-        auto& ch = ch_[c];
-        detectChannel(ch, biasCorr, biasCorrFast);
-        subBinCorrection(ch, biasCorr);
+        auto& ch = e.ch[c];
+        detectChannel(e, ch, biasCorr, biasCorrFast);
+        subBinCorrection(e, ch, biasCorr);
         const float* L = ch.levelDb.data();
         const float* base = ch.baseDb.data();
         const float* LF = ch.levelFDb.data();
@@ -810,11 +1156,11 @@ bool Core::computeGains(int numCh, const Params& p) noexcept
         {
             const auto bi = static_cast<size_t>(b);
             const float es = L[b] - base[b];
-            float e = es, sig = sigmaE_[bi];
+            float ex = es, sig = e.sigmaE[bi];
             est[b] = adj[b];   // excess at auditory resolution (== level - baseline above ~300 Hz)
             if (fastOn)
             {
-                const float ef = LF[b] - baseF[b], sf = sigmaEF_[bi];
+                const float ef = LF[b] - baseF[b], sf = e.sigmaEF[bi];
                 unsigned char& own = ch.fastOwns[bi];
                 bool useFast = false;
                 if (ef - es > kSwitchUpSigmas * sf) { own = 0; useFast = true; }          // onset
@@ -827,23 +1173,23 @@ bool Core::computeGains(int numCh, const Params& p) noexcept
                 }
                 if (useFast)
                 {
-                    e = ef; sig = sf;
+                    ex = ef; sig = sf;
                     est[b] = ef + std::max(adj[b] - es, 0.0f);   // keep the sub-bin (low-f) depth correction of the slow path
                 }
             }
             const float thr = z * sig;
-            kb[b] = e > thr ? smoothstep01((e - thr) / (kappa * sig)) : 0.0f;
+            kb[b] = ex > thr ? smoothstep01((ex - thr) / (kappa * sig)) : 0.0f;
         }
         for (int b = 0; b < B; ++b)
         {
-            const float e = est[b];
+            const float ev = est[b];
             float target = 0.0f;
             float k = 0.0f;
-            if (e > 0.0f && rMax > 0.0f)
-                for (int j = lobeLo_[static_cast<size_t>(b)]; j <= lobeHi_[static_cast<size_t>(b)]; ++j) k = std::max(k, kb[j]);
+            if (ev > 0.0f && rMax > 0.0f)
+                for (int j = e.lobeLo[static_cast<size_t>(b)]; j <= e.lobeHi[static_cast<size_t>(b)]; ++j) k = std::max(k, kb[j]);
             if (k > 0.0f)
             {
-                const float raw = k * e;
+                const float raw = k * ev;
                 const float x = raw / rMax;
                 target = hard ? raw / std::pow(1.0f + (x * x) * (x * x) * (x * x), 1.0f / 6.0f)
                               : raw / std::sqrt(1.0f + x * x);
@@ -874,36 +1220,39 @@ bool Core::computeGains(int numCh, const Params& p) noexcept
             for (int b = 0; b < B; ++b) sm[b] += broaden * (wa[b] - sm[b]);
         }
     }
+    e.forceRefresh = false;
 
     // ---- stereo link: blend each channel towards max(L, R) ----
     for (int c = 0; c < numCh; ++c)
     {
-        const float* own = ch_[c].smoothDb.data();
-        float* out = ch_[c].outDb.data();
+        const float* own = e.ch[c].smoothDb.data();
+        float* out = e.ch[c].outDb.data();
         if (numCh < 2 || link <= 0.0f) { std::memcpy(out, own, sizeof(float) * static_cast<size_t>(B)); continue; }
-        const float* other = ch_[1 - c].smoothDb.data();
+        const float* other = e.ch[1 - c].smoothDb.data();
         for (int b = 0; b < B; ++b) out[b] = own[b] + link * (std::max(own[b], other[b]) - own[b]);
     }
 
     // ---- weight curve (RS weighting semantics): w <= 1 scales the reduction, w > 1 deepens it up to the depth ceiling, never beyond (and never
-    //      below the unweighted value, which may exceed a just-lowered ceiling while it releases). nullptr = flat 1: the loop is skipped. ----
+    //      below the unweighted value, which may exceed a just-lowered ceiling while it releases). nullptr = flat 1: the loop is skipped.
+    //      Intake hardening: a non-finite entry reads as 1 (the band is left unweighted), negative as 0, above kMaxWeight as kMaxWeight. ----
     if (p.weightCurve != nullptr)
     {
         const float* wc = p.weightCurve;
         for (int c = 0; c < numCh; ++c)
         {
-            float* out = ch_[c].outDb.data();
+            float* out = e.ch[c].outDb.data();
             for (int b = 0; b < B; ++b)
             {
                 const float wr = wc[b];
-                const float w = wr > 0.0f ? (wr < kMaxWeight ? wr : kMaxWeight) : 0.0f;   // NaN / negative -> 0
+                const float w = !finiteF(wr) ? 1.0f : (wr > 0.0f ? (wr < kMaxWeight ? wr : kMaxWeight) : 0.0f);
                 const float v = out[b];
                 out[b] = w <= 1.0f ? w * v : std::min(w * v, std::max(rMax, v));
             }
         }
     }
 
-    // ---- meters: max applied band reduction of this frame ----
+    // ---- meters: max applied band reduction of this frame (only from the engine the output is aligned to) ----
+    if (publish)
     {
         float all = 0.0f;
         for (int c = 0; c < kMaxChannels; ++c)
@@ -911,7 +1260,7 @@ bool Core::computeGains(int numCh, const Params& p) noexcept
             float m = 0.0f;
             if (c < numCh)
             {
-                const float* out = ch_[c].outDb.data();
+                const float* out = e.ch[c].outDb.data();
                 for (int b = 0; b < B; ++b) m = std::max(m, out[b]);
             }
             meterCh_[c].store(m, std::memory_order_relaxed);
@@ -922,15 +1271,15 @@ bool Core::computeGains(int numCh, const Params& p) noexcept
 
     // ---- G(f): band curve -> bins, real zero-phase gain ----
     bool any = false;
-    const int nb = fftSize_ / 2 + 1;
+    const int nb = e.N / 2 + 1;
     for (int c = 0; c < numCh; ++c)
     {
-        const float* out = ch_[c].outDb.data();
-        float* g = ch_[c].binGain.data();
+        const float* out = e.ch[c].outDb.data();
+        float* g = e.ch[c].binGain.data();
         for (int k = 0; k < nb; ++k)
         {
-            const int j = binBand_[static_cast<size_t>(k)];
-            const float t = binFrac_[static_cast<size_t>(k)];
+            const int j = e.binBand[static_cast<size_t>(k)];
+            const float t = e.binFrac[static_cast<size_t>(k)];
             const float rdB = out[j] + t * (out[j + 1] - out[j]);
             if (rdB > 1.0e-6f) { g[k] = std::exp(-rdB * kLn10Over20); any = true; }
             else g[k] = 1.0f;

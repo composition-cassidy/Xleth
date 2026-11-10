@@ -20,7 +20,7 @@
 //   D1 dynamics     (v6) step response and release in MILLISECONDS (onset t50, time for the cut to fall <= 1 dB), at 48 and 96 kHz
 //   --- RS High Quality surface (every default bit-identical to before) ---
 //   W0-W4 weights   grid exposure (numBands / bandCentreHz); weightCurve of 1.0 == nullptr; exact RS semantics frame by frame against an
-//                   unweighted twin (w <= 1 scales, w > 1 deepens to the ceiling, clamps, NaN); weight 0 never cuts a planted resonance
+//                   unweighted twin (w <= 1 scales, w > 1 deepens to the ceiling, clamps, NaN -> 1); weight 0 never cuts a planted resonance
 //   S1-S2 sharpness -3 dB width of the cut of a Q8 resonance strictly decreasing over sharpness 0 / 0.5 / 1; clamping
 //   M1-M4 channels  mono == stereo ch 0 at link 0; Mid / Side wrappers (1-channel core + aligned dry) reconstruct at depth 0 and cut only
 //                   their own component; M + S as two channels == two mono cores
@@ -29,6 +29,17 @@
 //   P1 params       depth / sensitivity / sharpness / weightCurve / stereoLink at random extremes before every block: max sample step and
 //                   second difference within 1.25x of steady runs, no NaN / Inf, no allocation
 //   H1-H3 hop phase hopPhaseOffsetForInstance (van der Corput); 8 instances at hop 256: <= 2 frame boundaries per 64-sample block
+//   --- live frame-tier switching, aligned dry output, parameter hardening ---
+//   T-A fixed tier  every tier, default and weighted / sharpened configurations: output hash == the build before live switching (85df03d)
+//   T-E hardening   NaN / Inf / out-of-range in every Params field and in the weight curve: finite, bounded, == the sanitised value, no allocation
+//   T-H hop phase   8 staggered instances switched together keep their staggering (offset stored as a fraction of the hop)
+//   T-D0 alloc      zero operator new / delete over tier switches (every pair, cold, dryOut + aux + viz sink)
+//   T-B transitions every ordered pair, pink + bell and a 1 kHz sine: max step <= 1.25x steady, no NaN, crossfade where documented, impulse at the
+//                   new latency, wet + dryOut never combs at depth 0 (negative control: a dry that follows latencyFor(new) from the request)
+//   T-M Mid/Side    a mono core on M with S as the delay-only aux channel reconstructs L / R on the stereo dry timeline through every switch
+//   T-C continuity  detector state kept across a switch: the cut stays up and is within 1.5 dB of a fresh core of the new tier within 150 ms
+//   T-D stress      a second thread requests random tiers (every 1-50 ms, and bursts) during 200 000 random-size blocks: no NaN, bounded, zero
+//                   allocations (armed counter and a thread-id counter), every adoption matches a request
 //
 // The allocation counter hooks operator new / new[] on the measuring thread only (the same approach as
 // test_effect_processblock_alloc.cpp). Output prefix: [ResCore].
@@ -49,6 +60,7 @@
 #include <cstring>
 #include <new>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <vector>
 
@@ -58,10 +70,28 @@ std::atomic<bool>      g_allocArmed { false };
 std::atomic<long long> g_allocCount { 0 };
 thread_local bool      t_isMeasuringThread = false;
 
+// Second, independent filter (T-D): every allocation / free made by ONE thread (identified by std::thread::id, set before counting starts),
+// whether or not it is inside process().
+std::atomic<bool>      g_tidCounting { false };
+std::thread::id        g_tidWatched;
+std::atomic<long long> g_tidAllocCount { 0 };
+std::atomic<long long> g_freeCount { 0 };       // frees on the measuring thread while armed
+std::atomic<long long> g_tidFreeCount { 0 };
+
 inline void countAlloc() noexcept
 {
     if (g_allocArmed.load(std::memory_order_relaxed) && t_isMeasuringThread)
         g_allocCount.fetch_add(1, std::memory_order_relaxed);
+    if (g_tidCounting.load(std::memory_order_relaxed) && std::this_thread::get_id() == g_tidWatched)
+        g_tidAllocCount.fetch_add(1, std::memory_order_relaxed);
+}
+inline void countFree(void* p) noexcept
+{
+    if (p == nullptr) return;
+    if (g_allocArmed.load(std::memory_order_relaxed) && t_isMeasuringThread)
+        g_freeCount.fetch_add(1, std::memory_order_relaxed);
+    if (g_tidCounting.load(std::memory_order_relaxed) && std::this_thread::get_id() == g_tidWatched)
+        g_tidFreeCount.fetch_add(1, std::memory_order_relaxed);
 }
 } // namespace
 
@@ -69,12 +99,12 @@ void* operator new(std::size_t n)                 { countAlloc(); void* p = std:
 void* operator new[](std::size_t n)               { countAlloc(); void* p = std::malloc(n ? n : 1); if (!p) std::abort(); return p; }
 void* operator new(std::size_t n, const std::nothrow_t&) noexcept   { countAlloc(); return std::malloc(n ? n : 1); }
 void* operator new[](std::size_t n, const std::nothrow_t&) noexcept { countAlloc(); return std::malloc(n ? n : 1); }
-void  operator delete(void* p) noexcept                    { std::free(p); }
-void  operator delete[](void* p) noexcept                  { std::free(p); }
-void  operator delete(void* p, std::size_t) noexcept       { std::free(p); }
-void  operator delete[](void* p, std::size_t) noexcept     { std::free(p); }
-void  operator delete(void* p, const std::nothrow_t&) noexcept   { std::free(p); }
-void  operator delete[](void* p, const std::nothrow_t&) noexcept { std::free(p); }
+void  operator delete(void* p) noexcept                    { countFree(p); std::free(p); }
+void  operator delete[](void* p) noexcept                  { countFree(p); std::free(p); }
+void  operator delete(void* p, std::size_t) noexcept       { countFree(p); std::free(p); }
+void  operator delete[](void* p, std::size_t) noexcept     { countFree(p); std::free(p); }
+void  operator delete(void* p, const std::nothrow_t&) noexcept   { countFree(p); std::free(p); }
+void  operator delete[](void* p, const std::nothrow_t&) noexcept { countFree(p); std::free(p); }
 
 using xleth::dsp::resonance::Core;
 using xleth::dsp::resonance::Params;
@@ -826,7 +856,7 @@ void testWeightCurve()
         check(d.maxAbs == 0.0, "W1 weightCurve of 1.0 == nullptr: bit-identical output (C1c, 2.5 kHz resonance, blocks 64/333), max |diff| " + std::to_string(d.maxAbs));
     }
 
-    // W2: exact semantics against an unweighted twin, frame by frame: w <= 1 -> w x R, w > 1 -> min(w x R, max(Rmax, R)), clamp [0, 2.5], NaN / negative -> 0.
+    // W2: exact semantics against an unweighted twin, frame by frame: w <= 1 -> w x R, w > 1 -> min(w x R, max(Rmax, R)), clamp [0, 2.5], negative -> 0, NaN / Inf -> 1 (intake hardening; before it NaN read as 0).
     //     C1 (depth 0.5, Soft: ceiling 6 dB) so weights above 1 reach the ceiling; link 0.5 and a right-only resonance exercise the stereo link.
     {
         Stereo x = makePink(static_cast<int>(6.0 * sr), -20.0, 82);
@@ -855,7 +885,7 @@ void testWeightCurve()
                 {
                     const float u = cu.bandReductionDb(ch)[b], v = cw.bandReductionDb(ch)[b];
                     const float wr = w[static_cast<size_t>(b)];
-                    const float ww = wr > 0.0f ? std::min(wr, 2.5f) : 0.0f;
+                    const float ww = !std::isfinite(wr) ? 1.0f : (wr > 0.0f ? std::min(wr, 2.5f) : 0.0f);   // hardening: non-finite = 1 (unweighted)
                     const float expect = ww <= 1.0f ? ww * u : std::min(ww * u, std::max(rMax, u));
                     if (v != expect) ++mismatch;
                     ++checked;
@@ -865,7 +895,7 @@ void testWeightCurve()
                 }
         }
         char buf[260];
-        std::snprintf(buf, sizeof buf, "W2 weight semantics vs unweighted twin (C1, link 0.5, weights {0,.3,1,1.7,2.5,4->2.5,-1->0,NaN->0}): %lld / %lld band values differ; "
+        std::snprintf(buf, sizeof buf, "W2 weight semantics vs unweighted twin (C1, link 0.5, weights {0,.3,1,1.7,2.5,4->2.5,-1->0,NaN->1}): %lld / %lld band values differ; "
                       "deeper than unweighted %lld, at the 6 dB ceiling %lld, cut > 1 dB zeroed %lld", mismatch, checked, deeper, atCeiling, zeroed);
         check(mismatch == 0 && deeper > 0 && atCeiling > 0 && zeroed > 0, buf);
     }
@@ -1367,11 +1397,759 @@ void testHopPhaseHelper()
     }
 }
 
+// ===================================================================================================
+// Live frame-tier switching (requestTier / adoption / transition), aligned dry output, parameter hardening.
+
+// FNV-1a 64 over the float bit patterns of both channels: a fixture of an output stream that is cheap to store as a constant.
+uint64_t hashStereo(const Stereo& s)
+{
+    uint64_t h = 1469598103934665603ull;
+    for (int c = 0; c < 2; ++c)
+        for (float v : s.ch[c])
+        {
+            uint32_t u; std::memcpy(&u, &v, sizeof u);
+            for (int i = 0; i < 4; ++i) { h ^= (u >> (8 * i)) & 0xFFu; h *= 1099511628211ull; }
+        }
+    return h;
+}
+
+// T-A: fixed-tier output == the build before live switching (hashes recorded with the frozen pre-change core, commit 85df03d).
+void testFixedTierBitIdentity()
+{
+    const double sr = 48000.0;
+    Stereo in = resonantPink(sr, 3.0, 2500.0, 201);
+    for (int i = 0; i < in.size(); ++i)
+        in.ch[0][static_cast<size_t>(i)] += static_cast<float>(0.05 * std::sin(2.0 * juce::MathConstants<double>::pi * 1000.0 * i / sr));
+    const int B = xleth::dsp::resonance::kGridBands;
+    std::vector<float> w(static_cast<size_t>(B));
+    const float pat[5] = { 0.0f, 0.3f, 1.0f, 1.7f, 2.5f };
+    for (int b = 0; b < B; ++b) w[static_cast<size_t>(b)] = pat[b % 5];
+    Params def;
+    Params wBroad; wBroad.depth = 1.0f; wBroad.hardKnee = true; wBroad.sensitivity = 0.7f; wBroad.sharpness = 0.15f; wBroad.stereoLink = 0.5f; wBroad.weightCurve = w.data();
+    Params wNarrow = wBroad; wNarrow.hardKnee = false; wNarrow.sharpness = 0.85f; wNarrow.attackMs = 3.0f; wNarrow.releaseMs = 80.0f;
+    const std::vector<int> sched = { 1, 37, 128, 255, 511, 1024, 37 };
+    struct Case { Core::FrameTier tier; const Params* p; int offset; const char* name; uint64_t expect; };
+    const Case cases[] = {
+        { Core::FrameTier::Fast,   &def,     0,  "Fast default",            0x25060c2a75b9517dull },
+        { Core::FrameTier::Normal, &def,     0,  "Normal default",          0x39940e6a2cb57df4ull },
+        { Core::FrameTier::High,   &def,     0,  "High default",            0x6b365dec02bb5948ull },
+        { Core::FrameTier::Fast,   &wBroad,  0,  "Fast weighted broad",     0x98cfaed9e7402b07ull },
+        { Core::FrameTier::Normal, &wBroad,  0,  "Normal weighted broad",   0x9a1368aa4f7fc583ull },
+        { Core::FrameTier::High,   &wBroad,  0,  "High weighted broad",     0xa3f972865f34ceabull },
+        { Core::FrameTier::Fast,   &wNarrow, 0,  "Fast weighted narrow",    0x23153f24807bad95ull },
+        { Core::FrameTier::Normal, &wNarrow, 0,  "Normal weighted narrow",  0xb5703881c6b22543ull },
+        { Core::FrameTier::High,   &wNarrow, 0,  "High weighted narrow",    0x169d9e20ae264714ull },
+        { Core::FrameTier::Normal, &def,     96, "Normal default offset 96",0x1009686e0622dc46ull },
+    };
+    for (const Case& k : cases)
+    {
+        Core c; c.setFrameTier(k.tier); c.setHopPhaseOffset(k.offset); c.prepare(sr, 1024, 2);
+        const uint64_t h = hashStereo(render(c, in, sched, *k.p));
+        char buf[200];
+        std::snprintf(buf, sizeof buf, "T-A fixed tier bit-identical to the pre-switching build: %s hash 0x%016llx (expect 0x%016llx)",
+                      k.name, static_cast<unsigned long long>(h), static_cast<unsigned long long>(k.expect));
+        check(h == k.expect, buf);
+    }
+}
+
+const Core::FrameTier kTiers[3] = { Core::FrameTier::Fast, Core::FrameTier::Normal, Core::FrameTier::High };
+const char* tierName(Core::FrameTier t) { return t == Core::FrameTier::Fast ? "Fast" : (t == Core::FrameTier::Normal ? "Normal" : "High"); }
+inline uint64_t lcgNext(uint64_t s) { return s * 6364136223846793005ull + 1442695040888963407ull; }
+
+Stereo makeWhite(int n, double rmsDb, uint64_t seed)
+{
+    Stereo s; s.resize(n);
+    const double g = std::pow(10.0, rmsDb / 20.0) * std::sqrt(3.0);   // uniform [-1, 1) has rms 1 / sqrt(3)
+    for (int c = 0; c < 2; ++c)
+    {
+        uint64_t st = (seed + 31ull * static_cast<uint64_t>(c + 1)) * 0x9E3779B97F4A7C15ull;
+        for (int i = 0; i < n; ++i) { st = lcgNext(st); s.ch[c][static_cast<size_t>(i)] = static_cast<float>(g * (static_cast<double>(st >> 40) / 8388608.0 - 1.0)); }
+    }
+    return s;
+}
+
+Stereo makeSine(int n, double sr, double f, double amp)
+{
+    Stereo s; s.resize(n);
+    for (int i = 0; i < n; ++i)
+    {
+        const double ph = 2.0 * juce::MathConstants<double>::pi * f * i / sr;
+        s.ch[0][static_cast<size_t>(i)] = static_cast<float>(amp * std::sin(ph));
+        s.ch[1][static_cast<size_t>(i)] = static_cast<float>(amp * std::sin(ph + 0.9));
+    }
+    return s;
+}
+
+// Render `in` in fixed blocks with dryOut; before the first block that starts at or after requestAt, requestTier(to). Positions are stream positions
+// (the core is freshly prepared).
+struct SwitchRun
+{
+    Stereo out, dry;
+    long long adoptPos = -1;                       // start of the call that adopted the request
+    long long flipStart = -1, flipEnd = -1;        // the call during which frameTier() changed
+    long long endPos = -1;                         // end of the call after which no transition was running any more
+};
+SwitchRun runSwitch(Core& c, const Stereo& in, int block, long long requestAt, Core::FrameTier to, const Params& p)
+{
+    SwitchRun r; r.out = in; r.dry.resize(in.size());
+    const long long before = c.tierSwitchCount();
+    bool requested = false;
+    for (int pos = 0; pos < in.size();)
+    {
+        const int b = std::min(block, in.size() - pos);
+        if (!requested && pos >= requestAt) { c.requestTier(to); requested = true; }
+        float* ptrs[2] = { r.out.ch[0].data() + pos, r.out.ch[1].data() + pos };
+        float* dp[2] = { r.dry.ch[0].data() + pos, r.dry.ch[1].data() + pos };
+        const Core::FrameTier t0 = c.frameTier();
+        c.process(ptrs, 2, b, p, dp);
+        if (r.adoptPos < 0 && c.tierSwitchCount() > before) r.adoptPos = pos;
+        if (r.flipStart < 0 && c.frameTier() != t0) { r.flipStart = pos; r.flipEnd = pos + b; }
+        if (r.adoptPos >= 0 && r.endPos < 0 && !c.tierTransitionActive()) r.endPos = pos + b;
+        pos += b;
+    }
+    return r;
+}
+
+double maxStep(const Stereo& y, long long a, long long b)
+{
+    double m = 0.0;
+    for (int c = 0; c < 2; ++c)
+        for (long long i = std::max<long long>(a, 1); i < std::min<long long>(b, y.size()); ++i)
+            m = std::max(m, std::abs(static_cast<double>(y.ch[c][static_cast<size_t>(i)]) - y.ch[c][static_cast<size_t>(i - 1)]));
+    return m;
+}
+
+long long countNonFinite(const Stereo& y)
+{
+    long long n = 0;
+    for (int c = 0; c < 2; ++c) for (float v : y.ch[c]) if (!std::isfinite(v)) ++n;
+    return n;
+}
+
+// Power spectrum (Hann over [a, b), zero-padded to 2^order) of channel 0 of a + b2 (b2 may be null), smoothed over +-2 bins.
+std::vector<double> segmentPsd(const std::vector<float>& x, const std::vector<float>* y2, long long a, long long b, int order)
+{
+    const int nfft = 1 << order;
+    juce::dsp::FFT fft(order);
+    std::vector<float> buf(static_cast<size_t>(2 * nfft), 0.0f);
+    const long long len = b - a;
+    for (long long i = 0; i < len && i < nfft; ++i)
+    {
+        const double w = 0.5 - 0.5 * std::cos(2.0 * juce::MathConstants<double>::pi * (i + 0.5) / len);
+        double v = x[static_cast<size_t>(a + i)];
+        if (y2 != nullptr) v += (*y2)[static_cast<size_t>(a + i)];
+        buf[static_cast<size_t>(i)] = static_cast<float>(w * v);
+    }
+    fft.performFrequencyOnlyForwardTransform(buf.data(), true);
+    std::vector<double> p(static_cast<size_t>(nfft / 2 + 1), 0.0), s = p;
+    for (int k = 0; k <= nfft / 2; ++k) p[static_cast<size_t>(k)] = static_cast<double>(buf[static_cast<size_t>(k)]) * buf[static_cast<size_t>(k)];
+    for (int k = 0; k <= nfft / 2; ++k)
+    {
+        double acc = 0.0; int n = 0;
+        for (int j = std::max(0, k - 2); j <= std::min(nfft / 2, k + 2); ++j) { acc += p[static_cast<size_t>(j)]; ++n; }
+        s[static_cast<size_t>(k)] = acc / n;
+    }
+    return s;
+}
+
+// T-B: every ordered pair of tiers, mid-stream. Steps, finiteness, the crossfade position, the final latency (impulse) and the dry / wet contract.
+void testTierSwitchTransitions()
+{
+    const double sr = 48000.0;
+    Params cap; cap.depth = 1.0f; cap.hardKnee = true;   // C1c: the deepest cut, the largest difference between wet and dry
+    const int n = static_cast<int>(4.0 * sr);
+    const Stereo pinkRes = resonantPink(sr, 4.0, 2500.0, 301);
+    const Stereo sine = makeSine(n, sr, 1000.0, 0.25);
+    struct Sig { const Stereo* x; const char* name; };
+    const Sig sigs[2] = { { &pinkRes, "pink + 2.5 kHz bell" }, { &sine, "1 kHz sine" } };
+    const long long reqAt = static_cast<long long>(2.5 * sr) + 37;
+    const int block = 100;
+    const int steadySkip = Core::latencyFor(sr, Core::FrameTier::High) + static_cast<int>(0.5 * sr);
+    const double kBound = 1.25;
+    for (const Sig& sg : sigs)
+    {
+        double inStep = maxStep(*sg.x, steadySkip, n);
+        for (Core::FrameTier from : kTiers)
+            for (Core::FrameTier to : kTiers)
+            {
+                if (from == to) continue;
+                Core c; c.setFrameTier(from); c.prepare(sr, block, 2);
+                const SwitchRun r = runSwitch(c, *sg.x, block, reqAt, to, cap);
+                double ref = 0.0;
+                for (Core::FrameTier t : { from, to })
+                {
+                    Core f; f.setFrameTier(t); f.prepare(sr, block, 2);
+                    ref = std::max(ref, maxStep(render(f, *sg.x, { block }, cap), steadySkip, n));
+                }
+                const double tr = maxStep(r.out, r.adoptPos, r.endPos + block);
+                const int HB = Core::fftSizeFor(sr, to) / 4;
+                const long long valid = (r.adoptPos / HB) * HB + 3LL * HB;
+                const bool flipOk = r.adoptPos == reqAt - (reqAt % block) + (reqAt % block ? block : 0) && r.flipStart < valid && valid <= r.flipEnd;
+                const bool endOk = c.currentLatency() == Core::latencyFor(sr, to) && c.frameTier() == to && !c.tierTransitionActive() && r.endPos >= valid + c.tierCrossfadeSamples();
+                const long long nf = countNonFinite(r.out) + countNonFinite(r.dry);
+                char buf[400];
+                std::snprintf(buf, sizeof buf, "T-B %s, %s -> %s: transition %lld samples (adopt %lld, crossfade at %lld = adopt grid + 3 hops), max |step| %.4f vs steady %.4f (ratio %.3f <= %.2f; "
+                              "an unsuppressed dry bridge would reach %.3f), non-finite %lld, end latency %d == %d",
+                              sg.name, tierName(from), tierName(to), r.endPos - r.adoptPos, r.adoptPos, valid, tr, ref, tr / ref, kBound, inStep / ref, nf,
+                              c.currentLatency(), Core::latencyFor(sr, to));
+                check(flipOk && endOk && nf == 0 && tr <= kBound * ref, buf);
+            }
+    }
+
+    // Impulse after settling: silence, switch at 0.5 s, unit impulse at 2.0 s -> wet AND dry peak at exactly +latencyFor(new tier). Depth 0: unit height, nothing
+    // elsewhere. Default params: same position; the height is compared with a core of the new tier that never switched (an isolated impulse 2 s into digital
+    // silence is cut by ~0.3 % by a steady core of any tier below High: that is the detector, not the switch).
+    for (int variant = 0; variant < 2; ++variant)
+    for (Core::FrameTier from : kTiers)
+        for (Core::FrameTier to : kTiers)
+        {
+            if (from == to) continue;
+            const int m = static_cast<int>(3.0 * sr), at = static_cast<int>(2.0 * sr) + 11;
+            Stereo imp; imp.resize(m);
+            imp.ch[0][static_cast<size_t>(at)] = 1.0f; imp.ch[1][static_cast<size_t>(at)] = 1.0f;
+            Core c; c.setFrameTier(from); c.prepare(sr, 256, 2);
+            const Params prm = variant == 0 ? Params{ 0.0f } : Params{};
+            const SwitchRun r = runSwitch(c, imp, 256, static_cast<long long>(0.5 * sr), to, prm);
+            int pw = -1, pd = -1; float hw = 0.0f, hd = 0.0f; double rest = 0.0;
+            for (int i = 0; i < m; ++i)
+            {
+                const float w = std::abs(r.out.ch[0][static_cast<size_t>(i)]), d = std::abs(r.dry.ch[0][static_cast<size_t>(i)]);
+                if (w > hw) { hw = w; pw = i; }
+                if (d > hd) { hd = d; pd = i; }
+            }
+            for (int i = 0; i < m; ++i) if (i != pw) rest = std::max(rest, static_cast<double>(std::abs(r.out.ch[0][static_cast<size_t>(i)])));
+            const int lat = Core::latencyFor(sr, to);
+            // Control: a core of the new tier that never switched, same input.
+            Core ctl; ctl.setFrameTier(to); ctl.prepare(sr, 256, 2);
+            const Stereo yc = render(ctl, imp, { 256 }, prm);
+            int pc = -1; float hc = 0.0f; double restC = 0.0;
+            for (int i = 0; i < m; ++i) { const float v = std::abs(yc.ch[0][static_cast<size_t>(i)]); if (v > hc) { hc = v; pc = i; } }
+            for (int i = 0; i < m; ++i) if (i != pc) restC = std::max(restC, static_cast<double>(std::abs(yc.ch[0][static_cast<size_t>(i)])));
+            const Diff dc = sameDiff(r.out, yc);
+            char buf[400];
+            std::snprintf(buf, sizeof buf, "T-B impulse (%s) after %s -> %s (transition ended at %lld < impulse %d): wet peak at +%d, dry peak at +%d (expect %d), heights %.7f / %.7f, max elsewhere %.2e; "
+                          "never-switched %s core: peak at +%d, height %.7f, max elsewhere %.2e, max |switched - it| %.2e",
+                          variant == 0 ? "depth 0" : "default params", tierName(from), tierName(to), r.endPos, at, pw - at, pd - at, lat, static_cast<double>(hw), static_cast<double>(hd), rest,
+                          tierName(to), pc - at, static_cast<double>(hc), restC, dc.maxAbs);
+            const bool heightOk = variant == 0 ? (std::abs(hw - 1.0f) < 1.0e-5f && rest < kMaxAbsAt120) : (pc - at == lat && std::abs(hw - hc) <= 0.005f);
+            check(r.endPos < at && pw - at == lat && pd - at == lat && hd == 1.0f && heightOk, buf);
+        }
+
+    // Dry / wet contract at depth 0: wet + dryOut has the spectrum of 2 x dryOut over the whole transition (no comb). Negative control: a dry delay that follows
+    // latencyFor(requested tier) from the adoption on (what an effect would do with its own delay line and the published latency) combs over the hold period.
+    for (Core::FrameTier from : kTiers)
+        for (Core::FrameTier to : kTiers)
+        {
+            if (from == to) continue;
+            const int m = static_cast<int>(2.0 * sr);
+            const Stereo wn = makeWhite(m, -20.0, 77);
+            Core c; c.setFrameTier(from); c.prepare(sr, 128, 2);
+            const SwitchRun r = runSwitch(c, wn, 128, static_cast<long long>(1.0 * sr) + 37, to, Params{ 0.0f });
+            const long long a = r.adoptPos, b = r.endPos;
+            const int LA = Core::latencyFor(sr, from), LB = Core::latencyFor(sr, to);
+            std::vector<float> naive(static_cast<size_t>(m), 0.0f), twiceDry(static_cast<size_t>(m), 0.0f), twiceNaive(static_cast<size_t>(m), 0.0f);
+            double maxWetDry = 0.0;
+            for (long long t = 0; t < m; ++t)
+            {
+                const long long src = t - (t < a ? LA : LB);
+                naive[static_cast<size_t>(t)] = src >= 0 ? wn.ch[0][static_cast<size_t>(src)] : 0.0f;
+                twiceDry[static_cast<size_t>(t)] = 2.0f * r.dry.ch[0][static_cast<size_t>(t)];
+                twiceNaive[static_cast<size_t>(t)] = 2.0f * naive[static_cast<size_t>(t)];
+                if (t >= a && t < b) maxWetDry = std::max(maxWetDry, std::abs(static_cast<double>(r.out.ch[0][static_cast<size_t>(t)]) - r.dry.ch[0][static_cast<size_t>(t)]));
+            }
+            const std::vector<double> sOk = segmentPsd(r.out.ch[0], &r.dry.ch[0], a, b, 13), sRef = segmentPsd(twiceDry, nullptr, a, b, 13);
+            const std::vector<double> sBad = segmentPsd(r.out.ch[0], &naive, a, b, 13), sBadRef = segmentPsd(twiceNaive, nullptr, a, b, 13);
+            const int k0 = static_cast<int>(50.0 / (sr / 8192.0)), k1 = static_cast<int>(20000.0 / (sr / 8192.0));
+            double okMax = 0.0, badMin = 0.0, lgOk = 0.0, arOk = 0.0, lgBad = 0.0, arBad = 0.0;
+            for (int k = k0; k <= k1; ++k)
+            {
+                const double ro = sOk[static_cast<size_t>(k)] / sRef[static_cast<size_t>(k)], rb = sBad[static_cast<size_t>(k)] / sBadRef[static_cast<size_t>(k)];
+                okMax = std::max(okMax, std::abs(10.0 * std::log10(ro)));
+                badMin = std::min(badMin, 10.0 * std::log10(rb));
+                lgOk += std::log(ro); arOk += ro; lgBad += std::log(rb); arBad += rb;
+            }
+            const int nk = k1 - k0 + 1;
+            const double flatOk = std::exp(lgOk / nk) / (arOk / nk), flatBad = std::exp(lgBad / nk) / (arBad / nk);
+            char buf[400];
+            std::snprintf(buf, sizeof buf, "T-B depth 0 %s -> %s, window = the %lld-sample transition: max |wet - dryOut| %.2e; (wet + dryOut) / (2 dryOut) spectrum within %.4f dB (<= 0.1), flatness %.5f (>= 0.999); "
+                          "control dry at latencyFor(new) from adoption: deepest notch %.1f dB, flatness %.3f",
+                          tierName(from), tierName(to), b - a, maxWetDry, okMax, flatOk, badMin, flatBad);
+            check(maxWetDry <= kMaxAbsAt120 && okMax <= 0.1 && flatOk >= 0.999, buf);
+        }
+}
+
+// T-M: the Mid / Side recipe through a switch. A 1-channel core processes M = (L + R) / 2 with S = (L - R) / 2 as the delay-only aux channel. At depth 0,
+// L' = M' + S_d and R' = M' - S_d must equal the L / R a stereo core puts on its dry timeline (dryOut) at every sample of the switch, and auxOut must equal the
+// dryOut of a 2-channel core fed S as channel 1 (bit-identical: the same timeline).
+void testMidSideAcrossSwitch()
+{
+    const double sr = 48000.0;
+    const int m = static_cast<int>(2.0 * sr), block = 128;
+    const Stereo x = makeWhite(m, -20.0, 131);
+    std::vector<float> M(static_cast<size_t>(m)), S(static_cast<size_t>(m));
+    for (int i = 0; i < m; ++i)
+    {
+        M[static_cast<size_t>(i)] = 0.5f * (x.ch[0][static_cast<size_t>(i)] + x.ch[1][static_cast<size_t>(i)]);
+        S[static_cast<size_t>(i)] = 0.5f * (x.ch[0][static_cast<size_t>(i)] - x.ch[1][static_cast<size_t>(i)]);
+    }
+    for (Core::FrameTier from : kTiers)
+        for (Core::FrameTier to : kTiers)
+        {
+            if (from == to) continue;
+            Core mono; mono.setFrameTier(from); mono.prepare(sr, block, 1);
+            Core ref; ref.setFrameTier(from); ref.prepare(sr, block, 2);     // M and S as two channels: S's dryOut is the reference timeline
+            Core lr; lr.setFrameTier(from); lr.prepare(sr, block, 2);       // L and R: the stereo dry timeline
+            std::vector<float> mo = M, md(static_cast<size_t>(m)), so(static_cast<size_t>(m));
+            Stereo rIn; rIn.ch[0] = M; rIn.ch[1] = S;
+            Stereo rDry; rDry.resize(m);
+            Stereo lrOut = x, lrDry; lrDry.resize(m);
+            const Params p0 { 0.0f };
+            const long long reqAt = static_cast<long long>(1.0 * sr) + 37;
+            bool requested = false;
+            for (int pos = 0; pos < m; pos += block)
+            {
+                const int b = std::min(block, m - pos);
+                if (!requested && pos >= reqAt) { mono.requestTier(to); ref.requestTier(to); lr.requestTier(to); requested = true; }
+                float* p1[1] = { mo.data() + pos };
+                float* d1[1] = { md.data() + pos };
+                mono.process(p1, 1, b, p0, d1, S.data() + pos, so.data() + pos);
+                float* p2[2] = { rIn.ch[0].data() + pos, rIn.ch[1].data() + pos };
+                float* d2[2] = { rDry.ch[0].data() + pos, rDry.ch[1].data() + pos };
+                ref.process(p2, 2, b, p0, d2);
+                float* p3[2] = { lrOut.ch[0].data() + pos, lrOut.ch[1].data() + pos };
+                float* d3[2] = { lrDry.ch[0].data() + pos, lrDry.ch[1].data() + pos };
+                lr.process(p3, 2, b, p0, d3);
+            }
+            double auxDiff = 0.0, recon = 0.0;
+            for (int i = 0; i < m; ++i)
+            {
+                auxDiff = std::max(auxDiff, std::abs(static_cast<double>(so[static_cast<size_t>(i)]) - rDry.ch[1][static_cast<size_t>(i)]));
+                const double L = static_cast<double>(mo[static_cast<size_t>(i)]) + so[static_cast<size_t>(i)];
+                const double R = static_cast<double>(mo[static_cast<size_t>(i)]) - so[static_cast<size_t>(i)];
+                recon = std::max(recon, std::max(std::abs(L - lrDry.ch[0][static_cast<size_t>(i)]), std::abs(R - lrDry.ch[1][static_cast<size_t>(i)])));
+            }
+            char buf[300];
+            std::snprintf(buf, sizeof buf, "T-M Mid recipe through %s -> %s (mono core on M, S as aux, depth 0): auxOut == 2-channel dryOut[1] (max |diff| %.1e), L' / R' vs the stereo dry timeline max |diff| %.2e (<= 1e-6), switched %d",
+                          tierName(from), tierName(to), auxDiff, recon, mono.frameTier() == to ? 1 : 0);
+            check(auxDiff == 0.0 && recon <= kMaxAbsAt120 && mono.frameTier() == to && !mono.tierTransitionActive(), buf);
+        }
+}
+
+// Published cut at f0 (max applied band reduction within +-1/6 octave, channel 0) after every block; optional switch request before the first block at/after requestAt.
+struct CutCurve { std::vector<double> cut; long long adoptBlock = -1; };
+CutCurve cutCurve(Core& c, const Stereo& in, int block, double f0, long long requestAt, Core::FrameTier to)
+{
+    CutCurve r;
+    std::vector<float> l(static_cast<size_t>(block)), rr(static_cast<size_t>(block));
+    float* ptrs[2] = { l.data(), rr.data() };
+    const long long before = c.tierSwitchCount();
+    bool requested = false;
+    for (int pos = 0, blk = 0; pos + block <= in.size(); pos += block, ++blk)
+    {
+        if (requestAt >= 0 && !requested && pos >= requestAt) { c.requestTier(to); requested = true; }
+        std::memcpy(l.data(), in.ch[0].data() + pos, sizeof(float) * static_cast<size_t>(block));
+        std::memcpy(rr.data(), in.ch[1].data() + pos, sizeof(float) * static_cast<size_t>(block));
+        c.process(ptrs, 2, block, Params{ 1.0f, 0.5f, 15.0f, 200.0f, true });
+        if (r.adoptBlock < 0 && c.tierSwitchCount() > before) r.adoptBlock = blk;
+        double m = 0.0;
+        for (int b = 0; b < c.numBands(); ++b)
+            if (std::abs(std::log2(c.bandHz(b) / f0)) <= 1.0 / 6.0) m = std::max(m, static_cast<double>(c.bandReductionDb(0)[b]));
+        r.cut.push_back(m);
+    }
+    return r;
+}
+
+// T-C: detector / gain state across a switch. Steady planted resonance (C1c), switch after 4 s; the published cut of the switched core against a core of the
+// new tier that ran the whole signal (the "fresh core of the new tier"), and the same switch with the state reset instead of kept.
+void testTierSwitchContinuity()
+{
+    const double sr = 48000.0;
+    const int block = 64;
+    const double blockMs = 1000.0 * block / sr;
+    const int marks[] = { 0, 5, 10, 20, 30, 40, 50, 75, 100, 125, 150, 200, 300, 500 };
+    for (double f0 : { 2500.0, 500.0 })
+    {
+        const bool gate = f0 == 2500.0;   // 500 Hz: informational (the bell is narrower than a bin at every tier)
+        const Stereo x = resonantPink(sr, 4.8, f0, 501);
+        const long long reqAt = static_cast<long long>(4.0 * sr);
+        for (Core::FrameTier from : kTiers)
+            for (Core::FrameTier to : kTiers)
+            {
+                if (from == to) continue;
+                Core keep; keep.setFrameTier(from); keep.prepare(sr, block, 2);
+                Core rst; rst.setFrameTier(from); rst.setKeepDetectorStateOnTierSwitch(false); rst.prepare(sr, block, 2);
+                Core fresh; fresh.setFrameTier(to); fresh.prepare(sr, block, 2);
+                const CutCurve ck = cutCurve(keep, x, block, f0, reqAt, to), cr = cutCurve(rst, x, block, f0, reqAt, to), cf = cutCurve(fresh, x, block, f0, -1, to);
+                const long long a = ck.adoptBlock;
+                const long long nb = static_cast<long long>(ck.cut.size());
+                const long long b150 = a + static_cast<long long>(std::ceil(150.0 / blockMs));
+                double minKeep = 1.0e9, minReset = 1.0e9, worstAfter = 0.0;
+                for (long long i = a; i < nb; ++i)
+                {
+                    if (i <= b150) { minKeep = std::min(minKeep, ck.cut[static_cast<size_t>(i)]); minReset = std::min(minReset, cr.cut[static_cast<size_t>(i)]); }
+                    else worstAfter = std::max(worstAfter, std::abs(ck.cut[static_cast<size_t>(i)] - cf.cut[static_cast<size_t>(i)]));
+                }
+                auto settle = [&](const CutCurve& cc) {   // ms after adoption from which |cut - fresh| <= 1.5 dB to the end of the run
+                    long long last = a - 1;
+                    for (long long i = a; i < nb; ++i) if (std::abs(cc.cut[static_cast<size_t>(i)] - cf.cut[static_cast<size_t>(i)]) > 1.5) last = i;
+                    return (last + 1 - a) * blockMs;
+                };
+                std::string curve;
+                for (int ms : marks)
+                {
+                    const long long i = a + static_cast<long long>(std::llround(ms / blockMs));
+                    if (i >= nb) break;
+                    char t[64];
+                    std::snprintf(t, sizeof t, " %d:%.2f/%.2f/%.2f", ms, ck.cut[static_cast<size_t>(i)], cf.cut[static_cast<size_t>(i)], cr.cut[static_cast<size_t>(i)]);
+                    curve += t;
+                }
+                char buf[900];
+                std::snprintf(buf, sizeof buf, "T-C %.0f Hz %s -> %s: kept state: min cut in [0,150] ms %.2f dB (> 1), within 1.5 dB of a fresh %s core from %.1f ms (<= 150), worst |diff| after 150 ms %.2f dB; "
+                              "reset state: min %.2f dB, within 1.5 dB from %.1f ms; curve ms:kept/fresh/reset dB%s%s",
+                              f0, tierName(from), tierName(to), minKeep, tierName(to), settle(ck), worstAfter, minReset, settle(cr), curve.c_str(), gate ? "" : " (informational)");
+                if (gate) check(minKeep > 1.0 && worstAfter <= 1.5 && settle(ck) <= 150.0, buf);
+                else { std::printf("[ResCore] INFO %s\n", buf); std::fflush(stdout); }
+            }
+    }
+}
+
+// Zero allocations / frees on tier switches, deterministic: cold pass from the first block after prepare(), every ordered pair, with dryOut and a viz sink.
+struct NopSink final : xleth::dsp::resonance::VizSink { long long n = 0; void onResonanceFrame(const xleth::dsp::resonance::VizFrame&) noexcept override { ++n; } };
+void testTierSwitchAllocations()
+{
+    const double sr = 48000.0;
+    const Stereo x = resonantPink(sr, 6.0, 2500.0, 601);
+    for (int block : { 1, 64, 1000 })
+    {
+        Core c; c.prepare(sr, 1024, 2);
+        NopSink sink; c.setVizSink(&sink);
+        std::vector<float> l(static_cast<size_t>(block)), r(static_cast<size_t>(block)), dl = l, dr = r, ax = l, axo = l;
+        float* ptrs[2] = { l.data(), r.data() };
+        float* dp[2] = { dl.data(), dr.data() };
+        const Core::FrameTier seq[] = { Core::FrameTier::High, Core::FrameTier::Fast, Core::FrameTier::Normal, Core::FrameTier::Fast, Core::FrameTier::High, Core::FrameTier::Normal };
+        const int blocksPerStep = std::max(1, static_cast<int>(0.15 * sr) / block);
+        long long allocs = 0, frees = 0;
+        int step = 0;
+        t_isMeasuringThread = true;
+        for (int pos = 0, blk = 0; pos + block <= x.size(); pos += block, ++blk)
+        {
+            if (blk % blocksPerStep == 0) c.requestTier(seq[step++ % 6]);
+            std::memcpy(l.data(), x.ch[0].data() + pos, sizeof(float) * static_cast<size_t>(block));
+            std::memcpy(r.data(), x.ch[1].data() + pos, sizeof(float) * static_cast<size_t>(block));
+            g_allocCount.store(0); g_freeCount.store(0); g_allocArmed.store(true);
+            std::memcpy(ax.data(), x.ch[1].data() + pos, sizeof(float) * static_cast<size_t>(block));
+            c.process(ptrs, 2, block, Params{ 1.0f, 0.5f, 15.0f, 200.0f, true }, dp, ax.data(), axo.data());
+            g_allocArmed.store(false);
+            allocs += g_allocCount.load(); frees += g_freeCount.load();
+        }
+        t_isMeasuringThread = false;
+        char buf[200];
+        std::snprintf(buf, sizeof buf, "T-D0 tier switches every 150 ms (all 6 ordered pairs, block %d, dryOut + aux + viz sink, cold): %lld switches, operator new %lld, delete %lld",
+                      block, c.tierSwitchCount(), allocs, frees);
+        check(allocs == 0 && frees == 0 && c.tierSwitchCount() >= 30, buf);
+    }
+}
+
+// T-D: concurrency. A second thread requests random tiers while this (the audio) thread processes 200 000 blocks of random sizes 1..1024.
+void testTierSwitchStress()
+{
+    const double sr = 48000.0;
+    Stereo src = resonantPink(sr, 10.0, 2500.0, 701);
+    for (int i = 0; i < src.size(); ++i) src.ch[0][static_cast<size_t>(i)] += static_cast<float>(0.05 * std::sin(2.0 * juce::MathConstants<double>::pi * 1000.0 * i / sr));
+    double inMax = 0.0;
+    for (int c = 0; c < 2; ++c) for (float v : src.ch[c]) inMax = std::max(inMax, static_cast<double>(std::abs(v)));
+    const double bound = 4.0 * inMax;
+    const int kBlocks = 200000;
+    using clk = std::chrono::steady_clock;
+    auto now = [] { return static_cast<long long>(std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now().time_since_epoch()).count()); };
+    for (int mode = 0; mode < 2; ++mode)
+    {
+        Core c; c.setFrameTier(Core::FrameTier::Normal); c.prepare(sr, 1024, 2);
+        Params cap; cap.depth = 1.0f; cap.hardKnee = true;
+        struct Req { long long tPre, tPost; int tier; };
+        struct Adopt { long long tStart, tEnd; int tier; };
+        std::vector<Req> reqs(600000);
+        std::vector<Adopt> adopts(static_cast<size_t>(kBlocks) + 1);
+        std::atomic<int> nReq { 0 };
+        std::atomic<bool> stop { false };
+        std::vector<float> l(1024), r(1024), dl(1024), dr(1024);
+        float* ptrs[2] = { l.data(), r.data() };
+        float* dp[2] = { dl.data(), dr.data() };
+        int nAdopt = 0, nFlips = 0, flipMismatch = 0, latMismatch = 0, multiAdopt = 0;
+        long long nonFinite = 0, armedAllocs = 0, armedFrees = 0, samples = 0;
+        double outMax = 0.0;
+        int lastTier = static_cast<int>(c.frameTier());
+        long long lastSwitches = 0;
+        int lastTarget = lastTier;
+        long long tierBlocks[3] = { 0, 0, 0 };
+
+        std::thread requester([&] {
+            uint64_t st = 0xC0FFEEull + static_cast<uint64_t>(mode);
+            int idx = 0;
+            auto one = [&] {
+                st = lcgNext(st);
+                const int tier = static_cast<int>((st >> 33) % 3u);
+                const long long a = now();
+                c.requestTier(kTiers[tier]);
+                const long long b = now();
+                if (idx < static_cast<int>(reqs.size())) { reqs[static_cast<size_t>(idx)] = { a, b, tier }; ++idx; nReq.store(idx, std::memory_order_release); }
+            };
+            while (!stop.load(std::memory_order_relaxed))
+            {
+                one();
+                st = lcgNext(st);
+                if (mode == 0) std::this_thread::sleep_for(std::chrono::milliseconds(1 + static_cast<int>((st >> 33) % 50u)));
+                else
+                {
+                    if (((st >> 45) & 7u) == 0u) for (int k = 0; k < 20; ++k) one();   // back-to-back burst
+                    std::this_thread::sleep_for(std::chrono::microseconds(200 + static_cast<int>((st >> 33) % 4800u)));
+                }
+            }
+        });
+
+        g_tidWatched = std::this_thread::get_id();
+        g_tidAllocCount.store(0); g_tidFreeCount.store(0);
+        g_tidCounting.store(true);
+        t_isMeasuringThread = true;
+        const long long tStart = now();
+        uint64_t bs = 0xABCDEFull + static_cast<uint64_t>(mode);
+        int pos = 0;
+        for (int blk = 0; blk < kBlocks; ++blk)
+        {
+            bs = lcgNext(bs);
+            const int b = 1 + static_cast<int>((bs >> 33) % 1024u);
+            for (int i = 0; i < b; ++i)
+            {
+                l[static_cast<size_t>(i)] = src.ch[0][static_cast<size_t>(pos)];
+                r[static_cast<size_t>(i)] = src.ch[1][static_cast<size_t>(pos)];
+                if (++pos == src.size()) pos = 0;
+            }
+            const long long t0 = now();
+            g_allocCount.store(0); g_freeCount.store(0); g_allocArmed.store(true);
+            c.process(ptrs, 2, b, cap, dp);
+            g_allocArmed.store(false);
+            const long long t1 = now();
+            armedAllocs += g_allocCount.load(); armedFrees += g_freeCount.load();
+            samples += b;
+            for (int i = 0; i < b; ++i)
+                for (const float v : { l[static_cast<size_t>(i)], r[static_cast<size_t>(i)], dl[static_cast<size_t>(i)], dr[static_cast<size_t>(i)] })
+                {
+                    if (!std::isfinite(v)) ++nonFinite;
+                    else outMax = std::max(outMax, static_cast<double>(std::abs(v)));
+                }
+            const long long sw = c.tierSwitchCount();
+            if (sw != lastSwitches)
+            {
+                if (sw - lastSwitches > 1) ++multiAdopt;
+                lastTarget = static_cast<int>(c.targetFrameTier());
+                if (nAdopt < static_cast<int>(adopts.size())) adopts[static_cast<size_t>(nAdopt++)] = { t0, t1, lastTarget };
+                lastSwitches = sw;
+            }
+            const int ft = static_cast<int>(c.frameTier());
+            if (ft != lastTier) { ++nFlips; if (ft != lastTarget) ++flipMismatch; lastTier = ft; }
+            if (c.currentLatency() != Core::latencyFor(sr, c.frameTier())) ++latMismatch;
+            ++tierBlocks[ft];
+        }
+        const long long tEnd = now();
+        t_isMeasuringThread = false;
+        g_tidCounting.store(false);
+        const long long tidAllocs = g_tidAllocCount.load(), tidFrees = g_tidFreeCount.load();
+        stop.store(true);
+        requester.join();
+
+        // Every adoption must match a request: same tier, stored before the adopting call ended and after the previous adoption's call started
+        // (an older request was consumed or overwritten by then).
+        const int nr = nReq.load(std::memory_order_acquire);
+        int unmatched = 0;
+        for (int j = 0; j < nAdopt; ++j)
+        {
+            const long long lo = j == 0 ? std::numeric_limits<long long>::min() : adopts[static_cast<size_t>(j - 1)].tStart;
+            bool found = false;
+            for (int i = 0; i < nr && !found; ++i)
+            {
+                const Req& q = reqs[static_cast<size_t>(i)];
+                found = q.tier == adopts[static_cast<size_t>(j)].tier && q.tPre <= adopts[static_cast<size_t>(j)].tEnd && q.tPost >= lo;
+            }
+            if (!found) ++unmatched;
+        }
+        const double wallS = (tEnd - tStart) * 1.0e-9;
+        char buf[600];
+        std::snprintf(buf, sizeof buf, "T-D stress %s: %d blocks (1..1024, %.1f s of audio in %.1f s), %d requests, %d adoptions (%d unmatched, %d calls with > 1), %d tier changes (%d not the adopted target), "
+                      "blocks on Fast/Normal/High %lld/%lld/%lld, latency != latencyFor(frameTier) %d, non-finite %lld, max |out| %.3f (<= %.3f), operator new/delete in process %lld/%lld, on the audio thread %lld/%lld",
+                      mode == 0 ? "requests every 1-50 ms" : "burst (0.2-5 ms + runs of 20)", kBlocks, samples / sr, wallS, nr, nAdopt, unmatched, multiAdopt, nFlips, flipMismatch,
+                      tierBlocks[0], tierBlocks[1], tierBlocks[2], latMismatch, nonFinite, outMax, bound, armedAllocs, armedFrees, tidAllocs, tidFrees);
+        check(nonFinite == 0 && outMax <= bound && armedAllocs == 0 && armedFrees == 0 && tidAllocs == 0 && tidFrees == 0 && unmatched == 0 && multiAdopt == 0
+              && flipMismatch == 0 && latMismatch == 0 && nAdopt >= 20 && tierBlocks[0] > 0 && tierBlocks[1] > 0 && tierBlocks[2] > 0, buf);
+    }
+}
+
+// T-E: parameter hardening at intake. Every non-finite / out-of-range value in every Params field gives finite, bounded output with zero allocations, and the
+// output is bit-identical to passing the sanitised value explicitly. Valid values pass through bit-identically.
+void testParamHardening()
+{
+    const double sr = 48000.0;
+    const float nanv = std::numeric_limits<float>::quiet_NaN(), inf = std::numeric_limits<float>::infinity();
+    // (a) sanitizeParams on valid values is the identity (bit pattern), on invalid ones: non-finite -> default, else clamp.
+    {
+        bool ok = true;
+        uint64_t st = 99;
+        auto u01 = [&] { st = lcgNext(st); return static_cast<float>(static_cast<double>(st >> 40) / 16777216.0); };
+        for (int i = 0; i < 20000 && ok; ++i)
+        {
+            Params p;
+            p.depth = u01(); p.sensitivity = u01(); p.stereoLink = u01(); p.sharpness = u01();
+            p.attackMs = 0.1f + 999.9f * u01(); p.releaseMs = 1.0f + 9999.0f * u01();
+            if (i == 0) { p.depth = 0.0f; p.sensitivity = 1.0f; p.stereoLink = -0.0f; p.sharpness = 1.0f; p.attackMs = 0.1f; p.releaseMs = 10000.0f; }
+            const Params q = Core::sanitizeParams(p);
+            ok = std::memcmp(&p.depth, &q.depth, 4) == 0 && std::memcmp(&p.sensitivity, &q.sensitivity, 4) == 0 && std::memcmp(&p.attackMs, &q.attackMs, 4) == 0
+                 && std::memcmp(&p.releaseMs, &q.releaseMs, 4) == 0 && std::memcmp(&p.stereoLink, &q.stereoLink, 4) == 0 && std::memcmp(&p.sharpness, &q.sharpness, 4) == 0;
+        }
+        Params bad; bad.depth = nanv; bad.sensitivity = inf; bad.attackMs = -inf; bad.releaseMs = 0.0f; bad.stereoLink = 7.0f; bad.sharpness = -3.0f;
+        const Params q = Core::sanitizeParams(bad);
+        const bool mapOk = q.depth == 0.5f && q.sensitivity == 0.5f && q.attackMs == 15.0f && q.releaseMs == 1.0f && q.stereoLink == 1.0f && q.sharpness == 0.0f;
+        Params big; big.attackMs = 1.0e30f; big.releaseMs = -5.0f; big.depth = -1.0e30f;
+        const Params qb = Core::sanitizeParams(big);
+        const bool clampOk = qb.attackMs == 1000.0f && qb.releaseMs == 1.0f && qb.depth == 0.0f;
+        check(ok && mapOk && clampOk, "T-E sanitizeParams: 20000 random valid parameter sets unchanged (bit pattern); NaN / +-Inf -> default (0.5 / 0.5 / 15 ms / 0.5), out of range -> clamped (release 0 -> 1 ms, link 7 -> 1, sharpness -3 -> 0, attack 1e30 -> 1000 ms)");
+    }
+    // (b) every field x every bad value, through process().
+    Stereo x = resonantPink(sr, 1.5, 2500.0, 801);
+    for (int i = 0; i < x.size(); ++i) x.ch[1][static_cast<size_t>(i)] += static_cast<float>(0.05 * std::sin(2.0 * juce::MathConstants<double>::pi * 700.0 * i / sr));
+    double inMax = 0.0;
+    for (int c = 0; c < 2; ++c) for (float v : x.ch[c]) inMax = std::max(inMax, static_cast<double>(std::abs(v)));
+    const float badVals[] = { nanv, inf, -inf, 1.0e30f, -1.0e30f, 7.0f, -3.0f, 0.0f };
+    const char* fields[] = { "depth", "sensitivity", "attackMs", "releaseMs", "stereoLink", "sharpness" };
+    auto runCounted = [&](const Params& p, Stereo& out, long long& allocs)
+    {
+        Core c; c.prepare(sr, 256, 2);
+        out = x;
+        t_isMeasuringThread = true;
+        for (int pos = 0; pos < x.size(); pos += 256)
+        {
+            const int b = std::min(256, x.size() - pos);
+            float* ptrs[2] = { out.ch[0].data() + pos, out.ch[1].data() + pos };
+            g_allocCount.store(0); g_allocArmed.store(true);
+            c.process(ptrs, 2, b, p);
+            g_allocArmed.store(false); allocs += g_allocCount.load();
+        }
+        t_isMeasuringThread = false;
+    };
+    for (int f = 0; f < 6; ++f)
+    {
+        long long allocs = 0, nf = 0, mismatch = 0;
+        double mx = 0.0;
+        for (float v : badVals)
+        {
+            Params p; p.depth = 1.0f; p.hardKnee = true;
+            float* fld[6] = { &p.depth, &p.sensitivity, &p.attackMs, &p.releaseMs, &p.stereoLink, &p.sharpness };
+            *fld[f] = v;
+            Stereo yb, ys;
+            runCounted(p, yb, allocs);
+            runCounted(Core::sanitizeParams(p), ys, allocs);
+            nf += countNonFinite(yb);
+            for (int c = 0; c < 2; ++c) for (float s : yb.ch[c]) if (std::isfinite(s)) mx = std::max(mx, static_cast<double>(std::abs(s)));
+            if (sameDiff(yb, ys).maxAbs != 0.0 || countNonFinite(yb) != 0) ++mismatch;
+        }
+        char buf[300];
+        std::snprintf(buf, sizeof buf, "T-E %s in {NaN, +Inf, -Inf, 1e30, -1e30, 7, -3, 0}: non-finite %lld, max |out| %.3f (<= %.3f), outputs == the sanitised value's %d / 8, allocations %lld",
+                      fields[f], nf, mx, 4.0 * inMax, 8 - static_cast<int>(mismatch), allocs);
+        check(nf == 0 && mx <= 4.0 * inMax && mismatch == 0 && allocs == 0, buf);
+    }
+    // (c) every field bad at once, and a weight curve with non-finite / negative / huge entries (non-finite = 1, negative = 0, huge = 2.5).
+    {
+        const int B = xleth::dsp::resonance::kGridBands;
+        const float wp[6] = { nanv, inf, -inf, -1.0f, 1.0e30f, 0.5f }, ws[6] = { 1.0f, 1.0f, 1.0f, 0.0f, 2.5f, 0.5f };
+        std::vector<float> wBad(static_cast<size_t>(B)), wSan(static_cast<size_t>(B));
+        for (int b = 0; b < B; ++b) { wBad[static_cast<size_t>(b)] = wp[b % 6]; wSan[static_cast<size_t>(b)] = ws[b % 6]; }
+        Params pw; pw.depth = 1.0f; pw.hardKnee = true; pw.weightCurve = wBad.data();
+        Params pws = pw; pws.weightCurve = wSan.data();
+        long long allocs = 0;
+        Stereo y1, y2, y3, y4;
+        runCounted(pw, y1, allocs); runCounted(pws, y2, allocs);
+        Params all; all.depth = nanv; all.sensitivity = -inf; all.attackMs = nanv; all.releaseMs = inf; all.stereoLink = nanv; all.sharpness = inf; all.weightCurve = wBad.data();
+        runCounted(all, y3, allocs);
+        Params allS = Core::sanitizeParams(all); allS.weightCurve = wSan.data();
+        runCounted(allS, y4, allocs);
+        const long long nf = countNonFinite(y1) + countNonFinite(y3);
+        char buf[300];
+        std::snprintf(buf, sizeof buf, "T-E weightCurve {NaN, Inf, -Inf, -1, 1e30, 0.5} == {1, 1, 1, 0, 2.5, 0.5} (max |diff| %.1e); every field non-finite at once == its sanitised set (max |diff| %.1e); non-finite %lld, allocations %lld",
+                      sameDiff(y1, y2).maxAbs, sameDiff(y3, y4).maxAbs, nf, allocs);
+        check(sameDiff(y1, y2).maxAbs == 0.0 && sameDiff(y3, y4).maxAbs == 0.0 && nf == 0 && allocs == 0, buf);
+    }
+}
+
+// T-H: the hop phase offset survives tier switches. 8 instances prepared at Normal with hopPhaseOffsetForInstance(i, 256), all switched together
+// Normal -> High -> Fast -> Normal; in each steady segment count the frame boundaries per 64-sample block over the 8 instances, and the offsets.
+void testHopPhaseAcrossSwitch()
+{
+    const double sr = 48000.0;
+    const Stereo in = makePink(static_cast<int>(3.0 * sr), -20.0, 121);
+    for (int staggered = 1; staggered >= 0; --staggered)
+    {
+        Core cores[8];
+        for (int i = 0; i < 8; ++i) { cores[i].setHopPhaseOffset(staggered ? Core::hopPhaseOffsetForInstance(i, 256) : 0); cores[i].prepare(sr, 64, 2); }
+        std::vector<float> l(64), r(64);
+        float* ptrs[2] = { l.data(), r.data() };
+        const Core::FrameTier seq[4] = { Core::FrameTier::Normal, Core::FrameTier::High, Core::FrameTier::Fast, Core::FrameTier::Normal };
+        const int segBlocks = static_cast<int>(0.6 * sr) / 64;
+        std::string detail;
+        bool ok = true;
+        int pos = 0;
+        for (int s = 0; s < 4; ++s)
+        {
+            if (s > 0) for (auto& c : cores) c.requestTier(seq[s]);
+            int maxPer = 0;
+            bool offsOk = true;
+            for (int blk = 0; blk < segBlocks; ++blk, pos += 64)
+            {
+                int frames = 0;
+                bool anyTransition = false;
+                for (int i = 0; i < 8; ++i)
+                {
+                    std::memcpy(l.data(), in.ch[0].data() + pos, sizeof(float) * 64);
+                    std::memcpy(r.data(), in.ch[1].data() + pos, sizeof(float) * 64);
+                    const long long before = cores[i].framesProcessed();
+                    cores[i].process(ptrs, 2, 64, Params{});
+                    frames += static_cast<int>(cores[i].framesProcessed() - before);
+                    anyTransition = anyTransition || cores[i].tierTransitionActive() || cores[i].frameTier() != seq[s];
+                }
+                if (blk >= segBlocks / 4 && !anyTransition) maxPer = std::max(maxPer, frames);   // steady part of the segment
+            }
+            const int hop = cores[0].hopSize();
+            for (int i = 0; i < 8; ++i)
+            {
+                const int want = staggered ? Core::hopPhaseOffsetForInstance(i, 256) * hop / 256 : 0;
+                offsOk = offsOk && cores[i].hopPhaseOffset() == want && cores[i].frameTier() == seq[s];
+            }
+            const int expectMax = std::max(1, (8 * 64 + hop - 1) / hop);   // staggered: 8 instances spread evenly over the hop's 64-sample blocks
+            const bool segOk = offsOk && (staggered ? maxPer <= expectMax : maxPer == 8);
+            ok = ok && segOk;
+            detail += std::string(" ") + tierName(seq[s]) + " hop " + std::to_string(hop) + ": max " + std::to_string(maxPer) + (staggered ? " (<= " + std::to_string(expectMax) + ")" : "") + (offsOk ? "" : " OFFSETS WRONG");
+        }
+        check(ok, std::string("T-H 8 instances switched together Normal -> High -> Fast -> Normal, block 64, ") + (staggered ? "hopPhaseOffsetForInstance(i, 256)" : "all offset 0 (control)")
+                      + ": frame boundaries per block over the 8 in steady state," + detail + (staggered ? "; offsets scale with the hop (x2 High, /2 Fast, back to the original)" : ""));
+    }
+}
+
 } // namespace
 
-int main()
+int main(int argc, char** argv)
 {
     std::printf("[ResCore] test_resonance_core\n");
+    // Optional filter for local iteration: `test_resonance_core <substring>` runs only the switching / hardening groups whose name contains it
+    // (ctest passes no argument and runs everything).
+    const std::string only = argc > 1 ? argv[1] : "";
+    if (!only.empty())
+    {
+        struct G { const char* name; void (*fn)(); };
+        const G groups[] = { { "testFixedTierBitIdentity", testFixedTierBitIdentity }, { "testParamHardening", testParamHardening },
+                             { "testHopPhaseAcrossSwitch", testHopPhaseAcrossSwitch }, { "testTierSwitchAllocations", testTierSwitchAllocations },
+                             { "testTierSwitchTransitions", testTierSwitchTransitions }, { "testMidSideAcrossSwitch", testMidSideAcrossSwitch }, { "testTierSwitchContinuity", testTierSwitchContinuity },
+                             { "testTierSwitchStress", testTierSwitchStress } };
+        for (const G& g : groups) if (std::string(g.name).find(only) != std::string::npos) g.fn();
+        std::printf("[ResCore] --- %d passed, %d failed ---\n", g_pass, g_fail);
+        return g_fail == 0 ? 0 : 1;
+    }
     testLatency();
     testTierSizes();
     testIdentityAndCola();
@@ -1390,6 +2168,14 @@ int main()
     testMeters();
     testParamChangeSafety();
     testHopPhaseHelper();
+    testFixedTierBitIdentity();
+    testParamHardening();
+    testHopPhaseAcrossSwitch();
+    testTierSwitchAllocations();
+    testTierSwitchTransitions();
+    testMidSideAcrossSwitch();
+    testTierSwitchContinuity();
+    testTierSwitchStress();
     std::printf("[ResCore] --- %d passed, %d failed ---\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

@@ -8,7 +8,7 @@
 //
 // Signal path (per channel, block-size independent, latency = N exactly):
 //
-//   input ─► FIFO ─► sqrt-Hann ─► real FFT(N) ─┬─► detector ─► gain computer ─► G(f)
+//   input ─► ring ─► sqrt-Hann ─► real FFT(N) ─┬─► detector ─► gain computer ─► G(f)
 //                                               │                                 │
 //                                               └──────────► × G(f) (real, zero-phase)
 //                                                               │
@@ -33,21 +33,30 @@
 // Every time constant is in milliseconds and independent of N and of the sample rate (converted with the hop duration in prepare()); only the analysis
 // window itself (10.7 / 21.3 / 42.7 ms for the three frame tiers at <= 50 kHz) scales with N.
 //
-// Units: levels and reductions are dB, thresholds are in sigma of the excess estimate, times are ms, frequencies Hz. Latency is N samples, always.
+// Units: levels and reductions are dB, thresholds are in sigma of the excess estimate, times are ms, frequencies Hz. Latency is N samples of the tier in use.
 //
 // Known limit (a property of the analysis resolution, not a tuning issue): a resonance narrower than one analysis bin (a Q 8 bell is narrower than the 46.9 Hz bin
 // of N = 1024 at 48 kHz below roughly 370 Hz; the effect on the cut is large below ~150 Hz) is only partly reduced. The cut is the bin-average excess, so the sub-bin
 // peak stays standing: a Q 8 / +12 dB bell at 100 Hz keeps ~3.4 dB of its ~7.2 dB in-window excess, and N = 2048 does not change that. See "G1 resolution ceiling"
 // in ResonanceCore.md.
 //
+// Live frame-tier switching (ResonanceCore.md section 9). prepare() builds one complete engine per tier (FFT object, windows, bin <-> band maps, statistics tables,
+// per-channel overlap-add and detector state) and one input ring per channel that every engine reads its frames from. requestTier() (any thread) stores the wish
+// in one atomic; process() adopts it at the start of a call: the new tier's engine takes over the detector and gain state (remapped to its bins), runs next to the
+// old one until its overlap-add output is complete (3 hops of the new tier), and then the output crossfades from the old engine to the new one over
+// kTierCrossfadeMs. Until that crossfade starts the output (and currentLatency()) stay on the old tier; from its first sample they are on the new one. Nothing is
+// allocated, freed, constructed or locked by a switch.
+//
 // Realtime contract: prepare() / release() allocate and run on a non-audio thread.
-// process() and reset() never allocate, lock or log.
+// process(), reset() and requestTier() never allocate, lock or log.
 //
 // Threading: a Core is NOT thread-safe and owns no thread. One instance per audio chain; prepare(), release(), setFrameTier(), setDetectorTimeConstantMs(),
-// setFastTimeConstantMs() and setHopPhaseOffset() are called on a non-audio thread while the instance is not processing (the setters are structural and take effect at the next
-// prepare()). process(), reset() and the introspection accessors belong to the audio (processing) thread. Params is passed by value to every process() call and may
-// change freely between calls (tests T4 / T6 / P1 run with parameters swept every block, without allocation). setVizSink() belongs to the processing thread (between
-// process() calls) or to a non-audio thread while the instance is not processing. lastMaxReductionDb() is the only accessor that may be read from any thread.
+// setFastTimeConstantMs(), setHopPhaseOffset() and setKeepDetectorStateOnTierSwitch() are called on a non-audio thread while the instance is not processing (the
+// setters are structural and take effect at the next prepare()). process(), reset() and the introspection accessors belong to the audio (processing) thread.
+// Params is passed by value to every process() call and may change freely between calls (tests T4 / T6 / P1 run with parameters swept every block, without
+// allocation); process() sanitises it (non-finite -> default, every field clamped to its range). setVizSink() belongs to the processing thread (between process()
+// calls) or to a non-audio thread while the instance is not processing. Any thread: requestTier(), latencyFor(), fftSizeFor(), currentLatency(), frameTier(),
+// tierSwitchCount() and lastMaxReductionDb() (atomics / pure functions).
 
 #include <juce_dsp/juce_dsp.h>
 
@@ -62,7 +71,8 @@ namespace xleth::dsp::resonance
 constexpr int kMaxChannels = 2;
 constexpr int kGridBands   = 96;   // detector / gain grid: ERB-rate spaced, 20 Hz .. min(0.45 fs, 20 kHz)
 
-// Parameter block, copied by value into process() once per block. Plain data only.
+// Parameter block, copied by value into process() once per block. Plain data only. process() sanitises a copy at intake (ResonanceCore.md 9.6): a non-finite
+// float field is replaced by its default below, every float field is then clamped to the range given here. Valid values pass through bit-identically.
 struct Params
 {
     // depth: 0..1. Ceiling of the reduction of one band, in dB: depth x 12 dB (Soft) or depth x 24 dB (Hard). The cut follows the excess smoothly towards the ceiling
@@ -85,9 +95,10 @@ struct Params
     //        (0 = [1 2 1]^4 / 256, the broadest). Monotonic: lower = broader. Detection is not affected. Applied per frame, after attack / release.
     float sharpness   = 0.5f;
     // weightCurve: nullptr = flat 1 (the historical behaviour). Otherwise numBands() floats on the core's band grid (centres: Core::bandCentreHz(i)), each clamped to
-    //        [0, kMaxWeight] (NaN / negative = 0). It scales the applied reduction of its band, the Resonance Suppressor's weighting semantics: w <= 1 gives w x R (0 = the band
-    //        is never cut), w > 1 gives min(w x R, max(Rmax, R)) (deeper, up to the depth ceiling Rmax; it never creates a cut where nothing was detected). Applied per frame
-    //        after attack / release and the stereo link (both channels use the same curve). The array is read during process() only; it must stay valid for that call.
+    //        [0, kMaxWeight] (negative = 0; NaN / +-Inf = 1, i.e. that band unweighted). It scales the applied reduction of its band, the Resonance Suppressor's weighting
+    //        semantics: w <= 1 gives w x R (0 = the band is never cut), w > 1 gives min(w x R, max(Rmax, R)) (deeper, up to the depth ceiling Rmax; it never creates a
+    //        cut where nothing was detected). Applied per frame after attack / release and the stereo link (both channels use the same curve). The array is read during
+    //        process() only; it must stay valid for that call.
     const float* weightCurve = nullptr;
 };
 
@@ -101,7 +112,8 @@ struct VizFrame
     long long hopIndex = 0;    // 0-based index of this frame (== framesProcessed() before it); both channels of one hop share it
     int   channel      = 0;    // 0 .. processed channels - 1 (Mid / Side: whatever the caller fed as that channel)
     int   numBands     = 0;    // == Core::numBands() (kGridBands); entries [numBands, kGridBands) are unused
-    int   hopSize      = 0;    // samples per hop; the frame's input ends hopSize x (hopIndex + 1) - hopPhaseOffset() samples into the stream
+    int   hopSize      = 0;    // samples per hop of the tier in use; without a tier switch since reset() the frame's input ends
+                               // hopSize x (hopIndex + 1) - hopPhaseOffset() samples into the stream (after a switch hopIndex keeps counting frames of the tier in use)
     float maxReductionDb = 0.0f;   // max over bands of reductionDb (this channel)
     // Per band, on the core's grid (centres Core::bandCentreHz(i)):
     //   levelDb:    the detector's input level, 10 log10 of the bias-corrected, per-octave weighted average of |X_k|^2 (the 40 ms fast estimate; the 200 ms slow one when the
@@ -137,28 +149,53 @@ public:
     Core(const Core&) = delete;
     Core& operator=(const Core&) = delete;
 
-    // Allocates everything process() will ever touch. numChannels is clamped to 1..kMaxChannels.
+    // Allocates everything process() will ever touch, for ALL frame tiers (sized for the largest tier at this rate). numChannels is clamped to 1..kMaxChannels.
     void prepare(double sampleRate, int maxBlockSize, int numChannels);
     void release();
-    // Clears all signal state (FIFOs, overlap-add, detector, gain smoothers). RT-safe.
+    // Clears all signal state (input ring, overlap-add, detector, gain smoothers) of every tier. A tier transition in progress is completed at once: the core
+    // continues on the requested tier, as a freshly prepared instance of that tier would. A pending requestTier() stays pending. RT-safe.
     void reset() noexcept;
 
-    // Frame-size tier (structural: chosen before prepare(), no live switching). N = 512 / 1024 / 2048 at <= 50 kHz (window about
-    // 10.7 / 21.3 / 42.7 ms), doubled per sample-rate octave above that. Every time constant stays in ms.
+    // Frame tiers. N = 512 / 1024 / 2048 at <= 50 kHz (window about 10.7 / 21.3 / 42.7 ms), doubled per sample-rate octave above that. Every time constant stays in ms.
     enum class FrameTier { Fast = 0, Normal = 1, High = 2 };
-    void setFrameTier(FrameTier t) noexcept { tier_ = t; }
-    FrameTier frameTier() const noexcept { return tier_; }
+    // The tier the next prepare() starts on (structural: non-audio thread, not processing). Live changes go through requestTier().
+    void setFrameTier(FrameTier t) noexcept { target_ = static_cast<int>(t); activeTier_.store(static_cast<int>(t), std::memory_order_relaxed); }
+    // Ask for a live tier change. Callable from ANY thread, at any time (also before prepare() and while process() runs): one atomic store (release); the last
+    // request before process() looks wins, earlier ones are overwritten. process() reads it (acquire exchange) at the start of a call when no transition is running
+    // and adopts it; a request for the tier already in use is consumed and ignored; a request made during a transition waits for its end. Out-of-range values clamp.
+    void requestTier(FrameTier t) noexcept
+    {
+        const int v = static_cast<int>(t);
+        pendingTier_.store(v < 0 ? 0 : (v > 2 ? 2 : v), std::memory_order_release);
+    }
+    // The tier the output is aligned to (any thread, relaxed). It changes on the first sample of the crossfade to the new tier.
+    FrameTier frameTier() const noexcept { return static_cast<FrameTier>(activeTier_.load(std::memory_order_relaxed)); }
+    // The tier the core is on or switching to: frameTier() outside a transition, the new tier during one (processing thread).
+    FrameTier targetFrameTier() const noexcept { return static_cast<FrameTier>(target_); }
+    bool tierTransitionActive() const noexcept { return trans_.active; }               // processing thread
+    long long tierSwitchCount() const noexcept { return switches_.load(std::memory_order_relaxed); }   // adopted requests since prepare() (any thread)
     static int fftSizeFor(double sampleRate, FrameTier tier = FrameTier::Normal) noexcept;
-    // Latency in samples for a given rate and tier (constant; independent of every Params field).
+    // Latency in samples for a given rate and tier (constant; independent of every Params field). Pure: any thread, before or after prepare().
     static int latencyFor(double sampleRate, FrameTier tier = FrameTier::Normal) noexcept { return fftSizeFor(sampleRate, tier); }
-    int currentLatency() const noexcept { return fftSize_; }
+    // The latency the output is aligned to right now: latencyFor(sampleRate(), frameTier()). Any thread (relaxed atomic). During a tier crossfade the output is a
+    // blend of the old and the new alignment; this already reads the new latency for the whole crossfade.
+    int currentLatency() const noexcept { return latency_.load(std::memory_order_relaxed); }
+    // Length of the tier crossfade (5 ms, the family of the EQ spectral restart fade-in): round(kTierCrossfadeMs x sampleRate) samples, >= 1.
+    static constexpr float kTierCrossfadeMs = 5.0f;
+    int tierCrossfadeSamples() const noexcept { return fadeLen_; }
+    // Study option (structural, before prepare(); default true): on a tier switch the new tier starts from the old tier's detector / gain state (remapped power
+    // averages, per-band reductions and latches, bias-correction and sigma counters). false = the new tier starts from reset state (the measured alternative, 9.4).
+    void setKeepDetectorStateOnTierSwitch(bool keep) noexcept { keepState_ = keep; }
 
     // Hop phase offset (structural: set before prepare(); default 0 = the historical behaviour, bit-identical). Shifts the initial frame grid by `samples` (any integer, taken modulo the hop):
     // the hop counter starts that many samples into a hop, so the first frame completes after hop - offset input samples and then every hop. The stream behaves as if it had been preceded by
     // `offset` zero samples: latency stays exactly N, steady-state COLA and every detector time constant are unchanged. Use: a thread that runs n instances back to back gives instance i the
     // offset i x hop / n, so their hops (all of the FFT / detector / gain work) complete in different blocks instead of all in the same one (ResonanceCore.md, "Multi-instance bursts").
+    // The offset is kept as a FRACTION of the prepare-time tier's hop (o / H); every tier uses floor(fraction x its hop), on the same stream clock, so a staggering of
+    // several instances survives tier switches (exactly whenever the offset times the smallest hop is a multiple of the prepare-time hop, e.g. any multiple of 4
+    // samples from a High prepare, of 2 from Normal; hopPhaseOffsetForInstance(i, hop) satisfies it for up to hop / 4 instances; see 9.5).
     void setHopPhaseOffset(int samples) noexcept { hopPhaseOffset_ = samples; }
-    int hopPhaseOffset() const noexcept { return hopOffset_; }   // the applied offset, in [0, hop), valid after prepare()
+    int hopPhaseOffset() const noexcept;   // the applied offset of the tier in use, in [0, hop), valid after prepare()
     // The offset for instance `instanceIndex` (0, 1, 2, ...) of any number of instances in one thread: the base-2 van der Corput sequence (bit reversal of the index)
     // times the hop, floored: 0, hop/2, hop/4, 3 hop/4, hop/8, 5 hop/8, 3 hop/8, 7 hop/8, hop/16, ... Every prefix of n instances is spread as evenly as a dyadic
     // grid allows, so instances can be added without re-spacing the others. Result in [0, hop); 0 for instanceIndex <= 0 or hop <= 1.
@@ -180,37 +217,49 @@ public:
 
     // In place. Channels [0, min(numChannels, prepared channels)) are processed; any others are untouched.
     // numSamples may be any value >= 0 (it is NOT limited to the prepared maxBlockSize).
-    void process(float* const* channels, int numChannels, int numSamples, const Params& p) noexcept;
+    // dryOut (optional, nullptr = off): per processed channel a buffer of numSamples (a null entry skips that channel) that receives the input on EXACTLY the
+    // timeline of the wet output: delayed by currentLatency() outside a transition and crossfaded between the old and the new latency with the same gains as the
+    // wet output during one. At depth 0 the wet output equals dryOut within the COLA error (-160 dBFS), at every moment of a switch, so an effect that mixes
+    // (1 - mix) x dryOut + mix x wet never combs. dryOut must not alias the channel buffers.
+    // auxIn / auxOut (optional, both or neither): one delay-only channel (numSamples each) that is NOT analysed or processed; auxOut receives auxIn on
+    // exactly the dryOut timeline. It is the Mid / Side recipe's other component (8.3, 9.2): Mid mode processes M as channel 0 and passes S here, so
+    // L' = M' + S_d and R' = M' - S_d stay aligned through a tier switch. Pass it on every call while it is in use (its ring is written only when
+    // auxIn != nullptr); reset() clears it. auxOut must not alias anything else.
+    void process(float* const* channels, int numChannels, int numSamples, const Params& p, float* const* dryOut = nullptr,
+                 const float* auxIn = nullptr, float* auxOut = nullptr) noexcept;
 
     // ---- hooks (stage 1: not implemented) ----
     int numRegions() const noexcept { return 1; }
     RegionOutput regionOutput(int /*regionIndex*/) const noexcept { return {}; }
 
     // ---- introspection (tests / bench; read on the processing thread between process() calls) ----
-    int fftSize() const noexcept { return fftSize_; }
-    int hopSize() const noexcept { return hop_; }
-    int numBins() const noexcept { return fftSize_ / 2 + 1; }
+    // All of them describe the tier the output is aligned to (frameTier()).
+    int fftSize() const noexcept { return eng_[active_].N; }
+    int hopSize() const noexcept { return eng_[active_].H; }
+    int numBins() const noexcept { return eng_[active_].N / 2 + 1; }
     double sampleRate() const noexcept { return sampleRate_; }
-    long long framesProcessed() const noexcept { return frames_; }
+    long long framesProcessed() const noexcept { return frames_; }   // frames of the tier in use (one count per hop; continues across a switch)
     // Band grid (valid after prepare()): numBands() bands (kGridBands), centres ERB-rate spaced from 20 Hz to min(0.45 fs, 20 kHz). Params::weightCurve and every
     // per-band array use this indexing. The grid depends on the sample rate only (not on the frame tier).
     int numBands() const noexcept { return numBands_; }
     float bandCentreHz(int b) const noexcept { return bandHz_[static_cast<size_t>(b)]; }
     float bandHz(int b) const noexcept { return bandHz_[static_cast<size_t>(b)]; }   // alias of bandCentreHz
     // Last frame's per-band values (dB), length numBands().
-    const float* bandLevelDb(int c) const noexcept    { return ch_[c].levelDb.data(); }    // averaged level, per-octave units
-    const float* bandBaselineDb(int c) const noexcept { return ch_[c].baseDb.data(); }     // robust flank baseline
-    const float* bandReductionDb(int c) const noexcept{ return ch_[c].outDb.data(); }      // applied reduction (>= 0)
-    const float* bandSigmaDb() const noexcept         { return sigmaE_.data(); }           // std-dev of (level - baseline) on noise
-    const float* bandSigmaFastDb() const noexcept     { return sigmaEF_.data(); }          // the same for the fast estimate
-    const float* bandFastLevelDb(int c) const noexcept    { return ch_[c].levelFDb.data(); }
-    const float* bandFastBaselineDb(int c) const noexcept { return ch_[c].baseFDb.data(); }
+    const float* bandLevelDb(int c) const noexcept    { return eng_[active_].ch[c].levelDb.data(); }    // averaged level, per-octave units
+    const float* bandBaselineDb(int c) const noexcept { return eng_[active_].ch[c].baseDb.data(); }     // robust flank baseline
+    const float* bandReductionDb(int c) const noexcept{ return eng_[active_].ch[c].outDb.data(); }      // applied reduction (>= 0)
+    const float* bandSigmaDb() const noexcept         { return eng_[active_].sigmaE.data(); }           // std-dev of (level - baseline) on noise
+    const float* bandSigmaFastDb() const noexcept     { return eng_[active_].sigmaEF.data(); }          // the same for the fast estimate
+    const float* bandFastLevelDb(int c) const noexcept    { return eng_[active_].ch[c].levelFDb.data(); }
+    const float* bandFastBaselineDb(int c) const noexcept { return eng_[active_].ch[c].baseFDb.data(); }
     // Detection threshold in units of sigma_E for a sensitivity (0..1): 6 sigma at 0, 4 at 0.5, 2 at 1.
     static float thresholdSigmas(float sensitivity) noexcept
     {
         const float s = sensitivity < 0.0f ? 0.0f : (sensitivity > 1.0f ? 1.0f : sensitivity);
         return 6.0f - 4.0f * s;
     }
+    // The sanitised copy process() works on (ResonanceCore.md 9.6). Exposed for tests and for an effect that wants to show what is in effect.
+    static Params sanitizeParams(const Params& p) noexcept;
     // ---- detector constants (exposed so the design notes / tests can quote them; evidence for every value: ResonanceCore.md) ----
     // Slow estimate: recursive power average of |X_k|^2, time constant in ms. Long enough that the excess of a band has a small, predictable sigma (about 0.5 dB at 2.5 kHz),
     // short enough to follow a held resonance. 400 ms detects sub-bin resonances more often but lingers about 2 tau after a resonance stops and lets the low-frequency
@@ -254,7 +303,6 @@ public:
 private:
     struct Channel
     {
-        std::vector<float> inFifo;    // last N input samples; the newest hop is filled at [N - H, N)
         std::vector<float> outAcc;    // overlap-add accumulator, N samples, index 0 = oldest output
         std::vector<float> outFifo;   // H finished output samples handed out during the next hop
         std::vector<float> fftBuf;    // 2N (JUCE real-FFT layout)
@@ -274,66 +322,113 @@ private:
         std::vector<float> exAdjDb;   // per band, excess at auditory resolution (sub-bin correction, low f only)
     };
 
-    void buildGrid();
-    void updateSigma() noexcept;
-    void updateSigmaFor(const std::vector<double>& vfTime, long long frames, std::vector<float>& sigmaOut) noexcept;
-    void processFrame(int numCh, const Params& p) noexcept;
-    void emitViz(int numCh) noexcept;
+    // Everything that depends on the frame size N: one per tier, all built in prepare().
+    struct Engine
+    {
+        int N = 0, H = 0;
+        int slowPeriod = 4, fastPeriod = 2;   // baseline refresh periods in frames
+        int hopOffset = 0;                    // frames end at stream positions e with (e + hopOffset) % H == 0
+        std::unique_ptr<juce::dsp::FFT> fft;
+        std::vector<float> window;            // sqrt-Hann (periodic), analysis
+        std::vector<float> synthesis;         // sqrt-Hann × 1/Σw² of its hop phase
+        // band <- bins (CSR, weights include f_k), flank band lists per side, main-lobe zones, bin -> band interpolation
+        std::vector<int>   bwStart, bwBin;  std::vector<float> bwW;
+        std::vector<int>   flStart[2], fl[2];
+        std::vector<int>   lobeLo, lobeHi;
+        std::vector<int>   binBand;  std::vector<float> binFrac;
+        // statistics
+        float emaA = 0.0f, emaB = 1.0f;       // per-frame power average: S = a S + b P
+        std::vector<double> vfTime;           // variance factor of the bias-corrected average after n frames (index n-1)
+        float emaAF = 0.0f, emaBF = 1.0f;     // the same for the fast average
+        std::vector<double> vfTimeF;
+        std::vector<float> vfBin;             // per band: variance factor of the bin weighting
+        std::vector<float> sideX[2];          // per band and side: mean log2(f) of the flank bands
+        std::vector<float> sideVf[2];         // per band and side: mean bin variance factor of the flank bands
+        std::vector<float> sideNeff[2];       // per band and side: effective independent flank values
+        std::vector<float> sigmaE, sigmaEF;   // per band std-dev of excess (dB) at the current frame count (slow / fast)
+        // sub-bin (auditory-resolution) excess at low f
+        int kLowMax = 0;                      // last bin whose ERB is narrower than the analysis kernel's ENBW
+        float kernelVar = 0.0f;               // second moment (bins^2) a narrowband source shows over +/-2 bins
+        std::vector<float> erbBins;           // per bin: ERB(f_k) in bins
+        // running state
+        double emaAn = 1.0, emaAnF = 1.0;     // a^n (bias correction 1 / (1 - a^n)), slow / fast
+        long long frames = 0;                 // detector frame count of this engine (sigma tables, baseline stagger)
+        long long nextEnd = 0;                // stream position at which this engine's next frame completes
+        bool forceRefresh = false;            // next frame recomputes every baseline (set by a tier switch that kept the state)
+        Channel ch[kMaxChannels];
+    };
+
+    struct Transition
+    {
+        bool active = false;
+        int from = 0, to = 0;                 // engine indices
+        long long valid = 0;                  // stream position of the new engine's first complete output sample == start of the crossfade
+    };
+
+    void buildSharedGrid();
+    void buildEngine(Engine& e, FrameTier tier);
+    void resetEngine(Engine& e) noexcept;
+    int hopOffsetFor(int hop) const noexcept;
+    void updateSigma(Engine& e) noexcept;
+    void updateSigmaFor(const Engine& e, const std::vector<double>& vfTime, long long frames, std::vector<float>& sigmaOut) noexcept;
+    void processFrame(Engine& e, long long end, int numCh, const Params& p, bool publish) noexcept;
+    void emitViz(const Engine& e, int numCh) noexcept;
     // Detector + gain computer: writes Channel::binGain for channels [0, numCh). Returns false when every
-    // gain is exactly 1 (the multiply is then skipped).
-    bool computeGains(int numCh, const Params& p) noexcept;
-    void detectChannel(Channel& ch, double biasCorr, double biasCorrFast) noexcept;
+    // gain is exactly 1 (the multiply is then skipped). publish = false: meters are not written (an engine that is not the output's).
+    bool computeGains(Engine& e, int numCh, const Params& p, bool publish) noexcept;
+    void detectChannel(Engine& e, Channel& ch, double biasCorr, double biasCorrFast) noexcept;
     // refreshPeriod: each band's flank baseline (the median-heavy part) is recomputed every refreshPeriod-th frame, staggered over the
-    // bands; levels are exact every frame. Every baseline is recomputed on the first frames and whenever the mean band level has moved
+    // bands; levels are exact every frame. Every baseline is recomputed on the first frames, after a state-keeping tier switch and whenever the mean band level has moved
     // by more than kBaselineJumpDb since the last full refresh (a broadband onset: the stale baseline would show false excess).
-    void bandLevelsAndBaseline(const float* S, float* L, float* base, double biasCorr, int refreshPeriod, float& refMean) noexcept;
-    void subBinCorrection(Channel& ch, double biasCorr) noexcept;
+    void bandLevelsAndBaseline(const Engine& e, const float* S, float* L, float* base, double biasCorr, int refreshPeriod, float& refMean) noexcept;
+    void subBinCorrection(const Engine& e, Channel& ch, double biasCorr) noexcept;
     float median(const int* idx, int n, const float* values) noexcept;
+    // Tier switching (audio thread).
+    void adoptPendingTier(int numCh, const Params& p) noexcept;
+    void transferState(const Engine& from, Engine& to, int numCh) noexcept;
+    static void remapPower(const Engine& from, const Engine& to, const float* src, float* dst) noexcept;
+    struct Io { float* const* channels; float* const* dryOut; const float* auxIn; float* auxOut; };
+    int processSteady(const Io& io, int numCh, int offset, int n, const Params& p) noexcept;
+    int processTransition(const Io& io, int numCh, int offset, int n, const Params& p) noexcept;
+    void ringWrite(float* ring, long long at, const float* src, int n) const noexcept;
+    void ringRead(const float* ring, long long at, float* dst, int n) const noexcept;
+    float ringAt(const float* ring, long long at) const noexcept { return ring[static_cast<size_t>(at & ringMask_)]; }
 
     double sampleRate_ = 0.0;
     float detectorTauMs_ = kDefaultDetectorTauMs;
     float fastTauMs_ = kDefaultFastTauMs;
-    FrameTier tier_ = FrameTier::Normal;
-    int slowPeriod_ = 4, fastPeriod_ = 2;   // baseline refresh periods in frames
-    int fftSize_ = 0, hop_ = 0, numChannels_ = 0;
-    int hopFill_ = 0;
-    int hopPhaseOffset_ = 0;   // as set by setHopPhaseOffset()
-    int hopOffset_ = 0;        // applied at prepare(): hopPhaseOffset_ modulo the hop; reset() starts the hop counter here
-    long long frames_ = 0;
+    bool prepared_ = false;
+    bool keepState_ = true;
+    int numChannels_ = 0;
+    int hopPhaseOffset_ = 0;           // as set by setHopPhaseOffset()
+    int hopOffset0_ = 0, hop0_ = 1;    // the applied offset at prepare() and the prepare-time tier's hop: the stored fraction hopOffset0_ / hop0_
+    long long frames_ = 0;             // published frames (framesProcessed(), VizFrame::hopIndex)
+    long long pos_ = 0;                // stream position: input samples consumed since prepare() / reset()
+    int fadeLen_ = 1;                  // tier crossfade, samples
 
-    std::unique_ptr<juce::dsp::FFT> fft_;
-    std::vector<float> window_;      // sqrt-Hann (periodic), analysis
-    std::vector<float> synthesis_;   // sqrt-Hann × 1/Σw² of its hop phase
-    Channel ch_[kMaxChannels];
+    // Tiers: engines, the one the output is aligned to, the target, the request, the transition.
+    Engine eng_[3];
+    int active_ = 1;                   // engine the output (and the introspection) is aligned to
+    int target_ = 1;                   // tier on or switching to; also the prepare-time tier (setFrameTier)
+    std::atomic<int> activeTier_ { 1 };
+    std::atomic<int> latency_ { 0 };
+    std::atomic<int> pendingTier_ { -1 };   // -1 = no request
+    std::atomic<long long> switches_ { 0 };
+    Transition trans_;
 
-    // ---- band grid (ERB-rate spaced), built in prepare() ----
+    // Input ring per channel: the analysis FIFO of every engine and the source of the aligned dry. Length a power of two >= 2 x the largest N.
+    std::vector<float> ring_[kMaxChannels];
+    std::vector<float> auxRing_;          // the delay-only aux channel (same length)
+    long long ringMask_ = 0;
+
+    // ---- band grid (ERB-rate spaced, depends on the sample rate only), built in prepare() ----
     int numBands_ = 0;
     double erbLo_ = 0.0, erbStep_ = 1.0;
     std::vector<float> bandHz_;
-    std::vector<int>   bwStart_, bwBin_;  std::vector<float> bwW_;   // band <- bins (CSR), weights include f_k
-    std::vector<int>   flStart_[2], fl_[2];                          // flank band lists per side (0 = below, 1 = above)
-    std::vector<int>   lobeLo_, lobeHi_;                             // per band: bands inside its main-lobe exclusion zone
-    std::vector<int>   binBand_;  std::vector<float> binFrac_;       // bin -> (band j, t) for G(f) interpolation
-    // ---- statistics ----
-    float emaA_ = 0.0f, emaB_ = 1.0f;     // per-frame power average: S = a S + b P
-    double emaAn_ = 1.0;                  // a^n (bias correction 1 / (1 - a^n))
-    std::vector<double> vfTime_;          // variance factor of the bias-corrected average after n frames (index n-1)
-    float emaAF_ = 0.0f, emaBF_ = 1.0f;   // the same for the fast average
-    double emaAnF_ = 1.0;
-    std::vector<double> vfTimeF_;
-    std::vector<float> vfBin_;            // per band: variance factor of the bin weighting
     std::vector<float> bandX_;            // per band log2(f)
-    std::vector<float> sideX_[2];         // per band and side: mean log2(f) of the flank bands
     int slopeLo_ = 0, slopeHi_ = 0;       // band range of the wideband tilt fit (one-sided flank extrapolation)
     double slopeXMean_ = 0.0, slopeSxx_ = 1.0;
-    std::vector<float> sideVf_[2];        // per band and side: mean bin variance factor of the flank bands
-    std::vector<float> sideNeff_[2];      // per band and side: effective independent flank values
-    std::vector<float> sigmaE_;           // per band std-dev of excess (dB) at the current frame count
-    std::vector<float> sigmaEF_;          // the same for the fast estimate
-    // ---- sub-bin (auditory-resolution) excess at low f, where the analysis kernel is wider than an ERB ----
-    int kLowMax_ = 0;                     // last bin whose ERB is narrower than the analysis kernel's ENBW
-    float kernelVar_ = 0.0f;              // second moment (bins^2) a narrowband source shows over +/-2 bins
-    std::vector<float> erbBins_;          // per bin: ERB(f_k) in bins
+    // ---- scratch (sized for the largest tier) ----
     std::vector<float> binX_, binF_;      // per bin scratch: excess fraction, correction factor
     std::vector<float> scratch_;          // median scratch
     std::vector<float> tmpBand_;          // per band scratch
