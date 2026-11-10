@@ -2083,7 +2083,7 @@ static constexpr double kG4IsoAll       = 1.0e-3;
 static constexpr double kG5BroadbandDb  = 1.0;
 static constexpr double kG5BandDb       = 1.0;
 static constexpr double kG3LResAbsDb    = 1.0;    // v4: L-channel in-window residual must lie within +/- this on signal E
-static constexpr double kG7CpuRatio     = 1.0;    // v4: subject mean %RT / S3 mean %RT (same run), at block 128 and 64
+static constexpr double kG7CpuRatio     = 1.05;   // v4: subject mean %RT / S3 mean %RT (same run), at block 128 and 64; 1.05 = the agreed wall-clock margin (a strict 1.0 failed the same core at 1.0003 and passed it at 0.9957 in one run)
 
 struct EResidual { Residual r, l; bool valid = false; };          // signal E (resonance in R only), per channel
 
@@ -2419,9 +2419,9 @@ static std::map<std::string, std::pair<double, double>> cpuRatios(const std::vec
 static Table cpuRatioTable(const std::vector<CpuRow>& rows, const std::map<std::string, std::pair<double, double>>& ratios)
 {
     Table t;
-    t.title = "9c. G7 relative CPU (mean % RT / S3 mean % RT, same run; ratios to 4 decimals, G7 compares the unrounded values with <= 1.0)";
+    t.title = "9c. G7 relative CPU (mean % RT / S3 mean % RT, same run; ratios to 4 decimals, G7 compares the unrounded values with <= 1.05)";
     t.note = "Ratio = the subject's mean processBlock time divided by S3's (RS HQ Normal, default parameters) at the same block size, measured in this run. "
-             "G7 passes when the ratio is <= 1.00 at BOTH block 128 and block 64. Informational for the existing subjects (it grades future subjects against the current "
+             "G7 passes when the ratio is <= 1.05 (kG7CpuRatio) at BOTH block 128 and block 64. Informational for the existing subjects (it grades future subjects against the current "
              "HQ Normal cost); a ratio reflects one noisy wall-clock measurement per subject, so treat 0.9-1.1 as 'about equal'.";
     t.header = { "subject", "label", "mean % RT @64", "ratio @64", "mean % RT @128", "ratio @128", "G7" };
     std::vector<std::string> seen;
@@ -4484,7 +4484,7 @@ static int runGradedRun(const std::string& cfg, const std::string& cpu, bool isR
                  "G4: sensitive-variant jitter (signal C, subject's registered sensitive variant): std all <= 0.6 dB AND isolated-cell fraction all <= 1e-3. "
                  "G5: pre-echo with the mask engaged (D2): broadband E_out/E_in <= +1.0 dB AND band (f0 +/- 1/3 oct) E_out/E_in <= +1.0 dB. "
                  "G6: latency measured == reported at 48 and 44.1 kHz and unchanged across block schedules. "
-                 "G7: mean % RT divided by S3's mean % RT in the same run <= 1.00 at block 128 AND block 64 (kG7CpuRatio; the UNROUNDED ratios are compared, strictly, with no tolerance; cell shows ratio @128 / @64 to 4 decimals; 'n/a' with --no-cpu). "
+                 "G7: mean % RT divided by S3's mean % RT in the same run <= 1.05 at block 128 AND block 64 (kG7CpuRatio; the UNROUNDED ratios are compared, strictly, with no tolerance; cell shows ratio @128 / @64 to 4 decimals; 'n/a' with --no-cpu). "
                  "Subjects marked 'link-100 characterisation' (RSC-F / RSC-N / RSC-H, RS default stereo link 100 %) print G3 and G9a but those two gates are not graded for them; RSC-F0 / RSC-N0 / RSC-H0 (link 0, open curve) are graded on every gate. "
                  "G8a: time-varying resonance T1 (table 11), reaction: t50 <= 100 ms for D = 300 and 1000 ms at every f0 (count of 6; 'never' fails). "
                  "G8b: leak_fraction <= 0.5 (D = 300) / <= 0.3 (D = 1000) at every f0 (count of 6). "
@@ -4519,7 +4519,7 @@ static int runGradedRun(const std::string& cfg, const std::string& cpu, bool isR
         const char* kCharTag = " [link-100 characterisation, not graded]";
         const std::string g3cell = (g.g3valid ? pf(g.g3) + " (R " + (g.g3R ? "P" : "F") + ", L " + cnt(g.g3Lpass, g.g3Ln) + ")" : "FAIL (no data)") + (g.ungraded("G3") ? kCharTag : "");
         const std::string g9acell = pf(g.pass9a()) + " " + cnt(g.g9a, g.n9a) + (g.ungraded("G9a") ? kCharTag : "");
-        // G7 is shown with 4 decimals: the gate compares the UNROUNDED ratio with 1.0 (no tolerance), so a cell that reads "1.00" at two decimals can be 1.003 (FAIL) or 0.996 (PASS).
+        // G7 is shown with 4 decimals: the gate compares the UNROUNDED ratio with kG7CpuRatio = 1.05 (no further tolerance), so a cell that reads "1.05" at two decimals can be 1.053 (FAIL) or 1.046 (PASS).
         const std::string g7cell = g.g7valid ? pf(g.g7) + " " + num(g.g7r128, 4) + " / " + num(g.g7r64, 4) : "n/a";
         const std::string g1cell = pf(g.pass1()) + " " + cnt(g.g1, g.n) + (g.g1Waived > 0 ? " (raw; +" + inum(g.g1Waived) + " WAIVED, known limit)" : std::string());
         tGate.add({ g.id, g.label, g1cell, pf(g.pass2()) + " " + cnt(g.g2, g.n),
