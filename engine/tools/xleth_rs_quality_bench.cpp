@@ -51,6 +51,9 @@
 //   calibration: R0 pass-through must FAIL G8, the oracle R1 (returns the clean reference through Planted::cleanRef, delayed by its latency) must PASS G8 and G9.
 // v6: the v5 release gates (over_dB >= -3 dB, settle <= 400 ms) were unsatisfiable by any effective suppressor with a nonzero release (the clean signal is still cut by the depth reached at the
 //   offset) and are now informational; G9a / G9b gate whether the cut is GONE: |r_off(500 ms)| <= 1.0 dB and |r_off(1000 ms)| <= 0.5 dB. tau_fit (effective release constant) is reported.
+// Report-only metrics (printed per subject, never part of a gate, verdict or waiver; no threshold):
+//   G2lo (table 3lo): G2's collateral measure over 40 .. 100 Hz (below G2's floor) and over 100 .. 400 Hz excluding +/- 1 octave around f0.
+//   T-bass (table 6c): steady and 808-like bass notes at 55 / 82 / 110 Hz, mono / stereo: largest per-frame cut and the level error of the note.
 //
 // Usage: xleth_rs_quality_bench [--quick] [--no-cpu] [--cpu-only] [--out-dir DIR]
 //                               [--ref-subjects] [--subjects ID,ID,...] [--wav label=path]...
@@ -1270,6 +1273,35 @@ static Residual residualVsClean(const std::vector<double>& pout, const std::vect
     return r;
 }
 
+// ----------------------------------------------------------------------------
+// G2lo - REPORT-ONLY (printed per subject, NOT part of any gate, verdict or waiver). G2's collateral measure (mean over Welch bins of
+// |dB(PSD_out) - dB(PSD_clean)|, same PSDs as G2) applied to the two regions G2 does not look at:
+//   a = 40 Hz <= f < 100 Hz, excluding f0 +/- 1/3 oct (G2's own exclusion). G2 starts at 100 Hz, so a cut below it is invisible to G2.
+//   b = 100 Hz <= f <= 400 Hz, excluding f0 / 2 .. 2 f0 (+/- 1 octave around the planted resonance): the low-frequency part of G2's range,
+//       with the resonance's own octave removed, so a broad low-frequency plateau around a low f0 shows up here undiluted by the 100 Hz - 12 kHz average.
+// The signed means (negative = output below clean = over-suppression) are kept next to the absolute ones. n = Welch bins counted (0 -> "n/a").
+// ----------------------------------------------------------------------------
+struct LoDev { double a = 0, aSigned = 0, b = 0, bSigned = 0; int na = 0, nb = 0; };
+
+static LoDev residualLo(const std::vector<double>& pout, const std::vector<double>& pclean, double sr, double f0)
+{
+    const double binHz = sr / kWelchN;
+    const double s3 = std::pow(2.0, 1.0 / 3.0);
+    LoDev r;
+    for (size_t k = 1; k < pout.size(); ++k)
+    {
+        const double f = static_cast<double>(k) * binHz;
+        if (f > 400.0) break;
+        const double d = dbPow(pout[k]) - dbPow(pclean[k]);
+        if (f >= 40.0 && f < 100.0 && !(f >= f0 / s3 && f <= f0 * s3)) { r.a += std::abs(d); r.aSigned += d; ++r.na; }
+        if (f >= 100.0 && !(f >= 0.5 * f0 && f <= 2.0 * f0)) { r.b += std::abs(d); r.bSigned += d; ++r.nb; }
+    }
+    if (r.na) { r.a /= r.na; r.aSigned /= r.na; }
+    if (r.nb) { r.b /= r.nb; r.bSigned /= r.nb; }
+    return r;
+}
+static std::string loCell(double v, int n) { return n ? num(v, 2) : std::string("n/a"); }
+
 // Welch PSD of the clean reference, cached per (tag, window, channel selection): the clean signal does not depend on f0 or subject.
 static const std::vector<double>& cleanPsd(const std::string& tag, const Stereo& clean, int begin, int end, bool useL, bool useR)
 {
@@ -1286,13 +1318,119 @@ static const std::vector<double>& cleanPsd(const std::string& tag, const Stereo&
 struct Accuracy { RC rc; Residual res; };
 
 static Accuracy suppressionAccuracy(const Aligned& a, const std::string& cleanTag, const Stereo& clean, double sr, double f0,
-                                    bool useL = true, bool useR = true)
+                                    bool useL = true, bool useR = true, LoDev* lo = nullptr)
 {
     const auto pin  = welchPsd(a.in,  a.skip, a.n(), useL, useR);
     const auto pout = welchPsd(a.out, a.skip, a.n(), useL, useR);
     Accuracy r;
     r.rc  = removedCollateral(pin, pout, sr, f0);
-    r.res = residualVsClean(pout, cleanPsd(cleanTag, clean, a.skip, a.n(), useL, useR), sr, f0);
+    const auto& pc = cleanPsd(cleanTag, clean, a.skip, a.n(), useL, useR);
+    r.res = residualVsClean(pout, pc, sr, f0);
+    if (lo) *lo = residualLo(pout, pc, sr, f0);   // report-only G2lo, from the very same PSDs
+    return r;
+}
+
+// ----------------------------------------------------------------------------
+// T-bass - REPORT-ONLY (printed per subject, NOT part of any gate or verdict): what a suppressor does to a clean bass note. A bass note is a narrow
+// low-frequency peak by every detector's definition, so this measures how hard real bass is cut. Signals (48 kHz, 8 s): a sine at 55 / 82 / 110 Hz on a
+// -40 dBFS pink bed, either STEADY (-12 dBFS peak, 0.5 .. 7.5 s, 10 ms fades) or DECAYING ("808-like": a note every second from 1 s, 2 ms attack,
+// -6 dBFS peak, exp(-t / 350 ms) amplitude, pitch glide f x (1 + 0.6 e^(-t / 20 ms)), 0.9 s long with a 10 ms release fade). MONO = identical channels;
+// STEREO = independent pink beds per channel and the R tone 0.25 rad ahead. The input is the clean reference (an ideal suppressor leaves it alone).
+// Measured on the latency-aligned pair: STFT 4096 Hann hop 1024, per channel the energy within f +/- 1/3 oct; frames after 1.0 s whose input band energy
+// is within 30 dB of its maximum (the note is sounding). max cut = max over those frames and both channels of 10 log10(E_in / E_out) (dB, positive =
+// reduction); level error = 10 log10(sum E_out / sum E_in) over the same frames (dB, negative = the note came out quieter).
+// ----------------------------------------------------------------------------
+struct TBassCase { double f = 0; bool decaying = false, stereo = false; };
+static const std::vector<TBassCase>& tbassCases()
+{
+    static const std::vector<TBassCase> c = [] {
+        std::vector<TBassCase> v;
+        for (bool dec : { false, true }) for (bool st : { false, true }) for (double f : { 55.0, 82.0, 110.0 }) v.push_back({ f, dec, st });
+        return v;
+    }();
+    return c;
+}
+static std::string tbassName(const TBassCase& c) { return std::string(c.decaying ? "808" : "steady") + (c.stereo ? " stereo" : " mono"); }
+struct TBassResult { double maxCut = 0, meanCut = 0, levelErr = 0; int frames = 0; };
+
+static Stereo makeTBass(const TBassCase& c, double sr)
+{
+    const int n = static_cast<int>(8.0 * sr);
+    Stereo s = makePinkStereo(n, -40.0, 60);
+    if (!c.stereo) s.ch[1] = s.ch[0];
+    const double twoPi = 2.0 * juce::MathConstants<double>::pi;
+    for (int ch = 0; ch < 2; ++ch)
+    {
+        const double ph0 = (c.stereo && ch == 1) ? 0.25 : 0.0;
+        if (!c.decaying)
+        {
+            const double amp = std::pow(10.0, -12.0 / 20.0);
+            const int i0 = static_cast<int>(0.5 * sr), i1 = static_cast<int>(7.5 * sr), fade = static_cast<int>(0.010 * sr);
+            for (int i = i0; i < i1; ++i)
+            {
+                const double env = std::min({ 1.0, static_cast<double>(i - i0) / fade, static_cast<double>(i1 - i) / fade });
+                s.ch[ch][static_cast<size_t>(i)] += static_cast<float>(amp * env * std::sin(twoPi * c.f * (i - i0) / sr + ph0));
+            }
+        }
+        else
+        {
+            const double amp = std::pow(10.0, -6.0 / 20.0);
+            const int len = static_cast<int>(0.9 * sr), att = static_cast<int>(0.002 * sr), rel = static_cast<int>(0.010 * sr);
+            for (int note = 1; note <= 7; ++note)
+            {
+                const int i0 = static_cast<int>(note * sr);
+                double ph = ph0;
+                for (int i = 0; i < len && i0 + i < n; ++i)
+                {
+                    const double t = static_cast<double>(i) / sr;
+                    ph += twoPi * c.f * (1.0 + 0.6 * std::exp(-t / 0.020)) / sr;
+                    const double env = std::min({ 1.0, static_cast<double>(i) / att, static_cast<double>(len - i) / rel }) * std::exp(-t / 0.350);
+                    s.ch[ch][static_cast<size_t>(i0 + i)] += static_cast<float>(amp * env * std::sin(ph));
+                }
+            }
+        }
+    }
+    return s;
+}
+
+static TBassResult tbassMeasure(const Aligned& a, double f, double sr)
+{
+    constexpr int NF = 4096, HOP = 1024;
+    static const Fft fft(NF);
+    static const std::vector<double> win = hannPeriodic(NF);
+    const double s3 = std::pow(2.0, 1.0 / 3.0), binHz = sr / NF;
+    const int k0 = std::max(1, static_cast<int>(std::floor(f / s3 / binHz))), k1 = static_cast<int>(std::ceil(f * s3 / binHz));
+    std::vector<std::complex<double>> bi(NF), bo(NF);
+    std::vector<double> ein[2], eout[2];
+    const int begin = static_cast<int>(1.0 * sr);
+    for (int c = 0; c < 2; ++c)
+        for (int p = begin; p + NF <= a.n(); p += HOP)
+        {
+            for (int i = 0; i < NF; ++i)
+            {
+                bi[static_cast<size_t>(i)] = { a.in.ch[c][static_cast<size_t>(p + i)] * win[static_cast<size_t>(i)], 0.0 };
+                bo[static_cast<size_t>(i)] = { a.out.ch[c][static_cast<size_t>(p + i)] * win[static_cast<size_t>(i)], 0.0 };
+            }
+            fft.forward(bi); fft.forward(bo);
+            double ei = 0.0, eo = 0.0;
+            for (int k = k0; k <= k1; ++k) { ei += std::norm(bi[static_cast<size_t>(k)]); eo += std::norm(bo[static_cast<size_t>(k)]); }
+            ein[c].push_back(ei); eout[c].push_back(eo);
+        }
+    double emax = 0.0;
+    for (int c = 0; c < 2; ++c) for (double v : ein[c]) emax = std::max(emax, v);
+    TBassResult r; r.maxCut = -1.0e30;
+    double si = 0.0, so = 0.0, cutSum = 0.0;
+    for (int c = 0; c < 2; ++c)
+        for (size_t j = 0; j < ein[c].size(); ++j)
+        {
+            if (!(ein[c][j] >= emax * 1.0e-3)) continue;
+            const double cut = dbPow(ein[c][j]) - dbPow(eout[c][j]);
+            r.maxCut = std::max(r.maxCut, cut); cutSum += cut; ++r.frames;
+            si += ein[c][j]; so += eout[c][j];
+        }
+    if (r.frames == 0) { r.maxCut = 0.0; return r; }
+    r.meanCut = cutSum / r.frames;
+    r.levelErr = dbPow(so) - dbPow(si);
     return r;
 }
 
@@ -2202,6 +2340,9 @@ struct BenchData
     std::map<std::string, PreEcho> d2;                                 // subject id -> signal D2 pre-echo
     std::map<std::string, LatencyGate> latency;                        // subject id -> G6 evidence
     std::map<std::string, std::map<std::pair<int, int>, TvMetrics>> tv;   // v5: subject id -> (f0 Hz, D ms) -> T1 metrics (48 kHz)
+    // REPORT-ONLY (never read by evaluateGates / gradeCells / any verdict):
+    std::map<std::string, std::map<int, LoDev>> resLo;                 // G2lo: subject id -> f0 -> low-frequency collateral (48 kHz scan)
+    std::map<std::string, std::vector<TBassResult>> tbass;             // T-bass: subject id -> one result per tbassCases() entry (48 kHz)
 };
 
 struct GateRow
@@ -3330,6 +3471,51 @@ static int runSeedSet(const std::string& cfg, const std::string& cpu, bool isRel
         const auto slash = pc.find('/');
         if (slash != std::string::npos && pc.substr(0, slash) != pc.substr(slash + 1)) tFail.add(r);
     }
+    // ---- REPORT-ONLY metrics over the seeds (G2lo, T-bass): no gate, no verdict, no threshold ----
+    Table tLo; tLo.title = "Seed set " + g_opt.seedset + " - G2lo (report-only): low-frequency collateral, median / worst over the seeds (dB)";
+    tLo.note = "a = |dB(out) - dB(clean)| over 40 .. 100 Hz excluding f0 +/- 1/3 oct; b = over 100 .. 400 Hz excluding f0 / 2 .. 2 f0 (definitions in the per-seed summary, table 3lo). "
+               "'max' = the largest value over the 12 scan f0 on each seed. Signed = median of the signed mean (negative = output below clean). Not part of any verdict.";
+    tLo.header = { "subject", "f0", "a median", "a worst", "a signed median", "b median", "b worst", "b signed median" };
+    Table tTb; tTb.title = "Seed set " + g_opt.seedset + " - T-bass (report-only): max cut and level error of clean bass notes, median / worst over the seeds (dB)";
+    tTb.note = "Signals and measurement as in the per-seed table 6c. worst max cut = the largest over the seeds; worst level error = the most negative. Not part of any verdict.";
+    tTb.header = { "subject", "case", "f Hz", "max cut median", "max cut worst", "level error median", "level error worst" };
+    for (size_t si = 0; si < caps[0].subjects.size(); ++si)
+    {
+        const std::string& id = caps[0].subjects[si].id;
+        for (int f : { 100, 150, 220, 330, -1 })
+        {
+            std::vector<double> va, vb, vas, vbs;
+            for (const auto& cp : caps)
+            {
+                const auto it = cp.bd.resLo.find(id);
+                if (it == cp.bd.resLo.end()) continue;
+                LoDev pick; bool have = false;
+                if (f > 0) { const auto jt = it->second.find(f); if (jt != it->second.end()) { pick = jt->second; have = true; } }
+                else for (const auto& [ff, lo] : it->second) { if (!have || lo.a > pick.a) { pick.a = lo.a; pick.aSigned = lo.aSigned; pick.na = lo.na; have = true; } if (lo.b > pick.b) { pick.b = lo.b; pick.bSigned = lo.bSigned; pick.nb = lo.nb; } }
+                if (!have) continue;
+                if (pick.na) { va.push_back(pick.a); vas.push_back(pick.aSigned); }
+                if (pick.nb) { vb.push_back(pick.b); vbs.push_back(pick.bSigned); }
+            }
+            auto mx = [](const std::vector<double>& v) { return v.empty() ? std::string("n/a") : num(*std::max_element(v.begin(), v.end()), 3); };
+            auto md3 = [](const std::vector<double>& v) { return v.empty() ? std::string("n/a") : num(medianOf(v), 3); };
+            tLo.add({ id, f > 0 ? inum(f) + " Hz" : std::string("max over f0"), md3(va), mx(va), md3(vas), md3(vb), mx(vb), md3(vbs) });
+        }
+        const auto& cases = tbassCases();
+        for (size_t ci = 0; ci < cases.size(); ++ci)
+        {
+            std::vector<double> mc, le;
+            for (const auto& cp : caps)
+            {
+                const auto it = cp.bd.tbass.find(id);
+                if (it == cp.bd.tbass.end() || it->second.size() != cases.size()) continue;
+                mc.push_back(it->second[ci].maxCut); le.push_back(it->second[ci].levelErr);
+            }
+            if (mc.empty()) continue;
+            tTb.add({ id, tbassName(cases[ci]), num(cases[ci].f, 0), num(medianOf(mc), 3), num(*std::max_element(mc.begin(), mc.end()), 3), num(medianOf(le), 3), num(*std::min_element(le.begin(), le.end()), 3) });
+        }
+    }
+    std::ofstream(setDir / "seedset_g2lo.csv", std::ios::binary) << csvSafe(tLo).csv();
+    std::ofstream(setDir / "seedset_tbass.csv", std::ios::binary) << csvSafe(tTb).csv();
     std::ostringstream md;
     md << "# RS bench - seed set `" << g_opt.seedset << "` (" << (g_opt.quick ? "QUICK" : "FULL") << ")\n\n";
     md << "- Git: `" << hash << "` (working tree may be dirty)\n- Build: **" << cfg << "**" << (isRelease ? "" : "  **<-- NOT RELEASE**") << "\n- CPU: " << cpu << "\n";
@@ -3341,7 +3527,7 @@ static int runSeedSet(const std::string& cfg, const std::string& cpu, bool isRel
           "Thresholds and metric definitions are unchanged.\n";
     md << "- Regrade check: " << (drift == 0 ? "the per-cell regrade reproduces every gate flag of every per-seed run" : "**" + std::to_string(drift) + " regrade mismatches (see warnings)**") << "\n";
     md << "- Per-seed full runs (CSV, summary.md, WAVs): `runs/`\n\n";
-    md << tVerdict.markdown() << tFocus.markdown() << tGates.markdown() << tFail.markdown() << tSeeds.markdown();
+    md << tVerdict.markdown() << tFocus.markdown() << tGates.markdown() << tFail.markdown() << tSeeds.markdown() << tLo.markdown() << tTb.markdown();
     std::ofstream(setDir / "summary.md", std::ios::binary) << md.str();
 
     logf("---- ROBUST VERDICT, seed set %s {%s} ----", g_opt.seedset.c_str(), seedList.c_str());
@@ -4910,10 +5096,12 @@ static int runGradedRun(const std::string& cfg, const std::string& cpu, bool isR
                 Fx fx = makeFx(s, sr, f0, false, kPrepareBlock);
                 const Stereo out = renderStd(fx, sig);
                 const auto a = align(sig, out, measureLatency(s, sr).measured, sr);
-                const Accuracy acc = suppressionAccuracy(a, "C@" + num(sr, 0), base, sr, f0);
+                LoDev lo;
+                const Accuracy acc = suppressionAccuracy(a, "C@" + num(sr, 0), base, sr, f0, true, true, &lo);
                 const RC rc = acc.rc;
                 scanRes[s.id + "@" + num(sr, 0)][static_cast<int>(f0)] = rc;
                 bd.residual[s.id + "@" + num(sr, 0)][static_cast<int>(f0)] = acc.res;
+                if (sr == SR) bd.resLo[s.id][static_cast<int>(f0)] = lo;   // report-only G2lo (48 kHz)
                 tResCsv.add({ s.id, num(sr, 0), num(f0, 0), num(acc.res.inWindow, 4), num(acc.res.outsideDev, 4), num(ideal, 4),
                               num(kG1ResIdealFrac * ideal, 4), g1Cell(acc.res, ideal) ? "1" : "0", g2Cell(acc.res) ? "1" : "0" });
                 tScanCsv.add({ s.id, num(sr, 0), num(f0, 0), num(rc.removed, 4), num(rc.collateral, 4), num(rc.removed - rc.collateral, 4),
@@ -4998,6 +5186,45 @@ static int runGradedRun(const std::string& cfg, const std::string& cpu, bool isR
             }
             tables.push_back(t);
         }
+    }
+
+    // ---------------------------------------------------------------- G2lo (REPORT-ONLY: no gate, no verdict, no threshold)
+    {
+        const std::string loNote = "REPORT-ONLY, not a gate and not part of any verdict. Same scan runs and Welch PSDs as G2 (48 kHz). G2lo a = mean over Welch bins 40 Hz <= f < 100 Hz, "
+                                   "excluding f0 +/- 1/3 oct (G2's own exclusion), of |dB(PSD_out) - dB(PSD_clean)|: the region below G2's 100 Hz floor. G2lo b = the same over 100 .. 400 Hz excluding "
+                                   "f0 / 2 .. 2 f0 (+/- 1 octave around the planted resonance). Signed means (negative = output below clean) are in residual_lo_scan.csv. n/a = no Welch bin left after the exclusion.";
+        Table t; t.title = "3lo. Low-frequency collateral G2lo (report-only) - resonance scan @48000 Hz, gated subjects";
+        t.note = loNote + " Each cell: a / b (dB).";
+        t.header = { "f0 Hz" };
+        std::vector<Subject> loSubs;
+        for (const auto& s : scanSubjects) if (s.gated) { loSubs.push_back(s); t.header.push_back(s.id); }
+        Table tCsv; tCsv.header = { "subject", "f0_hz", "g2lo_a_db", "g2lo_a_signed_db", "g2lo_a_bins", "g2lo_b_db", "g2lo_b_signed_db", "g2lo_b_bins" };
+        for (double f0 : scanF0)
+        {
+            std::vector<std::string> row = { num(f0, 0) };
+            for (const auto& s : loSubs)
+            {
+                const LoDev& lo = bd.resLo[s.id][static_cast<int>(f0)];
+                row.push_back(loCell(lo.a, lo.na) + " / " + loCell(lo.b, lo.nb));
+                tCsv.add({ s.id, num(f0, 0), num(lo.a, 4), num(lo.aSigned, 4), inum(lo.na), num(lo.b, 4), num(lo.bSigned, 4), inum(lo.nb) });
+            }
+            t.add(row);
+        }
+        Table tSum; tSum.title = "3lo-s. G2lo per subject (report-only): the 100 / 150 Hz cells and the largest value over the 12 scan f0";
+        tSum.note = loNote;
+        tSum.header = { "subject", "a @100 (signed)", "b @100 (signed)", "a @150 (signed)", "b @150 (signed)", "max a over f0 (at)", "max b over f0 (at)" };
+        for (const auto& s : loSubs)
+        {
+            const auto& m = bd.resLo[s.id];
+            auto sc = [&](int f, bool b) { const LoDev& lo = m.at(f); return b ? loCell(lo.b, lo.nb) + " (" + loCell(lo.bSigned, lo.nb) + ")" : loCell(lo.a, lo.na) + " (" + loCell(lo.aSigned, lo.na) + ")"; };
+            double ma = -1, mb = -1; int fa = 0, fb = 0;
+            for (const auto& [f, lo] : m) { if (lo.na && lo.a > ma) { ma = lo.a; fa = f; } if (lo.nb && lo.b > mb) { mb = lo.b; fb = f; } }
+            tSum.add({ s.id, sc(100, false), sc(100, true), sc(150, false), sc(150, true), num(ma, 2) + " (" + inum(fa) + " Hz)", num(mb, 2) + " (" + inum(fb) + " Hz)" });
+            logf("      G2lo (report-only) %-7s a@100 %s  b@100 %s  a@150 %s  b@150 %s  max a %.2f (%d Hz)  max b %.2f (%d Hz)", s.id.c_str(), sc(100, false).c_str(), sc(100, true).c_str(),
+                 sc(150, false).c_str(), sc(150, true).c_str(), ma, fa, mb, fb);
+        }
+        csvTables["residual_lo_scan"] = tCsv;
+        tables.push_back(t); tables.push_back(tSum);
     }
 
     // ---------------------------------------------------------------- v4 shape scans (Q, level) at f0 = 2500 Hz / 48 kHz
@@ -5121,6 +5348,52 @@ static int runGradedRun(const std::string& cfg, const std::string& cpu, bool isR
     }
     csvTables["preecho"] = tPre; tables.push_back(tPre);
     csvTables["preecho_d2"] = tPre2; tables.push_back(tPre2);
+
+    // ---------------------------------------------------------------- T-bass (REPORT-ONLY: no gate, no verdict, no threshold)
+    logf("[6b/9] T-bass (report-only): steady / 808-like bass notes at 55 / 82 / 110 Hz, mono / stereo");
+    {
+        Table t; t.title = "6c. T-bass (report-only): clean bass notes through the gated subjects (48 kHz)";
+        t.note = "REPORT-ONLY, not a gate and not part of any verdict. A sine at 55 / 82 / 110 Hz on a -40 dBFS pink bed: steady (-12 dBFS peak) or 808-like (a note per second, -6 dBFS peak, "
+                 "350 ms decay, short pitch glide); mono = identical channels, stereo = independent beds + R tone 0.25 rad ahead. The input is the clean reference. STFT 4096 / hop 1024, energy within "
+                 "f +/- 1/3 oct, frames after 1 s while the note sounds (input within 30 dB of its maximum). Cell: max cut / level error (dB): max cut = largest per-frame 10 log10(E_in / E_out) "
+                 "(positive = reduction), level error = 10 log10(sum E_out / sum E_in) (negative = the note came out quieter). Means are in tbass.csv.";
+        t.header = { "subject", "case" };
+        for (double f : { 55.0, 82.0, 110.0 }) t.header.push_back(num(f, 0) + " Hz");
+        Table tCsv; tCsv.header = { "subject", "case", "f_hz", "max_cut_db", "mean_cut_db", "level_error_db", "frames" };
+        for (const auto& s : scanSubjects)
+        {
+            if (!s.gated) continue;
+            const int lat = measureLatency(s, SR).measured;
+            const bool coreFamily = s.id.rfind("C1c", 0) == 0 || s.id.rfind("RSC", 0) == 0 || s.id.rfind("EQS", 0) == 0;
+            std::vector<TBassResult> res;
+            std::map<std::string, std::vector<std::string>> rows;
+            for (const auto& c : tbassCases())
+            {
+                const Stereo in = makeTBass(c, SR);
+                Fx fx = makeFx(s, SR, c.f, false, kPrepareBlock);
+                const Stereo out = renderStd(fx, in);
+                const auto a = align(in, out, lat, SR, 0.0);
+                const TBassResult r = tbassMeasure(a, c.f, SR);
+                res.push_back(r);
+                auto& row = rows[tbassName(c)];
+                row.push_back(num(r.maxCut, 2) + " / " + num(r.levelErr, 2));
+                tCsv.add({ s.id, tbassName(c), num(c.f, 0), num(r.maxCut, 4), num(r.meanCut, 4), num(r.levelErr, 4), inum(r.frames) });
+                // Listening WAVs only for a single (non seed-set) run, and only for the core family (the seed-set runs would write hundreds of files).
+                if (!cap && coreFamily)
+                {
+                    const std::string stem = "Tbass_" + num(c.f, 0) + "_" + (c.decaying ? "808" : "steady") + (c.stereo ? "_st" : "_mono");
+                    writeWav(wavDir / (stem + "_" + s.id + "_out.wav"), a.out, SR);
+                    if (s.id == "C1c-N") writeWav(wavDir / (stem + "_in.wav"), a.in, SR);
+                }
+            }
+            for (const auto& [name, cells] : rows) { std::vector<std::string> r = { s.id, name }; r.insert(r.end(), cells.begin(), cells.end()); t.add(r); }
+            double worstCut = 0.0, worstErr = 0.0;
+            for (const auto& r : res) { worstCut = std::max(worstCut, r.maxCut); worstErr = std::min(worstErr, r.levelErr); }
+            logf("      T-bass (report-only) %-7s largest max cut %.2f dB, most negative level error %.2f dB (12 cases)", s.id.c_str(), worstCut, worstErr);
+            bd.tbass[s.id] = std::move(res);
+        }
+        csvTables["tbass"] = tCsv; tables.push_back(t);
+    }
 
     // ---------------------------------------------------------------- block size (7)
     logf("[7/9] block-size dependence (signal A@2500)");
