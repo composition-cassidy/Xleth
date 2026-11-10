@@ -10,7 +10,8 @@ benchmarked without an engine. As of this document it is **not wired into any ef
 `XlethResonanceSuppressorEffect` and the EQ spectral band are separate implementations. Section 8 is the surface the
 Resonance Suppressor's High Quality mode needs (band grid and weight curve, sharpness, mono / Mid / Side operation, a
 visualization tap, meters, parameter-change safety, the instance hop-phase helper) and how the effect maps its
-parameters onto the core.
+parameters onto the core. Section 9 is live frame-tier switching (Fast / Normal / High while processing, from any thread, without
+allocation), the aligned dry output an effect mixes against, and the parameter hardening at intake.
 
 This file describes what the code does, why each constant has its value, what was tried and rejected, and where the
 core is known to be limited. Numbers quoted here were measured with `engine/tools/xleth_rs_quality_bench.cpp` and
@@ -28,19 +29,22 @@ for arbitrary program material.
 6. Running the bench against the core
 7. Measured margins (7.1 single-seed robustness, 7.2 D1 vs the bench, 7.3 worst-case CPU, 7.4 seed protocol and tier study, 7.5 multi-instance bursts)
 8. Resonance Suppressor integration surface (8.1 grid and weight curve, 8.2 sharpness, 8.3 channels and Mid / Side, 8.4 visualization tap, 8.5 meters, 8.6 parameter changes, 8.7 instance hop phases, 8.8 RS parameter mapping, 8.9 what the core still cannot do)
+9. Live frame-tier switching, aligned dry, parameter hardening (9.1 structure, 9.2 the transition contract, 9.3 what the effect must do, 9.4 detector state across a switch, 9.5 hop phase across tiers, 9.6 parameter hardening, 9.7 API summary, 9.8 bit-identity and CPU checks, 9.9 limitations)
 
 ## 1. Architecture
 
 ### 1.1 Frame engine
 
-- **Frame size N** is chosen before `prepare()` with `setFrameTier()`: Fast 512, Normal 1024, High 2048 at sample rates
-  up to 50 kHz, doubled for every further sample-rate octave (Normal: 2048 at 88.2 / 96 kHz), so a Normal frame is
-  about 21.3 ms at any rate. Hop H = N / 4.
+- **Frame size N**: Fast 512, Normal 1024, High 2048 at sample rates up to 50 kHz, doubled for every further sample-rate
+  octave (Normal: 2048 at 88.2 / 96 kHz), so a Normal frame is about 21.3 ms at any rate. Hop H = N / 4. `setFrameTier()`
+  picks the tier `prepare()` starts on; `prepare()` builds all three, and `requestTier()` switches between them while
+  processing (section 9).
 - **Windows:** periodic sqrt-Hann for analysis and for synthesis; the synthesis window is also scaled by the
   per-hop-phase constant 1 / sum(w^2) so that overlap-add reconstructs the input exactly (depth 0 is a pass-through
   with an error of -160 dBFS RMS, max |diff| 6e-8).
-- **Latency** is exactly N samples, for every parameter value and every block size. Output is bit-identical across
-  block schedules (any `numSamples >= 0` is accepted; frames are produced as the hop fills).
+- **Latency** is exactly N samples of the tier in use, for every parameter value and every block size. Output is bit-identical across
+  block schedules (any `numSamples >= 0` is accepted; frames are produced as the hop fills). The input goes into a per-channel ring that
+  is every tier's analysis FIFO (9.1).
 - **Transform:** `juce::dsp::FFT` real, forward, per-bin gain, inverse. One FFT pair per channel per hop.
 - **Hop phase offset** (`setHopPhaseOffset()`, before `prepare()`, default 0): shifts the initial frame grid by `offset` samples (modulo the hop). The hop
   counter starts that far into a hop, so the first frame completes after `hop - offset` input samples and then every hop; the stream behaves as if it had been
@@ -141,18 +145,23 @@ impulse failed the unit test T3 with a height of 0.83). Levels are exact in ever
 | `sharpness` | 0 - 1 | - | narrowness of the applied cut (cross-band smoothing): 0.5 (default) = [1 2 1] / 4, the historical behaviour; 1 = none (narrowest); 0 = [1 2 1]^4 / 256 (broadest). Section 8.2 |
 | `weightCurve` | pointer | - | nullptr (default) = flat 1. Else `numBands()` floats in [0, 2.5] on the band grid; scales the applied reduction with the RS weighting semantics (w <= 1: w x R; w > 1: deeper up to the depth ceiling). Section 8.1 |
 
+`process()` sanitises a copy at intake: a non-finite field takes its default, every field is clamped to the range above
+(9.6). Valid values pass through bit-identically.
+
 The bench subjects use: **C1** = defaults (depth 0.5, Soft), **C1c** = depth 1, Hard, everything else default (the
 "capability" setting every gate is graded at), **C1s** = depth 1, sensitivity 1, Hard (the most sensitive and deepest
 setting; the musical-noise gate G4 is graded on it).
 
-### 2.2 Structural settings (before `prepare()`, no live change)
+### 2.2 Structural settings (before `prepare()`, no live change) and the live tier request
 
 | setter | default | unit | effect |
 |---|---|---|---|
-| `setFrameTier()` | Normal | tier | N = 512 / 1024 / 2048 (window 10.7 / 21.3 / 42.7 ms at <= 50 kHz); latency = N. Nothing is retuned per tier |
+| `setFrameTier()` | Normal | tier | the tier `prepare()` starts on: N = 512 / 1024 / 2048 (window 10.7 / 21.3 / 42.7 ms at <= 50 kHz); latency = N. Nothing is retuned per tier |
+| `requestTier()` | - | tier | **live**, any thread: switch the tier while processing (section 9). Not structural |
+| `setKeepDetectorStateOnTierSwitch()` | true | bool | study option: false starts the new tier from reset state on a switch (9.4) |
 | `setDetectorTimeConstantMs()` | 200 | ms | slow estimate |
 | `setFastTimeConstantMs()` | 40 | ms | fast estimate; 0 disables the fast path (slow only) |
-| `setHopPhaseOffset()` | 0 | samples | initial hop phase, modulo the hop; latency stays N; 0 = historical behaviour (bit-identical). Use `Core::hopPhaseOffsetForInstance(i, hop)` for instance i in one thread (7.5, 8.7) |
+| `setHopPhaseOffset()` | 0 | samples | initial hop phase, modulo the hop; latency stays N; 0 = historical behaviour (bit-identical). Use `Core::hopPhaseOffsetForInstance(i, hop)` for instance i in one thread (7.5, 8.7). Kept as a fraction of the hop across tier switches (9.5) |
 | `setVizSink()` | nullptr | - | visualization tap (not structural: may be set between `process()` calls on the processing thread). Section 8.4 |
 
 ### 2.3 Constants (compile time)
@@ -240,17 +249,20 @@ visible, and the verdict reads `PASS (1 waiver)` when everything else passes. No
 
 ## 5. Real-time rules: allocation and threading
 
-- **Allocation.** `prepare()` and `release()` allocate (and free) everything `process()` will ever touch; they run on a
-  non-audio thread. `process()` and `reset()` **never allocate, lock, log or throw**. Unit test T4 counts `operator new`
-  on the measuring thread: 0 calls with static parameters, with parameters changed before **every** block, and in a
-  cold pass armed from the first block after `prepare()`.
+- **Allocation.** `prepare()` and `release()` allocate (and free) everything `process()` will ever touch, for every frame
+  tier; they run on a non-audio thread. `process()`, `reset()` and `requestTier()` **never allocate, lock, log or throw**,
+  including across tier switches. Unit test T4 counts `operator new` on the measuring thread: 0 calls with static parameters,
+  with parameters changed before **every** block, and in a cold pass armed from the first block after `prepare()`; T-D0 / T-D
+  count `operator new` and `operator delete` over thousands of tier switches (9.2).
 - **`numSamples` is not limited to the prepared `maxBlockSize`;** the core consumes any block length by filling hops.
   `maxBlockSize` is accepted for interface symmetry and not used for sizing.
 - **Threading.** A `Core` is **not thread-safe** and owns **no thread**. One instance per audio chain. `prepare()`,
-  `release()` and the structural setters (`setFrameTier`, `setDetectorTimeConstantMs`, `setFastTimeConstantMs`, `setHopPhaseOffset`) belong to a
-  non-audio thread and must not run concurrently with `process()` (they take effect at the next `prepare()`). `process()`,
-  `reset()` and the introspection accessors (`bandLevelDb`, `bandReductionDb`, `framesProcessed`, ...) belong to the
-  processing thread; the accessors return pointers into state that the next `process()` rewrites.
+  `release()` and the structural setters (`setFrameTier`, `setDetectorTimeConstantMs`, `setFastTimeConstantMs`, `setHopPhaseOffset`,
+  `setKeepDetectorStateOnTierSwitch`) belong to a non-audio thread and must not run concurrently with `process()` (they take effect at
+  the next `prepare()`). `process()`, `reset()` and the introspection accessors (`bandLevelDb`, `bandReductionDb`, `framesProcessed`, ...)
+  belong to the processing thread; the accessors return pointers into state that the next `process()` rewrites. **Any thread:**
+  `requestTier()` (one release store), `latencyFor()` / `fftSizeFor()` (pure), `currentLatency()`, `frameTier()`, `tierSwitchCount()` and
+  the meters (relaxed atomics); memory orders in 9.2.
 - **Parameters** (`Params`) are copied by value into every `process()` call; change them freely between calls
   (unit test P1 changes every one of them before every block, section 8.6). `weightCurve` is a pointer: the array
   (`numBands()` floats) is read during that `process()` call only and must stay valid and unchanged for its duration.
@@ -262,7 +274,8 @@ visible, and the verdict reads `PASS (1 waiver)` when everything else passes. No
 - **`reset()`** clears all signal state (FIFOs, overlap-add, both power averages, baselines, latches, reduction
   smoothers) without touching the allocations; it is real-time safe and equals a freshly prepared instance (test T7).
   After `reset()` the detector re-enters its start-up (bias-corrected) phase.
-- **Latency** is `currentLatency()` = N samples, constant for a prepared instance; report it to the host before audio runs.
+- **Latency** is `currentLatency()` = N samples of the tier the output is aligned to; report it to the host before audio runs, and
+  `latencyFor(sr, t)` when requesting tier t (9.3).
 
 ## 6. Running the bench against the core
 
@@ -562,8 +575,8 @@ threshold is statistical (sigma), so the HQ detector-shape side effect has no co
   | RS stereo_mode | input | core prepared | what the effect feeds | output |
   |---|---|---|---|---|
   | Stereo | stereo | 2 ch | L, R; `stereoLink = stereo_link / 100` | L', R' |
-  | Mid | stereo | 2 ch (or 1) | M = (L + R) / 2 as channel 0, process(n = 1); S from the effect's dry delay of exactly `currentLatency()` samples | L' = M' + S_d, R' = M' - S_d |
-  | Side | stereo | 2 ch (or 1) | S = (L - R) / 2 as channel 0, process(n = 1); M from the dry delay | L' = M_d + S', R' = M_d - S' |
+  | Mid | stereo | 2 ch (or 1) | M = (L + R) / 2 as channel 0, process(n = 1); S as the aux channel (`auxIn`), S_d = `auxOut` (9.2: on the dry timeline through a tier switch) | L' = M' + S_d, R' = M' - S_d |
+  | Side | stereo | 2 ch (or 1) | S = (L - R) / 2 as channel 0, process(n = 1); M as the aux channel, M_d = `auxOut` | L' = M_d + S', R' = M_d - S' |
   | Stereo / Mid | mono | 1 ch | the channel | as is |
   | Side | mono | 1 ch | nothing to process (the RS feeds zeros to keep its state warm and outputs the delayed dry) | delayed dry |
 
@@ -645,8 +658,7 @@ stressed output (after latency + 0.5 s) <= 1.25 x the largest of four steady run
 
 So no internal smoothing was added (none was needed, and the steady state is untouched). The caller does not have to smooth anything for
 click safety; the RS's existing parameter smoothers (20 ms) may stay for slower glides (a weight node dragged by the user changes the curve at the
-hop rate otherwise). The caller must pass finite values for `depth`, `sensitivity`, `stereoLink`, `attackMs`, `releaseMs` (APVTS values always
-are); `sharpness` (NaN = 0.5) and the weights (NaN = 0) are sanitised by the core.
+hop rate otherwise). Every float field is sanitised by the core at intake (9.6): non-finite -> default, then clamped; non-finite weights read as 1.
 
 ### 8.7 Instance hop phases
 
@@ -670,13 +682,13 @@ in every 4th block (375 blocks) and 0 in the others.
 | `stereo_link` (0..100 %, **100**) | `stereoLink = stereo_link / 100` (the core's default is 0) |
 | weighting (`wc_hp`, `wc_lp`, `wc_b1..8_*`) | `weightCurve` = `weightingForFrequency(bandCentreHz(i))`, always passed (8.1) |
 | `stereo_mode` | 8.3 |
-| `quality` Fast / Normal / High | `setFrameTier()` + `prepare()` (structural) |
-| `mix`, `trim`, `delta`, dry delay (= `currentLatency()`), bypass, `processing_mode` (the LL engine) | stay in the effect |
+| `quality` Fast / Normal / High | `setFrameTier()` before `prepare()`; while playing `requestTier()` + `setLatencySamples(Core::latencyFor(sr, t))`, never a reprepare (9.3) |
+| `mix`, `trim`, `delta`, bypass, `processing_mode` (the LL engine) | stay in the effect; the dry they mix against is the core's `dryOut` (and `auxOut` for Mid / Side), not an own delay line (9.2, 9.3) |
 | viz overlay, meters | 8.4, 8.5 |
 
 ### 8.9 What the core still cannot do for the RS
 
-- **Live frame-tier switching** (changing `quality` while playing): structural, `prepare()` only; the next phase.
+- ~~Live frame-tier switching~~: done (section 9).
 - **The RS HQ detector semantics** of selectivity and sharpness (dB above a raw local mean, centre gap, salience slope): the core's detector is
   statistical; presets will not sound the same. Only direction and midpoint correspond (8.8).
 - **Per-bin weighting**: the weight is sampled at the 96 band centres (8.1); weighting features narrower than a band spacing (below ~100 Hz the
@@ -684,7 +696,7 @@ in every 4th block (375 blocks) and 0 in the others.
 - **Viz**: no instantaneous per-bin spectrum; `levelDb` is uncalibrated (a constant display offset is the effect's) and on 96 bands, not 128 buckets.
 - **RS meter "activity" and detector activity** (`blockDetectorActivity_`): not computed by the core (the `regionOutput()` hook is still a stub); the effect
   derives what it shows from `lastMaxReductionDb()` or the viz frames.
-- **NaN in depth / sensitivity / link / attack / release** is not sanitised (8.6).
+- ~~NaN in depth / sensitivity / link / attack / release~~: sanitised at intake (9.6).
 - **Sub-frame parameter timing**: parameters apply per hop (5.3 ms at 48 kHz Normal), from the block that completes it.
 - Out of scope here and unchanged: the named G1 waiver at 100 Hz and the seed-dependent G1 150 Hz / G8a 500 Hz shortfalls (7.1, 7.4).
 
@@ -702,3 +714,271 @@ in every 4th block (375 blocks) and 0 in the others.
   mean per-block time of C1 (48 kHz stereo): block 64: 17.59 / 17.87 us before, 17.75 / 17.62 us after; block 128: 35.32 / 35.88 before, 35.39 / 35.29 after;
   block 512: 142.5 / 142.8 before, 142.0 / 140.8 after. Within the run-to-run spread (about 1 %); the extra per-hop work of the defaults is the meter's
   max over 96 bands per channel and one pointer test.
+
+## 9. Live frame-tier switching, aligned dry, parameter hardening
+
+The core can change its frame tier (Fast 512 / Normal 1024 / High 2048 at <= 50 kHz) while it processes, from any thread, without
+allocating, locking or reprepare. This is the core-side fix for audit finding RT3 (`docs/RESONANCE_SUPPRESSOR_AUDIT.md` 2.5: the RS
+re-prepares its `WolaProcessor` on the message thread while the audio thread may be inside `processBlock`). Fixed-tier output is
+bit-identical to the core before this change (9.8). The core is still not wired into any effect. Unit tests T-A, T-B, T-C, T-D0, T-D,
+T-E, T-H, T-M in `test_resonance_core` (numbers below are from that run, 48 kHz).
+
+### 9.1 Structure: everything is built in `prepare()`
+
+`prepare()` builds one complete **engine per tier**: its `juce::dsp::FFT` object, analysis and synthesis windows, band <- bin weights,
+flank lists, main-lobe zones, bin -> band map, statistics tables, sigma arrays, and per channel the overlap-add accumulator, output FIFO,
+FFT buffer, bin gains, both power averages and every per-band state array. It also allocates one **input ring** per channel (and one
+for the aux channel, 9.3), a power of two >= 2 x the largest N at that rate (4096 at 48 kHz). The ring is every engine's analysis FIFO:
+a frame that ends at stream position e reads `ring[e - N, e)`, so an engine that starts mid-stream already has its history. Scratch is
+sized for the largest tier. After `prepare()` a tier change only changes which preallocated engine is read: it allocates, frees and
+constructs nothing (T-D0 and T-D count `operator new` and `operator delete`: 0).
+
+The band grid, and with it every per-band array (`Params::weightCurve`, the viz frame, the meters), does not depend on the tier; the
+power averages and everything indexed by bin do. Each engine's frame grid is (e + offset) % H == 0 on one stream clock (input samples
+since `prepare()` / `reset()`).
+
+Fixed-tier code path: `process()` writes each block into the ring (in place of the old per-engine input FIFO), hands out the finished
+output, and runs a frame when the hop completes, exactly as before. The analysis multiplies the same samples by the same window (read
+from the ring in at most two segments), so every output sample is bit-identical.
+
+### 9.2 The transition contract
+
+**What the core guarantees**
+
+1. **Request.** `requestTier(t)` may be called from any thread at any time (also before `prepare()` and while `process()` runs). It is
+   one atomic store. The last request before the audio thread looks wins; earlier ones are overwritten, never queued.
+2. **Adoption.** At the start of a `process()` call in which no transition is running, the core takes the pending request (one atomic
+   exchange). A request for the tier already in use is consumed and ignored. A request made during a transition stays pending and is
+   adopted at the first call after the transition has ended. At most one adoption per call.
+3. **Hold.** From the adoption on, the new engine runs next to the old one. It starts from the old engine's detector / gain state
+   (9.4), processes its first frame at its last grid point m <= the adoption position (the input is already in the ring), and then
+   runs on its own grid. Its overlap-add output is complete **3 hops after that first frame** (valid = m + 3 H_new). Until `valid` the
+   output is the old engine's output, **bit-identical to a core that was never asked to switch**; the meters, the viz tap, the
+   introspection accessors, `frameTier()` and `currentLatency()` stay on the old tier. The hold lasts 2 to 3 hops of the new tier:
+   at 48 kHz up to 8 ms to Fast, 16 ms to Normal, 32 ms to High.
+4. **Crossfade.** From `valid` on (a frame boundary of the new engine) the output is `y = A + r (B - A)`, with A the old engine's
+   output, B the new one's, and r = (k + 1) / F for the k-th sample of the fade (linear, the same form as the EQ spectral restart
+   fade-in of eae4ab1), F = round(5 ms x fs) = 240 samples at 48 kHz (`Core::kTierCrossfadeMs`, `tierCrossfadeSamples()`). At the
+   first sample of the fade `frameTier()` and `currentLatency()` switch to the new tier, the viz tap and the meters publish the new
+   engine, and `framesProcessed()` keeps counting (frames of the tier in use). When r reaches 1 the output is exactly B and the old
+   engine stops.
+5. **Duration.** adoption -> end of crossfade = (2 .. 3) x H_new + F. Measured at 48 kHz (T-B, block 100): 600 samples to Fast,
+   1 000 to Normal, 1 500 to High (12.5 / 20.8 / 31.3 ms). Both engines run during that time.
+6. **Never silent, never a step.** The output is never muted and never switched without a crossfade. T-B, every ordered pair, C1c:
+   the largest sample step from the adoption to the end of the crossfade is 0.880 - 0.961 x the steady runs' largest on pink noise
+   with a +12 dB / Q 8 bell at 2.5 kHz, and 0.994 - 0.998 x on a 1 kHz sine (bound 1.25); no NaN / Inf.
+7. **Alignment.** Outside the crossfade the wet output is the input delayed by `currentLatency()` (at depth 0 within -160 dBFS);
+   during it, it is the blend of the two delays given above. After the transition a unit impulse comes out at exactly
+   +`latencyFor(new tier)` with unit height (T-B, depth 0, every pair; max elsewhere <= 2.4e-8).
+
+**Aligned dry (`dryOut`).** `process(channels, n, numSamples, params, dryOut)` writes, per processed channel, the input on exactly the
+timeline of the wet output: delayed by `currentLatency()` outside a transition, the old delay during the hold, and
+`x[t - N_old] + r (x[t - N_new] - x[t - N_old])` with the same r during the crossfade. At depth 0 wet == dryOut within the COLA
+error at every sample of a switch (T-B: max |wet - dryOut| <= 4.5e-8 over the whole transition). So any mix
+`(1 - mix) x dryOut + mix x wet`, a delta `wet - dryOut`, or a bypass crossfade to dryOut never combs and never steps. T-B measures it
+on white noise at depth 0 over the whole transition: the spectrum of wet + dryOut equals that of 2 x dryOut to 0.0000 dB (flatness of
+the ratio 1.00000). **Negative control:** a dry delay that follows `latencyFor(requested tier)` from the adoption on (an effect that keeps
+its own delay line and switches it when it publishes the new latency) combs over the hold: deepest notch -22 to -31 dB, flatness of the
+ratio 0.25 - 0.58. `dryOut` must not alias the channel buffers; a null entry skips that channel.
+
+**Aux channel (`auxIn` / `auxOut`).** One extra delay-only channel, not analysed or processed, delayed onto exactly the `dryOut`
+timeline. It is the other component of the Mid / Side recipe (8.3): Mid mode processes M as channel 0 of a 1-channel call and passes S as
+aux; then L' = M' + S_d and R' = M' - S_d. T-M: through every ordered switch at depth 0 that reconstructs the stereo dry timeline to
+<= 5.2e-8, and auxOut is bit-identical to the dryOut of a 2-channel core fed S as channel 1. Pass the aux on every call while it is in use
+(its ring is written only when `auxIn != nullptr`); `reset()` clears it.
+
+**Why the hold, and not an immediate switch with a dry bridge.** The alternative was to move the output to the new latency at the
+adoption and to bridge the hold with the unsuppressed input at the new delay, then crossfade to the new wet once it is valid. That puts
+the resonance back, unsuppressed, for 2 - 3 hops of the new tier (up to 32 ms at High) on every switch, and it breaks the step bound
+wherever the core cuts something: T-B computes what it would do, max input step / steady wet step = 1.05 on pink + bell and **15.1 - 15.7 on
+the 1 kHz sine** (C1c cuts a lone sine about 24 dB), against the 1.25 limit. The hold keeps the suppression continuous. Its cost: the
+output reaches the new latency up to 3 hops + 5 ms after the request instead of at once (9.3, step 2).
+
+**Memory orders.** `requestTier()` stores with `memory_order_release`. The audio thread first does a `relaxed` load (the common case,
+nothing pending, costs one load per call) and, only if something is pending, `exchange(-1, memory_order_acquire)`. The value is a
+self-contained tier index, so relaxed would be correct for the core; release / acquire are there so that whatever the requesting thread
+wrote before the request (for example the effect's own parameter state) is visible to the audio thread once the request is adopted.
+`frameTier()`, `currentLatency()` and `tierSwitchCount()` are written by the audio thread and read anywhere with relaxed atomics: they
+are status values, not synchronisation. Out-of-range tier values clamp to Fast / High. There is no mutex, condition variable, spin-wait
+or retry loop anywhere on the path.
+
+### 9.3 What the effect must do (integration phase)
+
+1. **prepareToPlay** (message thread, not processing): `core.setFrameTier(tier from the quality parameter)`, `core.prepare(sr, block,
+   channels)`, then `setLatencySamples(core.currentLatency())`. Allocate `dryOut` buffers (and the aux buffer for Mid / Side) for the
+   largest block the host can deliver.
+2. **Quality change** (message thread, `onParameterValueChanged("quality")`): `core.requestTier(t)` and
+   `setLatencySamples(Core::latencyFor(sr, t))`. **Never** `prepare()` or `reset()` for a quality change: that is RT3. The host's PDC
+   recompute is not sample-synchronous with the core's adoption anyway; the core keeps its output aligned to `currentLatency()`
+   throughout, and the gap between the published latency and the core's is at most the hold + 5 ms (9.2, step 3). An effect that wants
+   to publish the latency only once the core has moved can watch `frameTier()` / `currentLatency()` from the message thread instead
+   (both are atomics); the difference is the order of two transients, not their size.
+3. **processBlock**: one `core.process(ch, n, numSamples, params, dryOut[, auxIn, auxOut])` per block, then mix with **the core's
+   dryOut** (not with an own dry delay of `latencyFor()` or `currentLatency()` samples): `out = dryOut + mix x (wet - dryOut)`, delta
+   = `wet - dryOut`. The effect needs no dry delay line of its own.
+4. **Mid / Side**: Mid = process M (channel 0, n = 1) with S as aux; Side = process S with M as aux; recombine with the aux output. A
+   stereo_mode change still calls `reset()` (8.3).
+5. **Parameters**: pass the APVTS values as they are; the core sanitises them (9.6). `weightCurve` must stay valid for the call.
+6. Do not call `prepare()`, `release()` or the structural setters while `process()` can run; `requestTier()` is the only tier call that
+   may race with it.
+
+CPU during a transition: both engines run for (2 .. 3) x H_new + F samples; a block then completes at most one frame of each tier, plus
+the new engine's first frame in the adopting call (which may coincide with a frame of the old one). Fixed-tier cost is unchanged (9.8).
+The prepared footprint is the three engines together (N = 512 + 1024 + 2048: about 3.5 x the Normal tier's buffers) plus the rings; prepare() builds all three tiers' tables (its time was not measured).
+
+### 9.4 Detector and gain state across a switch (kept, measured)
+
+The detector's band-domain state is tier-invariant in meaning: per-band reductions (attack / release state, dB), the release latches,
+and the bias-correction products a^n of both averages (a^n = exp(-t / tau) at every tier: the time constants are in ms). Band LEVELS are
+not tier-invariant (they carry a constant offset that depends on N, 1.2), and the power averages live on the bins. On a switch the core
+therefore:
+
+- copies the per-band reductions, smoothed / applied curves and latches, and both a^n;
+- remaps both power averages to the new bins with the |X|^2 scaling of a noise-like input (x N_new / N_old): linear interpolation in
+  frequency to a finer grid, a triangular average over the old bins within +-r of the new bin to a coarser grid (r = 2 or 4), so a peak
+  between two new bins is shared, not dropped;
+- converts the frame count through time (round(frames x H_old / H_new); it indexes the sigma tables and the baseline stagger), recomputes
+  sigma for it, and forces a full baseline refresh on the first new frame (the levels are recomputed from the remapped averages every frame).
+
+Measured (T-C, C1c, pink noise with a steady +12 dB / Q 8 bell, switch after 4 s, published cut = max applied band reduction within
++-1/6 octave of f0, channel 0, sampled every 64 samples; "fresh" = a core of the new tier that processed the whole signal). Acceptance: the
+cut stays above 1 dB from the adoption to 150 ms and is within 1.5 dB of the fresh core from 150 ms on.
+
+| 2.5 kHz | kept: min cut 0-150 ms | kept: within 1.5 dB of fresh from | kept: worst \|diff\| after 150 ms | reset: min cut 0-150 ms | reset: within 1.5 dB from |
+|---|---:|---:|---:|---:|---:|
+| Fast -> Normal | 8.22 dB | 0 ms | 0.20 dB | 0.21 dB | 62.7 ms |
+| Fast -> High | 8.23 | 0 | 0.21 | 5.48 | 62.7 |
+| Normal -> Fast | 8.36 | 0 | 0.12 | 0.00 | 52.0 |
+| Normal -> High | 8.40 | 0 | 0.06 | 5.48 | 62.7 |
+| High -> Fast | 8.39 | 0 | 0.15 | 0.00 | 52.0 |
+| High -> Normal | 8.43 | 0 | 0.02 | 0.21 | 62.7 |
+
+Curves (ms after the adoption: kept / fresh / reset, dB):
+
+| ms | Normal -> High | Normal -> Fast | High -> Normal |
+|---:|---|---|---|
+| 0 | 8.72 / 8.73 / 8.72 | 8.72 / 8.50 / 8.72 | 8.73 / 8.72 / 8.73 |
+| 10 | 8.71 / 8.72 / 8.71 | 8.70 / 8.49 / **0.00** | 8.72 / 8.71 / 8.72 |
+| 20 | 8.69 / 8.70 / 8.69 | 8.68 / 8.49 / **0.85** | 8.69 / 8.69 / **0.69** |
+| 30 | 8.66 / 8.68 / **5.48** | 8.66 / 8.47 / 3.75 | 8.67 / 8.67 / 3.21 |
+| 50 | 8.63 / 8.66 / 6.52 | 8.62 / 8.45 / 6.83 | 8.65 / 8.64 / 6.25 |
+| 100 | 8.51 / 8.55 / 7.51 | 8.49 / 8.34 / 7.47 | 8.53 / 8.52 / 7.44 |
+| 150 | 8.40 / 8.44 / 7.68 | 8.36 / 8.24 / 7.60 | 8.43 / 8.42 / 7.64 |
+| 300 | 8.40 / 8.42 / 8.40 | 8.33 / 8.30 / 8.36 | 8.41 / 8.42 / 8.40 |
+| 500 | 8.89 / 8.91 / 8.97 | 8.78 / 8.78 / 8.82 | 8.89 / 8.89 / 8.92 |
+
+The reset alternative (`setKeepDetectorStateOnTierSwitch(false)`: the new engine starts from reset state) drops the cut to 0 - 5.5 dB
+when the new engine takes over (the bias-corrected start-up and its large start-up sigma) and needs 52 - 63 ms to come back within 1.5 dB;
+at 500 Hz (informational, the bell is narrower than one bin at every tier) it drops to 0.00 dB for 20 - 115 ms depending on the pair and needs 175 - 204 ms,
+while the kept state stays at >= 7.22 dB with a worst difference to the fresh core of 0.24 - 0.51 dB after 150 ms. **Decision: the state is
+kept** (default; the reset path remains a structural study option). The 1.5 dB criterion is met from the first sample because the three
+tiers' steady cuts at 2.5 kHz differ by only 0.2 dB; the evidence that the transfer itself is right is the worst difference after 150 ms
+(<= 0.21 dB at 2.5 kHz), not the 1.5 dB bound.
+
+### 9.5 Hop phase across tiers
+
+`setHopPhaseOffset()` is stored as a fraction of the prepare-time tier's hop (o / H at `prepare()`); every tier uses floor(fraction x its
+hop) on the same stream clock. Going to a longer hop is always exact; going to a shorter one is exact when the offset is a multiple of the
+hop ratio (2 or 4), which `hopPhaseOffsetForInstance(i, hop)` satisfies for up to hop / 4 instances. The fraction is never re-derived from
+a rounded offset, so repeated switches do not drift. T-H: 8 instances prepared at Normal with `hopPhaseOffsetForInstance(i, 256)`, all
+switched together Normal -> High -> Fast -> Normal at 64-sample blocks: in steady state at most 2 / 1 / 4 / 2 frame boundaries per block over
+the 8 (8 x 64 / hop), every offset is the original x2 at High and /2 at Fast and the original again at Normal; the all-zero control has 8 at
+every tier.
+
+### 9.6 Parameter hardening (at intake, on the audio thread)
+
+`process()` works on `Core::sanitizeParams(p)`, a copy of the caller's block (exposed for tests and for showing what is in effect):
+
+| field | non-finite (NaN, +-Inf) | then clamped to |
+|---|---|---|
+| `depth` | 0.5 | 0 .. 1 |
+| `sensitivity` | 0.5 | 0 .. 1 |
+| `attackMs` | 15 | 0.1 .. 1000 |
+| `releaseMs` | 200 | 1 .. 10000 |
+| `stereoLink` | 0 | 0 .. 1 |
+| `sharpness` | 0.5 | 0 .. 1 |
+| `weightCurve[i]` (per frame, at use) | **1** (the band is left unweighted) | 0 .. `kMaxWeight` (2.5); negative -> 0 |
+
+The finite test reads the bit pattern, so it holds under any floating-point model. A finite value inside its range passes bit-identically
+(T-E: 20 000 random valid sets compared by bit pattern), so valid inputs give bit-identical results. **Change for invalid input:** a NaN
+weight used to read as 0 (the band never cut) and now reads as 1, and +-Inf in `sharpness` now reads as 0.5 instead of 1 / 0; W2 was updated
+accordingly. `hardKnee` (a bool) and the `weightCurve` pointer cannot be validated; non-finite input AUDIO is not sanitised (9.9). T-E: each of
+the six float fields set to NaN, +Inf, -Inf, 1e30, -1e30, 7, -3 and 0 in turn (C1c otherwise), all fields non-finite at once, and a weight curve
+of {NaN, Inf, -Inf, -1, 1e30, 0.5}: output finite, max |out| <= 0.46 against 4 x the input peak, bit-identical to passing the sanitised value
+explicitly, zero allocations.
+
+### 9.7 API summary for the effect
+
+| call | thread | notes |
+|---|---|---|
+| `setFrameTier(t)`, `setHopPhaseOffset(o)`, `setKeepDetectorStateOnTierSwitch(b)`, `prepare()`, `release()` | non-audio, not processing | `prepare()` builds every tier |
+| `requestTier(t)` | any | one atomic store; last wins |
+| `Core::latencyFor(sr, t)`, `Core::fftSizeFor(sr, t)` | any | pure |
+| `currentLatency()`, `frameTier()`, `tierSwitchCount()`, `lastMaxReductionDb()` | any | relaxed atomics |
+| `process(ch, n, len, params, dryOut = nullptr, auxIn = nullptr, auxOut = nullptr)` | audio | adopts a pending request at its start |
+| `reset()` | audio (or not processing) | completes a running transition at once on the requested tier; a pending request stays pending |
+| `targetFrameTier()`, `tierTransitionActive()`, `tierCrossfadeSamples()`, introspection | audio | describe the tier the output is aligned to |
+| `Core::sanitizeParams(p)` | any | pure |
+
+### 9.8 How "fixed-tier output is bit-identical" and "CPU unchanged" were checked
+
+- **T-A** (unit test): for each tier, the default configuration, a weighted / broadened one (depth 1, Hard, sensitivity 0.7, sharpness 0.15,
+  link 0.5, weights {0, 0.3, 1, 1.7, 2.5}) and a weighted / narrowed one (Soft, sharpness 0.85, attack 3 ms, release 80 ms), plus Normal with hop
+  offset 96, a 3 s stereo signal (pink + bell + 1 kHz tone) through the schedule {1, 37, 128, 255, 511, 1024, 37}: a 64-bit FNV-1a hash of
+  every output sample. The hashes were recorded by building the same test against the core of 85df03d; the new core reproduces all 10.
+- **The 101 checks that existed before** print byte-identical text (every measured number) from the old and the new binary, except W2 (its
+  NaN entry, 9.6) and V4 (wall-clock).
+- **Bench** (9.8.1) and **CPU** (9.8.2) below.
+
+#### 9.8.1 Bench, byte for byte
+
+The pre-change bench binary (85df03d) was frozen as `xleth_rs_quality_bench_tierpre.exe`, the new one built, and both run with
+`--subjects C1,C1c,C1c-F,C1c-N,C1c-H,S3c,R0,R1 --ref-subjects --no-cpu` on the default seed and on `--seedset dev` (the held-out seeds were
+not run). Every file was compared byte by byte, with the run-folder name / timestamp normalised:
+
+| run | files | byte-identical | differ only in the run folder name / timestamp | content differences |
+|---|---:|---:|---:|---:|
+| default seed | 90 (21 CSV, 68 WAV, summary.md) | 89 | 1 (summary.md, its "Run directory" line) | 0 |
+| dev seeds 1..6 | 546 (131 CSV, 408 WAV, 7 summaries) | 538 | 8 (7 summaries, `seedset_per_seed.csv`) | 0 |
+
+Gate counts and verdicts are therefore unchanged (C1c-N default seed `PASS (1 waiver)`; dev robust verdicts C1c FAIL G1 1/6, G8a 1/6;
+C1c-F G3 5/6, G8a 1/6, G9a 4/6; C1c-N G1 1/6, G8a 1/6; C1c-H G8a 1/6, as in 7.4).
+
+#### 9.8.2 Fixed-tier CPU
+
+`--cpu-only` times only the default (Primary) subjects, so C1c-N was timed through the full run, `--subjects C1c-N` (its G7 rows: 30 x 10 s stereo
+pink noise per block size, fresh instance per repetition, against S3 in the same run), alternating the two binaries: pre, post, pre, post.
+Mean per-block time, us (ratio to S3 in the same run):
+
+| run | C1c-N @64 | C1c-N @128 | S3 @64 | S3 @128 |
+|---|---:|---:|---:|---:|
+| pre 1 | 19.9 (0.783) | 39.2 (0.798) | 25.4 | 49.1 |
+| post 1 | 21.2 (0.768) | 45.1 (0.862) | 27.7 | 52.3 |
+| pre 2 | 31.2 (0.938) | 62.7 (0.839) | 33.3 | 74.8 |
+| post 2 | 26.1 (0.675) | 59.9 (0.816) | 38.6 | 73.4 |
+
+**These runs were not on a quiet machine**: a DAW session (FL Studio) was using about 2.5 cores throughout, and the unchanged S3 reference
+itself moved by up to 52 % between runs of the same binary (49 -> 75 us at 128). The same C1c-N binary varies by 57 - 60 % between its two runs;
+the pre / post difference changes sign between the pairs (64: +7 % then -16 %; 128: +15 % then -4 %) and is far inside that spread. What can
+be said: no systematic cost is visible at this noise level, and the fixed-tier path does no more work per sample than before (the input memcpy now
+goes into the ring instead of the FIFO, the per-frame memmove of N - H input samples is gone, the window reads the ring in at most two segments;
+per call: one relaxed atomic load and the six-field Params sanitise). **A rerun on an idle machine is still owed** to put a number on "unchanged
+within noise" (the 8.10 protocol: about 1 % run-to-run spread when quiet).
+
+### 9.9 Limitations (for the effect integration)
+
+- **Latency reaches the new tier 2 - 3 hops + 5 ms after the adoption**, not at once (9.2): with a PDC update published at the request, the
+  track is misaligned by the latency difference for up to that time (32 + 5 ms at High, 48 kHz).
+- **One transition at a time.** A request made during one waits until it ends (at most about 37 ms at 48 kHz); a request is never cancelled or
+  re-targeted mid-transition.
+- **During a transition both engines run** (9.3); a switch costs one extra frame of the new tier in the adopting call.
+- **The crossfade is between two delays of the same audio**: for a stationary tone the blend of the two phases can dip during the 5 ms (a
+  partial cancellation at frequencies where the two delays differ by about half a period). Broadband material shows nothing; this is the
+  nature of moving a timeline, and the dry follows the same blend, so mixes stay consistent.
+- **`VizFrame::hopIndex`** keeps counting frames of the tier in use; the sample-position formula `hopSize x (hopIndex + 1) - hopPhaseOffset()`
+  holds only without a switch since `reset()`.
+- **Mixed channel counts across calls** (a 2-channel core called with n = 1 and later n = 2) leave channel 1's ring stale for one latency, as the
+  old per-channel FIFO did.
+- **Non-finite input audio** is not sanitised (it would propagate through the averages like before); the effect's input stage owns that.
+- An **isolated impulse after seconds of digital silence** is cut by 0.2 - 0.4 % by a steady Fast or Normal core, switched or not (seen in T-B with
+  default parameters); a detector property, not part of the switch.
