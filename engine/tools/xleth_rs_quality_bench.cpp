@@ -76,6 +76,8 @@
 //   The single-seed verdict is unchanged. TUNING WORK USES DEFAULT + DEV ONLY; the heldout set (101..106) is RESERVED: it is run only for the final confirmation by the person grading.
 //   --seedset cannot be combined with --seed (the set chooses the seeds).
 //   --corr-diag (diagnostic, no gate): G1 @ 150 Hz and G8a @ 500 Hz of RSC-N / RSC-N0 / C1c-N on dev seeds 1..6 with independent AND fully correlated (R == L) noise; see runCorrDiag().
+//   --lowfreq-diag (diagnostic, no gate): why the core misses G1 @ 100 / 150 Hz and G8a @ 500 Hz - WOLA-replica transform oracles, per-band detector / gain taps,
+//   one-knob public sweeps, T1 timing (default + dev seeds); see runLowFreqDiagT().
 //
 // RS New engine subjects (after the integration): RSC-F0 / RSC-N0 / RSC-H0 (stereo link 0, focus curve open 20 Hz - 20 kHz = the C1c settings through the effect) are graded on every gate
 //   against C1c-F / C1c-N / C1c-H; RSC-F / RSC-N / RSC-H (RS defaults, stereo link 100 %) are a characterisation set whose G3 / G9a are printed but not graded (Subject::notGraded).
@@ -256,6 +258,7 @@ struct Options
     std::string burstStagger = "preroll";// --burst-stagger preroll|core: how hop phases are staggered (preroll = bench-only, feeds i*hop/N silent samples first)
     bool corrNoise = false;              // --corr-noise (diagnostic, set by --corr-diag only): both channels of every pink-noise signal use the SAME noise (R == L); default off = independent L/R, output unchanged
     bool corrDiag = false;               // --corr-diag: G1 @ 150 Hz and G8a @ 500 Hz of RSC-N / RSC-N0 / C1c-N on dev seeds 1..6, with independent and with fully correlated L/R noise (diagnostic, no gate)
+    bool lfDiag = false;                 // --lowfreq-diag: why the ResonanceCore misses its low-frequency cells (G1 @ 100 / 150 Hz, G8a @ 500 Hz); diagnostic, no gate
 };
 
 static Options g_opt;
@@ -3639,6 +3642,1008 @@ static int runCorrDiag(const std::string& cfg, const std::string& cpu, bool isRe
     return g_nonFinite == 0 ? 0 : 1;
 }
 
+// ============================================================================
+// Low-frequency diagnostic (--lowfreq-diag). NOT a gate, NOT a verdict: no threshold, metric definition or waiver is touched.
+// ============================================================================
+//
+// Question: why does the ResonanceCore miss its low-frequency cells (G1 @ 100 / 150 Hz; G8a @ 500 Hz)? Everything is graded with the bench's own metrics
+// (residualVsClean on scan signal A, tvAnalyse on T1) at the C1c settings (depth 1, Hard, stereo link 0), tiers F / N / H, on the default seed and the dev
+// seeds 1..6 (never the held-out set).
+//   1. Transform-domain oracles: a bench-local replica of the core's WOLA (sqrt-Hann periodic analysis and synthesis, hop N / 4, per-phase 1 / sum w^2,
+//      latency N) with FIXED per-bin gains: `samp` = the inverse bell sampled at the bin centres; `binavg` = the inverse of the bin-average excess a perfect
+//      bin-power detector would read (pink weighting under the window's power kernel); `ls` / `ls+` = per-bin gains optimised through the renderer's kernel
+//      model (least squares in dB over f0 / 2 .. 2 f0 and +/- 1 bin around every free bin, the G1 window weighted x4; ls: g <= 1, ls+: g <= 2); `band` = the exact bell at the core's 96 band
+//      centres interpolated to the bins with the core's ERB-axis rule; `band121` the same after the default [1 2 1] / 4. R0 / R1 run on the same cells:
+//      R1 (the exact biquad inverse) contains no transform, so it cannot tell whether the TRANSFORM is the limit; the WOLA oracles can.
+//   2. Core taps through the PUBLIC introspection only: the core runs in blocks of one hop, so every process() call ends on a frame. Per frame and band:
+//      slow / fast excess and sigma, thresholds, a replica of the release latch (which estimate is in charge), the knee before / after the main-lobe gating,
+//      the applied reduction (bandReductionDb), the per-bin cut it maps to and the response the renderer's kernel model gives for it.
+//      (A core type that also offers lfdEst / lfdTarget / lfdRedPre adds the private stages; the production Core does not, the columns then read "-".)
+//   3. One-knob sweeps of public parameters and of the signal: sensitivity, sharpness, attack, planted Q, f0 moved off the bin centre.
+//   4. T1 @ 500 Hz (D 300 / 1000): t50 per tier and seed, the transform's timing floor, and an event-locked timeline of the taps.
+// Output: bench_out/<stamp>_<hash>_lfdiag/ (CSV + summary.md).
+
+namespace lfd
+{
+using RCore   = xleth::dsp::resonance::Core;
+using RParams = xleth::dsp::resonance::Params;
+
+constexpr double kSR = 48000.0;
+constexpr int kB = xleth::dsp::resonance::kGridBands;
+static const char* tierName(int t) { return t == 0 ? "F" : (t == 1 ? "N" : "H"); }
+static RParams c1c() { RParams p; p.depth = 1.0f; p.hardKnee = true; return p; }
+static int tierN(int t) { return RCore::fftSizeFor(kSR, static_cast<RCore::FrameTier>(t)); }
+
+static double erbRateHz(double f)   { return 21.4 * std::log10(1.0 + 0.00437 * f); }
+static double erbRateToHz(double e) { return (std::pow(10.0, e / 21.4) - 1.0) / 0.00437; }
+static double erbHzAt(double f)     { return 24.7 * (4.37 * f / 1000.0 + 1.0); }
+
+// The core's band grid and its bin <- band interpolation rule (ResonanceCore.cpp buildSharedGrid / buildEngine), replicated; checked against
+// Core::bandCentreHz() at the start of the run.
+struct Grid
+{
+    double erbLo = 0.0, erbStep = 1.0;
+    std::vector<double> hz;
+    Grid()
+    {
+        erbLo = erbRateHz(20.0);
+        erbStep = (erbRateHz(std::min(0.45 * kSR, 20000.0)) - erbLo) / (kB - 1);
+        for (int b = 0; b < kB; ++b) hz.push_back(erbRateToHz(erbLo + b * erbStep));
+    }
+    void binMap(double fHz, int& j, double& t) const
+    {
+        const double x = (erbRateHz(fHz) - erbLo) / erbStep;
+        if (x <= 0.0) { j = 0; t = 0.0; }
+        else if (x >= kB - 1) { j = kB - 2; t = 1.0; }
+        else { j = static_cast<int>(std::floor(x)); t = x - j; }
+    }
+    double bandToBinDb(const float* bandDb, double fHz) const
+    {
+        int j; double t; binMap(fHz, j, t);
+        return bandDb[j] + t * (static_cast<double>(bandDb[j + 1]) - bandDb[j]);
+    }
+    int nearest(double f) const
+    {
+        int best = 0;
+        for (int b = 1; b < kB; ++b) if (std::abs(hz[static_cast<size_t>(b)] - f) < std::abs(hz[static_cast<size_t>(best)] - f)) best = b;
+        return best;
+    }
+};
+static const Grid& grid() { static const Grid g; return g; }
+
+// Main-lobe zone of every band (ResonanceCore.cpp buildEngine: +/- max(kGapOct, kGapBins bins)), replicated for a tier.
+static void lobeZones(int N, std::vector<int>& lo, std::vector<int>& hi)
+{
+    const auto& g = grid().hz;
+    const double binHz = kSR / N, gapUp = std::pow(2.0, static_cast<double>(RCore::kGapOct));
+    lo.assign(kB, 0); hi.assign(kB, 0);
+    for (int b = 0; b < kB; ++b)
+    {
+        const double fb = g[static_cast<size_t>(b)];
+        const double exUp = std::max(fb * gapUp, fb + RCore::kGapBins * binHz);
+        const double exDn = std::min(fb / gapUp, fb - RCore::kGapBins * binHz);
+        int l = b, h = b;
+        while (l > 0 && g[static_cast<size_t>(l - 1)] > exDn) --l;
+        while (h < kB - 1 && g[static_cast<size_t>(h + 1)] < exUp) ++h;
+        lo[static_cast<size_t>(b)] = l; hi[static_cast<size_t>(b)] = h;
+    }
+}
+
+// The sub-bin correction's coverage (ResonanceCore.cpp buildEngine): last bin whose ERB is narrower than the analysis kernel's ENBW.
+static int kLowMaxFor(int N)
+{
+    const double binHz = kSR / N;
+    double sw = 0.0, sw2 = 0.0;
+    for (int n = 0; n < N; ++n) { const double w = std::sqrt(std::max(0.5 - 0.5 * std::cos(2.0 * juce::MathConstants<double>::pi * n / N), 0.0)); sw += w; sw2 += w * w; }
+    const double enbw = N * sw2 / (sw * sw);
+    int k = 0;
+    for (int i = 1; i < N / 2 + 1 - 3; ++i) if (erbHzAt(i * binHz) < enbw * binHz) k = i;
+    return k;
+}
+static double enbwBins(int N)
+{
+    double sw = 0.0, sw2 = 0.0;
+    for (int n = 0; n < N; ++n) { const double w = std::sqrt(std::max(0.5 - 0.5 * std::cos(2.0 * juce::MathConstants<double>::pi * n / N), 0.0)); sw += w; sw2 += w * w; }
+    return N * sw2 / (sw * sw);
+}
+
+// |W(d)|^2 / |W(0)|^2 of the sqrt-Hann periodic window, d in bins (tabulated, |d| < 8). The WOLA renderer's response to a stationary component at
+// frequency f (in bins) is sum_k g_k K(f - k) / sum_k K(f - k) in AMPLITUDE (analysis x synthesis kernel; frame-rate aliasing neglected).
+struct Kernel
+{
+    static constexpr int kRes = 64, kSpan = 8;
+    std::vector<double> tab;
+    explicit Kernel(int N)
+    {
+        std::vector<double> w(static_cast<size_t>(N));
+        double sw = 0.0;
+        for (int n = 0; n < N; ++n) { w[static_cast<size_t>(n)] = std::sqrt(std::max(0.5 - 0.5 * std::cos(2.0 * juce::MathConstants<double>::pi * n / N), 0.0)); sw += w[static_cast<size_t>(n)]; }
+        tab.assign(static_cast<size_t>(kSpan * kRes + 2), 0.0);
+        for (int i = 0; i <= kSpan * kRes + 1; ++i)
+        {
+            const double d = static_cast<double>(i) / kRes;
+            double re = 0.0, im = 0.0;
+            for (int n = 0; n < N; ++n)
+            {
+                const double ph = -2.0 * juce::MathConstants<double>::pi * d * n / N;
+                re += w[static_cast<size_t>(n)] * std::cos(ph); im += w[static_cast<size_t>(n)] * std::sin(ph);
+            }
+            tab[static_cast<size_t>(i)] = (re * re + im * im) / (sw * sw);
+        }
+    }
+    double operator()(double d) const
+    {
+        d = std::abs(d) * kRes;
+        if (d >= kSpan * kRes) return 0.0;
+        const int i = static_cast<int>(d);
+        const double t = d - i;
+        return tab[static_cast<size_t>(i)] + t * (tab[static_cast<size_t>(i) + 1] - tab[static_cast<size_t>(i)]);
+    }
+};
+static const Kernel& kernelFor(int N)
+{
+    static std::map<int, std::unique_ptr<Kernel>> cache;
+    auto& k = cache[N];
+    if (!k) k = std::make_unique<Kernel>(N);
+    return *k;
+}
+
+// Renderer-model amplitude response at fBins for per-bin gains g (bins 0 .. N/2; negative bins mirror).
+static double geffModel(const Kernel& K, const std::vector<double>& g, double fBins)
+{
+    double num = 0.0, den = 0.0;
+    const int k0 = static_cast<int>(std::floor(fBins));
+    for (int k = k0 - Kernel::kSpan; k <= k0 + Kernel::kSpan + 1; ++k)
+    {
+        const int kk = std::abs(k);
+        if (kk >= static_cast<int>(g.size())) continue;
+        const double w = K(fBins - k);
+        num += g[static_cast<size_t>(kk)] * w; den += w;
+    }
+    return den > 0.0 ? num / den : 1.0;
+}
+
+static double bellDb(double f, double f0, double q, double gainDb) { return f <= 0.0 ? 0.0 : bellMagDb(f, kSR, f0, q, gainDb); }
+
+// ---- oracle gain sets (per bin, N / 2 + 1 values) ----
+static std::vector<double> gainsSamp(int N, double f0, double q, double gainDb)
+{
+    const int nb = N / 2 + 1; const double binHz = kSR / N;
+    std::vector<double> g(static_cast<size_t>(nb), 1.0);
+    for (int k = 1; k < nb; ++k) g[static_cast<size_t>(k)] = std::pow(10.0, -bellDb(k * binHz, f0, q, gainDb) / 20.0);
+    return g;
+}
+static std::vector<double> gainsBinAvg(int N, double f0, double q, double gainDb)
+{
+    const int nb = N / 2 + 1; const double binHz = kSR / N;
+    const Kernel& K = kernelFor(N);
+    std::vector<double> g(static_cast<size_t>(nb), 1.0);
+    for (int k = 1; k < nb; ++k)
+    {
+        if (k * binHz > 4.0 * f0 + 8.0 * binHz) break;
+        double num = 0.0, den = 0.0;
+        for (int s = -Kernel::kSpan * 64; s <= Kernel::kSpan * 64; ++s)
+        {
+            const double d = s / 64.0, f = (k + d) * binHz;
+            if (f <= 1.0) continue;
+            const double w = K(d) / f;   // pink: PSD ~ 1 / f
+            den += w; num += w * std::pow(10.0, bellDb(f, f0, q, gainDb) / 10.0);
+        }
+        g[static_cast<size_t>(k)] = std::sqrt(den / num);
+    }
+    return g;
+}
+static std::vector<double> gainsLs(int N, double f0, double q, double gainDb, double gMax)
+{
+    const int nb = N / 2 + 1; const double binHz = kSR / N, wHz = kSR / kWelchN;
+    const Kernel& K = kernelFor(N);
+    std::vector<double> g = gainsSamp(N, f0, q, gainDb);
+    const double gMin = std::pow(10.0, -30.0 / 20.0);
+    for (double& v : g) v = std::clamp(v, gMin, gMax);
+    const int kLo = std::max(1, static_cast<int>(std::floor(0.5 * f0 / binHz)) - 2), kHi = std::min(nb - 1, static_cast<int>(std::ceil(2.0 * f0 / binHz)) + 2);
+    for (int k = 1; k < nb; ++k) if (k < kLo || k > kHi) g[static_cast<size_t>(k)] = 1.0;
+    const double s6 = std::pow(2.0, 1.0 / 6.0);
+    std::vector<double> fb, tgt, wt;
+    const double fLo = std::min(0.5 * f0, (kLo - 1) * binHz), fHi = std::max(2.0 * f0, (kHi + 1) * binHz);   // every free bin is pinned by evaluation points
+    for (int i = 1; i * wHz <= fHi; ++i)
+    {
+        const double f = i * wHz;
+        if (f < fLo) continue;
+        fb.push_back(f / binHz); tgt.push_back(-bellDb(f, f0, q, gainDb)); wt.push_back((f >= f0 / s6 && f <= f0 * s6) ? 4.0 : 1.0);
+    }
+    auto J = [&]() {
+        double s = 0.0;
+        for (size_t i = 0; i < fb.size(); ++i)
+        {
+            const double e = 20.0 * std::log10(std::max(geffModel(K, g, fb[i]), 1.0e-6)) - tgt[i];
+            s += wt[i] * e * e;
+        }
+        return s;
+    };
+    const double gr = 0.5 * (std::sqrt(5.0) - 1.0);
+    for (int sweep = 0; sweep < 30; ++sweep)
+        for (int k = kLo; k <= kHi; ++k)
+        {
+            double a = gMin, b = gMax;
+            auto at = [&](double v) { g[static_cast<size_t>(k)] = v; return J(); };
+            double c = b - gr * (b - a), d = a + gr * (b - a), fc = at(c), fd = at(d);
+            for (int it = 0; it < 40; ++it)
+            {
+                if (fc < fd) { b = d; d = c; fd = fc; c = b - gr * (b - a); fc = at(c); }
+                else         { a = c; c = d; fc = fd; d = a + gr * (b - a); fd = at(d); }
+            }
+            g[static_cast<size_t>(k)] = 0.5 * (a + b);
+        }
+    return g;
+}
+static std::vector<double> gainsBand(int N, double f0, double q, double gainDb, bool smooth121)
+{
+    const int nb = N / 2 + 1; const double binHz = kSR / N;
+    const auto& G = grid();
+    float r[kB], s[kB];
+    for (int b = 0; b < kB; ++b) r[b] = static_cast<float>(std::max(0.0, bellDb(G.hz[static_cast<size_t>(b)], f0, q, gainDb)));
+    for (int b = 0; b < kB; ++b) s[b] = smooth121 ? 0.25f * r[b > 0 ? b - 1 : 0] + 0.5f * r[b] + 0.25f * r[b < kB - 1 ? b + 1 : kB - 1] : r[b];
+    std::vector<double> g(static_cast<size_t>(nb), 1.0);
+    for (int k = 0; k < nb; ++k) g[static_cast<size_t>(k)] = std::pow(10.0, -G.bandToBinDb(s, k * binHz) / 20.0);
+    return g;
+}
+
+// The core's WOLA, replicated (double precision). Raw output (latency N, like the core). gainsAt(frame centre, input samples) -> nullptr = unity.
+static Stereo wolaRaw(const Stereo& in, int N, const std::function<const std::vector<double>*(long long)>& gainsAt)
+{
+    const int H = N / 4, n = in.size();
+    std::vector<double> win(static_cast<size_t>(N)), syn(static_cast<size_t>(N));
+    for (int i = 0; i < N; ++i) win[static_cast<size_t>(i)] = std::sqrt(std::max(0.5 - 0.5 * std::cos(2.0 * juce::MathConstants<double>::pi * i / N), 0.0));
+    for (int ph = 0; ph < H; ++ph)
+    {
+        double s = 0.0;
+        for (int i = ph; i < N; i += H) s += win[static_cast<size_t>(i)] * win[static_cast<size_t>(i)];
+        for (int i = ph; i < N; i += H) syn[static_cast<size_t>(i)] = win[static_cast<size_t>(i)] / s;
+    }
+    const Fft fft(N);
+    Stereo out; out.resize(n);
+    std::vector<std::complex<double>> buf(static_cast<size_t>(N));
+    for (int c = 0; c < 2; ++c)
+    {
+        std::vector<double> y(static_cast<size_t>(n), 0.0);
+        const float* x = in.ch[c].data();
+        for (long long e = H; e - N < n; e += H)
+        {
+            for (int i = 0; i < N; ++i)
+            {
+                const long long idx = e - N + i;
+                buf[static_cast<size_t>(i)] = { (idx >= 0 && idx < n) ? x[idx] * win[static_cast<size_t>(i)] : 0.0, 0.0 };
+            }
+            fft.forward(buf);
+            if (const auto* g = gainsAt(e - N / 2))
+                for (int k = 0; k <= N / 2; ++k)
+                {
+                    buf[static_cast<size_t>(k)] *= (*g)[static_cast<size_t>(k)];
+                    if (k > 0 && k < N / 2) buf[static_cast<size_t>(N - k)] *= (*g)[static_cast<size_t>(k)];
+                }
+            for (auto& v : buf) v = std::conj(v);
+            fft.forward(buf);
+            for (int i = 0; i < N; ++i)
+            {
+                const long long idx = e - N + i;
+                if (idx >= 0 && idx < n) y[static_cast<size_t>(idx)] += (buf[static_cast<size_t>(i)].real() / N) * syn[static_cast<size_t>(i)];
+            }
+        }
+        for (int t = N; t < n; ++t) out.ch[c][static_cast<size_t>(t)] = static_cast<float>(y[static_cast<size_t>(t - N)]);
+    }
+    return out;
+}
+
+// Optional private taps (a diagnostic copy of the core may offer them; the production Core does not).
+template <class C> concept HasPrivateTaps = requires(const C& c) { c.lfdEst(0); c.lfdTarget(0); c.lfdRedPre(0); };
+
+// Runs a core on `in` in blocks of one hop (every process() call ends on a frame) and calls onFrame(core, frameEnd) after each frame. Raw output (latency N).
+template <class CoreT>
+static Stereo coreRaw(CoreT& core, int tier, const RParams& p, const Stereo& in, const std::function<void(const CoreT&, long long)>& onFrame)
+{
+    core.setFrameTier(static_cast<typename CoreT::FrameTier>(tier));
+    core.prepare(kSR, 4096, 2);
+    const int H = core.hopSize(), n = in.size();
+    Stereo out; out.resize(n);
+    std::vector<float> b0(static_cast<size_t>(H)), b1(static_cast<size_t>(H));
+    float* chs[2] = { b0.data(), b1.data() };
+    for (int pos = 0; pos < n; pos += H)
+    {
+        const int k = std::min(H, n - pos);
+        std::memcpy(b0.data(), in.ch[0].data() + pos, sizeof(float) * static_cast<size_t>(k));
+        std::memcpy(b1.data(), in.ch[1].data() + pos, sizeof(float) * static_cast<size_t>(k));
+        core.process(chs, 2, k, p);
+        std::memcpy(out.ch[0].data() + pos, b0.data(), sizeof(float) * static_cast<size_t>(k));
+        std::memcpy(out.ch[1].data() + pos, b1.data(), sizeof(float) * static_cast<size_t>(k));
+        if (k == H && onFrame) onFrame(core, static_cast<long long>(pos) + H);
+    }
+    return out;
+}
+
+// Per-frame derived view of one channel's detector / gain stages, from the public introspection (+ a replica of the release latch, the knee and the
+// main-lobe gating). State: the latch per channel and band.
+struct TapState
+{
+    int N = 0;
+    float z = 4.0f, kappa = 1.5f;
+    std::vector<int> lobeLo, lobeHi;
+    std::vector<unsigned char> own[2];
+    // per frame, per channel, per band (filled by update())
+    float es[2][kB], ef[2][kB], ex[2][kB], sig[2][kB], thr[2][kB], knee[2][kB], kneeG[2][kB], red[2][kB];
+    bool fast[2][kB];
+    void init(int n, const RParams& p)
+    {
+        N = n; z = RCore::thresholdSigmas(p.sensitivity); kappa = p.hardKnee ? 1.5f : 3.0f;
+        lobeZones(N, lobeLo, lobeHi);
+        own[0].assign(kB, 0); own[1].assign(kB, 0);
+    }
+    template <class CoreT> void update(const CoreT& c)
+    {
+        const float* sS = c.bandSigmaDb();
+        const float* sF = c.bandSigmaFastDb();
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            const float* L = c.bandLevelDb(ch); const float* Bs = c.bandBaselineDb(ch);
+            const float* LF = c.bandFastLevelDb(ch); const float* BF = c.bandFastBaselineDb(ch);
+            const float* R = c.bandReductionDb(ch);
+            for (int b = 0; b < kB; ++b)
+            {
+                const float s = L[b] - Bs[b], f = LF[b] - BF[b], sf = sF[b];
+                unsigned char& o = own[ch][static_cast<size_t>(b)];
+                bool useFast = false;
+                if (f - s > RCore::kSwitchUpSigmas * sf) { o = 0; useFast = true; }
+                else
+                {
+                    const float d = s - f;
+                    if (o != 0) { if (d < RCore::kVetoClearSigmas * sf) o = 0; }
+                    else if (d > RCore::kVetoSetSigmas * sf) o = 1;
+                    useFast = o != 0;
+                }
+                es[ch][b] = s; ef[ch][b] = f; fast[ch][b] = useFast;
+                ex[ch][b] = useFast ? f : s; sig[ch][b] = useFast ? sf : sS[b];
+                thr[ch][b] = z * sig[ch][b];
+                const float u = (ex[ch][b] - thr[ch][b]) / (kappa * sig[ch][b]);
+                knee[ch][b] = ex[ch][b] > thr[ch][b] ? (u >= 1.0f ? 1.0f : u * u * (3.0f - 2.0f * u)) : 0.0f;
+                red[ch][b] = R[b];
+            }
+            for (int b = 0; b < kB; ++b)
+            {
+                float k = 0.0f;
+                for (int j = lobeLo[static_cast<size_t>(b)]; j <= lobeHi[static_cast<size_t>(b)]; ++j) k = std::max(k, knee[ch][j]);
+                kneeG[ch][b] = k;
+            }
+        }
+    }
+};
+
+// Accumulated band statistics of one G1 cell (steady state: frames after kSkipSec, both channels).
+struct BandAcc
+{
+    double n = 0, es = 0, ef = 0, sigS = 0, sigF = 0, thrS = 0, thrF = 0, detS = 0, detF = 0, fast = 0, ex = 0, thr = 0, det = 0, knee = 0, kneeG = 0, gated = 0, red = 0, redPow = 0;
+    double est = 0, target = 0, redPre = 0; bool priv = false;
+};
+struct BinAcc { double n = 0, cut = 0, cutPow = 0; };
+struct CellTaps
+{
+    int N = 0;
+    std::vector<int> bands;                       // band indices reported
+    std::map<int, BandAcc> band;
+    std::vector<int> bins; std::map<int, BinAcc> bin;   // per-bin applied cut (band curve -> bins)
+    std::vector<double> evalHz; std::vector<double> geffPow, geffN;   // renderer-model response power, per Welch-bin eval point (time-averaged)
+};
+
+struct G1Run { double res = 0, dev = 0, ideal = 0, limit = 0; bool pass = false; };
+static G1Run gradeG1(const Stereo& base, const Stereo& sig, const Stereo& raw, int lat, double f0, double q)
+{
+    const auto a = align(sig, raw, lat, kSR);
+    const Residual r = suppressionAccuracy(a, "C@48000", base, kSR, f0).res;
+    G1Run o; o.res = r.inWindow; o.dev = r.outsideDev; o.ideal = idealBoostDb(kSR, f0, q, 12.0); o.limit = kG1ResIdealFrac * o.ideal; o.pass = g1Cell(r, o.ideal);
+    return o;
+}
+// Per-Welch-bin residual (dB(out) - dB(clean)) over [lo, hi] Hz, for the shape tables.
+static std::vector<std::pair<double, double>> welchResidual(const Stereo& base, const Stereo& sig, const Stereo& raw, int lat, double lo, double hi)
+{
+    const auto a = align(sig, raw, lat, kSR);
+    const auto pout = welchPsd(a.out, a.skip, a.n(), true, true);
+    const auto& pc = cleanPsd("C@48000", base, a.skip, a.n(), true, true);
+    std::vector<std::pair<double, double>> r;
+    for (size_t k = 1; k < pout.size(); ++k)
+    {
+        const double f = static_cast<double>(k) * kSR / kWelchN;
+        if (f >= lo && f <= hi) r.emplace_back(f, dbPow(pout[k]) - dbPow(pc[k]));
+    }
+    return r;
+}
+
+// One core G1 cell with taps. Returns the raw output; fills `taps` when non-null.
+template <class CoreT>
+static Stereo runCoreCell(int tier, const RParams& p, const Stereo& sig, double f0, CellTaps* taps)
+{
+    auto core = std::make_unique<CoreT>();
+    TapState ts;
+    const int N = tierN(tier);
+    ts.init(N, p);
+    const auto& G = grid();
+    const long long skip = static_cast<long long>(kSkipSec * kSR);
+    if (taps)
+    {
+        taps->N = N;
+        taps->bands.clear(); taps->bins.clear(); taps->evalHz.clear();
+        for (int b = 0; b < kB; ++b) if (G.hz[static_cast<size_t>(b)] >= f0 / 2.5 && G.hz[static_cast<size_t>(b)] <= f0 * 2.5) taps->bands.push_back(b);
+        const double binHz = kSR / N;
+        for (int k = 1; k * binHz <= 2.0 * f0 + binHz; ++k) if (k * binHz >= 0.5 * f0 - binHz) taps->bins.push_back(k);
+        const double wHz = kSR / kWelchN;
+        for (int i = 1; i * wHz <= 1.5 * f0; ++i) if (i * wHz >= f0 / 1.5) taps->evalHz.push_back(i * wHz);
+        taps->geffPow.assign(taps->evalHz.size(), 0.0); taps->geffN.assign(taps->evalHz.size(), 0.0);
+    }
+    std::vector<double> g(static_cast<size_t>(N / 2 + 1), 1.0);
+    const Kernel& K = kernelFor(N);
+    auto onFrame = [&](const CoreT& c, long long end)
+    {
+        if (!taps) return;
+        ts.update(c);
+        if (end < skip) return;
+        const float* sS = c.bandSigmaDb(); const float* sF = c.bandSigmaFastDb();
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            for (int b : taps->bands)
+            {
+                BandAcc& a = taps->band[b];
+                a.n += 1; a.es += ts.es[ch][b]; a.ef += ts.ef[ch][b]; a.sigS += sS[b]; a.sigF += sF[b];
+                a.thrS += ts.z * sS[b]; a.thrF += ts.z * sF[b];
+                a.detS += ts.es[ch][b] > ts.z * sS[b] ? 1 : 0; a.detF += ts.ef[ch][b] > ts.z * sF[b] ? 1 : 0;
+                a.fast += ts.fast[ch][b] ? 1 : 0; a.ex += ts.ex[ch][b]; a.thr += ts.thr[ch][b]; a.det += ts.ex[ch][b] > ts.thr[ch][b] ? 1 : 0;
+                a.knee += ts.knee[ch][b]; a.kneeG += ts.kneeG[ch][b]; a.gated += ts.kneeG[ch][b] > 0.0f ? 1 : 0;
+                a.red += ts.red[ch][b]; a.redPow += std::pow(10.0, -ts.red[ch][b] / 10.0);
+                if constexpr (HasPrivateTaps<CoreT>)
+                {
+                    a.priv = true; a.est += c.lfdEst(ch)[b]; a.target += c.lfdTarget(ch)[b]; a.redPre += c.lfdRedPre(ch)[b];
+                }
+            }
+            const float* R = c.bandReductionDb(ch);
+            const double binHz = kSR / N;
+            for (int k = 0; k <= N / 2; ++k)
+            {
+                if (k * binHz > 3.0 * f0 + 4.0 * binHz) { g[static_cast<size_t>(k)] = 1.0; continue; }
+                const double cut = std::max(0.0, G.bandToBinDb(R, k * binHz));
+                g[static_cast<size_t>(k)] = cut > 1.0e-6 ? std::pow(10.0, -cut / 20.0) : 1.0;
+            }
+            for (int k : taps->bins)
+            {
+                BinAcc& a = taps->bin[k];
+                const double cut = -20.0 * std::log10(g[static_cast<size_t>(k)]);
+                a.n += 1; a.cut += cut; a.cutPow += std::pow(10.0, -cut / 10.0);
+            }
+            for (size_t i = 0; i < taps->evalHz.size(); ++i)
+            {
+                const double v = geffModel(K, g, taps->evalHz[i] / binHz);
+                taps->geffPow[i] += v * v; taps->geffN[i] += 1;
+            }
+        }
+    };
+    return coreRaw<CoreT>(*core, tier, p, sig, std::function<void(const CoreT&, long long)>(onFrame));
+}
+
+// ---- T1 ----
+struct T1Line { double n = 0, es = 0, ef = 0, sigF = 0, thrF = 0, thr = 0, ex = 0, fast = 0, det = 0, kneeG = 0, red = 0, redMax = 0, est = 0, target = 0; };
+struct T1Taps
+{
+    int b0 = 0;                                  // band nearest f0
+    std::vector<int> win;                        // bands within f0 +/- 1/6 oct
+    std::map<int, T1Line> line;                  // key: frame-centre time since the onset, in hops of the tier (floor)
+    double tDet = 0, tKnee = 0, tRed3 = 0, tRed6 = 0, nEv = 0, nDetNever = 0, nRed6Never = 0;
+};
+
+template <class CoreT>
+static Stereo runCoreT1(int tier, const RParams& p, const TvCase& tc, T1Taps* taps)
+{
+    auto core = std::make_unique<CoreT>();
+    TapState ts;
+    const int N = tierN(tier), H = N / 4;
+    ts.init(N, p);
+    const auto& G = grid();
+    const double s6 = std::pow(2.0, 1.0 / 6.0);
+    if (taps)
+    {
+        taps->b0 = G.nearest(tc.f0);
+        taps->win.clear();
+        for (int b = 0; b < kB; ++b) if (G.hz[static_cast<size_t>(b)] >= tc.f0 / s6 && G.hz[static_cast<size_t>(b)] <= tc.f0 * s6) taps->win.push_back(b);
+    }
+    // per event and channel: first frame (centre time, ms) with a detection / gated knee / reduction >= 3 / 6 dB at b0, on or after the onset
+    std::vector<std::array<double, 4>> first(tc.events.size() * 2, { -1.0, -1.0, -1.0, -1.0 });
+    auto onFrame = [&](const CoreT& c, long long end)
+    {
+        if (!taps) return;
+        ts.update(c);
+        const long long centre = end - N / 2;
+        for (size_t e = 0; e < tc.events.size(); ++e)
+        {
+            const long long rel = centre - tc.events[e].onset;
+            if (rel < -static_cast<long long>(0.05 * kSR) || rel > static_cast<long long>((tc.durMs * 1.0e-3 + 0.05) * kSR)) continue;
+            const int j = static_cast<int>(std::floor(static_cast<double>(rel) / H));
+            const double tMs = 1000.0 * static_cast<double>(rel) / kSR;
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                const int b = taps->b0;
+                T1Line& L = taps->line[j];
+                L.n += 1; L.es += ts.es[ch][b]; L.ef += ts.ef[ch][b]; L.sigF += c.bandSigmaFastDb()[b]; L.thrF += ts.z * c.bandSigmaFastDb()[b];
+                L.thr += ts.thr[ch][b]; L.ex += ts.ex[ch][b]; L.fast += ts.fast[ch][b] ? 1 : 0; L.det += ts.ex[ch][b] > ts.thr[ch][b] ? 1 : 0;
+                L.kneeG += ts.kneeG[ch][b]; L.red += ts.red[ch][b];
+                float mx = 0.0f; for (int w : taps->win) mx = std::max(mx, ts.red[ch][w]);
+                L.redMax += mx;
+                if constexpr (HasPrivateTaps<CoreT>) { L.est += c.lfdEst(ch)[b]; L.target += c.lfdTarget(ch)[b]; }
+                auto& f = first[e * 2 + static_cast<size_t>(ch)];
+                if (rel >= 0)
+                {
+                    if (f[0] < 0.0 && ts.ex[ch][b] > ts.thr[ch][b]) f[0] = tMs;
+                    if (f[1] < 0.0 && ts.kneeG[ch][b] > 0.0f) f[1] = tMs;
+                    if (f[2] < 0.0 && ts.red[ch][b] >= 3.0f) f[2] = tMs;
+                    if (f[3] < 0.0 && ts.red[ch][b] >= 6.0f) f[3] = tMs;
+                }
+            }
+        }
+    };
+    Stereo raw = coreRaw<CoreT>(*core, tier, p, tc.sig, std::function<void(const CoreT&, long long)>(onFrame));
+    if (taps)
+        for (const auto& f : first)
+        {
+            taps->nEv += 1;
+            const double cap = tc.durMs;   // "never within the event" counts as D (and is counted)
+            taps->tDet  += f[0] < 0.0 ? cap : f[0]; if (f[0] < 0.0) taps->nDetNever += 1;
+            taps->tKnee += f[1] < 0.0 ? cap : f[1];
+            taps->tRed3 += f[2] < 0.0 ? cap : f[2];
+            taps->tRed6 += f[3] < 0.0 ? cap : f[3]; if (f[3] < 0.0) taps->nRed6Never += 1;
+        }
+    return raw;
+}
+
+static double t50Of(const TvCase& tc, const Stereo& raw, int lat, const std::vector<std::vector<double>>& eClean, const std::vector<std::vector<double>>& ePass, int kMin, int kMax)
+{
+    const auto a = align(tc.sig, raw, lat, kSR);
+    const auto eOut = tvWindowEnergy(a.out, tc.events, kMin, kMax, kSR, tc.f0);
+    const TvMetrics m = tvAnalyse(eOut, eClean, ePass, tc.durMs, kMin, kSR);
+    return m.t50 < 0.0 ? kNeverValue : m.t50;
+}
+
+// ---- result collection ----
+struct CellKey { std::string group, variant; int tier; double f0, q; bool operator<(const CellKey& o) const { return std::tie(group, variant, tier, f0, q) < std::tie(o.group, o.variant, o.tier, o.f0, o.q); } };
+struct Collect
+{
+    Table cells;                                          // one row per (cell, seed)
+    std::map<CellKey, std::vector<G1Run>> g1;             // per seed
+    std::map<CellKey, std::vector<double>> t50;           // per seed (G8a cells: variant carries D)
+    Collect()
+    {
+        cells.header = { "group", "variant", "tier", "f0_hz", "q", "seed", "value", "outside_dev_db", "ideal_db", "limit", "pass" };
+    }
+    void addG1(const CellKey& k, uint64_t seed, const G1Run& r)
+    {
+        g1[k].push_back(r);
+        cells.add({ k.group, k.variant, k.tier < 0 ? "-" : tierName(k.tier), num(k.f0, 2), num(k.q, 1), inum(static_cast<long long>(seed)), num(r.res, 3), num(r.dev, 3), num(r.ideal, 3), num(r.limit, 3), r.pass ? "1" : "0" });
+    }
+    void addT50(const CellKey& k, uint64_t seed, double t)
+    {
+        t50[k].push_back(t);
+        cells.add({ k.group, k.variant, k.tier < 0 ? "-" : tierName(k.tier), num(k.f0, 2), num(k.q, 1), inum(static_cast<long long>(seed)), num(t, 1), "-", "-", num(kG8aT50Ms, 0), t <= kG8aT50Ms ? "1" : "0" });
+    }
+};
+
+static std::vector<uint64_t> diagSeeds() { return { 0, 1, 2, 3, 4, 5, 6 }; }   // default + dev; the held-out set is never run here
+
+// One seed's base / scan signal, generated with g_opt.seed set (the bench generators read it).
+static void makeScan(uint64_t seed, double f0, double q, Stereo& base, Stereo& sig)
+{
+    g_opt.seed = seed;
+    base = makePinkStereo(static_cast<int>(sigSeconds() * kSR), -20.0, 1);
+    sig = makeResonant(base, kSR, f0, true, true, q, 12.0);
+}
+
+template <class CoreT>
+static void g1CoreCell(Collect& col, const std::string& group, const std::string& variant, int tier, const RParams& p, double f0, double q,
+                       std::map<std::tuple<int, double, uint64_t>, CellTaps>* tapsOut = nullptr,
+                       std::map<std::tuple<std::string, int, double>, std::vector<std::vector<std::pair<double, double>>>>* shapes = nullptr)
+{
+    for (uint64_t seed : diagSeeds())
+    {
+        Stereo base, sig; makeScan(seed, f0, q, base, sig);
+        CellTaps tp;
+        const Stereo raw = runCoreCell<CoreT>(tier, p, sig, f0, tapsOut ? &tp : nullptr);
+        const int N = tierN(tier);
+        col.addG1({ group, variant, tier, f0, q }, seed, gradeG1(base, sig, raw, N, f0, q));
+        if (tapsOut) (*tapsOut)[{ tier, f0, seed }] = std::move(tp);
+        if (shapes) (*shapes)[{ variant, tier, f0 }].push_back(welchResidual(base, sig, raw, N, f0 / 1.5, f0 * 1.5));
+    }
+}
+
+static void g1OracleCell(Collect& col, const std::string& variant, int tier, double f0, double q,
+                         std::map<std::tuple<std::string, int, double>, std::vector<std::vector<std::pair<double, double>>>>* shapes = nullptr)
+{
+    const int N = tier < 0 ? 0 : tierN(tier);
+    std::vector<double> g;
+    if (variant == "samp") g = gainsSamp(N, f0, q, 12.0);
+    else if (variant == "binavg") g = gainsBinAvg(N, f0, q, 12.0);
+    else if (variant == "ls") g = gainsLs(N, f0, q, 12.0, 1.0);
+    else if (variant == "ls+") g = gainsLs(N, f0, q, 12.0, 2.0);
+    else if (variant == "band") g = gainsBand(N, f0, q, 12.0, false);
+    else if (variant == "band121") g = gainsBand(N, f0, q, 12.0, true);
+    for (uint64_t seed : diagSeeds())
+    {
+        Stereo base, sig; makeScan(seed, f0, q, base, sig);
+        Stereo raw; int lat = 0;
+        if (variant == "R0") raw = sig;
+        else if (variant == "R1") { raw = sig; for (int c = 0; c < 2; ++c) applyRbjPeak(raw.ch[c], kSR, f0, q, -12.0); }
+        else { raw = wolaRaw(sig, N, [&](long long) { return &g; }); lat = N; }
+        col.addG1({ "oracle", variant, tier, f0, q }, seed, gradeG1(base, sig, raw, lat, f0, q));
+        if (shapes) (*shapes)[{ variant, tier, f0 }].push_back(welchResidual(base, sig, raw, lat, f0 / 1.5, f0 * 1.5));
+    }
+}
+
+// Renderer-model check for an oracle gain set: predicted in-window residual (mean over the G1 window's Welch bins of bell + 20 log10 G_eff).
+static double modelResidual(int N, const std::vector<double>& g, double f0, double q)
+{
+    const Kernel& K = kernelFor(N);
+    const double s6 = std::pow(2.0, 1.0 / 6.0), wHz = kSR / kWelchN, binHz = kSR / N;
+    double s = 0.0; int n = 0;
+    for (int i = 1; i * wHz <= f0 * s6; ++i)
+    {
+        const double f = i * wHz;
+        if (f < f0 / s6) continue;
+        s += bellDb(f, f0, q, 12.0) + 20.0 * std::log10(std::max(geffModel(K, g, f / binHz), 1.0e-9)); ++n;
+    }
+    return n ? s / n : 0.0;
+}
+
+static std::string agg(const std::vector<G1Run>& v, int what)
+{
+    if (v.empty()) return "-";
+    double s = 0.0, w = -1.0e30; int p = 0;
+    for (const auto& r : v) { s += r.res; w = std::max(w, r.res); p += r.pass ? 1 : 0; }
+    if (what == 0) return num(s / v.size(), 2);
+    if (what == 1) return num(w, 2);
+    return inum(p) + "/" + inum(static_cast<long long>(v.size()));
+}
+
+} // namespace lfd
+
+template <class CoreT>
+static int runLowFreqDiagT(const std::string& cfg, const std::string& cpu, bool isRelease, const std::string& hash, const std::string& stamp, const std::string& tagSuffix,
+                           const std::function<void(lfd::Collect&, std::ostringstream&)>& extra = nullptr)
+{
+    using namespace lfd;
+    const fs::path dir = fs::path(g_opt.outBase) / (stamp + "_" + hash + "_lfdiag" + tagSuffix + (g_opt.quick ? "_quick" : ""));
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) { logf("cannot create %s", dir.string().c_str()); return 3; }
+    logf("--lowfreq-diag: C1c settings, tiers F / N / H, seeds 0..6 (default + dev), writing to %s", dir.string().c_str());
+
+    // Grid check against the core's own band centres.
+    {
+        auto c = std::make_unique<CoreT>();
+        c->prepare(kSR, 512, 2);
+        double worst = 0.0;
+        for (int b = 0; b < kB; ++b) worst = std::max(worst, std::abs(static_cast<double>(c->bandCentreHz(b)) - grid().hz[static_cast<size_t>(b)]));
+        logf("grid replica vs Core::bandCentreHz: max |diff| %.6f Hz", worst);
+        if (worst > 0.01) { logf("grid replica does not match the core: abort"); return 3; }
+    }
+
+    Collect col;
+    std::ostringstream md;
+    md << "# RS bench - low-frequency diagnostic (--lowfreq-diag)\n\n- Git: `" << hash << "`\n- Build: **" << cfg << "**" << (isRelease ? "" : "  **<-- NOT RELEASE**")
+       << "\n- CPU: " << cpu << "\n- Seeds: 0 (default) + 1..6 (dev). Held-out seeds are not run.\n- Settings: C1c (depth 1, Hard, sensitivity 0.5, attack 15 / release 200 ms, sharpness 0.5, link 0). Signal: " << sigSeconds()
+       << " s pink -20 dBFS + RBJ bell +12 dB (Q 8 unless stated), both channels. Metric: the bench's G1 in-window residual (mean over f0 +/- 1/6 oct of dB(out) - dB(clean)); limit 0.30 x ideal.\n\n";
+
+    // ---- geometry (read from the formulas; no signal) ----
+    {
+        Table t; t.title = "Geometry per tier: bins, kernel, sub-bin correction coverage, grid density at the bell";
+        t.note = "bell BW = f0 / Q (Q 8). 'bands / bell BW' = bell -3 dB width / local band spacing of the 96-band ERB grid. 'sub-bin covers' = the core's kLowMax bin "
+                 "(ERB(f_k) < ENBW): the auditory-resolution depth correction runs only up to there. lobe zone = the main-lobe gating zone of the band nearest f0.";
+        t.header = { "tier", "N", "bin Hz", "ENBW Hz", "sub-bin covers up to (Hz)", "f0", "bell BW Hz", "bins / bell BW", "band spacing Hz", "bands / bell BW", "lobe zone (bands)", "lobe zone Hz" };
+        for (int tier = 0; tier < 3; ++tier)
+        {
+            const int N = tierN(tier); const double binHz = kSR / N;
+            std::vector<int> lo, hi; lobeZones(N, lo, hi);
+            for (double f0 : { 100.0, 150.0, 220.0, 500.0 })
+            {
+                const int b = grid().nearest(f0);
+                const double sp = grid().hz[static_cast<size_t>(b) + 1] - grid().hz[static_cast<size_t>(b)];
+                t.add({ tierName(tier), inum(N), num(binHz, 2), num(enbwBins(N) * binHz, 1), num(kLowMaxFor(N) * binHz, 1), num(f0, 0), num(f0 / 8.0, 2),
+                        num(f0 / 8.0 / binHz, 2), num(sp, 2), num(f0 / 8.0 / sp, 2), inum(hi[static_cast<size_t>(b)] - lo[static_cast<size_t>(b)] + 1),
+                        num(grid().hz[static_cast<size_t>(lo[static_cast<size_t>(b)])], 0) + "-" + num(grid().hz[static_cast<size_t>(hi[static_cast<size_t>(b)])], 0) });
+            }
+        }
+        std::ofstream(dir / "lf_geometry.csv", std::ios::binary) << csvSafe(t).csv();
+        md << t.markdown();
+    }
+
+    // ---- 1. oracles + 2. core taps at the G1 cells ----
+    const std::vector<double> f0s = { 100.0, 150.0, 500.0 };
+    std::map<std::tuple<int, double, uint64_t>, CellTaps> taps;
+    std::map<std::tuple<std::string, int, double>, std::vector<std::vector<std::pair<double, double>>>> shapes;
+    Table tModel; tModel.title = "Renderer-model check (oracle gain sets): predicted vs measured in-window residual, default seed";
+    tModel.header = { "variant", "tier", "f0", "model residual dB", "measured (seed 0) dB" };
+    for (double f0 : f0s)
+    {
+        logf("G1 cells @ %.0f Hz: references", f0);
+        g1OracleCell(col, "R0", -1, f0, 8.0, &shapes);
+        g1OracleCell(col, "R1", -1, f0, 8.0, &shapes);
+        for (int tier = 0; tier < 3; ++tier)
+        {
+            logf("G1 cells @ %.0f Hz, tier %s: core taps + WOLA oracles", f0, tierName(tier));
+            g1CoreCell<CoreT>(col, "core", "C1c", tier, c1c(), f0, 8.0, &taps, &shapes);
+            for (const char* v : { "samp", "binavg", "ls", "ls+", "band", "band121" })
+            {
+                g1OracleCell(col, v, tier, f0, 8.0, &shapes);
+                const int N = tierN(tier);
+                std::vector<double> g;
+                const std::string vs = v;
+                if (vs == "samp") g = gainsSamp(N, f0, 8.0, 12.0); else if (vs == "binavg") g = gainsBinAvg(N, f0, 8.0, 12.0);
+                else if (vs == "ls") g = gainsLs(N, f0, 8.0, 12.0, 1.0); else if (vs == "ls+") g = gainsLs(N, f0, 8.0, 12.0, 2.0);
+                else if (vs == "band") g = gainsBand(N, f0, 8.0, 12.0, false); else g = gainsBand(N, f0, 8.0, 12.0, true);
+                const auto& rs = col.g1[{ "oracle", vs, tier, f0, 8.0 }];
+                tModel.add({ vs, tierName(tier), num(f0, 0), num(modelResidual(N, g, f0, 8.0), 2), rs.empty() ? "-" : num(rs.front().res, 2) });
+            }
+        }
+    }
+
+    // H1 table: core vs transform oracles vs references.
+    {
+        Table t; t.title = "H1 - is the transform the limit? G1 in-window residual (dB), mean / worst over seeds 0..6, and seeds passing";
+        t.note = "core = C1c through the production core. samp / binavg / ls / ls+ / band / band121 = fixed per-bin gains through a replica of the core's WOLA (same N, window, hop) - see the section header. "
+                 "R0 / R1 have no transform (tier '-'). Limit = 0.30 x ideal.";
+        t.header = { "f0", "tier", "limit", "core", "core pass", "samp", "binavg", "ls", "ls pass", "ls+", "band", "band121", "R0", "R1" };
+        for (double f0 : f0s)
+            for (int tier = 0; tier < 3; ++tier)
+            {
+                auto m = [&](const std::string& g, const std::string& v, int tr) { return agg(col.g1[{ g, v, tr, f0, 8.0 }], 0) + " / " + agg(col.g1[{ g, v, tr, f0, 8.0 }], 1); };
+                const auto& core = col.g1[{ "core", "C1c", tier, f0, 8.0 }];
+                t.add({ num(f0, 0), tierName(tier), core.empty() ? "-" : num(core.front().limit, 3), m("core", "C1c", tier), agg(core, 2), m("oracle", "samp", tier), m("oracle", "binavg", tier),
+                        m("oracle", "ls", tier), agg(col.g1[{ "oracle", "ls", tier, f0, 8.0 }], 2), m("oracle", "ls+", tier), m("oracle", "band", tier), m("oracle", "band121", tier),
+                        m("oracle", "R0", -1), m("oracle", "R1", -1) });
+            }
+        std::ofstream(dir / "lf_h1_oracles.csv", std::ios::binary) << csvSafe(t).csv();
+        md << t.markdown() << tModel.markdown();
+    }
+
+    // Band tables (seed-averaged) + per-seed CSV.
+    {
+        Table all; all.header = { "tier", "f0", "seed", "band", "band_hz", "ideal_db", "es", "sig_s", "thr_s", "p_det_s", "ef", "sig_f", "thr_f", "p_det_f", "p_fast", "ex_used", "thr_used", "p_det_used",
+                                  "knee", "knee_gated", "p_gated", "red_mean_db", "red_pow_db", "est_db", "target_db", "red_pre_db" };
+        Table bins; bins.header = { "tier", "f0", "seed", "bin", "bin_hz", "ideal_db", "binavg_ideal_db", "cut_mean_db", "cut_pow_db" };
+        Table model; model.header = { "tier", "f0", "seed", "welch_hz", "bell_db", "model_residual_db (bell + 10log10 mean_t Geff^2)" };
+        std::map<std::tuple<int, double>, std::map<int, std::array<double, 22>>> avg;   // seed-average of the band columns
+        std::map<std::tuple<int, double>, std::map<int, std::array<double, 4>>> avgBin;
+        std::map<std::tuple<int, double>, std::map<double, std::array<double, 2>>> avgModel;
+        for (const auto& [key, tp] : taps)
+        {
+            const auto [tier, f0, seed] = key;
+            const int N = tp.N; const double binHz = kSR / N;
+            const auto gBin = gainsBinAvg(N, f0, 8.0, 12.0);
+            for (const auto& [b, a] : tp.band)
+            {
+                const double n = std::max(a.n, 1.0);
+                const double hz = grid().hz[static_cast<size_t>(b)];
+                std::array<double, 22> v = { bellDb(hz, f0, 8.0, 12.0), a.es / n, a.sigS / n, a.thrS / n, a.detS / n, a.ef / n, a.sigF / n, a.thrF / n, a.detF / n, a.fast / n,
+                                             a.ex / n, a.thr / n, a.det / n, a.knee / n, a.kneeG / n, a.gated / n, a.red / n, -10.0 * std::log10(a.redPow / n),
+                                             a.priv ? a.est / n : NAN, a.priv ? a.target / n : NAN, a.priv ? a.redPre / n : NAN, 1.0 };
+                std::vector<std::string> row = { tierName(tier), num(f0, 0), inum(static_cast<long long>(seed)), inum(b), num(hz, 1) };
+                for (int i = 0; i < 21; ++i) row.push_back(std::isfinite(v[static_cast<size_t>(i)]) ? num(v[static_cast<size_t>(i)], 3) : std::string("-"));
+                all.add(row);
+                auto& s = avg[{ tier, f0 }][b];
+                for (int i = 0; i < 22; ++i) s[static_cast<size_t>(i)] += v[static_cast<size_t>(i)];
+            }
+            for (const auto& [k, a] : tp.bin)
+            {
+                const double n = std::max(a.n, 1.0);
+                const double cm = a.cut / n, cp = -10.0 * std::log10(a.cutPow / n), id = bellDb(k * binHz, f0, 8.0, 12.0), ba = -20.0 * std::log10(gBin[static_cast<size_t>(k)]);
+                bins.add({ tierName(tier), num(f0, 0), inum(static_cast<long long>(seed)), inum(k), num(k * binHz, 2), num(id, 3), num(ba, 3), num(cm, 3), num(cp, 3) });
+                auto& s = avgBin[{ tier, f0 }][k];
+                s[0] += id; s[1] += ba; s[2] += cm; s[3] += cp;
+            }
+            for (size_t i = 0; i < tp.evalHz.size(); ++i)
+            {
+                const double f = tp.evalHz[i], bd = bellDb(f, f0, 8.0, 12.0);
+                const double mr = bd + 10.0 * std::log10(std::max(tp.geffPow[i] / std::max(tp.geffN[i], 1.0), 1.0e-12));
+                model.add({ tierName(tier), num(f0, 0), inum(static_cast<long long>(seed)), num(f, 2), num(bd, 3), num(mr, 3) });
+                auto& s = avgModel[{ tier, f0 }][f];
+                s[0] += bd; s[1] += mr;
+            }
+        }
+        std::ofstream(dir / "lf_bands.csv", std::ios::binary) << csvSafe(all).csv();
+        std::ofstream(dir / "lf_bins.csv", std::ios::binary) << csvSafe(bins).csv();
+        std::ofstream(dir / "lf_model.csv", std::ios::binary) << csvSafe(model).csv();
+        const double nS = static_cast<double>(diagSeeds().size());
+        for (double f0 : f0s)
+            for (int tier = 0; tier < 3; ++tier)
+            {
+                Table t; t.title = "Detector / gain stages per band, tier " + std::string(tierName(tier)) + ", f0 " + num(f0, 0) + " Hz (steady state, mean over both channels and seeds 0..6)";
+                t.note = "ideal = the bell's boost at the band centre (the cut that would cancel it there). es / ef = slow / fast excess (level - flank baseline), thr = 4 sigma of the estimate. "
+                         "p_fast = share of frames the fast estimate is in charge (latch replica). knee_g = knee after the main-lobe gating. red = applied reduction (bandReductionDb, after "
+                         "attack / release and [1 2 1] / 4): mean of dB and power-effective (-10 log10 mean 10^(-red/10)). est / target / red_pre: private stages (diagnostic copy of the core only).";
+                t.header = { "band", "Hz", "ideal", "es", "thr_s", "p_det_s", "ef", "thr_f", "p_fast", "ex used", "p_det", "knee_g", "red mean", "red pow", "est", "target", "red pre" };
+                for (const auto& [b, s] : avg[{ tier, f0 }])
+                {
+                    auto c = [&](int i, int pr = 2) { const double v = s[static_cast<size_t>(i)] / nS; return std::isfinite(v) ? num(v, pr) : std::string("-"); };
+                    t.add({ inum(b), num(grid().hz[static_cast<size_t>(b)], 1), c(0), c(1), c(3), c(4), c(5), c(7), c(9), c(10), c(12), c(14), c(16), c(17), c(18), c(19), c(20) });
+                }
+                md << t.markdown();
+                Table tb; tb.title = "Per-bin applied cut vs ideal, tier " + std::string(tierName(tier)) + ", f0 " + num(f0, 0) + " Hz (mean over seeds 0..6)";
+                tb.note = "ideal = bell at the bin centre; binavg ideal = what a perfect bin-power detector reads (inverse of the bin-average excess); cut = the core's band curve mapped to the bin (mean dB / power-effective).";
+                tb.header = { "bin", "Hz", "ideal", "binavg ideal", "cut mean", "cut pow" };
+                for (const auto& [k, s] : avgBin[{ tier, f0 }])
+                    tb.add({ inum(k), num(k * kSR / tierN(tier), 1), num(s[0] / nS, 2), num(s[1] / nS, 2), num(s[2] / nS, 2), num(s[3] / nS, 2) });
+                md << tb.markdown();
+                Table tm; tm.title = "Renderer-model residual from the core's applied gains vs measured residual per Welch bin, tier " + std::string(tierName(tier)) + ", f0 " + num(f0, 0) + " Hz (mean over seeds 0..6)";
+                tm.note = "model = bell + 10 log10 of the time-averaged |G_eff|^2 the core's per-frame bin gains give through the window kernel; measured = dB(out) - dB(clean) of the core's output.";
+                tm.header = { "Welch Hz", "bell", "model residual", "measured residual" };
+                const auto& sh = shapes[{ "C1c", tier, f0 }];
+                for (const auto& [f, s] : avgModel[{ tier, f0 }])
+                {
+                    double meas = 0.0; int n = 0;
+                    for (const auto& seedShape : sh) for (const auto& [ff, r] : seedShape) if (std::abs(ff - f) < 1.0e-6) { meas += r; ++n; }
+                    tm.add({ num(f, 2), num(s[0] / nS, 2), num(s[1] / nS, 2), n ? num(meas / n, 2) : std::string("-") });
+                }
+                md << tm.markdown();
+            }
+    }
+
+    // ---- 3. one-knob sweeps (public parameters / signal), G1 @ 100 / 150 ----
+    {
+        logf("G1 sweeps (public parameters / signal)");
+        struct V { std::string name; RParams p; double q; };
+        std::vector<V> vs;
+        auto mk = [&](const std::string& n, auto fn, double q = 8.0) { RParams p = c1c(); fn(p); vs.push_back({ n, p, q }); };
+        mk("sens 0.25", [](RParams& p) { p.sensitivity = 0.25f; });
+        mk("sens 0.75", [](RParams& p) { p.sensitivity = 0.75f; });
+        mk("sens 1.0",  [](RParams& p) { p.sensitivity = 1.0f; });
+        mk("sharp 0.25", [](RParams& p) { p.sharpness = 0.25f; });
+        mk("sharp 0.75", [](RParams& p) { p.sharpness = 0.75f; });
+        mk("sharp 1.0",  [](RParams& p) { p.sharpness = 1.0f; });
+        mk("Q 4",  [](RParams&) {}, 4.0);
+        mk("Q 16", [](RParams&) {}, 16.0);
+        for (double f0 : { 100.0, 150.0 })
+            for (int tier = 0; tier < 3; ++tier)
+                for (const auto& v : vs)
+                {
+                    g1CoreCell<CoreT>(col, "sweep", v.name, tier, v.p, f0, v.q);
+                    if (v.q != 8.0) g1OracleCell(col, "ls", tier, f0, v.q);
+                }
+        Table t; t.title = "One-knob sweeps (public Params / planted Q): G1 residual mean / worst (dB), seeds passing; C1c baseline first";
+        t.note = "Each row changes ONE thing from C1c. Q rows grade against their own ideal / limit (shown). 'ls (same Q)' = the transform oracle for that Q.";
+        t.header = { "f0", "tier", "variant", "limit", "mean", "worst", "pass", "ls oracle (same Q) mean" };
+        for (double f0 : { 100.0, 150.0 })
+            for (int tier = 0; tier < 3; ++tier)
+            {
+                const auto& b = col.g1[{ "core", "C1c", tier, f0, 8.0 }];
+                t.add({ num(f0, 0), tierName(tier), "C1c (baseline)", b.empty() ? "-" : num(b.front().limit, 2), agg(b, 0), agg(b, 1), agg(b, 2), agg(col.g1[{ "oracle", "ls", tier, f0, 8.0 }], 0) });
+                for (const auto& v : vs)
+                {
+                    const auto& r = col.g1[{ "sweep", v.name, tier, f0, v.q }];
+                    t.add({ num(f0, 0), tierName(tier), v.name, r.empty() ? "-" : num(r.front().limit, 2), agg(r, 0), agg(r, 1), agg(r, 2), agg(col.g1[{ "oracle", "ls", tier, f0, v.q }], 0) });
+                }
+            }
+        std::ofstream(dir / "lf_sweeps.csv", std::ios::binary) << csvSafe(t).csv();
+        md << t.markdown();
+    }
+
+    // f0 moved across the bin grid (85 .. 125 Hz): core vs ls oracle per tier.
+    {
+        logf("G1 f0 scan 85..125 Hz (bin-offset study)");
+        Table t; t.title = "f0 moved off the bin centre: G1 residual mean over seeds 0..6 (dB) vs limit; core | ls oracle";
+        t.note = "Bin centres: N 512 = 93.75 Hz; N 1024 = 93.75 / 140.6 Hz; N 2048 = 93.75 / 117.2 Hz. 'offset' = (f0 - nearest bin centre) in bins of that tier.";
+        t.header = { "f0", "limit", "F offset", "F core", "F ls", "N offset", "N core", "N ls", "H offset", "H core", "H ls" };
+        for (double f0 : { 85.0, 89.0, 93.75, 97.0, 100.0, 105.47, 111.0, 117.19, 125.0 })
+        {
+            std::vector<std::string> row = { num(f0, 2) };
+            bool first = true;
+            for (int tier = 0; tier < 3; ++tier)
+            {
+                if (f0 != 100.0) g1CoreCell<CoreT>(col, "f0scan", "C1c", tier, c1c(), f0, 8.0);
+                g1OracleCell(col, "ls", tier, f0, 8.0);
+                const auto& r = f0 == 100.0 ? col.g1[{ "core", "C1c", tier, f0, 8.0 }] : col.g1[{ "f0scan", "C1c", tier, f0, 8.0 }];
+                if (first) { row.push_back(r.empty() ? "-" : num(r.front().limit, 2)); first = false; }
+                const double binHz = kSR / tierN(tier), off = f0 / binHz - std::round(f0 / binHz);
+                row.push_back(num(off, 2)); row.push_back(agg(r, 0) + " (" + agg(r, 2) + ")"); row.push_back(agg(col.g1[{ "oracle", "ls", tier, f0, 8.0 }], 0));
+            }
+            t.add(row);
+        }
+        std::ofstream(dir / "lf_f0scan.csv", std::ios::binary) << csvSafe(t).csv();
+        md << t.markdown();
+    }
+
+    // ---- 4. T1 @ 500 Hz ----
+    {
+        logf("T1 @ 500 Hz: t50 + taps per tier / seed, transform timing floor, public sweeps");
+        Table t; t.title = "G8a @ 500 Hz: t50 (ms) mean / worst over seeds 0..6, seeds passing (limit 100 ms); detection timing at the band nearest 500 Hz (mean over events, channels, seeds)";
+        t.note = "transform floor = the WOLA replica with the 'samp' inverse-bell gains switched on for frames whose centre lies inside the on-time (a perfect, instantaneous detector). "
+                 "t_det = first frame (centre time after the onset) where the estimate in charge exceeds its threshold; t_knee = first frame with a gated knee > 0; t_red3 / t_red6 = first frame "
+                 "with an applied reduction >= 3 / 6 dB at that band (D if never; 'never' counts the events). The bench's t50 is the 1024-Hann STFT in-window energy criterion.";
+        t.header = { "tier", "D ms", "variant", "t50 mean", "t50 worst", "pass", "t_det", "t_knee", "t_red3", "t_red6", "red6 never" };
+        Table tl; tl.header = { "tier", "D", "t_ms", "es", "ef", "sig_f", "thr_f", "thr_used", "ex_used", "p_fast", "p_det", "knee_g", "red_b0", "red_max_win", "est", "target" };
+        struct V { std::string name; RParams p; };
+        std::vector<V> vs;
+        auto mk = [&](const std::string& n, auto fn) { RParams p = c1c(); fn(p); vs.push_back({ n, p }); };
+        mk("C1c", [](RParams&) {});
+        mk("attack 5", [](RParams& p) { p.attackMs = 5.0f; });
+        mk("attack 1", [](RParams& p) { p.attackMs = 1.0f; });
+        mk("sens 0.75", [](RParams& p) { p.sensitivity = 0.75f; });
+        mk("sens 1.0", [](RParams& p) { p.sensitivity = 1.0f; });
+        mk("sharp 1.0", [](RParams& p) { p.sharpness = 1.0f; });
+        for (int tier = 0; tier < 3; ++tier)
+            for (int D : { 300, 1000 })
+            {
+                std::map<std::string, std::vector<double>> t50s;
+                std::map<std::string, T1Taps> tt;
+                for (uint64_t seed : diagSeeds())
+                {
+                    g_opt.seed = seed;
+                    TvCase tc = makeTvCase(500.0, D, kSR);
+                    int kMin = 0, kMax = 0; tvFrameRange(D, kSR, kMin, kMax);
+                    const auto eClean = tvWindowEnergy(tc.clean, tc.events, kMin, kMax, kSR, 500.0);
+                    const auto ePass  = tvWindowEnergy(tc.sig, tc.events, kMin, kMax, kSR, 500.0);
+                    const int N = tierN(tier);
+                    for (const auto& v : vs)
+                    {
+                        T1Taps& tp = tt[v.name];
+                        const Stereo raw = runCoreT1<CoreT>(tier, v.p, tc, &tp);
+                        const double t50 = t50Of(tc, raw, N, eClean, ePass, kMin, kMax);
+                        t50s[v.name].push_back(t50);
+                        col.addT50({ "t1", v.name + " D" + inum(D), tier, 500.0, 8.0 }, seed, t50);
+                    }
+                    const auto g = gainsSamp(N, 500.0, 8.0, 12.0);
+                    const Stereo rawO = wolaRaw(tc.sig, N, [&](long long c) -> const std::vector<double>* {
+                        for (const auto& ev : tc.events) if (c >= ev.onset && c < ev.offset) return &g;
+                        return nullptr; });
+                    const double t50o = t50Of(tc, rawO, N, eClean, ePass, kMin, kMax);
+                    t50s["transform floor"].push_back(t50o);
+                    col.addT50({ "t1", "transform floor D" + inum(D), tier, 500.0, 8.0 }, seed, t50o);
+                }
+                for (const auto& [name, v] : t50s)
+                {
+                    double s = 0.0, w = 0.0; int p = 0;
+                    for (double x : v) { s += x; w = std::max(w, x); p += x <= kG8aT50Ms ? 1 : 0; }
+                    const auto it = tt.find(name);
+                    if (it != tt.end())
+                    {
+                        const T1Taps& a = it->second; const double n = std::max(a.nEv, 1.0);
+                        t.add({ tierName(tier), inum(D), name, num(s / v.size(), 1), num(w, 1), cnt(p, static_cast<int>(v.size())), num(a.tDet / n, 1), num(a.tKnee / n, 1), num(a.tRed3 / n, 1),
+                                num(a.tRed6 / n, 1), num(a.nRed6Never, 0) + "/" + num(a.nEv, 0) });
+                    }
+                    else t.add({ tierName(tier), inum(D), name, num(s / v.size(), 1), num(w, 1), cnt(p, static_cast<int>(v.size())), "-", "-", "-", "-", "-" });
+                }
+                const T1Taps& a = tt["C1c"];
+                const double hopMs = 1000.0 * (tierN(tier) / 4) / kSR;
+                for (const auto& [j, L] : a.line)
+                {
+                    const double n = std::max(L.n, 1.0);
+                    if (j * hopMs > 400.0) continue;
+                    tl.add({ tierName(tier), inum(D), num((j + 0.5) * hopMs, 1), num(L.es / n, 2), num(L.ef / n, 2), num(L.sigF / n, 2), num(L.thrF / n, 2), num(L.thr / n, 2), num(L.ex / n, 2),
+                             num(L.fast / n, 2), num(L.det / n, 2), num(L.kneeG / n, 2), num(L.red / n, 2), num(L.redMax / n, 2),
+                             HasPrivateTaps<CoreT> ? num(L.est / n, 2) : std::string("-"), HasPrivateTaps<CoreT> ? num(L.target / n, 2) : std::string("-") });
+                }
+            }
+        std::ofstream(dir / "lf_t1.csv", std::ios::binary) << csvSafe(t).csv();
+        std::ofstream(dir / "lf_t1_timeline.csv", std::ios::binary) << csvSafe(tl).csv();
+        md << t.markdown();
+        Table tl2 = tl; tl2.title = "T1 @ 500 Hz event-locked timeline at the band nearest 500 Hz (C1c; mean over 6 events, 2 channels, seeds 0..6), D 300 only, t <= 150 ms";
+        tl2.rows.clear();
+        for (const auto& r : tl.rows) if (r[1] == "300" && std::atof(r[2].c_str()) <= 150.0) tl2.add(r);
+        md << tl2.markdown();
+    }
+
+    if (extra) extra(col, md);
+
+    g_opt.seed = 0;
+    std::ofstream(dir / "lf_cells.csv", std::ios::binary) << csvSafe(col.cells).csv();
+    std::ofstream(dir / "summary.md", std::ios::binary) << md.str();
+    logf("wrote lf_*.csv and summary.md to %s", dir.string().c_str());
+    return g_nonFinite == 0 ? 0 : 1;
+}
+
+static int runLowFreqDiag(const std::string& cfg, const std::string& cpu, bool isRelease, const std::string& hash, const std::string& stamp)
+{
+    return runLowFreqDiagT<lfd::RCore>(cfg, cpu, isRelease, hash, stamp, "");
+}
+
 static bool parseArgs(int argc, char** argv)
 {
     for (int i = 1; i < argc; ++i)
@@ -3656,6 +4661,7 @@ static bool parseArgs(int argc, char** argv)
         else if (a == "--d1-reconcile") g_opt.d1Reconcile = true;
         else if (a == "--cpu-burst") g_opt.cpuBurst = true;
         else if (a == "--corr-diag") g_opt.corrDiag = true;
+        else if (a == "--lowfreq-diag") g_opt.lfDiag = true;
         else if (a == "--burst-instances" && i + 1 < argc) g_opt.burstInstances = std::max(1, std::atoi(argv[++i]));
         else if (a == "--burst-seconds" && i + 1 < argc) g_opt.burstSeconds = std::max(2.0, std::atof(argv[++i]));
         else if (a == "--burst-stagger" && i + 1 < argc)
@@ -3689,6 +4695,8 @@ static bool parseArgs(int argc, char** argv)
     if (!g_opt.seedset.empty() && g_opt.seed != 0) { std::printf("[RSBench] --seedset and --seed are mutually exclusive (the set chooses the seeds)\n"); return false; }
     if (g_opt.corrDiag && (!g_opt.seedset.empty() || g_opt.seed != 0 || g_opt.cpuOnly || g_opt.cpuWorst || g_opt.d1Reconcile || g_opt.cpuBurst))
     { std::printf("[RSBench] --corr-diag chooses its own seeds (dev 1..6) and cannot be combined with --seedset / --seed / --cpu-only / --cpu-worst / --d1-reconcile / --cpu-burst\n"); return false; }
+    if (g_opt.lfDiag && (!g_opt.seedset.empty() || g_opt.seed != 0 || g_opt.cpuOnly || g_opt.cpuWorst || g_opt.d1Reconcile || g_opt.cpuBurst || g_opt.corrDiag))
+    { std::printf("[RSBench] --lowfreq-diag chooses its own seeds (0..6) and cannot be combined with --seedset / --seed / --cpu-only / --cpu-worst / --d1-reconcile / --cpu-burst / --corr-diag\n"); return false; }
     if (!g_opt.seedset.empty() && (g_opt.cpuOnly || g_opt.cpuWorst || g_opt.d1Reconcile || g_opt.cpuBurst))
     { std::printf("[RSBench] --seedset grades the full run; it cannot be combined with --cpu-only / --cpu-worst / --d1-reconcile / --cpu-burst\n"); return false; }
     return true;
@@ -3756,6 +4764,7 @@ int main(int argc, char** argv)
     if (g_opt.d1Reconcile) return runD1Reconcile(hash, stamp);
     if (g_opt.cpuBurst) return runCpuBurst(cfg, cpu, isRelease, hash, stamp);
     if (g_opt.corrDiag) return runCorrDiag(cfg, cpu, isRelease, hash, stamp);
+    if (g_opt.lfDiag) return runLowFreqDiag(cfg, cpu, isRelease, hash, stamp);
     if (!g_opt.seedset.empty()) return runSeedSet(cfg, cpu, isRelease, hash, stamp);
     return runGradedRun(cfg, cpu, isRelease, hash, stamp, nullptr);
 }
