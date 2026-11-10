@@ -823,7 +823,7 @@ or retry loop anywhere on the path.
    may race with it.
 
 CPU during a transition: both engines run for (2 .. 3) x H_new + F samples; a block then completes at most one frame of each tier, plus
-the new engine's first frame in the adopting call (which may coincide with a frame of the old one). Fixed-tier cost is unchanged (9.8).
+the new engine's first frame in the adopting call (which may coincide with a frame of the old one). Fixed-tier cost: no change in p99 or in the same-run ratios; up to about 2 - 4 % of the mean not excluded (9.8.2).
 The prepared footprint is the three engines together (N = 512 + 1024 + 2048: about 3.5 x the Normal tier's buffers) plus the rings; prepare() builds all three tiers' tables (its time was not measured).
 
 ### 9.4 Detector and gain state across a switch (kept, measured)
@@ -947,28 +947,39 @@ C1c-F G3 5/6, G8a 1/6, G9a 4/6; C1c-N G1 1/6, G8a 1/6; C1c-H G8a 1/6, as in 7.4)
 #### 9.8.2 Fixed-tier CPU
 
 `--cpu-only` times only the default (Primary) subjects, so C1c-N was timed through the full run, `--subjects C1c-N` (its G7 rows: 30 x 10 s stereo
-pink noise per block size, fresh instance per repetition, against S3 in the same run), alternating the two binaries: pre, post, pre, post.
-Mean per-block time, us (ratio to S3 in the same run):
+pink noise per block size, fresh instance per repetition, against S3 in the same run). Six runs on an otherwise idle machine (one unrelated process
+held about 0.9 of a core), in the order pre, post, pre, post, post, pre. Mean per-block time, us (ratio to S3 in the same run):
 
-| run | C1c-N @64 | C1c-N @128 | S3 @64 | S3 @128 |
-|---|---:|---:|---:|---:|
-| pre 1 | 19.9 (0.783) | 39.2 (0.798) | 25.4 | 49.1 |
-| post 1 | 21.2 (0.768) | 45.1 (0.862) | 27.7 | 52.3 |
-| pre 2 | 31.2 (0.938) | 62.7 (0.839) | 33.3 | 74.8 |
-| post 2 | 26.1 (0.675) | 59.9 (0.816) | 38.6 | 73.4 |
+| run | C1c-N @64 | C1c-N @128 | S3 @64 | S3 @128 | C1c-N p99 @64 |
+|---|---:|---:|---:|---:|---:|
+| pre 1 | 18.84 (0.857) | 36.85 (0.843) | 21.99 | 43.73 | 120.2 |
+| post 1 | 19.41 (0.799) | 37.93 (0.811) | 24.31 | 46.76 | 122.9 |
+| pre 2 | 19.01 (0.746) | 37.12 (0.755) | 25.48 | 49.14 | 118.2 |
+| post 2 | 18.98 (0.689) | 37.93 (0.845) | 27.57 | 44.89 | 120.0 |
+| post 3 | 19.48 (0.810) | 39.39 (0.846) | 24.05 | 46.58 | 122.8 |
+| pre 3 | 17.64 (0.804) | 35.33 (0.853) | 21.95 | 41.43 | 78.3 |
 
-**These runs were not on a quiet machine**: a DAW session (FL Studio) was using about 2.5 cores throughout, and the unchanged S3 reference
-itself moved by up to 52 % between runs of the same binary (49 -> 75 us at 128). The same C1c-N binary varies by 57 - 60 % between its two runs;
-the pre / post difference changes sign between the pairs (64: +7 % then -16 %; 128: +15 % then -4 %) and is far inside that spread. What can
-be said: no systematic cost is visible at this noise level, and the fixed-tier path does no more work per sample than before (the input memcpy now
-goes into the ring instead of the FIFO, the per-frame memmove of N - H input samples is gone, the window reads the ring in at most two segments;
-per call: one relaxed atomic load and the six-field Params sanitise). **A rerun on an idle machine is still owed** to put a number on "unchanged
-within noise" (the 8.10 protocol: about 1 % run-to-run spread when quiet).
+Reading it:
+
+- **Same-run ratios to S3** (the bench's own normaliser, G7): pre 0.80 / 0.82, post 0.77 / 0.83 at 64 / 128 (means of three). The S3 reference
+  runs identical code in both binaries yet moves by 25 % between runs, so the ratios scatter by about +-7 % and show no difference.
+- **Raw means of C1c-N**: post is higher by 4.3 % at 64 and 5.5 % at 128 over all six runs. The last pre run caught a quieter machine state (its S3
+  and both p99 values are far lower: 78 against about 120 us); over the four runs in the same state (p99 about 120 us) the difference is +1.9 % at
+  64 and +3.9 % at 128, against a same-binary spread of about 1 % in that state.
+- **Worst-case blocks** (p99) are unchanged in the comparable state: 120 - 123 us post against 118 - 120 us pre.
+
+**Conclusion: a fixed-tier cost of up to about 2 - 4 % of the mean cannot be excluded by these wall-clock runs; no difference is visible in the
+p99 or in the same-run ratios.** The per-sample and per-frame work did not grow (the input memcpy goes into the ring instead of the FIFO, the
+per-frame memmove of N - H input samples is gone, the window reads the ring in at most two segments; per call one relaxed atomic load and the
+six-field Params sanitise, a few ns), so a real difference, if any, would come from memory layout (the three engines and the 4096-sample ring
+per channel against one engine and a 1024-sample FIFO). Settling it needs an in-process A/B (the 85df03d core compiled under another namespace
+next to the new one, interleaved per repetition), which the bench cannot do as it stands. All six runs pass G7 (ratio <= 1.0) with a wide margin.
 
 ### 9.9 Limitations (for the effect integration)
 
 - **Latency reaches the new tier 2 - 3 hops + 5 ms after the adoption**, not at once (9.2): with a PDC update published at the request, the
   track is misaligned by the latency difference for up to that time (32 + 5 ms at High, 48 kHz).
+- **Fixed-tier mean CPU** may be up to about 2 - 4 % higher than before (9.8.2: not resolvable by wall-clock runs; p99 unchanged); an in-process A/B against the 85df03d core would settle it.
 - **One transition at a time.** A request made during one waits until it ends (at most about 37 ms at 48 kHz); a request is never cancelled or
   re-targeted mid-transition.
 - **During a transition both engines run** (9.3); a switch costs one extra frame of the new tier in the adopting call.
