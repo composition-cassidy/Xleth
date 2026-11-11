@@ -16,6 +16,11 @@ export interface NumberBoxProps extends ValueControlProps, DataAttrs {
   hideLabel?: boolean;
   /** Field height: 'sm' 24px (default), 'md' 28px (matches IconButtons in a toolbar). */
   size?: 'sm' | 'md';
+  /**
+   * Draw the value-fill rule along the bottom edge. Default true. Pass false where another
+   * control already draws the same value as a position (a mixer's volume field above its fader).
+   */
+  fill?: boolean;
   /** Optional modulation range (see modRing.ts): a band along the top edge. Absent = an ordinary box. */
   mod?: ControlMod | null;
 }
@@ -29,7 +34,7 @@ export default function NumberBox(props: NumberBoxProps) {
   const {
     label, value, defaultValue, disabled = false, bipolar = false, centre, width = 72, hideLabel = false, size = 'sm',
     pxPerRange = DEFAULT_NUMBERBOX_PX, hint, hintMods, className, onChange, onCommit, onCancel,
-    min, max, scale, unit, formatOptions, format, parse, codec, step, stepNorm, quantize, mod = null,
+    min, max, scale, unit, formatOptions, format, parse, codec, step, stepNorm, quantize, mod = null, fill = true,
     ...rest
   } = props;
   const resolved = useMemo(
@@ -117,7 +122,7 @@ export default function NumberBox(props: NumberBoxProps) {
       ) : (
         <span className={styles.value}>{text}</span>
       )}
-      <span className={styles.fill} aria-hidden="true" />
+      {fill ? <span className={styles.fill} aria-hidden="true" /> : null}
       {routed ? <span className={styles.mod} aria-hidden="true" data-mod-ring="" /> : null}
     </div>
   );

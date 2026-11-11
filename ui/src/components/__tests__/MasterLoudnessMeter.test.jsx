@@ -35,6 +35,8 @@ describe('MasterLoudnessMeter dock', () => {
     vi.resetModules()
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
     localStorage.clear()
+    // Most of these tests look inside the dock, so it starts opened (a renderer-only choice).
+    localStorage.setItem('xleth.mixer.loudnessDockOpen', '1')
     window.xleth = {
       audio: {
         setMasterLoudnessEnabled: vi.fn(),
@@ -152,14 +154,38 @@ describe('MasterLoudnessMeter dock', () => {
     await act(async () => root.unmount())
   })
 
-  it('has the strip-width setting (renderer-only UI state)', async () => {
+  it('while metering is off and the dock was never opened it is a rail; the rail opens it and the choice is kept', async () => {
+    localStorage.removeItem('xleth.mixer.loudnessDockOpen')
     const { Meter, useMixerUiStore } = await load()
     const { container, root } = await mount(Meter)
-    const compact = Array.from(container.querySelectorAll('[role="radio"]')).find(r => r.textContent === 'Compact')
-    await click(compact)
 
-    expect(useMixerUiStore.getState().stripWidthMode).toBe('compact')
-    expect(localStorage.getItem('xleth.mixer.stripWidth')).toBe('compact')
+    const rail = container.querySelector('[data-testid="loudness-rail"]')
+    expect(rail).not.toBeNull()
+    expect(rail.textContent).toBe('LoudnessOff')
+    expect(container.textContent).not.toContain('Momentary')
+    expect(container.querySelector('canvas')).toBeNull()
+
+    await click(rail.querySelector('button'))
+    expect(container.querySelector('[data-testid="loudness-rail"]')).toBeNull()
+    expect(container.textContent).toContain('Metering is off')
+    expect(useMixerUiStore.getState().loudnessDockOpen).toBe(true)
+    expect(localStorage.getItem('xleth.mixer.loudnessDockOpen')).toBe('1')
+
+    await click(container.querySelector('button[aria-label="Collapse the loudness dock"]'))
+    expect(container.querySelector('[data-testid="loudness-rail"]')).not.toBeNull()
+    expect(localStorage.getItem('xleth.mixer.loudnessDockOpen')).toBe('0')
+    await act(async () => root.unmount())
+  })
+
+  it('while metering is on the dock is open whatever the rail choice was, and offers no collapse', async () => {
+    localStorage.removeItem('xleth.mixer.loudnessDockOpen')
+    localStorage.setItem('xleth.meter.loudnessEnabled', '1')
+    const { Meter } = await load()
+    const { container, root } = await mount(Meter)
+
+    expect(container.querySelector('[data-testid="loudness-rail"]')).toBeNull()
+    expect(container.textContent).toContain('Momentary')
+    expect(container.querySelector('button[aria-label="Collapse the loudness dock"]')).toBeNull()
     await act(async () => root.unmount())
   })
 })

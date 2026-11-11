@@ -17,6 +17,12 @@ export interface KnobProps extends ValueControlProps, DataAttrs {
   size?: number;
   /** Cell width in px. Default 56. Long labels truncate with an ellipsis. */
   width?: number;
+  /**
+   * Do not print the label (it stays the accessible name and the value text). For a row of
+   * identical knobs whose label is printed once beside the row (the mixer's Pan and Width).
+   * The value under the dial always stays.
+   */
+  hideLabel?: boolean;
   /** Optional modulation ring (see modRing.ts). Absent = an ordinary knob. */
   mod?: ControlMod | null;
   /** Right-click, for hosts that add a menu (automation). Ignored while `mod` owns right-click. */
@@ -33,7 +39,7 @@ const MIN_MOD_SWEEP_DEG = 8;
  */
 export default function Knob(props: KnobProps) {
   const {
-    label, value, defaultValue, disabled = false, bipolar = false, centre, size = 32, width = 56,
+    label, value, defaultValue, disabled = false, bipolar = false, centre, size = 32, width = 56, hideLabel = false,
     pxPerRange = DEFAULT_KNOB_PX, hint, hintMods, className, onChange, onCommit, onCancel,
     min, max, scale, unit, formatOptions, format, parse, codec, step, stepNorm, quantize, mod = null,
     ...rest
@@ -123,6 +129,7 @@ export default function Knob(props: KnobProps) {
       data-dragging={drag.dragging || ring.dragging}
       data-bipolar={bipolar || undefined}
       data-disabled={disabled || undefined}
+      data-no-label={hideLabel || undefined}
       {...modAttrs(mod)}
       {...hintAttrs({
         hint: routed && mod?.tooltip ? mod.tooltip : hint,
@@ -130,7 +137,7 @@ export default function Knob(props: KnobProps) {
       })}
       {...handlers}
     >
-      <span className={styles.label}>{label}</span>
+      {hideLabel ? null : <span className={styles.label}>{label}</span>}
       <svg ref={dialRef} className={styles.dial} width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true" focusable="false">
         <path className={styles.track} d={geo.track} />
         {geo.value ? <path className={styles.arc} d={geo.value} /> : null}

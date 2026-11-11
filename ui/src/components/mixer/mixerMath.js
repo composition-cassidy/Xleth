@@ -50,8 +50,37 @@ export function parseWidth(text) {
   return n == null ? null : Math.max(0, Math.min(2, n / 100))
 }
 
-/** What the inserts button says. */
+/** The inserts in words, for an accessible name: "No FX", "FX 3", "FX graph". */
 export function insertLabel(chain, fxMode) {
   if (fxMode === 'graph') return 'FX graph'
   return chain.length === 0 ? 'No FX' : `FX ${chain.length}`
+}
+
+/** Volume fields and faders print an explicit plus on positive gain (+3.0 dB beside −12.9 dB). */
+export const GAIN_FORMAT = Object.freeze({ signed: true })
+
+/**
+ * What a strip's insert list shows in `rows` rows (ui/DESIGN.md 10).
+ *
+ * Each entry is `{ text, index, off }`: `index` is the chain position the row opens in the
+ * Devices tab, or null for a row that only opens the chain. A chain longer than the list
+ * keeps its first `rows - 1` names and ends with "+N more", which opens the first hidden
+ * device. A track whose effects live in its FX Graph says so in one row. Rows past the end
+ * are null: empty wells.
+ */
+export function insertRows(chain, fxMode, rows, nameOf) {
+  const out = Array.from({ length: rows }, () => null)
+  if (rows <= 0) return out
+  if (fxMode === 'graph') {
+    out[0] = { text: 'FX graph', index: null, off: false }
+    return out
+  }
+  const named = (effect, index) => ({ text: nameOf(effect), index, off: !!effect?.bypassed })
+  if (chain.length <= rows) {
+    chain.forEach((effect, i) => { out[i] = named(effect, i) })
+    return out
+  }
+  for (let i = 0; i < rows - 1; i += 1) out[i] = named(chain[i], i)
+  out[rows - 1] = { text: `+${chain.length - (rows - 1)} more`, index: rows - 1, off: false, more: true }
+  return out
 }

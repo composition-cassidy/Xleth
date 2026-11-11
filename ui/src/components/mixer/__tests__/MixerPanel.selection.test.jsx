@@ -166,11 +166,20 @@ describe('MixerPanel selection and layout', () => {
     await flushEffects()
 
     const panel = container.querySelector('[data-testid="mixer-panel"]')
-    const scroll = panel.children[0]
-    const dock = panel.children[1]
+    // Gutter (fixed), then the scrolling strips, then the dock (fixed).
+    const gutter = panel.children[0]
+    const scroll = panel.children[1]
+    const dock = panel.children[2]
+    expect(gutter.querySelector('[data-testid="mixer-gutter"]')).not.toBeNull()
     expect(scroll.querySelectorAll('[data-testid^="mixer-strip-"]')).toHaveLength(2)
     expect(dock.querySelector('[data-testid="master-strip"]')).not.toBeNull()
     expect(dock.textContent).toMatch(/loudness/i)
+    // What every strip shares is printed once, in the gutter.
+    expect(gutter.textContent).toContain('Pan')
+    expect(gutter.textContent).toContain('Width')
+    expect(gutter.textContent).toContain('dB')
+    expect(scroll.textContent).not.toContain('Pan')
+    expect(gutter.querySelector('[role="img"]').getAttribute('aria-label')).toBe('Level scale, 0 to −60 dB')
     await act(async () => root.unmount())
   })
 

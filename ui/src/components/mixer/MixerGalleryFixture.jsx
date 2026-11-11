@@ -5,8 +5,10 @@
 // None of this ships in the real Mixer view, and nothing here is engine data.
 //
 // States shown: selected (5), muted (3), soloed (6), visual-only (8), clipped
-// meter (4), a bus route (2, 3 -> 5; 8 -> 10), a sidechain (1 -> 6), an inserts
-// count (1, 2, 7). "Armed" is not shown: the engine has no record-arm.
+// meter (4), a bus route (2, 3 -> 5; 8 -> 10), a sidechain (1 -> 6), named inserts
+// (1 with one bypassed, 2, 7 with more than five so the last row is "+N more", 9 on
+// an FX graph), the dB gutter and the loudness dock. "Armed" is not shown: the
+// engine has no record-arm.
 
 import { useEffect, useState } from 'react'
 import useMixerStore, { peaksSnapshot } from '../../stores/mixerStore.js'
@@ -14,6 +16,7 @@ import useEffectChainStore from '../../stores/effectChainStore.js'
 import { TRACK_PALETTE_FALLBACK } from '../timeline/trackColorResolver.js'
 import MixerStrip from './MixerStrip.jsx'
 import MasterStrip from './MasterStrip.jsx'
+import { MixerGutter } from './MixerPanel.jsx'
 import RoutingBand from './RoutingBand.jsx'
 import MasterLoudnessMeter, { LOUDNESS_ENABLED_KEY, pollMasterLoudness } from '../MasterLoudnessMeter.jsx'
 import { publishMeters } from './mixerMeterBus.js'
@@ -54,7 +57,7 @@ function mockPeaks() {
   return snap
 }
 
-export default function MixerGalleryFixture({ stripMode = 'normal' }) {
+export default function MixerGalleryFixture({ stripMode = 'compact' }) {
   const stripW = STRIP_WIDTHS[stripMode]
   const identity = Object.fromEntries(IDS.map((id, i) => [id, TRACK_PALETTE_FALLBACK[i % 16]]))
   // The dock reads its on/off preference once, at mount: set it before the first render.
@@ -67,6 +70,7 @@ export default function MixerGalleryFixture({ stripMode = 'normal' }) {
     const prior = {
       mixer: useMixerStore.getState(),
       chains: useEffectChainStore.getState().chains,
+      fxModes: useEffectChainStore.getState().fxModes,
       xleth: window.xleth,
       loud: (() => { try { return localStorage.getItem(LOUDNESS_ENABLED_KEY) } catch { return null } })(),
       width: useMixerUiStore.getState().stripWidthMode,
@@ -79,9 +83,34 @@ export default function MixerGalleryFixture({ stripMode = 'normal' }) {
         gain: 1, preFader: false, enabled: true, status: 'ok',
       }],
     })
-    useEffectChainStore.setState({ chains: { ...prior.chains, 1: [{ nodeId: 1 }, { nodeId: 2 }], 2: [{ nodeId: 3 }], 7: [{ nodeId: 4 }, { nodeId: 5 }, { nodeId: 6 }] } })
+    const fx = (nodeId, pluginId, extra) => ({ nodeId, pluginId, ...extra })
+    const mockChains = {
+      1: [fx(1, 'xletheq'), fx(2, 'compressor'), fx(3, 'reverb', { bypassed: true })],
+      2: [fx(4, 'limiter')],
+      7: [fx(5, 'xletheq'), fx(6, 'compressor'), fx(7, 'uniflange'), fx(8, 'delay'), fx(9, 'reverb'), fx(10, 'limiter'), fx(11, 'apex')],
+      master: [fx(12, 'xletheq'), fx(13, 'limiter')],
+    }
+    useEffectChainStore.setState({
+      chains: { ...prior.chains, ...mockChains },
+      fxModes: { ...prior.fxModes, 9: 'graph' },
+    })
     // The dock reads the engine through window.xleth; a MOCK stands in, for the gallery only.
-    window.xleth = { ...(window.xleth || {}), audio: { ...(window.xleth?.audio || {}), getMasterLoudness: async () => MOCK_LOUDNESS, setMasterLoudnessEnabled: () => {} } }
+    // Each strip fetches its own chain when it mounts, so the MOCK answers that call too.
+    window.xleth = {
+      ...(window.xleth || {}),
+      audio: {
+        ...(window.xleth?.audio || {}),
+        getMasterLoudness: async () => MOCK_LOUDNESS,
+        setMasterLoudnessEnabled: () => {},
+        getEffectChain: async (id) => mockChains[id] ?? [],
+        getMasterEffectChain: async () => mockChains.master,
+      },
+    }
+    // The strips mounted (and asked for their chains) before this effect installed the MOCK,
+    // so ask again: the newest fetch per chain wins.
+    const { fetchChain } = useEffectChainStore.getState()
+    fetchChain('master')
+    IDS.forEach((id) => fetchChain(String(id)))
     pollMasterLoudness()
     // The strips only mount once the store above is seeded, so their meters
     // subscribe a render later: push the (steady) mock levels after that.
@@ -91,7 +120,7 @@ export default function MixerGalleryFixture({ stripMode = 'normal' }) {
     return () => {
       timers.forEach(clearTimeout)
       useMixerStore.setState(prior.mixer, true)
-      useEffectChainStore.setState({ chains: prior.chains })
+      useEffectChainStore.setState({ chains: prior.chains, fxModes: prior.fxModes })
       window.xleth = prior.xleth
       try {
         if (prior.loud == null) localStorage.removeItem(LOUDNESS_ENABLED_KEY)
@@ -101,7 +130,10 @@ export default function MixerGalleryFixture({ stripMode = 'normal' }) {
   }, [])
 
   return (
-    <div className={panel.panel} style={{ width: 1660, height: 273, flex: 'none' }} data-testid="mixer-gallery-fixture">
+    <div className={panel.panel} style={{ width: 1660, height: 380, flex: 'none' }} data-testid="mixer-gallery-fixture">
+      <div className={panel.gutterDock}>
+        <MixerGutter stripMode={stripMode} onStripMode={() => {}} />
+      </div>
       <div className={panel.scroll}>
         <div className={panel.lane}>
           {IDS.map((id, i) => (

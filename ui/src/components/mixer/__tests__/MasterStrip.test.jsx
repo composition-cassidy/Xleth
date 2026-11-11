@@ -36,7 +36,7 @@ describe('MasterStrip', () => {
     vi.restoreAllMocks()
   })
 
-  it('renders the master inserts count and selects master on click', async () => {
+  it('renders the master with an empty insert list and selects master on click', async () => {
     const { MasterStrip, useMixerStore } = await loadMasterStripFixture()
     useMixerStore.setState({ master: { volume: 1 }, selectedChainKey: null })
 
@@ -44,7 +44,10 @@ describe('MasterStrip', () => {
     const strip = container.querySelector('[data-testid="master-strip"]')
 
     expect(strip.textContent).toContain('Master')
-    expect(strip.textContent).toContain('No FX')
+    const inserts = strip.querySelector('[data-testid="mixer-inserts"]')
+    expect(inserts.getAttribute('aria-label')).toBe('Master inserts: No FX')
+    expect(inserts.querySelectorAll('[role="option"]')).toHaveLength(0)
+    expect(inserts.querySelectorAll('[data-empty="true"]')).toHaveLength(5)
 
     await act(async () => {
       strip.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -52,6 +55,25 @@ describe('MasterStrip', () => {
 
     expect(useMixerStore.getState().selectedChainKey).toBe('master')
     expect(strip.getAttribute('data-selected')).toBe('true')
+    await act(async () => {
+      root.unmount()
+    })
+  })
+
+  it('loads the master chain on mount so the insert list names the real chain', async () => {
+    const getMasterEffectChain = vi.fn(async () => [
+      { nodeId: 9, pluginId: 'apex', position: 0, bypassed: false },
+    ])
+    window.xleth.audio.getMasterEffectChain = getMasterEffectChain
+    const { MasterStrip, useMixerStore } = await loadMasterStripFixture()
+    useMixerStore.setState({ master: { volume: 1 }, selectedChainKey: null })
+
+    const { container, root } = await renderMasterStrip(MasterStrip)
+
+    expect(getMasterEffectChain).toHaveBeenCalled()
+    const rows = Array.from(container.querySelectorAll('[data-testid="mixer-inserts"] [role="option"]')).map((r) => r.textContent)
+    expect(rows).toEqual(['APEX'])
+    expect(container.querySelector('[data-testid="mixer-inserts"]').getAttribute('aria-label')).toBe('Master inserts: FX 1')
     await act(async () => {
       root.unmount()
     })

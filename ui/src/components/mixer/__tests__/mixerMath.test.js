@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { dbToGain, formatPan, formatWidth, gainToDb, insertLabel, parsePan, parseWidth } from '../mixerMath.js'
+import { formatValue } from '../../../ui-kit'
+import { GAIN_FORMAT, dbToGain, formatPan, formatWidth, gainToDb, insertLabel, insertRows, parsePan, parseWidth } from '../mixerMath.js'
 
 describe('mixerMath', () => {
   it('round-trips gain and dB, and treats the floor as silence', () => {
@@ -38,9 +39,58 @@ describe('mixerMath', () => {
     expect(parseWidth('x')).toBeNull()
   })
 
-  it('labels the inserts button', () => {
+  it('summarises the inserts in words, for the accessible name of the insert list', () => {
     expect(insertLabel([], 'chain')).toBe('No FX')
     expect(insertLabel([{}, {}], 'chain')).toBe('FX 2')
     expect(insertLabel([{}], 'graph')).toBe('FX graph')
+  })
+
+  it('prints positive gain with an explicit plus, negative with a true minus, zero bare', () => {
+    // Number, thin space (U+2009), unit; a true minus (U+2212).
+    expect(formatValue(3, 'dB', GAIN_FORMAT)).toBe('+3.0\u2009dB')
+    expect(formatValue(7.1, 'dB', GAIN_FORMAT)).toBe('+7.1\u2009dB')
+    expect(formatValue(-12.9, 'dB', GAIN_FORMAT)).toBe('\u221212.9\u2009dB')
+    expect(formatValue(0, 'dB', GAIN_FORMAT)).toBe('0.0\u2009dB')
+    expect(formatValue(-Infinity, 'dB', GAIN_FORMAT)).toBe('\u2212inf\u2009dB')
+  })
+
+  describe('insertRows', () => {
+    const fx = (pluginId, extra) => ({ pluginId, ...extra })
+    const name = (e) => e.pluginId.toUpperCase()
+    const texts = (rows) => rows.map((r) => (r ? r.text : null))
+
+    it('names each insert in chain order and leaves the rest as empty wells', () => {
+      const rows = insertRows([fx('eq'), fx('comp')], 'chain', 5, name)
+      expect(texts(rows)).toEqual(['EQ', 'COMP', null, null, null])
+      expect(rows.slice(0, 2).map((r) => r.index)).toEqual([0, 1])
+    })
+
+    it('an empty chain is five wells', () => {
+      expect(insertRows([], 'chain', 5, name)).toEqual([null, null, null, null, null])
+    })
+
+    it('exactly as many inserts as rows are all named', () => {
+      const chain = ['a', 'b', 'c', 'd', 'e'].map((p) => fx(p))
+      expect(texts(insertRows(chain, 'chain', 5, name))).toEqual(['A', 'B', 'C', 'D', 'E'])
+    })
+
+    it('a longer chain keeps the first rows - 1 names and ends in "+N more", which opens the first hidden device', () => {
+      const chain = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((p) => fx(p))
+      const rows = insertRows(chain, 'chain', 5, name)
+      expect(texts(rows)).toEqual(['A', 'B', 'C', 'D', '+3 more'])
+      expect(rows[4]).toMatchObject({ index: 4, more: true })
+      expect(texts(insertRows(chain, 'chain', 3, name))).toEqual(['A', 'B', '+5 more'])
+    })
+
+    it('marks a bypassed insert', () => {
+      const rows = insertRows([fx('eq'), fx('comp', { bypassed: true })], 'chain', 5, name)
+      expect(rows.map((r) => r && r.off)).toEqual([false, true, null, null, null])
+    })
+
+    it('a track on an FX graph says so in one row, which opens the chain, not a device', () => {
+      const rows = insertRows([fx('eq')], 'graph', 5, name)
+      expect(texts(rows)).toEqual(['FX graph', null, null, null, null])
+      expect(rows[0].index).toBeNull()
+    })
   })
 })

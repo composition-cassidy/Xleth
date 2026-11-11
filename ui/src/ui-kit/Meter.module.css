@@ -41,6 +41,15 @@
     right: -9px;
   }
 
+  /* Where the latch would be while a `clipLatch="latched"` meter is not clipped, and on a
+   * MeterScale: same box, nothing drawn, so bars and numerals keep their y. */
+  .clipSpace {
+    display: block;
+    flex: none;
+    width: var(--bars-w);
+    height: 6px;
+  }
+
   .clip[data-clipped="true"] {
     border-color: var(--ui-clip);
     background: var(--ui-clip);

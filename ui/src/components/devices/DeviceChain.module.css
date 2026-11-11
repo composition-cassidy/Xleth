@@ -30,6 +30,12 @@
     outline: 1px solid var(--ui-select);
   }
 
+  /* The device a mixer strip's insert row asked for: outlined until the next press in the chain. */
+  .slot[data-revealed="true"] {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 1px;
+  }
+
   /* The end of the chain: plain text, no illustration. Opens the FX picker. */
   .drop {
     box-sizing: border-box;

@@ -395,6 +395,7 @@ Number, **thin space U+2009**, unit. **True minus U+2212**, never a hyphen-minus
 | Unit | Rule | Example |
 |---|---|---|
 | dB | 1 decimal | `−6.0 dB` |
+| dB of gain (a level you set: faders, volume fields, a peak readout) | 1 decimal, **explicit plus** on a positive value, never on zero | `+3.0 dB`, `0.0 dB`, `−12.9 dB` |
 | Hz | below 1 k: 0 decimals; from 1 k: kHz, 2 decimals | `455 Hz`, `5.49 kHz` |
 | ms | below 100: 1 decimal; else 0 | `12.5 ms`, `250 ms` |
 | % | 0 decimals | `70 %` |
@@ -402,6 +403,10 @@ Number, **thin space U+2009**, unit. **True minus U+2212**, never a hyphen-minus
 
 Legacy inconsistencies (`db`, `dB`, `0dB`, mixed minus signs) are fixed per component as each
 phase rebuilds it, through `formatValue`, never by regex.
+
+The plus is `formatValue`'s `signed` option, passed by the control that shows a gain (`formatOptions={{ signed: true }}`;
+the mixer's is `GAIN_FORMAT` in `mixer/mixerMath.js`), not a global rule: a threshold or a ceiling is a position on a
+scale, not a gain, and stays unsigned. A column of levels then reads `+7.1 dB` beside `−12.9 dB`, not `7.1 dB`.
 
 ## 7. Control gestures (identical on every control)
 
@@ -590,23 +595,72 @@ that behaviour; the one-step revert after a preset load remains. "Every edit is 
 
 ## 10. Mixer (Phase 5)
 
-The Mixer tab of the detail dock: identical strips scrolling between a fixed Master + loudness
-dock. There is **no inspector column**: a track's detail lives in the Inspector and the Devices
-tab (the inserts button opens Devices on that track). Components: `components/mixer/`
-(`MixerPanel`, `MixerStrip`, `MasterStrip`, `RoutingBand`) and `components/MasterLoudnessMeter.jsx`.
+The Mixer tab of the detail dock: a fixed **gutter** at the left, identical strips scrolling in the
+middle, a fixed Master + loudness dock at the right. There is **no inspector column**: a track's
+detail lives in the Inspector and the Devices tab (an insert row opens Devices on that device).
+Components: `components/mixer/` (`MixerPanel` with `MixerGutter`, `MixerStrip`, `MasterStrip`,
+`InsertList`, `RoutingBand`) and `components/MasterLoudnessMeter.jsx`.
 
-**Strip** (84 px normal, 68 px compact, the setting is renderer-only UI state), top to bottom:
-identity stripe (3 px top edge, the same colour as lane, device and layer) with number and name ·
-inserts button · M / S / V Toggles at rest · Pan (bipolar) and Width Knobs · volume NumberBox ·
-Fader + Meter (printed dB scale, peak hold, clip latch) · routing cable row · Output Select.
-**Muted** dims every row but the name and the M/S/V row (`--ui-mute-opacity`) and shows a mute glyph;
-**selected** is a 1px `--ui-select` outline. M/S/V are real engine state; **there is no arm**
-(the engine has no record-arm) and **no sends** (`TrackInfo.sends` is reserved and always empty),
-so neither is drawn.
+**Round 3 rebuilt the strip around two rules: show the content, and say shared things once.** A strip used
+to carry an "FX 5" button, the words Pan and Width, a 0 to −60 numeral scale and an empty clip box, on every
+strip, and drew its level three times (number, fill bar, fader). Now:
+
+**Strip** (**72 px compact, the default**; 84 px normal; renderer-only UI state, and a stored choice is
+kept), one eight-row grid, top to bottom:
+
+1. **Head** (g2): the 3 px identity stripe (the same colour as lane, device and layer), the **number on
+   its own row above the name**, so a 10-character name is whole at 72 px (11 px, weight 500).
+2. **Insert names** (`InsertList`): five 16 px rows naming the chain's devices in signal order, through the
+   device title bar's own name map (`deviceName`). A longer chain keeps four names and ends in **"+N more"**;
+   a track whose effects live in its FX Graph says "FX graph"; a bypassed insert is dimmer **and** struck
+   through; rows past the end are empty slots (g1 on the strip's g0). The list is **one control**, a listbox
+   far over the 24 px hit floor: the row under the pointer, or the arrow-key row, is the device it opens in
+   the Devices tab (`deviceRevealStore`: the chain scrolls to it and outlines it until the next press there);
+   an empty row opens the chain. Sixteen-pixel rows that were each their own button would break the Floor.
+3. **M / S / V** Toggles at rest, three 24 px cells.
+4. **Pan** (bipolar) and **Width** Knobs with their values printed under them and **no word above**: the
+   words are in the gutter. Each keeps its accessible name, `aria-valuetext` and hint.
+5. **Volume** NumberBox, signed (section 6), **without the value-fill rule**: the fader below is the slider.
+6. **Fader + Meter**: the meter draws **ticks only** and its **clip latch only once latched** (its space is
+   kept, so the bars never move); peak hold as before.
+7. Routing cable row. 8. Output Select.
+
+Compact is 72, not the 68 it used to be: three 24 px toggles need 72. A short dock (under 316 px for the
+strips) shows three insert rows and lets the fader go down to 48 px, so a 320 px dock at 1366x768 still does not
+scroll vertically.
+
+**Muted** dims every row but the head and the M/S/V row (`--ui-mute-opacity`) and shows a mute glyph;
+**selected** is a 1px `--ui-select` outline **plus the head one ramp step lighter** (g3). M/S/V are real
+engine state; **there is no arm** (the engine has no record-arm) and **no sends** (`TrackInfo.sends` is
+reserved and always empty), so neither is drawn.
+
+**Gutter** (`MixerGutter`, 40 px, fixed left of the scroller): the meters' **dB numerals, printed once**
+(kit `MeterScale`), the words **Pan** and **Width** beside the knob row (left and right, like the knobs),
+and the strip-width switch. The gutter, every strip and the Master are equal-height columns on the same row
+grid, and `MeterScale` has a meter's own box, so each numeral sits at the y of the strips' ticks at any dock
+height. Which marks a height shows is one function (`visibleScaleMarks`: a mark at least 12 px under the one
+before it), shared by a meter's numerals, a meter's bare ticks and the scale. The scroller's bar is always
+present (`overflow-x: scroll`) and its height is **measured**, not assumed: the fixed columns leave exactly
+that much at the bottom.
+
+**Master** is the same grid: head, its own insert list, then a **peak readout** in the two rows a track
+gives to M/S/V and pan + width (the highest master level since the last reset, from the same meter bus, "—"
+until a level arrives, "Over" in words above 0 dB, click to reset), volume, fader and a meter **with
+numerals** (the gutter is at the far left of a long mixer). Same tick set at the same y as every strip.
 
 **Meters.** The mixer's one existing 125 ms `getAllPeaks` poll writes `peaksSnapshot` and then
 fans levels out through `mixerMeterBus` to the kit Meters (dB, own rAF ballistics, asleep at
-rest). No timer was added and nothing is a DOM segment.
+rest). No timer was added and nothing is a DOM segment. **A level meter is drawn in the audio signal hue**
+(`--ui-signal-audio`, section 3.3: Meter `tone="audio"`), the same hue as the routing cables under it, so
+"audio" is one colour from the meter to the cable; clipping is still `--ui-clip`. A meter that shows a value
+rather than a signal's level (gain reduction in the compressors) keeps `--ui-value`. A strip's meter slot is
+g1 (`well="panel"`) because the strip body is g0.
+
+**Insert names and the chain cache.** Names are read from `useEffectChainStore.chains[key]`. Each strip fills
+its own entry when it mounts (it used to be filled only for the selected track, so every other strip read
+"No FX"); edits made through the store keep it current, and `MixerPanel` refetches every strip's chain when
+a project loads. It is not refreshed by a chain change the renderer did not make (an undo of a chain load
+while the Mixer stays mounted): open.
 
 **Routing.** `RoutingBand` is one canvas over each strip's cable row, drawn from the store's own
 `outputRoutes` and `sidechainRoutes` (`routingCables.js` is the pure geometry): a dot in the
@@ -615,13 +669,20 @@ feeds, and sidechain cables thinner, dashed and lower contrast, all in `--ui-sig
 Disabled, stale or dangling routes are not drawn. The canvas redraws on change only and takes no
 pointer events; the Output Selects are the controls.
 
-**Loudness dock.** Off, or nothing measured: every value is "—" with its unit and no bars are
-drawn. Values go through `formatValue`; a true peak over the ceiling is flagged "Over" in words.
+**Loudness dock.** While metering is off it is a **28 px rail** (the folded-device width: "Loudness",
+"Off", an open control) unless the user opened it; the choice is kept (`xleth.mixer.loudnessDockOpen`,
+renderer-only). While metering is on it is always open. Open and off, or nothing measured: every value is
+"—" with its unit and no bars are drawn. Values go through `formatValue`; a true peak over the ceiling is flagged "Over" in words.
 The target is a labelled Select (platform targets, `none` omitted because the meter reads it as
 unset) writing the `xleth.export.loudnessTarget` key the export dialog shares.
 
 **Gallery.** `?view=ui-kit` shows 16 strips with mixed states from `MixerGalleryFixture` (MOCK
-data, gallery only; a test fails if anything else imports it).
+data, gallery only; a test fails if anything else imports it): the gutter, named inserts (one bypassed, one
+chain with "+3 more", one FX graph), the Master's inserts and peak readout, at 72 and at 84 px.
+
+**Measured** in the render harness (fake engine, 24 tracks, 1920x1080, Compose, dock at its auto height):
+20 strips fully visible beside the Master (17 before round 3, at 84 px), no clipped name among ten-character
+names, the M/S/V cells 24 px wide, strip, Master and gutter meters at the same y and height.
 
 ## 11. Browser, sample picker, icons (Phase 6)
 

@@ -1,6 +1,9 @@
-/* The Mixer tab (ui/DESIGN.md section 8). Track strips scroll horizontally in the
- * middle; the master strip and the loudness dock are fixed at the right. There is
- * no inspector column: a track's detail lives in the Inspector and the Devices tab. */
+/* The Mixer tab (ui/DESIGN.md section 10). A fixed gutter at the left prints what every
+ * strip shares (the dB numerals, the words Pan and Width); track strips scroll
+ * horizontally in the middle; the master strip and the loudness dock are fixed at the
+ * right. There is no inspector column: a track's detail lives in the Inspector and the
+ * Devices tab. Gutter, strips and master are equal-height columns on one row grid
+ * (MixerStrip.module.css), so the numerals sit at the strips' ticks. */
 @layer kit {
   .panel {
     box-sizing: border-box;
@@ -12,7 +15,18 @@
     background: var(--ui-g0);
     color: var(--ui-ink);
     font-family: var(--ui-font);
-    overflow: hidden;
+    container: mixer-panel / size;
+    /* A panel shorter than the strips' floor scrolls (the strips stop compressing there)
+     * rather than clipping the output select. Horizontal scroll stays on .scroll. */
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--ui-g4) var(--ui-g1);
+  }
+
+  .panel > .scroll,
+  .panel > .dock {
+    min-height: min-content;
   }
 
   .scroll {
@@ -21,10 +35,48 @@
     flex-direction: column;
     min-width: 0;
     min-height: 0;
-    overflow-x: auto;
+    /* Always there (not `auto`): the strips' height must not depend on whether they overflow,
+     * or the gutter's numerals and the master would stop lining up with them. */
+    overflow-x: scroll;
     overflow-y: hidden;
-    scrollbar-width: thin;
-    scrollbar-color: var(--ui-g4) var(--ui-g1);
+    /* .panel sets scrollbar-color for its own vertical bar and that property inherits; any
+     * value but auto makes Chromium ignore the ::-webkit-scrollbar rules below, and the bar
+     * would stop being the 18px the fixed columns leave for it. */
+    scrollbar-color: auto;
+    scrollbar-width: auto;
+  }
+
+  /* Same fat left/right bar as the Devices chain (DeviceChain.module.css); no scrollbar-width,
+   * which would make Chromium ignore these. */
+  .scroll::-webkit-scrollbar {
+    height: 18px;
+  }
+
+  .scroll::-webkit-scrollbar-track {
+    background: var(--ui-g0);
+    border-top: 1px solid var(--ui-g4);
+  }
+
+  .scroll::-webkit-scrollbar-thumb {
+    min-width: 48px;
+    border: 3px solid var(--ui-g0);
+    border-radius: 999px;
+    background: var(--ui-boundary);
+  }
+
+  .scroll::-webkit-scrollbar-thumb:hover,
+  .scroll::-webkit-scrollbar-thumb:active {
+    background: var(--ui-ink-2);
+  }
+
+  .scroll::-webkit-scrollbar-corner {
+    background: var(--ui-g0);
+  }
+
+  /* A short dock (data-short, MixerPanel): three insert rows and a 48px fader floor, so the
+   * strips still fit a 320px dock without scrolling vertically. */
+  .panel[data-short="true"] {
+    --mx-fader-floor: 48px;
   }
 
   .lane {
@@ -35,7 +87,9 @@
     flex: 1;
     width: max-content;
     min-width: 100%;
-    min-height: 0;
+    /* The lane is as tall as the strips' floor at the least, so .scroll's min-content
+     * (and with it the panel's vertical scroll) tracks it. */
+    min-height: min-content;
   }
 
   /* Folder labels above their strips; strips are fixed-width so the spans line up. */
@@ -76,6 +130,35 @@
     flex: none;
     border-left: 1px solid var(--ui-boundary);
     background: var(--ui-g1);
+  }
+
+  .gutterDock {
+    display: flex;
+    flex: none;
+  }
+
+  /* The fixed columns stand beside the scroller, so they leave the same 18px the scroller's
+   * bar takes at the bottom and, when folders are shown, the folder row's height at the top.
+   * Their strips are then exactly as tall as the scrolling ones. */
+  .dock,
+  .gutterDock {
+    box-sizing: border-box;
+    /* --mx-bar-h is the scroller's bar as measured (MixerPanel): 18px in the app, 0 where
+     * scrollbars are hidden. Never assumed, or the columns would be off by exactly that. */
+    padding-bottom: var(--mx-bar-h, 0px);
+    background-image: linear-gradient(var(--ui-g0), var(--ui-g0));
+    background-repeat: no-repeat;
+    background-position: left bottom;
+    background-size: 100% var(--mx-bar-h, 0px);
+  }
+
+  .dock[data-folders],
+  .gutterDock[data-folders] {
+    padding-top: var(--row-h-compact);
+  }
+
+  .gutterDock {
+    background-color: var(--ui-g1);
   }
 
   .empty {

@@ -20,8 +20,8 @@ export { default as NumberBox } from './NumberBox';
 export type { NumberBoxProps } from './NumberBox';
 export { default as Fader } from './Fader';
 export type { FaderProps } from './Fader';
-export { default as Meter, meterWidth } from './Meter';
-export type { MeterProps, MeterSubscribe } from './Meter';
+export { default as Meter, MeterScale, meterWidth, visibleScaleMarks } from './Meter';
+export type { MeterProps, MeterScaleMode, MeterScaleProps, MeterSubscribe } from './Meter';
 export { default as FaderMeter } from './FaderMeter';
 export type { FaderMeterProps } from './FaderMeter';
 

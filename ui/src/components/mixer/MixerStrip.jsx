@@ -1,13 +1,15 @@
 import { memo, useCallback, useEffect, useRef } from 'react'
 import { VolumeX } from 'lucide-react'
-import { Button, Fader, Knob, Meter, NumberBox, Select, Toggle, dbTaperScale } from '../../ui-kit'
+import { Fader, Knob, Meter, NumberBox, Select, Toggle, dbTaperScale } from '../../ui-kit'
 import useMixerStore, { MASTER_OUTPUT_TARGET_ID, normalizeOutputTargetId } from '../../stores/mixerStore.js'
 import useTimelineFocusStore from '../../stores/timelineFocusStore.js'
 import useEffectChainStore, { resolveFxMode } from '../../stores/effectChainStore.js'
 import useFxChainDragStore from '../../stores/fxChainDragStore.js'
 import { usePanelRegistry } from '../../windowing/registry/PanelRegistry'
+import { requestDeviceReveal } from '../devices/deviceRevealStore.js'
+import InsertList from './InsertList.jsx'
 import { subscribeMeter } from './mixerMeterBus.js'
-import { dbToGain, formatPan, formatWidth, gainToDb, insertLabel, parsePan, parseWidth } from './mixerMath.js'
+import { GAIN_FORMAT, dbToGain, formatPan, formatWidth, gainToDb, parsePan, parseWidth } from './mixerMath.js'
 import styles from './MixerStrip.module.css'
 
 const EMPTY_CHAIN = []
@@ -29,14 +31,18 @@ export function useFxDropState(fxKey) {
   return undefined
 }
 
-/** Select this strip's chain and open the Devices tab on it. */
-export function openDevicesFor(chainKey, trackId) {
+/**
+ * Select this strip's chain and open the Devices tab on it. With `deviceIndex`
+ * (an insert row), the Devices tab also brings that device into view.
+ */
+export function openDevicesFor(chainKey, trackId, deviceIndex = null) {
   if (trackId != null) useTimelineFocusStore.getState().setFocusedTrackId(trackId)
   useMixerStore.getState().setSelectedChainKey(chainKey)
   usePanelRegistry.getState().openPanel('devices')
+  if (deviceIndex != null) requestDeviceReveal(chainKey, deviceIndex)
 }
 
-function MixerStrip({ trackId, index, color, stripW = 84 }) {
+function MixerStrip({ trackId, index, color, stripW = 72, insertRowCount = 5 }) {
   const fxKey = String(trackId)
   const track = useMixerStore(s => s.tracks[trackId])
   const tracks = useMixerStore(s => s.tracks)
@@ -56,6 +62,7 @@ function MixerStrip({ trackId, index, color, stripW = 84 }) {
   const setFocusedTrackId = useTimelineFocusStore(s => s.setFocusedTrackId)
   const chain = useEffectChainStore(s => s.chains[fxKey] ?? EMPTY_CHAIN)
   const fxMode = useEffectChainStore(s => resolveFxMode(s.fxModes, fxKey))
+  const fetchChain = useEffectChainStore(s => s.fetchChain)
   const openFxChainMenu = useFxChainDragStore(s => s.openMenu)
   const fxDrop = useFxDropState(fxKey)
   const subscribe = useMeterSubscribe(fxKey)
@@ -67,6 +74,14 @@ function MixerStrip({ trackId, index, color, stripW = 84 }) {
   useEffect(() => {
     if (selected) stripRef.current?.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' })
   }, [selected])
+
+  // The insert list reads the chain cache, which only the Devices and FX Graph
+  // panels used to fill (for the selected track). Each strip fills its own entry
+  // when it mounts; edits made through the store keep it current after that, and
+  // MixerPanel refetches every strip's chain when a project loads.
+  useEffect(() => {
+    fetchChain(fxKey)
+  }, [fxKey, fetchChain])
 
   useEffect(() => {
     if (routeTargetId !== MASTER_OUTPUT_TARGET_ID && !routeTarget) refreshRouting()
@@ -89,6 +104,7 @@ function MixerStrip({ trackId, index, color, stripW = 84 }) {
   const handlePan = useCallback((v) => setPan(trackId, v), [trackId, setPan])
   const handleSpread = useCallback((v) => setSpread(trackId, v), [trackId, setSpread])
   const handleRoute = useCallback((target) => setOutputRoute(trackId, Number(target)), [trackId, setOutputRoute])
+  const handleOpenInsert = useCallback((deviceIndex) => openDevicesFor(fxKey, trackId, deviceIndex), [fxKey, trackId])
 
   if (!track) return null
 
@@ -100,7 +116,7 @@ function MixerStrip({ trackId, index, color, stripW = 84 }) {
     routeOptions.unshift({ value: routeTargetId, label: 'Missing track', disabled: true })
   }
   const db = gainToDb(track.volume)
-  const knobW = Math.floor((stripW - 4) / 2)
+  const knobW = Math.floor(stripW / 2) - 1
 
   return (
     <div
@@ -119,21 +135,16 @@ function MixerStrip({ trackId, index, color, stripW = 84 }) {
       onClick={handleSelect}
       onContextMenu={handleContextMenu}
     >
+      {/* Number over name: two rows, so a 10-character name is whole at 72px. */}
       <div className={styles.head} title={name}>
-        <span className={styles.num}>{index}</span>
+        <span className={styles.numRow}>
+          <span className={styles.num}>{index}</span>
+          {track.muted ? <VolumeX className={styles.muteGlyph} size={12} aria-hidden="true" /> : null}
+        </span>
         <span className={styles.name}>{name}</span>
-        {track.muted ? <VolumeX className={styles.muteGlyph} size={12} aria-hidden="true" /> : null}
       </div>
 
-      <Button
-        size="sm"
-        className={styles.inserts}
-        aria-label={`${name}: ${insertLabel(chain, fxMode)}. Open in Devices`}
-        hint="Inserts on this track. Opens the Devices tab."
-        onClick={(e) => { e.stopPropagation(); openDevicesFor(fxKey, trackId) }}
-      >
-        {insertLabel(chain, fxMode)}
-      </Button>
+      <InsertList name={name} chain={chain} fxMode={fxMode} rows={insertRowCount} onOpen={handleOpenInsert} />
 
       <div className={styles.toggles}>
         <Toggle
@@ -150,32 +161,39 @@ function MixerStrip({ trackId, index, color, stripW = 84 }) {
         >V</Toggle>
       </div>
 
+      {/* Pan left, width right. The words are printed once, in the mixer's gutter; each knob
+          keeps its accessible name, its value text and its hint. */}
       <div className={styles.knobs}>
         <Knob
-          className={styles.knob} label="Pan" size={20} width={knobW} bipolar min={-1} max={1} defaultValue={0}
+          className={styles.knob} label="Pan" hideLabel size={20} width={knobW} bipolar min={-1} max={1} defaultValue={0}
           value={track.pan} format={formatPan} parse={parsePan}
           onChange={handlePan} onCommit={handlePan} hint={`Pan of ${name}`}
         />
         <Knob
-          className={styles.knob} label="Width" size={20} width={knobW} min={0} max={2} defaultValue={1}
+          className={styles.knob} label="Width" hideLabel size={20} width={knobW} min={0} max={2} defaultValue={1}
           value={track.spread} format={formatWidth} parse={parseWidth}
           onChange={handleSpread} onCommit={handleSpread} hint={`Stereo width of ${name}`}
         />
       </div>
 
+      {/* The number; the fader under it is the slider, so the field draws no fill of its own. */}
       <div className={styles.field}>
         <NumberBox
-          label={`${name} volume`} hideLabel width={stripW - 8} scale={dbTaperScale} unit="dB" defaultValue={0}
+          label={`${name} volume`} hideLabel fill={false} width={stripW - 7} scale={dbTaperScale} unit="dB"
+          formatOptions={GAIN_FORMAT} defaultValue={0}
           value={db} onChange={handleVolume} onCommit={handleVolume} hint={`Volume of ${name}`}
         />
       </div>
 
       <div className={styles.faderRow}>
         <Fader
-          label={`${name} volume`} scale={dbTaperScale} unit="dB" defaultValue={0} width={28}
+          label={`${name} volume`} scale={dbTaperScale} unit="dB" formatOptions={GAIN_FORMAT} defaultValue={0} width={28}
           value={db} onChange={handleVolume} onCommit={handleVolume} hint={`Volume of ${name}`}
         />
-        <Meter label={name} channels={2} well="panel" subscribe={subscribe} hint={`Level of ${name}`} />
+        <Meter
+          label={name} channels={2} well="panel" tone="audio" scale="ticks" clipLatch="latched"
+          subscribe={subscribe} hint={`Level of ${name}, in dB. The scale is printed once, at the left of the mixer.`}
+        />
       </div>
 
       <div className={styles.cableSpace} aria-hidden="true" />

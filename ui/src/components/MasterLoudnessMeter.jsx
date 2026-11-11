@@ -13,8 +13,8 @@
 // measured, every value reads "—" with its unit, and the bars are not drawn.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { RotateCcw } from 'lucide-react'
-import { IconButton, SegmentedControl, Select, Toggle, formatValue } from '../ui-kit'
+import { ChevronsLeft, ChevronsRight, RotateCcw } from 'lucide-react'
+import { IconButton, Select, Toggle, formatValue } from '../ui-kit'
 import { tokenValue } from '../theming/tokenValue.ts'
 import { useThemeEpoch } from '../theming/useThemeEpoch.js'
 import { PLATFORM_TARGETS } from '../constants/loudnessTargets.js'
@@ -44,10 +44,6 @@ const SCALE_TICKS = [-48, -36, -24, -12, 0]
 const TARGET_OPTIONS = Object.entries(PLATFORM_TARGETS)
   .filter(([key]) => key !== 'none')
   .map(([key, t]) => ({ value: key, label: t.label }))
-const WIDTH_OPTIONS = [
-  { value: 'normal', label: 'Normal', hint: 'Wide strips (84 px)' },
-  { value: 'compact', label: 'Compact', hint: 'Narrow strips (68 px): more tracks across' },
-]
 
 const EMPTY_SNAPSHOT = {
   enabled: false,
@@ -241,8 +237,10 @@ export default function MasterLoudnessMeter() {
   const [values, setValues] = useState(snapshot)
   const [enabled, setEnabled] = useState(readLoudnessEnabledPreference)
   const [target, setTarget] = useState(resolveTarget)
-  const stripWidthMode = useMixerUiStore(s => s.stripWidthMode)
-  const setStripWidthMode = useMixerUiStore(s => s.setStripWidthMode)
+  // While metering is off the dock is a 28px rail unless the user opened it (the choice is
+  // kept, renderer-only). While metering is on it is always open: a running meter is shown.
+  const userOpen = useMixerUiStore(s => s.loudnessDockOpen)
+  const setUserOpen = useMixerUiStore(s => s.setLoudnessDockOpen)
 
   // Poll tick: take the new values, and re-resolve the target only when the
   // shared key actually changed. The 'storage' event does not fire in the window
@@ -317,6 +315,26 @@ export default function MasterLoudnessMeter() {
   const targetText = target.targetLufs == null ? '—' : formatValue(target.targetLufs, 'dB', { unitless: true })
   const ceilingText = target.maxDbtp == null ? '—' : formatValue(target.maxDbtp, 'dB', { unitless: true })
 
+  if (!enabled && !userOpen) {
+    return (
+      <section className={styles.rail} aria-label="Loudness, collapsed" data-testid="loudness-rail">
+        <button
+          type="button"
+          className={styles.railButton}
+          aria-expanded={false}
+          aria-label="Open the loudness dock. Metering is off"
+          data-hint="Loudness: BS.1770-4 metering of the master bus. Metering is off."
+          data-hint-mods="Click: open the dock"
+          onClick={() => setUserOpen(true)}
+        >
+          <ChevronsLeft size={14} aria-hidden="true" />
+          <span className={styles.railText}>Loudness</span>
+          <span className={styles.railState}>Off</span>
+        </button>
+      </section>
+    )
+  }
+
   return (
     <section className={styles.dock} aria-label="Loudness">
       <header className={styles.header}>
@@ -329,6 +347,12 @@ export default function MasterLoudnessMeter() {
           size="sm" label="Reset loudness" onClick={handleReset}
           hint="Reset integrated loudness, loudness range and true peak"
         ><RotateCcw size={12} aria-hidden="true" /></IconButton>
+        {enabled ? null : (
+          <IconButton
+            size="sm" label="Collapse the loudness dock" onClick={() => setUserOpen(false)}
+            hint="Collapse the loudness dock to a rail. It opens again when metering is turned on."
+          ><ChevronsRight size={14} aria-hidden="true" /></IconButton>
+        )}
       </header>
 
       <div className={styles.row}>
@@ -360,12 +384,6 @@ export default function MasterLoudnessMeter() {
         <Readout label="Ceiling" value={ceilingText} unit="dBTP" hint={`${target.label} true-peak ceiling`} />
       </div>
 
-      <div className={styles.view}>
-        <SegmentedControl
-          size="sm" label="Strip width" options={WIDTH_OPTIONS} value={stripWidthMode}
-          onChange={setStripWidthMode} hint="Mixer strip width. Compact fits more tracks across."
-        />
-      </div>
     </section>
   )
 }

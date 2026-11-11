@@ -9,6 +9,7 @@ import TrackContextMenu from '../timeline/TrackContextMenu.jsx'
 import useTrackIdentityColors from '../inspector/useTrackIdentityColors.js'
 import EffectDevice from './EffectDevice.jsx'
 import ChainHead from './ChainHead.jsx'
+import useDeviceRevealStore from './deviceRevealStore.js'
 import styles from './DeviceChain.module.css'
 
 const EMPTY_CHAIN = []
@@ -82,6 +83,19 @@ export default function DeviceChain() {
 
   const displayChain = dragOrder ?? chain
 
+  // A mixer strip's insert row asks for one device of a chain (deviceRevealStore): once that
+  // chain is the one shown and the device exists, scroll it into view and outline it. The
+  // outline goes on the next press inside the chain.
+  const reveal = useDeviceRevealStore((s) => s.request)
+  const clearReveal = useDeviceRevealStore((s) => s.clear)
+  const revealedIndex = reveal && reveal.chainKey === key && reveal.index < chain.length ? reveal.index : -1
+  const revealNonce = reveal?.nonce ?? 0
+  useEffect(() => {
+    if (revealedIndex < 0) return
+    const el = rowRef.current?.querySelector(`[data-device-index="${revealedIndex}"]`)
+    el?.scrollIntoView?.({ inline: 'nearest', block: 'nearest' })
+  }, [revealedIndex, revealNonce])
+
   // ── Reorder: drag a device by its name. Local preview, one moveEffect on drop.
   const onPointerMove = useCallback((e) => {
     const d = dragRef.current
@@ -152,7 +166,7 @@ export default function DeviceChain() {
 
   return (
     <div className={styles.scroller} data-testid="xleth-device-chain" aria-label={`${chainName} devices`} role="list">
-      <div className={styles.row} ref={rowRef}>
+      <div className={styles.row} ref={rowRef} onPointerDownCapture={revealedIndex >= 0 ? clearReveal : undefined}>
         <ChainHead name={chainName} identityColor={identityColor} videoDisabled={master} />
         {displayChain.map((effect, index) => {
           const live = Number.isInteger(effect.nodeId) && effect.nodeId >= 0
@@ -168,6 +182,7 @@ export default function DeviceChain() {
               data-device-index={index}
               data-device-node={effect.nodeId}
               data-dragging={dragRef.current?.active && dragRef.current.nodeId === effect.nodeId ? true : undefined}
+              data-revealed={index === revealedIndex ? true : undefined}
             >
               <EffectDevice
                 effect={effect}

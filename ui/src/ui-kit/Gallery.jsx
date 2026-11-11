@@ -345,8 +345,8 @@ export default function Gallery() {
       </Section>
 
       <Section title="Mixer: 16 strips, mixed states (MOCK data, gallery only)">
-        <Spec caption="normal width: selected 5, muted 3, soloed 6, visual-only 8, clipped meter 4, bus 2,3 to 5 and 8 to 10, sidechain 1 to 6. No arm state: the engine has no record-arm." wide><MixerGalleryFixture /></Spec>
-        <Spec caption="compact width: the same tracks in 68 px strips" wide><MixerGalleryFixture stripMode="compact" /></Spec>
+        <Spec caption="compact width (72 px, the default): selected 5, muted 3, soloed 6, visual-only 8, clipped meter 4, bus 2,3 to 5 and 8 to 10, sidechain 1 to 6, inserts by name (1 with one bypassed, 7 with +3 more, 9 on an FX graph). The dB numerals and the words Pan and Width are printed once, in the gutter. No arm state: the engine has no record-arm." wide><MixerGalleryFixture /></Spec>
+        <Spec caption="normal width: the same tracks in 84 px strips" wide><MixerGalleryFixture stripMode="normal" /></Spec>
       </Section>
 
       {PHASE_4B_DEVICES.map((d) => (
