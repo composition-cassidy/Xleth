@@ -162,6 +162,8 @@ art/
 # Test scratch projects / one-off verification
 /buffer test/
 /portable-verify/
+# One-off scratch scripts/dumps (underscore-prefixed); local copies live in archives/.
+/scripts/_*
 # Prompt-related scripts moved into scripts/
 /scripts/slider_prompts_docx.py
 /scripts/XlethSampler.jsx
