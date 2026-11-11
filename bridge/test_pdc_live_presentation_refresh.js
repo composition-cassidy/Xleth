@@ -8,6 +8,7 @@
 //
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const TRACK_ID = 959;
@@ -15,9 +16,9 @@ const TRACK_NAME = 'KICK';
 const TRACK_TYPE = 'Clip';
 const EXPECTED_RS_HQ_LATENCY = 2048;
 
-const STAGE7A_SOURCE = 'C:\\Users\\Krasen\\Desktop\\XLETH\\diagnostics\\pdc-stage7a\\NO_MAIL_project_copy';
+const STAGE7A_SOURCE = path.resolve(__dirname, '..', 'diagnostics', 'pdc-stage7a', 'NO_MAIL_project_copy');
 const SCRATCH_PROJECT = path.resolve(__dirname, '..', 'diagnostics', 'pdc-stage7c', 'NO_MAIL_bridge_smoke_copy');
-const ORIGINAL_NO_MAIL = 'C:\\Users\\Krasen\\Desktop\\SR\\NO MAIL';
+const ORIGINAL_NO_MAIL = path.join(os.homedir(), 'Desktop', 'SR', 'NO MAIL');
 
 function pickNativeConfig() {
   const requested = process.env.XLETH_NATIVE_CONFIG;

@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -638,8 +639,10 @@ static void test_authored_tracks_are_not_clobbered() {
 static void test_real_v1_project_migration() {
     std::cout << "[12] ACCEPTANCE — real pre-v2 project on disk migrates correctly\n";
 
-    const std::string dir =
-        "C:\\Users\\Krasen\\Desktop\\XLETH\\diagnostics\\pdc-stage7a\\NO_MAIL_project_copy";
+    // The original dev machine's repo checkout; absent elsewhere, so this skips.
+    const char* home = std::getenv("USERPROFILE");
+    const std::string dir = std::string(home ? home : "") +
+        "\\Desktop\\XLETH\\diagnostics\\pdc-stage7a\\NO_MAIL_project_copy";
     std::ifstream probe(dir + "\\project.json");
     if (!probe.good()) {
         std::cout << "    skip:  fixture not present on this machine\n";

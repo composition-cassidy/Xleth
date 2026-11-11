@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import fs from 'node:fs'
+import os from 'node:os'
 import { planRegionFetches } from '../hiResFetchPlanner.js'
 import { prioritiseProcessedJobs, padClipWindow } from '../hiResProcessedPlanner.js'
 
@@ -21,7 +22,7 @@ import { prioritiseProcessedJobs, padClipWindow } from '../hiResProcessedPlanner
 //
 // Like the ppg quote test next door this reads a real project off disk, so it
 // skips rather than fails where that file isn't present (CI, another machine).
-const PROJECT = 'C:/Users/Krasen/Desktop/SR/BFDIA 9/project.json'
+const PROJECT = `${os.homedir().replace(/\\/g, '/')}/Desktop/SR/BFDIA 9/project.json`
 const PPQ = 960
 
 // Must match TimelineView.jsx's constants.

@@ -41,13 +41,13 @@ console.log('recentProjectsLogic smoke test\n');
 
 // ── normalizeDir: case-insensitive, trailing-slash-insensitive ─────────────
 check('normalizeDir is case-insensitive', () => {
-  const a = logic.normalizeDir('C:\\Users\\Krasen\\Proj');
-  const b = logic.normalizeDir('c:\\users\\krasen\\proj');
+  const a = logic.normalizeDir('C:\\Users\\Example\\Proj');
+  const b = logic.normalizeDir('c:\\users\\example\\proj');
   assert.strictEqual(a, b);
 });
 check('normalizeDir strips a trailing slash', () => {
-  const a = logic.normalizeDir('C:\\Users\\Krasen\\Proj');
-  const b = logic.normalizeDir('C:\\Users\\Krasen\\Proj\\');
+  const a = logic.normalizeDir('C:\\Users\\Example\\Proj');
+  const b = logic.normalizeDir('C:\\Users\\Example\\Proj\\');
   assert.strictEqual(a, b);
 });
 

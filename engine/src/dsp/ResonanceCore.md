@@ -333,7 +333,7 @@ waiver was changed). The reason text is now known to be wrong; see the proposed 
 Build (Release, root `build/`; invoke the `.bat` by absolute path from PowerShell):
 
 ```
-C:\Users\Krasen\Desktop\XLETH\build.bat engine
+<repo root>\build.bat engine
 ```
 
 Unit tests (run through ctest, not directly: the executables need the FFmpeg DLLs on PATH):

@@ -86,7 +86,7 @@ Engine (`ctest`, 43/47 passed, baseline 2026-07-14):
 | `test_flip_orientation_golden` | assertion failure (GPU shader golden) |
 | `test_effects` | assertion failure |
 | `test_reverb` | assertion failure |
-| `test_real_render` | segfault — also hardcodes the project path `C:\Users\Krasen\Desktop\XLETH\test`, so it can only ever run on that machine |
+| `test_real_render` | segfault — also hardcodes the project path `%USERPROFILE%\Desktop\XLETH\test` (the original dev machine's repo `test\` folder), so it only runs there unless you pass `--project <dir>` |
 
 `test_video_flip_applier` and `test_frame_collector`, previously listed here, now pass on the current build — in particular `test_frame_collector` runs Tests 1–6 to `ALL TESTS PASSED` and the old `0xc0000409` fail-fast crash no longer reproduces. The suite is now 47 tests because the snapshot-transition feature added `test_snapshot_transition` (passing).
 
@@ -97,7 +97,7 @@ Bridge (`npm test` → `run_contract_tests.js`, 12/15 passed, baseline 2026-07-1
 | Script | Failure |
 |--------|---------|
 | `test_dynamics_viz.js` | `drain.schema === 1 (got 2)` — schema version mismatch |
-| `test_midi_import.js` | expects `C:\Users\Krasen\Desktop\XLETH\test.wav` (missing on disk) and sampler-metadata round-trip fails (`rootNote`/`attackMs` come back `undefined`) |
+| `test_midi_import.js` | expects `test.wav` at the repo root (missing on disk) and sampler-metadata round-trip fails (`rootNote`/`attackMs` come back `undefined`) |
 | `test_pdc_live_presentation_refresh.js` | `EPERM` deleting its scratch copy under `diagnostics\pdc-stage7c\` during cleanup |
 
 `test_patterns.js`, previously listed here, now passes on the current build. `test_snapshot_transition_preview_contract.js` (the snapshot-transition live preview seam) passes.

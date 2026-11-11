@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import fs from 'node:fs'
+import os from 'node:os'
 import { planRegionFetches } from '../hiResFetchPlanner.js'
 import { findCoveringEntry, insertEntry } from '../hiResRegionCache.js'
 
@@ -9,7 +10,8 @@ import { findCoveringEntry, insertEntry } from '../hiResRegionCache.js'
 // TimelineView settle-effect computes per clip (visStartSec/visEndSec via
 // the same beatPos/x/secPerPx arithmetic), then runs it through the real
 // planner + cache modules to prove the fetch count collapses.
-const PROJECT = 'C:/Users/Krasen/Desktop/SR/ppg quote/project.json'
+// Lives in the developer's own projects folder (~/Desktop/SR), not in the repo.
+const PROJECT = `${os.homedir().replace(/\\/g, '/')}/Desktop/SR/ppg quote/project.json`
 const PPQ = 960
 
 describe('ppg quote: coalesced hi-res fetch planning', () => {

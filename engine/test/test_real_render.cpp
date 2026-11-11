@@ -14,6 +14,8 @@
 #include "project/ProjectManager.h"
 #include "audio/MixEngine.h"
 #include "SampleBank.h"
+
+#include <cstdlib>
 #include "SyncManager.h"
 
 extern "C" {
@@ -112,8 +114,10 @@ int main(int argc, char* argv[])
     std::fprintf(stderr, "================================================================\n\n");
 
     // ── Step 1: Load the project ─────────────────────────────────────────
+    // Default: the original dev machine's repo test\ folder; pass --project elsewhere.
+    const char* home = std::getenv("USERPROFILE");
     const std::string projectDir = projectArg.empty()
-        ? std::string("C:\\Users\\Krasen\\Desktop\\XLETH\\test")
+        ? std::string(home ? home : "") + "\\Desktop\\XLETH\\test"
         : projectArg;
     std::string outputPath = outputArg.empty()
         ? projectDir + "\\test_render_bars1to17.mp4"
