@@ -26,7 +26,7 @@ describe('effectCatalog shared add-effect source', () => {
         'compressor', 'glue', 'opto', 'fet', 'varimu', 'limiter', 'overdone', 'transientproc', 'resonancesuppressor',
         'xletheq', 'xlethfilter', 'distortion', 'waveshaper', 'amp',
         'uniflange', 'chorus', 'flanger', 'phaser', 'phanjer',
-        'delay', 'reverb', 'smartbalance',
+        'delay', 'reverb', 'smartbalance', 'fedda',
       ]),
     )
   })

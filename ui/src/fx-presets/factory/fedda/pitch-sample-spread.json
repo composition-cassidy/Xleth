@@ -1,0 +1,19 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "fedda",
+  "name": "Pitch Sample Spread",
+  "author": "XLETH",
+  "created": "2026-11-11T00:00:00.000Z",
+  "state": {
+    "params": {
+      "width": 40,
+      "character": 1,
+      "size": 8,
+      "low_bypass": 200,
+      "low_slope": 0,
+      "hf_damp": 20000,
+      "guard": 20,
+      "loudness_match": 0
+    }
+  }
+}

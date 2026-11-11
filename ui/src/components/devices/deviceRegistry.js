@@ -56,6 +56,8 @@ import ChorusDevice from './ChorusDevice.jsx'
 import useChorusStore from '../../stores/chorusStore.js'
 import PitchShifterDevice from './PitchShifterDevice.jsx'
 import usePitchShifterStore from '../../stores/pitchShifterStore.js'
+import FeddaDevice from './FeddaDevice.jsx'
+import useFeddaStore from '../../stores/feddaStore.js'
 
 export const DEVICE_BODIES = {
   // Width omitted: the frame fits the body's fixed-width sections (the
@@ -80,6 +82,7 @@ export const DEVICE_BODIES = {
   phaser: { Body: PhaserDevice, useEditorStore: usePhaserStore },
   chorus: { Body: ChorusDevice, useEditorStore: useChorusStore },
   pitchshifter: { Body: PitchShifterDevice, useEditorStore: usePitchShifterStore },
+  fedda: { Body: FeddaDevice, useEditorStore: useFeddaStore },
   // The character compressors on CompressorCore share CompressorFamilyDevice.
   glue: { Body: GlueDevice, useEditorStore: useGlueCompStore },
   opto: { Body: OptoDevice, useEditorStore: useOptoCompStore },

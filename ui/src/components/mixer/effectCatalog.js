@@ -69,6 +69,7 @@ export const EFFECT_CATEGORIES = [
     label: 'Utility',
     submenu: [
       { label: 'Smart Balance', id: 'smartbalance' },
+      { label: 'Fedda', id: 'fedda' },
     ],
   },
 ]

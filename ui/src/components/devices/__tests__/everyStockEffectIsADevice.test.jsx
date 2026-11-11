@@ -14,9 +14,9 @@ import EffectDevice from '../EffectDevice.jsx'
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
 describe('every stock effect is a device', () => {
-  it('each of the 25 stock effects has a device body, a pop-out opener and a name', () => {
+  it('each of the 26 stock effects has a device body, a pop-out opener and a name', () => {
     const stock = Object.keys(EFFECT_EDITORS)
-    expect(stock).toHaveLength(25)
+    expect(stock).toHaveLength(26)
     for (const id of stock) {
       expect(DEVICE_BODIES[id], `${id} has a body in DEVICE_BODIES`).toBeTruthy()
       expect(DEVICE_NAMES[id], `${id} has a name in DEVICE_NAMES`).toBeTruthy()

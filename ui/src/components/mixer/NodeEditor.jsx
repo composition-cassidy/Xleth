@@ -30,6 +30,7 @@ const PLUGIN_NAMES = {
   opto: 'Opto Comp',
   fet: 'FET Comp',
   varimu: 'Vari-Mu Comp',
+  fedda: 'Fedda',
 }
 
 const EFFECT_CATEGORIES = [
@@ -59,6 +60,7 @@ const EFFECT_CATEGORIES = [
   ]},
   { label: 'Utility', submenu: [
     { label: 'Smart Balance', id: 'smartbalance' },
+    { label: 'Fedda', id: 'fedda' },
   ]},
 ]
 

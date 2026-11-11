@@ -336,9 +336,39 @@ const xformAdapter = {
   },
 }
 
+// ── Fedda adapter — scalar params minus per-instance and monitor state ───────
+//
+// `variation` is the instance's decorrelation seed: two Fedda instances loaded from one preset
+// with the same seed would stamp the same comb pattern on the mix bus (the thing the seed exists to
+// prevent), so a preset never carries it and never sets it. `mono_check` / `compare` are audition
+// switches that the engine never saves or renders; a preset must not switch them on either.
+
+const FEDDA_INSTANCE_PARAMS = new Set(['variation', 'mono_check', 'compare'])
+
+function withoutFeddaInstanceParams(params) {
+  const out = {}
+  for (const [id, value] of Object.entries(params || {})) {
+    if (!FEDDA_INSTANCE_PARAMS.has(id)) out[id] = value
+  }
+  return out
+}
+
+const feddaAdapter = {
+  async captureState(target) {
+    const state = await defaultAdapter.captureState(target)
+    return { params: withoutFeddaInstanceParams(state.params) }
+  },
+
+  async applyState(target, state) {
+    if (!state || typeof state.params !== 'object') return
+    await defaultAdapter.applyState(target, { ...state, params: withoutFeddaInstanceParams(state.params) })
+  },
+}
+
 // ── Registry ──────────────────────────────────────────────────────────────────
 
 const ADAPTERS = {
+  fedda: feddaAdapter,
   apex: apexAdapter,
   waveshaper: waveshaperAdapter,
   xletheq: eqAdapter,
@@ -350,4 +380,4 @@ export function getPresetAdapter(effectType) {
   return ADAPTERS[effectType] || defaultAdapter
 }
 
-export { defaultAdapter, apexAdapter, xformAdapter }
+export { defaultAdapter, apexAdapter, xformAdapter, feddaAdapter }

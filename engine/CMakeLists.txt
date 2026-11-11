@@ -362,6 +362,8 @@ add_library(XlethEngineCore STATIC
     # Shared resonance detector / gain computer / spectral renderer (resonance-suppressor
     # rewrite stage 1, docs/RESONANCE_SUPPRESSOR_AUDIT.md s6). Not wired into any effect yet.
     src/dsp/ResonanceCore.cpp
+    # Mono-safe pseudo-stereo side generator (xleth-spread-spec.md). Fedda is its stock-effect face.
+    src/dsp/stereoize/StereoizeCore.cpp
     src/audio/WorldStretchCache.cpp
     src/audio/SlotBakeCache.cpp
     # Sample Sandbox offline renderer. Sits here rather than in the model tier
@@ -2283,6 +2285,48 @@ target_compile_definitions(test_resonance_core PRIVATE
 )
 
 add_test(NAME test_resonance_core COMMAND test_resonance_core)
+
+# ── test_stereoize_core / test_fedda ────────────────────────────────────────
+# xleth::dsp::stereoize::Core (src/dsp/stereoize/StereoizeCore.*) headless: mono null, correlation
+# calibration, block-size independence, automation zipper, sample rates, denormals, CPU, seed
+# decorrelation, zero operator new. test_fedda: the XlethFeddaEffect wrapper (parameter contract,
+# state round-trip, zero latency, monitors forced off non-realtime). Output prefixes:
+# [StereoizeCore], [Fedda].
+foreach(_fedda_test test_stereoize_core test_fedda)
+    add_executable(${_fedda_test}
+        test/${_fedda_test}.cpp
+    )
+
+    target_link_libraries(${_fedda_test} PRIVATE
+        XlethEngineCore
+        XlethEngineModel
+        juce::juce_core
+        juce::juce_audio_basics
+        juce::juce_audio_formats
+        juce::juce_audio_processors
+        juce::juce_dsp
+        juce::juce_events
+        juce::juce_gui_basics
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+    )
+
+    target_include_directories(${_fedda_test} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+
+    target_compile_definitions(${_fedda_test} PRIVATE
+        JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+        JUCE_USE_CURL=0
+        JUCE_WEB_BROWSER=0
+        JUCE_MODAL_LOOPS_PERMITTED=1
+        JUCE_DIRECTSOUND=0
+        JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+        JUCE_STANDALONE_APPLICATION=1
+    )
+
+    add_test(NAME ${_fedda_test} COMMAND ${_fedda_test})
+endforeach()
 
 # ── test_chain_effect_identity ────────────────────────────────────────────────
 # Prompt 4A: stable chain-mode effectInstanceId — creation, lookup, move, bypass,

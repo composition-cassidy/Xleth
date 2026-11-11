@@ -33,6 +33,7 @@ export const DEVICE_NAMES = Object.freeze({
   opto: 'Opto comp',
   fet: 'FET comp',
   varimu: 'Vari-mu comp',
+  fedda: 'Fedda',
 })
 
 /** Display name for a chain entry: stock name, else the plugin's own, else its id. */
