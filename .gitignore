@@ -128,6 +128,10 @@ art/
 
 # Root dev scripts & stray files
 /*.bat
+# ...except the documented build/release/push entry points (CONTRIBUTING.md, CI).
+!/build.bat
+!/build-portable.bat
+!/push.bat
 /project.json
 /test.mid
 /XlethSampler.jsx

@@ -1,0 +1,4 @@
+# cmd.exe misparses LF-only batch files (eaten characters, broken labels), so
+# always check them out with CRLF regardless of the cloner's core.autocrlf.
+*.bat text eol=crlf
+*.cmd text eol=crlf
