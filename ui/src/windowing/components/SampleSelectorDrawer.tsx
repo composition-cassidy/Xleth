@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import type { CSSProperties, MouseEvent } from 'react';
+import type { CSSProperties, MouseEvent, ReactNode } from 'react';
 import {
   ChevronDown,
   ChevronLeft,
@@ -84,7 +84,16 @@ function stopControlMouseDown(event: MouseEvent<HTMLButtonElement>) {
   event.stopPropagation();
 }
 
-export function SampleSelectorDrawer() {
+export interface SampleSelectorDrawerProps {
+  /**
+   * A dock region stacked above the drawer in this column (ui/DESIGN.md 8.1): the
+   * edge region on the drawer's own side, when it holds a panel. It is rendered
+   * outside the drawer's visibility scope, so collapsing the Browser never hides it.
+   */
+  stackedRegion?: ReactNode;
+}
+
+export function SampleSelectorDrawer({ stackedRegion = null }: SampleSelectorDrawerProps = {}) {
   const reactiveHidden = usePanelRegistry((state) => state.panels.sampleSelector.hidden);
   const reactiveSide = usePanelRegistry((state) => state.panels.sampleSelector.docked.region);
   const hidden = typeof window === 'undefined'
@@ -163,21 +172,28 @@ export function SampleSelectorDrawer() {
     '--xleth-windowing-panel-color': panelTypeColorVar('sampleSelector'),
   } as CSSProperties;
 
+  const hasStack = stackedRegion !== null && stackedRegion !== undefined && stackedRegion !== false;
+
   return (
-    <PanelVisibilityProvider isVisible={expanded}>
-      <div
-        className="xleth-sample-selector-drawer-host"
-        data-drawer-state={drawerState}
-        data-drawer-side={side}
-        style={drawerStyle}
-      >
+    <div
+      className="xleth-sample-selector-drawer-host"
+      data-drawer-state={drawerState}
+      data-drawer-side={side}
+      data-stacked={hasStack ? 'true' : undefined}
+      style={drawerStyle}
+    >
+      {hasStack ? stackedRegion : null}
+      <PanelVisibilityProvider isVisible={expanded}>
         {!shouldRenderDrawer ? (
           <div
             className={styles.rail}
-            data-side={side}
+            // Under a stacked region the column keeps its width, so the collapsed
+            // Browser is a row beneath it, not a 28px-wide rail.
+            data-side={hasStack ? 'bottom' : side}
+            data-stacked={hasStack ? 'true' : undefined}
             role="toolbar"
             aria-label="Browser, collapsed"
-            aria-orientation={orientation === 'horizontal' ? 'horizontal' : 'vertical'}
+            aria-orientation={orientation === 'horizontal' || hasStack ? 'horizontal' : 'vertical'}
           >
             <button
               type="button"
@@ -251,8 +267,8 @@ export function SampleSelectorDrawer() {
             <DockRegionResizer region={side} currentSize={drawerSize} />
           </aside>
         )}
-      </div>
-    </PanelVisibilityProvider>
+      </PanelVisibilityProvider>
+    </div>
   );
 }
 

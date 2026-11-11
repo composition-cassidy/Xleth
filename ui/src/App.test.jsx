@@ -179,7 +179,7 @@ describe('XlethRoot New Project reset', () => {
     expect(loadPersistedStateMock).toHaveBeenCalledTimes(1)
   })
 
-  it('falls back to the default xleth-arrange layout when persisted layout hydration fails', async () => {
+  it('falls back to the default Compose layout when persisted layout hydration fails', async () => {
     vi.spyOn(StatePersistence, 'setPersistenceAdapter').mockImplementation(() => {})
     vi.spyOn(StatePersistence, 'loadPersistedState').mockResolvedValue(false)
     const applyPresetSpy = vi.fn()
@@ -192,7 +192,7 @@ describe('XlethRoot New Project reset', () => {
     })
 
     expect(hydrated).toBe(false)
-    expect(applyPresetSpy).toHaveBeenCalledWith('xleth-arrange')
+    expect(applyPresetSpy).toHaveBeenCalledWith('xleth-compose')
   })
 
   it('maps root keyboard shortcuts without triggering inside inputs', () => {
@@ -330,9 +330,10 @@ describe('XlethRoot New Project reset', () => {
     ])
   })
 
-  it('offers the tiled default first under View > Layouts, with honest names for the others', () => {
+  it('offers Compose first under View > Layouts, with honest names for the others', () => {
     expect(LAYOUT_PRESETS.map((preset) => [preset.id, preset.label])).toEqual([
-      ['xleth-arrange', 'Tiled (default)'],
+      ['xleth-compose', 'Compose (default)'],
+      ['xleth-arrange', 'Tiled (preview row)'],
       ['fl-compose', 'Floating mixer'],
       ['vegas-arrange', 'Floating preview'],
     ])

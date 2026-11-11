@@ -33,6 +33,14 @@ export interface DockRegionProps {
   sizeOverride?: number;
   /** No region resizer: the region is a fixed-size sheet, not a docked row. */
   lockSize?: boolean;
+  /**
+   * The region is stacked above the Browser drawer in the drawer's own column
+   * (ui/DESIGN.md 8.1, Compose). It takes that column's width instead of setting
+   * one, and is as tall as its panels: the Preview at 16:9 under its header,
+   * anything else at its stored size. Both parts of the column are sized by the
+   * same `dockRegionSizes` number, so either resizer drags the one edge.
+   */
+  stacked?: boolean;
 }
 
 const EMPTY_PANEL_IDS: readonly PanelId[] = Object.freeze([]);
@@ -285,7 +293,7 @@ export function fillSlotIndex(slots: readonly DockedSlotEntry[]): number {
   return -1;
 }
 
-export function DockRegion({ side, renderPanel, excludePanelIds = EMPTY_PANEL_IDS, className, sizeOverride, lockSize = false }: DockRegionProps) {
+export function DockRegion({ side, renderPanel, excludePanelIds = EMPTY_PANEL_IDS, className, sizeOverride, lockSize = false, stacked = false }: DockRegionProps) {
   // The center has no stored size and no resizer: it is whatever the edge
   // regions leave. Hooks still run unconditionally; for the center they read
   // an edge key and the result is ignored.
@@ -305,7 +313,7 @@ export function DockRegion({ side, renderPanel, excludePanelIds = EMPTY_PANEL_ID
   const fillIndex = fillSlotIndex(docked);
   // Every slot collapsed: the region is chrome only and must not hold its full
   // stored size open as a dead band, so it shrinks to its content.
-  const sizeStyle: CSSProperties = !edge || fillIndex < 0
+  const sizeStyle: CSSProperties = !edge || fillIndex < 0 || stacked
     ? {}
     : (edge === 'left' || edge === 'right')
       ? { width: `${effectiveSize}px` }
@@ -313,8 +321,9 @@ export function DockRegion({ side, renderPanel, excludePanelIds = EMPTY_PANEL_ID
 
   return (
     <div
-      className={`xleth-dock-region xleth-dock-region--${side}${className ? ` ${className}` : ''}`}
+      className={`xleth-dock-region xleth-dock-region--${side}${stacked ? ' xleth-dock-region--stacked' : ''}${className ? ` ${className}` : ''}`}
       data-region={side}
+      data-stacked={stacked ? 'true' : undefined}
       data-testid={`xleth-dock-region-${side}`}
       style={sizeStyle}
     >
@@ -330,7 +339,8 @@ export function DockRegion({ side, renderPanel, excludePanelIds = EMPTY_PANEL_ID
         // grows to fill the region nor offers a splitter to drag.
         const slotClassName = [
           'xleth-docked-panel-slot',
-          index === fillIndex ? 'xleth-docked-panel-slot--fill' : '',
+          // A stacked region is as tall as its content: nothing grows to fill it.
+          index === fillIndex && !stacked ? 'xleth-docked-panel-slot--fill' : '',
           entry.collapsed ? 'xleth-docked-panel-slot--collapsed' : '',
         ].filter(Boolean).join(' ');
         const showSplitter = Boolean(next) && !entry.collapsed && !next!.collapsed;

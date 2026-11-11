@@ -72,6 +72,12 @@
     border-top: 1px solid var(--ui-g4);
   }
 
+  /* Under a stacked region (windowing.css): one 28px row, the rest of the column is ground. */
+  .rail[data-stacked="true"] {
+    flex: none;
+    height: var(--panel-header-h);
+  }
+
   .railDivider {
     flex: none;
     width: var(--space-4);

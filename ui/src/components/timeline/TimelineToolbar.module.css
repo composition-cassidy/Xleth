@@ -1,5 +1,6 @@
-/* The arrangement toolbar (DESIGN.md 22): one 38px row on g2. The shell's centre-column
- * budget counts this row at 38, so the height is fixed. Narrow widths scroll the row;
+/* The arrangement toolbar (DESIGN.md 22): one 32px row on g2 (the tallest control height;
+ * its controls are 24 and 28). The shell's centre-column budget counts this row at 32, so
+ * the height is fixed. Narrow widths scroll the row;
  * they never squeeze a control. */
 @layer kit {
   .bar {
@@ -8,7 +9,7 @@
     display: flex;
     align-items: center;
     gap: var(--space-1);
-    height: 38px;
+    height: var(--ctl-h-lg);
     padding: 0 var(--space-2);
     overflow-x: auto;
     overflow-y: hidden;

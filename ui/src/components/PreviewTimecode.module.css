@@ -24,4 +24,22 @@
     font-family: var(--ui-font);
     font-size: var(--type-11);
   }
+
+  /* In a narrow Preview header (its container, PreviewHeader.module.css): "f 231", not "Frame 231". */
+  @container (max-width: 360px) {
+    .frameLabel {
+      display: none;
+    }
+
+    .frame {
+      min-width: 0;
+    }
+
+    .frame::before {
+      content: "f ";
+      color: var(--ui-ink-3);
+      font-family: var(--ui-font);
+      font-size: var(--type-11);
+    }
+  }
 }

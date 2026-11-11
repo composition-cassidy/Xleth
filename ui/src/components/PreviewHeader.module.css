@@ -1,6 +1,8 @@
 /* The Preview header (ui/DESIGN.md section 8.1). One 28px row: timecode left,
  * everything else right. Below 720px the chips shrink to their glyph; below
- * 600px Edit grid and Import keep only their glyph. Hints still carry the words. */
+ * 600px Edit grid and Import keep only their glyph; below 360px (the Preview in the
+ * Browser's column, Compose) View keeps only its chevron and the frame number loses
+ * its word. Hints and accessible names still carry the words. */
 @layer kit {
   .header {
     container-type: inline-size;
@@ -93,6 +95,16 @@
   @container (max-width: 600px) {
     .label {
       display: none;
+    }
+  }
+
+  @container (max-width: 360px) {
+    .viewLabel {
+      display: none;
+    }
+
+    .right {
+      gap: 2px;
     }
   }
 }

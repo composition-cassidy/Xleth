@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ARRANGEMENT_CHROME_H,
   ARRANGEMENT_MIN_H,
+  ARRANGEMENT_PREFERRED_H,
   TRACK_ROW_H,
   autoDockHeight,
   computeShellLayout,
@@ -30,9 +31,9 @@ describe('autoDockHeight', () => {
 });
 
 describe('computeShellLayout', () => {
-  it('1920x1080 (column 1022), dock open: dock 409, top 230, arrangement 383 (8 rows)', () => {
+  it('1920x1080 (column 1022), dock open: dock 409, top 242, arrangement 371 (8 rows)', () => {
     const l = computeShellLayout(base);
-    expect(l).toEqual({ dockH: 409, topMode: 'full', topH: 230, arrangementH: 383 });
+    expect(l).toEqual({ dockH: 409, topMode: 'full', topH: 242, arrangementH: 371 });
     expect(rows(l.arrangementH)).toBe(8);
   });
 
@@ -47,7 +48,7 @@ describe('computeShellLayout', () => {
       dockH: 29, topMode: 'full', topH: 340, arrangementH: 653,
     });
     expect(computeShellLayout({ ...base, dockOpen: false, columnH: 710 })).toEqual({
-      dockH: 29, topMode: 'full', topH: 298, arrangementH: 383,
+      dockH: 29, topMode: 'full', topH: 310, arrangementH: 371,
     });
   });
 
@@ -81,6 +82,22 @@ describe('computeShellLayout', () => {
   it('has no top row when the region holds nothing', () => {
     const l = computeShellLayout({ ...base, topPresent: false });
     expect(l).toMatchObject({ topMode: 'none', topH: 0, dockH: 409, arrangementH: 613 });
+  });
+
+  // Compose (the default preset): no top row, so the arrangement has the column minus the dock.
+  it('Compose: 14 rows at 1920x1080, 13 in a 1032px window, 8 at 1366x768, dock open', () => {
+    const compose = { ...base, topPresent: false };
+    expect(rows(computeShellLayout(compose).arrangementH)).toBe(14);
+    expect(rows(computeShellLayout({ ...compose, columnH: 974 }).arrangementH)).toBe(13);
+    const small = computeShellLayout({ ...compose, columnH: 710 });
+    expect(small).toMatchObject({ topMode: 'none', dockH: 320, arrangementH: 390 });
+    expect(rows(small.arrangementH)).toBe(8);
+  });
+
+  it('the arrangement chrome is the toolbar, the ruler, the cue lane and a border', () => {
+    expect(ARRANGEMENT_CHROME_H).toBe(32 + 26 + 24 + 1);
+    expect(ARRANGEMENT_MIN_H).toBe(83 + 4 * 36);
+    expect(ARRANGEMENT_PREFERRED_H).toBe(83 + 8 * 36);
   });
 });
 

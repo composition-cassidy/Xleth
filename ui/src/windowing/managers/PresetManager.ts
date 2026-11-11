@@ -1,6 +1,7 @@
 import flCompose from '../presets/fl-compose.json';
 import vegasArrange from '../presets/vegas-arrange.json';
 import xlethArrange from '../presets/xleth-arrange.json';
+import xlethCompose from '../presets/xleth-compose.json';
 import {
   createInitialDockRegionSizes,
   createInitialPanelStates,
@@ -33,13 +34,19 @@ interface RawPreset {
 }
 
 const RAW_PRESETS: Record<string, RawPreset> = {
+  'xleth-compose': xlethCompose as RawPreset,
   'xleth-arrange': xlethArrange as RawPreset,
   'fl-compose': flCompose as RawPreset,
   'vegas-arrange': vegasArrange as RawPreset,
 };
 
-/** The layout a fresh install, a migrated layout and "Reset layout" land on. */
-export const DEFAULT_PRESET_ID = 'xleth-arrange';
+/**
+ * The layout a fresh install, a failed hydration, a pre-tiled layout and "Reset layout" land on.
+ * Round 3: Compose (the arrangement has the Preview row's height; Preview sits above the
+ * Browser, the Inspector opens on demand). Layouts saved in the tiled shell are never rewritten:
+ * a profile that holds the old default keeps it until its user picks Compose from the menu.
+ */
+export const DEFAULT_PRESET_ID = 'xleth-compose';
 
 export interface LayoutPresetEntry {
   id: string;
@@ -49,10 +56,12 @@ export interface LayoutPresetEntry {
 
 // View -> Layouts, in menu order. The two older presets keep their ids (and
 // their Ctrl+Shift+1/2 shortcuts); only their labels changed, because neither
-// floats the arrangement any more: each now differs from the default by the
-// one window it pops out.
+// floats the arrangement any more: each now differs from the tiled layout by
+// the one window it pops out. "Tiled" is the round 1 and 2 default: Preview
+// and Inspector in a row above the arrangement.
 export const LAYOUT_PRESETS: readonly LayoutPresetEntry[] = [
-  { id: 'xleth-arrange', label: 'Tiled (default)' },
+  { id: 'xleth-compose', label: 'Compose (default)' },
+  { id: 'xleth-arrange', label: 'Tiled (preview row)' },
   { id: 'fl-compose', label: 'Floating mixer' },
   { id: 'vegas-arrange', label: 'Floating preview' },
 ];

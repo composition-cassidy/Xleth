@@ -3,7 +3,7 @@ import type { CSSProperties, KeyboardEvent, MouseEvent, PointerEvent, ReactNode 
 import { ArrowDownToLine, ChevronDown, ChevronUp, Maximize2, Square, X } from 'lucide-react';
 import { armPanelDrag, useIsTabDropTarget } from '../managers/DragManager';
 import { dockHomeOf, PANEL_CATALOG, panelTypeColorVar, type PanelId } from '../registry/panelCatalog';
-import { usePanelRegistry } from '../registry/PanelRegistry';
+import { isEdgeRegion, usePanelRegistry } from '../registry/PanelRegistry';
 import { usePanelValue } from '../registry/usePanelValue';
 import { XlethIconButton } from '../../components/common/XlethButton.jsx';
 import './windowing.css';
@@ -104,7 +104,14 @@ export function Titlebar({ id, focused, children }: TitlebarProps) {
   // A popped-out panel with a home region goes back in one click (dragging it
   // to that edge still works too). It returns to the slot it left: undocking
   // keeps the panel's docked order, so Preview lands left of the Inspector.
-  const dockHome = dockHomeOf(id);
+  // The catalog's home is the fallback; a panel that was docked somewhere else (Compose puts
+  // Preview on the left and the Inspector on the right) goes back there, because undocking
+  // keeps `docked.region`. Detail-dock tabs always return to the dock.
+  const catalogHome = dockHomeOf(id);
+  const lastRegion = usePanelRegistry((state) => state.panels[id].docked.region);
+  const dockHome = catalogHome !== null && catalogHome !== 'bottom' && isEdgeRegion(lastRegion) && lastRegion !== 'bottom'
+    ? lastRegion
+    : catalogHome;
   const canReturnToDock = mode === 'floating' && dockHome !== null;
   const returnLabel = `Return ${entry.title} to the dock`;
   const returnToDock = (event: MouseEvent<HTMLButtonElement>) => {

@@ -419,16 +419,45 @@ The **whole cell, including its label, is draggable.** Controls expose `role="sl
 knob without a readout. A persistent **hint bar** names the hovered control and its modifiers;
 tooltips are not documentation.
 
-## 8. Layout contract (target for Phase 1; not built in Phase 0)
+## 8. Layout contract
+
+**Compose** is the default since round 3 (`windowing/presets/xleth-compose.json`): the arrangement owns the centre column.
 
 ```
 ┌ Menus │ transport · time · BAR.BEAT · BPM │ panel toggles │ win ┐ 36
-├ Browser │ Preview (16:9)            │ Inspector              ┤ ~340 @1080p
+├ Preview 304 │ Arrangement: toolbar 32, ruler 26, cue lane 24   ┤
+│ (28 + 16:9) │ then lanes, full width of the column             │ rest
+├─────────────┤                                    ┌ Inspector  ┤
+│ Browser     │                                    │ 280, only  │
+│ (the rest)  ├────────────────────────────────────┤ when asked │
+│             │ Detail dock: Devices │ Mixer │ Piano Roll │ ... │ 28 collapsed
+└ Hint bar: hovered control + its modifiers                     ┘ 22
+```
+
+**Tiled (preview row)** is the round 1 and 2 layout (`xleth-arrange.json`), still in View > Layouts:
+
+```
+┌ Menus │ transport · time · BAR.BEAT · BPM │ panel toggles │ win ┐ 36
+├ Browser │ Preview (16:9)            │ Inspector              ┤ ~240 @1080p
 │ (full   ├───────────────────────────┴────────────────────────┤
 │ height) │ Arrangement — full width, one ruler, video+audio   │ rest
 ├ Detail dock: Devices │ Mixer │ Piano Roll │ Sampler │ FX Graph ┤ 28 collapsed
 └ Hint bar: hovered control + its modifiers                     ┘ 22
 ```
+
+**Why Compose.** In Tiled the top row cost 200px or more of every window, 76 % of it letterbox beside a 304px picture,
+with an Inspector that holds one sentence at rest; the arrangement showed 8 rows at 1080p. Compose puts the same
+304px picture at the top of the Browser's column and gives the row to the lanes: 14 rows.
+
+- **Presets** (`managers/PresetManager.ts`): `xleth-compose` "Compose (default)", `xleth-arrange` "Tiled (preview row)",
+  `fl-compose` "Floating mixer", `vegas-arrange` "Floating preview". `DEFAULT_PRESET_ID` is what a fresh profile, a failed
+  layout hydration, a pre-tiled saved layout and Reset layout land on. A layout saved in the tiled shell is merged as
+  it is and never rewritten: a profile that holds the old default keeps it until its user picks Compose once.
+- **The Inspector** is hidden in Compose and docked `right` (280) when its region toggle opens it; it then runs the full
+  height of the work area beside the centre column.
+- **Return to dock** (a popped-out panel's title bar) goes back to the region the panel was last docked in (undocking
+  keeps `docked.region`), and to the catalog's `dockHome` only when it never sat on an edge. So a Compose Preview returns
+  to the left column, not to a new top row.
 
 ### 8.1 Sharing the centre column (round 2)
 
@@ -438,18 +467,46 @@ height A). Regions render the result; the stored sizes are still what a drag com
 
 - **Detail dock, open:** `clamp(320, 40% of A, 520)` until the user resizes it. A stored value of 304 (the old
   default every earlier layout holds) means "never resized". A dragged size is kept and persisted.
-- **Top row (Preview + Inspector):** minimum **200px**, never squeezed. An untouched row (stored 340) leaves the arrangement
-  8 rows; a row the user resized may take space down to the arrangement's 4-row minimum.
-- **Arrangement:** minimum 4 rows = 95px chrome (toolbar 38, ruler 26, cue lane 30) + 4 x 36px.
-- **Not all three fit** (A - dock < 200 + 239): the top row folds to a **28px strip** with Preview and Inspector
+- **Top row (Preview + Inspector), when the layout has one:** minimum **200px**, never squeezed. An untouched row (stored
+  340) leaves the arrangement 8 rows; a row the user resized may take space down to the arrangement's 4-row minimum.
+  With nothing docked in the top region (Compose) there is no row: `topMode` is `'none'` and the arrangement is the
+  column minus the dock.
+- **Arrangement:** minimum 4 rows = **83px** chrome (toolbar 32, ruler 26, cue lane 24, 1px of borders) + 4 x 36px. It
+  was 95 (38 / 26 / 30) until round 3: 32 is the tallest control height, 24 the hit-area floor, and the cue lane's pin
+  and grips keep 24x24 hit areas inside it.
+- **Not all three fit** (A - dock < 200 + 227): the top row folds to a **28px strip** with Preview and Inspector
   buttons. They open the row as a 200px **sheet** over the arrangement (hard offset shadow; Esc, a press outside, or
   the button again closes it). Folded panels stay mounted but report themselves not visible (no decoding).
   The dock yields only if the arrangement would drop under 4 rows.
 
-| Window | A | Dock | Top row | Arrangement |
-|---|---|---|---|---|
-| 1920x1080 | 1022 | 409 | 230 | 383 (8 rows) |
-| 1366x768 | 710 | 320 | 28 strip | 362 (7 rows) |
+| Layout | Window | A | Dock | Top row | Arrangement | Left column |
+|---|---|---|---|---|---|---|
+| Compose | 1920x1080 | 1022 | 409 | none | 613 (**14 rows**) | 304: Preview 199 (28 + 171), Browser 823 |
+| Compose | 1366x768 | 710 | 320 | none | 390 (**8 rows**) | 304: Preview 199, Browser 511 |
+| Tiled | 1920x1080 | 1022 | 409 | 242 | 371 (8 rows) | 258: Browser 1022 |
+| Tiled | 1366x768 | 710 | 320 | 28 strip | 362 (7 rows) | 258: Browser 710 |
+
+Rows are whole 36px lanes after the 83px chrome. Measured in the render harness with 16 tracks and the Mixer open:
+14 and 8 lanes fully visible in Compose (7 and 6 in Tiled before round 3); the lane viewport is 511px and 288px because
+the horizontal scrollbar takes 19. In a 1032px-high window (1080p with a taskbar) Compose shows 13.
+
+**Stacked side region (Compose).** The Browser is a drawer in its own column beside the work area, not a member of the
+`left` dock region, so a panel docked `left` used to open a second column next to it. Now the edge region on the
+Browser's own side **lives in the Browser's column, above the drawer** (`AppShell` passes it to `SampleSelectorDrawer` as
+`stackedRegion`; `DockRegion` takes `stacked`). The column is that region, then the drawer taking the rest.
+
+- Both parts are sized by the one stored number they always shared, `dockRegionSizes.left`, so either part's resizer
+  drags the same edge and no stored key changed meaning.
+- A stacked region is as tall as its panels and never fills: the **Preview is its 28px header plus a 16:9 picture at
+  the column's width** (304 gives 302x169 inside the 1px borders, no letterbox at 16:9; another aspect letterboxes inside
+  that box). Any other panel docked there keeps its stored size. The region is capped at 60 % of the column.
+- While the column holds a stacked panel, collapsing the Browser cannot collapse the column: the Browser folds to a
+  **28px row** under the region (expand control and its two tab icons) instead of a 28px-wide rail.
+- The stacked region sits outside the drawer's visibility scope, so a collapsed Browser never stops the Preview, and it
+  is not hidden by the shell (only `top` and `center` fold), so the Preview reports visible. Hiding the Preview from its
+  toggle removes the region and the column is the Browser alone again.
+- Only `left` and `right` stack. A Browser docked top or bottom is a strip of cards and the side region is its own
+  column, as before. Nothing else about regions, slots, splitters or presets changed.
 
 The Inspector scrolls inside its own region (`Inspector.module.css` `.root`).
 
@@ -467,7 +524,8 @@ row: timecode and frame number left; right, FPS (only while playing), state chip
 quality: Poster frames or Live frames), then FX, Edit grid and Import as kit controls. A chip appears only when its state
 differs from the default and is neutral with an info glyph and a `data-hint`: **Poster** while Poster frames are on,
 and the renderer by name when it is not WebGL. There is no "Preview = Render" badge; the Poster hint says exports are
-always full-fidelity. Below 720px the chips keep only their glyph; below 600px Edit grid and Import do too.
+always full-fidelity. Below 720px the chips keep only their glyph; below 600px Edit grid and Import do too; below 360px
+(the Compose column) View keeps only its chevron and the frame number reads `f 231`, so the row fits 304px unclipped.
 
 **Top bar panel controls** (`components/TitleBarRegions.jsx`). Four region toggles (Browser, Preview, Inspector, Detail
 dock) and one **Tools** menu (Sample Sandbox F10, Quick Notation, Split Syllables, then the user's own launchers from
@@ -1129,7 +1187,7 @@ macro lanes' DOM geometry, the curve canvases).
   rows use the browser's `Disclosure` triangle (`aria-expanded`), a folder glyph, the name and the **child count in
   tabular numerals**; the delete action shows on hover or focus. Macro and automation lane label rows share the column's
   module. `AUTOMATION_GROUP_HEADER_HEIGHT` is 24 (the hit floor).
-- **Toolbar** (`TimelineToolbar`): one 38px row (the height `shellLayout` budgets) of kit IconButtons in a `Toolbar`.
+- **Toolbar** (`TimelineToolbar`): one 32px row (the height `shellLayout` budgets; 38 until round 3) of kit IconButtons in a `Toolbar`.
   Tools are named "Select tool" and so on with their key (S, P, C, D) and mouse grammar in the hint bar. **Snap is a
   labelled Select**; the sample indicator reads **"Painting with: Pitch 1"** and is absent with no sample (a syllable
   template gets an outlined dot); the zoom is a tabular `40 px/beat` with the unit repeated in its hint; Quick notation

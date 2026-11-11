@@ -111,10 +111,11 @@ export default function PreviewHeader({
           glyph={<ChevronDown />}
           aria-haspopup="menu"
           aria-expanded={menu !== null}
+          aria-label="View"
           hint="View: renderer, resolution and quality of the Preview"
           onClick={openMenu}
         >
-          View
+          <span className={styles.viewLabel}>View</span>
         </Button>
 
         <Toggle

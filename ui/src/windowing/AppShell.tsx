@@ -120,6 +120,14 @@ export function AppShell() {
   const sampleDockResizePreview = useDockRegionResizePreview(sampleDockSide);
   const sampleDockSize = sampleDockResizePreview?.size ?? committedSampleDockRegionSize;
   const sampleDockExpanded = !sampleSelectorHidden;
+  // The edge region on the Browser's own side shares the Browser's column instead of
+  // standing beside it as a second one: its panels stack above the drawer (DESIGN.md 8.1).
+  // Only left and right stack; a Browser docked top or bottom is a strip of cards.
+  const stackSide = sampleDockSide === 'left' || sampleDockSide === 'right' ? sampleDockSide : null;
+  const stackKey = useRegistryValue((state) => (
+    stackSide ? dockedPanelKey(stackSide, DRAWER_PANEL_IDS, state.panels) : ''
+  ));
+  const stackedSide = stackKey !== '' ? stackSide : null;
 
   // How the centre column's height is shared between the top row, the
   // arrangement and the detail dock (layout/shellLayout.ts).
@@ -143,7 +151,8 @@ export function AppShell() {
   const shellClassName = [
     'xleth-windowing-shell',
     sampleDockExpanded ? 'sample-dock-open' : 'sample-dock-collapsed',
-  ].join(' ');
+    stackedSide ? 'sample-dock-stacked' : '',
+  ].filter(Boolean).join(' ');
   const shellStyle = {
     '--xleth-sample-dock-width': `${sampleDockSize}px`,
     '--xleth-sample-dock-height': `${sampleDockSize}px`,
@@ -208,13 +217,17 @@ export function AppShell() {
         data-sample-dock-side={sampleDockSide}
         style={shellStyle}
       >
-        <SampleSelectorDrawer />
+        <SampleSelectorDrawer
+          stackedRegion={stackedSide ? (
+            <DockRegion side={stackedSide} stacked renderPanel={renderPanel} excludePanelIds={DRAWER_PANEL_IDS} />
+          ) : null}
+        />
         <div className="xleth-app-workarea" data-testid="xleth-app-workarea" ref={workAreaRef}>
           <div
             className={`xleth-docked-window-layer ${styles.dockedLayer}`}
             data-testid="xleth-docked-window-layer"
           >
-            <DockRegion side="left" renderPanel={renderPanel} excludePanelIds={DRAWER_PANEL_IDS} />
+            {stackedSide === 'left' ? null : <DockRegion side="left" renderPanel={renderPanel} excludePanelIds={DRAWER_PANEL_IDS} />}
             <div className={`xleth-center-column ${styles.centerColumn}`} ref={columnRef}>
               {/* The sample picker opens as a sheet over the top row; the
                   arrangement and detail dock below it stay mounted and live. */}
@@ -239,7 +252,7 @@ export function AppShell() {
                   time under a tab strip that is always there. */}
               <DetailDock renderPanel={renderPanel} sizeOverride={layout?.dockH} />
             </div>
-            <DockRegion side="right" renderPanel={renderPanel} excludePanelIds={DRAWER_PANEL_IDS} />
+            {stackedSide === 'right' ? null : <DockRegion side="right" renderPanel={renderPanel} excludePanelIds={DRAWER_PANEL_IDS} />}
           </div>
           <div className="xleth-floating-window-layer" data-testid="xleth-floating-window-layer">
             <SnapGhost />

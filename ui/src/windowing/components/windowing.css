@@ -66,6 +66,40 @@
   flex-basis: 0;
 }
 
+/* Stacked side region (ui/DESIGN.md 8.1, Compose): the edge region on the Browser's own
+ * side lives in the Browser's column, above the drawer, instead of standing beside it as
+ * a second column. The column is that region, then the drawer taking the rest. While it
+ * holds a panel the column keeps its width even with the Browser collapsed (the Browser
+ * then folds to a 28px row under the region, not to a 28px-wide rail). */
+.xleth-windowing-shell.sample-dock-stacked.sample-dock-collapsed .xleth-sample-selector-drawer-host {
+  flex-basis: var(--xleth-sample-dock-width);
+}
+
+.xleth-sample-selector-drawer-host[data-stacked="true"] {
+  display: flex;
+  flex-direction: column;
+}
+
+.xleth-sample-selector-drawer-host[data-stacked="true"] > .xleth-sample-selector-drawer {
+  flex: 1 1 0;
+  height: auto;
+  min-height: 0;
+}
+
+/* Two classes: this has to beat the 280px default width of .xleth-dock-region--left/right below. */
+.xleth-dock-region.xleth-dock-region--stacked {
+  flex: none;
+  width: 100%;
+  max-height: 60%;
+  border-bottom: 1px solid var(--ui-g4);
+}
+
+/* A stacked slot is as tall as its stored size; the Preview is its header plus a 16:9
+ * picture at the column's width, so the picture has no letterbox. */
+.xleth-dock-region--stacked > .xleth-docked-panel-slot[data-docked-slot-id="preview"] {
+  flex: 0 1 calc(var(--panel-header-h, 28px) + var(--xleth-sample-dock-width) * 9 / 16);
+}
+
 .xleth-app-workarea {
   flex: 1 1 auto;
   position: relative;

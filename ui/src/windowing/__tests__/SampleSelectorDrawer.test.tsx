@@ -105,9 +105,9 @@ describe('SampleSelectorDrawer', () => {
     const appShellSource = readUiSource('windowing/AppShell.tsx');
 
     expect(appShellSource).toContain('sample-dock-open');
-    expect(appShellSource).toContain('<SampleSelectorDrawer />');
+    expect(appShellSource).toContain('<SampleSelectorDrawer');
     expect(appShellSource).toContain('data-testid="xleth-app-workarea"');
-    expect(appShellSource.indexOf('<SampleSelectorDrawer />')).toBeLessThan(
+    expect(appShellSource.indexOf('<SampleSelectorDrawer')).toBeLessThan(
       appShellSource.indexOf('data-testid="xleth-app-workarea"'),
     );
   });
@@ -229,7 +229,7 @@ describe('SampleSelectorDrawer', () => {
 
   it('shell mounts the drawer and excludes the panel from every dock region', () => {
     const appShellSource = readUiSource('windowing/AppShell.tsx');
-    expect(appShellSource).toContain('<SampleSelectorDrawer />');
+    expect(appShellSource).toContain('<SampleSelectorDrawer');
     expect(appShellSource).toContain('excludePanelIds={DRAWER_PANEL_IDS}');
 
     // Docking it by hand must still not put a PanelFrame in the region.
@@ -239,5 +239,35 @@ describe('SampleSelectorDrawer', () => {
       <DockRegion side="left" excludePanelIds={DRAWER_PANEL_IDS} />,
     );
     expect(html).not.toContain('data-panel-id="sampleSelector"');
+  });
+
+  // Compose (ui/DESIGN.md 8.1): the edge region on the Browser's side is stacked above the
+  // drawer in the drawer's own column, outside the drawer's visibility scope.
+  it('hosts a stacked region above the drawer, and keeps it when the Browser collapses', () => {
+    openSampleSelectorDrawer();
+    const stacked = <DockRegion side="left" stacked excludePanelIds={DRAWER_PANEL_IDS} />;
+    usePanelRegistry.getState().applyPreset('xleth-compose');
+
+    const open = renderToStaticMarkup(<SampleSelectorDrawer stackedRegion={stacked} />);
+    expect(open).toContain('data-stacked="true"');
+    expect(open).toContain('xleth-dock-region--stacked');
+    expect(open).toContain('data-docked-slot-id="preview"');
+    // Stacked: no inline width (it takes the column's) and no fill slot.
+    expect(open).not.toMatch(/xleth-dock-region--stacked[^>]*style="[^"]*width/);
+    expect(open).not.toContain('xleth-docked-panel-slot--fill');
+    expect(open.indexOf('xleth-dock-region--stacked')).toBeLessThan(open.indexOf('class="xleth-sample-selector-drawer"'));
+
+    collapseSampleSelectorDrawer();
+    const collapsed = renderToStaticMarkup(<SampleSelectorDrawer stackedRegion={stacked} />);
+    expect(collapsed).toContain('data-docked-slot-id="preview"');
+    expect(collapsed).toContain('aria-label="Browser, collapsed"');
+    expect(collapsed).toMatch(/aria-label="Browser, collapsed"[^>]*aria-orientation="horizontal"/);
+  });
+
+  it('without a stacked region the host is unchanged', () => {
+    openSampleSelectorDrawer();
+    const html = renderToStaticMarkup(<SampleSelectorDrawer />);
+    expect(html).not.toContain('data-stacked');
+    expect(html).not.toContain('xleth-dock-region--stacked');
   });
 });

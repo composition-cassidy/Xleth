@@ -114,10 +114,35 @@ describe('fill slot', () => {
 describe('default layout', () => {
   beforeEach(reset);
 
-  it('resetLayout lands on the tiled default: browser, preview + inspector, arrangement', () => {
+  it('resetLayout lands on Compose: Preview with the Browser on the left, no top row, Inspector hidden on the right', () => {
     const registry = usePanelRegistry.getState();
     registry.applyPreset('fl-compose');
     registry.resetLayout();
+
+    const state = usePanelRegistry.getState();
+    expect(getRegionSlots(state.panels, 'center')).toEqual([['timeline']]);
+    expect(getRegionSlots(state.panels, 'top')).toEqual([]);
+    // The Browser (a drawer) and the Preview share the left region; only the Preview is a
+    // window panel there, so it is what the region renders (stacked above the drawer).
+    expect(getRegionSlots(state.panels, 'left')).toEqual([['sampleSelector'], ['preview']]);
+    expect(state.panels.sampleSelector.hidden).toBe(false);
+    expect(state.panels.inspector.hidden).toBe(true);
+    expect(state.panels.inspector.docked.region).toBe('right');
+    expect(state.panels.mixer.hidden).toBe(true);
+    expect(state.dockRegionSizes).toMatchObject({ left: 304, right: 280, top: 340 });
+  });
+
+  it('the Inspector toggle opens it docked on the right', () => {
+    const registry = usePanelRegistry.getState();
+    registry.resetLayout();
+    registry.togglePanel('inspector');
+    const state = usePanelRegistry.getState();
+    expect(getRegionSlots(state.panels, 'right')).toEqual([['inspector']]);
+    expect(getRegionSlots(state.panels, 'top')).toEqual([]);
+  });
+
+  it('Tiled (preview row) is still there: browser, preview + inspector, arrangement', () => {
+    usePanelRegistry.getState().applyPreset('xleth-arrange');
 
     const state = usePanelRegistry.getState();
     expect(getRegionSlots(state.panels, 'center')).toEqual([['timeline']]);
@@ -125,5 +150,6 @@ describe('default layout', () => {
     expect(state.panels.sampleSelector.hidden).toBe(false);
     expect(state.panels.mixer.hidden).toBe(true);
     expect(state.dockRegionSizes.top).toBe(340);
+    expect(state.dockRegionSizes.left).toBe(258);
   });
 });

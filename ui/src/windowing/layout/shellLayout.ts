@@ -22,8 +22,8 @@ export const TOP_MIN_H = 200;
 /** What the top row becomes when the window cannot hold all three regions. */
 export const TOP_STRIP_H = 28;
 
-/** Timeline toolbar 38 + ruler 26 + video cue lane 30, measured. */
-export const ARRANGEMENT_CHROME_H = 95;
+/** Timeline toolbar 32 + ruler 26 + video cue lane 24 + 1px of borders, measured. (95 until round 3: 38 / 26 / 30.) */
+export const ARRANGEMENT_CHROME_H = 83;
 /** Default track row height (TRACK_HEIGHT). */
 export const TRACK_ROW_H = 36;
 /** Hard minimum: 4 rows. */

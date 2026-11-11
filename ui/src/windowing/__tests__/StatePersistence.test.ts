@@ -244,8 +244,9 @@ describe('StatePersistence', () => {
       const expected = loadPreset(DEFAULT_PRESET_ID)!;
       const state = usePanelRegistry.getState();
       expect(state.panels.timeline.docked.region).toBe('center');
-      expect(state.panels.preview.docked.region).toBe('top');
-      expect(state.panels.inspector.hidden).toBe(false);
+      expect(state.panels.preview.docked.region).toBe(expected.panels.preview.docked.region);
+      expect(state.panels.preview.docked.region).toBe('left');
+      expect(state.panels.inspector.hidden).toBe(true);
       expect(state.dockRegionSizes).toEqual(expected.dockRegionSizes);
 
       // Written back as v4 straight away, so the next launch merges it instead

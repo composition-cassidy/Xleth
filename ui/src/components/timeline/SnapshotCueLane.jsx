@@ -24,7 +24,8 @@ import LineSweepDirectionControl, { normalizeLineSweepAngle } from './LineSweepD
 
 const PLAYHEAD_LINE_WIDTH = 1
 
-export const CUE_LANE_HEIGHT = 30
+// 24: the hit-area floor. The shell budgets this row (layout/shellLayout.ts ARRANGEMENT_CHROME_H).
+export const CUE_LANE_HEIGHT = 24
 
 // Cue stems and the shared DOM playhead both call this exact tick-to-x mapping.
 // The half-pixel grid alignment is folded into beatToPlayheadPixel for a 1px line.
