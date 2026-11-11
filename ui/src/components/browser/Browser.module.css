@@ -12,7 +12,9 @@
     height: 100%;
     min-width: 0;
     min-height: 0;
-    background: var(--ui-g1);
+    /* The list body is a content well (g0, DESIGN.md 3.1): the tabs row above it is a
+     * header (g2) and group rows are chrome (g1), so the regions read by fill. */
+    background: var(--ui-g0);
     color: var(--ui-ink);
     font-family: var(--ui-font);
     font-size: var(--type-12);

@@ -15,23 +15,23 @@
 @layer tokens {
   :root {
     /* ── Neutral ramp (DESIGN.md 3.1): chrome carries no hue ─────────────── */
-    --ui-g0: var(--theme-ui-g0, #141414);             /* wells, ground */
-    --ui-g1: var(--theme-ui-g1, #1B1B1B);             /* panel */
-    --ui-g2: var(--theme-ui-g2, #222222);             /* header */
-    --ui-g3: var(--theme-ui-g3, #2B2B2B);             /* control */
-    --ui-g4: var(--theme-ui-g4, #3A3A3A);             /* divider, decorative only */
-    --ui-boundary: var(--theme-ui-boundary, #747474); /* control outlines, >= 3:1 on g0..g3 */
+    --ui-g0: var(--theme-ui-g0, #0F0F0F);             /* wells, ground */
+    --ui-g1: var(--theme-ui-g1, #1A1A1A);             /* panel */
+    --ui-g2: var(--theme-ui-g2, #262626);             /* header */
+    --ui-g3: var(--theme-ui-g3, #323232);             /* control */
+    --ui-g4: var(--theme-ui-g4, #444444);             /* divider, decorative only */
+    --ui-boundary: var(--theme-ui-boundary, #7C7C7C); /* control outlines, >= 3:1 on g0..g3 */
     --ui-ink: var(--theme-ui-ink, #E6E6E6);           /* primary text */
     --ui-ink-2: var(--theme-ui-ink-2, #B4B4B4);       /* secondary text */
-    --ui-ink-3: var(--theme-ui-ink-3, #929292);       /* dimmest text allowed anywhere */
+    --ui-ink-3: var(--theme-ui-ink-3, #9A9A9A);       /* dimmest text allowed anywhere */
 
     /* ── Semantic colours (DESIGN.md 3.2) ────────────────────────────────── */
     --ui-value: var(--theme-ui-value, var(--theme-accent, #33CED6));     /* value fills, active displays */
     --ui-select: var(--theme-ui-select, var(--theme-accent, #33CED6));   /* 1px selection outline */
     --ui-on: var(--theme-ui-on-bg, #E6E6E6);                             /* "on" toggle chip background (inverted ink) */
-    --ui-on-fg: var(--theme-ui-on-fg, #1B1B1B);                          /* text on the "on" chip */
+    --ui-on-fg: var(--theme-ui-on-fg, #1A1A1A);                          /* text on the "on" chip */
     --ui-rec: var(--theme-ui-rec, #E5484D);                              /* record/arm: FILLS AND GLYPHS ONLY (4.40:1 on g1) */
-    --ui-rec-text: var(--theme-ui-rec-text, #F06A6E);                    /* record/arm text */
+    --ui-rec-text: var(--theme-ui-rec-text, #F67073);                    /* record/arm text */
     --ui-solo: var(--theme-ui-solo, #E8B53A);
     --ui-clip: var(--theme-ui-clip, var(--theme-danger, #FF4757));       /* clipping / error */
     --ui-mute-opacity: 0.45;                                             /* muted content dims to this, plus a mute glyph */

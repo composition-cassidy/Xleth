@@ -41,6 +41,12 @@ export interface MeterProps extends HintProps, DataAttrs {
    * bar hangs from the top and the scale prints as negative dB. No clip LED.
    */
   direction?: 'up' | 'down';
+  /**
+   * Tone of the empty slot. 'ground' (default, g0) for a meter on panel chrome or in a display
+   * well; 'panel' (g1) for a meter that sits on a g0 body (a mixer strip), where a g0 slot
+   * would disappear.
+   */
+  well?: 'ground' | 'panel';
   className?: string;
 }
 
@@ -49,12 +55,13 @@ const BAR_GAP = 1;
 const SCALE_W = 22;
 const MIN_LABEL_GAP = 12;
 
-interface Palette { well: string; fill: string; clip: string; peak: string; tick: string; font: string }
+interface Palette { well: string; wellPanel: string; fill: string; clip: string; peak: string; tick: string; font: string }
 
 // Read at draw/mount time and on theme change, never at module scope.
 function readPalette(): Palette {
   return {
     well: tokenValue('--ui-g0'),
+    wellPanel: tokenValue('--ui-g1'),
     fill: tokenValue('--ui-value'),
     clip: tokenValue('--ui-clip'),
     peak: tokenValue('--ui-ink'),
@@ -76,7 +83,7 @@ export function meterWidth(channels: 1 | 2, showScale: boolean): number {
 export default function Meter(props: MeterProps) {
   const {
     subscribe, label, channels = 1, min = -60, max = 0, scaleDb = DEFAULT_SCALE_DB, showScale = true,
-    clipDb: clipDbProp = 0, fallDbPerSec, holdMs, onClipChange, direction = 'up', hint, hintMods, className, ...rest
+    clipDb: clipDbProp = 0, fallDbPerSec, holdMs, onClipChange, direction = 'up', well = 'ground', hint, hintMods, className, ...rest
   } = props;
   const down = direction === 'down';
   const clipDb = down ? Number.POSITIVE_INFINITY : clipDbProp;
@@ -89,8 +96,8 @@ export default function Meter(props: MeterProps) {
   const lastTsRef = useRef(0);
   const paletteRef = useRef<Palette | null>(null);
   const clippedRef = useRef(false);
-  const optsRef = useRef({ min, max, scaleDb, showScale, clipDb, fallDbPerSec, holdMs, channels, onClipChange, down });
-  optsRef.current = { min, max, scaleDb, showScale, clipDb, fallDbPerSec, holdMs, channels, onClipChange, down };
+  const optsRef = useRef({ min, max, scaleDb, showScale, clipDb, fallDbPerSec, holdMs, channels, onClipChange, down, well });
+  optsRef.current = { min, max, scaleDb, showScale, clipDb, fallDbPerSec, holdMs, channels, onClipChange, down, well };
   const [clipped, setClipped] = useState(false);
 
   const width = meterWidth(channels, showScale);
@@ -121,7 +128,7 @@ export default function Meter(props: MeterProps) {
     for (let c = 0; c < o.channels; c += 1) {
       const x = c * (BAR_W + BAR_GAP);
       const st = statesRef.current[c];
-      ctx.fillStyle = pal.well;
+      ctx.fillStyle = o.well === 'panel' ? pal.wellPanel : pal.well;
       ctx.fillRect(x, 0, BAR_W, cssH);
       if (st.level > o.min) {
         const y = yOf(st.level);
@@ -211,7 +218,7 @@ export default function Meter(props: MeterProps) {
       statesRef.current = Array.from({ length: channels }, () => initialMeterState(min));
     }
     draw();
-  }, [channels, min, max, draw]);
+  }, [channels, min, max, well, draw]);
 
   // Theme change: re-read the palette and repaint.
   useEffect(() => {

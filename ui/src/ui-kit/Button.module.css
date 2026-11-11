@@ -1,5 +1,7 @@
 /* Button and IconButton (also the base look of Toggle). Neutral outline at rest;
- * "on" is the inverted ink chip (DESIGN.md 3.2), never a hue. No hover lift. */
+ * "on" is the inverted ink chip (DESIGN.md 3.2), never a hue. No hover lift.
+ * `data-tone="quiet"` is the on-state of housekeeping toggles that are on nearly all
+ * the time (region toggles, tempo lock): raised g3, its 3:1 outline, ink glyph. */
 @layer kit {
   .btn {
     box-sizing: border-box;
@@ -95,6 +97,23 @@
     border-color: var(--ui-on);
     background: var(--ui-on);
     color: var(--ui-on-fg);
+  }
+
+  /* Quiet on. Off is the borderless ghost, so the state is carried by the outline and the
+   * fill together (g3 on a g2 bar is only 1.2:1; the boundary is 3:1), never by colour. */
+  .btn[data-tone="quiet"][aria-pressed="true"] {
+    border-color: var(--ui-boundary);
+    background: var(--ui-g3);
+    color: var(--ui-ink);
+  }
+
+  .btn[data-tone="quiet"][aria-pressed="true"]:is(:hover, [data-state="hover"]):not(:disabled) {
+    border-color: var(--ui-ink-2);
+    background: var(--ui-g3);
+  }
+
+  .btn[data-tone="quiet"][aria-pressed="true"]:is(:active, [data-state="active"]):not(:disabled) {
+    background: var(--ui-g0);
   }
 
   .btn:disabled {

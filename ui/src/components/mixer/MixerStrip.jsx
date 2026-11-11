@@ -175,7 +175,7 @@ function MixerStrip({ trackId, index, color, stripW = 84 }) {
           label={`${name} volume`} scale={dbTaperScale} unit="dB" defaultValue={0} width={28}
           value={db} onChange={handleVolume} onCommit={handleVolume} hint={`Volume of ${name}`}
         />
-        <Meter label={name} channels={2} subscribe={subscribe} hint={`Level of ${name}`} />
+        <Meter label={name} channels={2} well="panel" subscribe={subscribe} hint={`Level of ${name}`} />
       </div>
 
       <div className={styles.cableSpace} aria-hidden="true" />

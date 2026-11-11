@@ -76,20 +76,32 @@ unit test in `ui-kit/`).
 
 | Token | Hex | Role | on g0 | on g1 | on g2 | on g3 |
 |---|---|---|---|---|---|---|
-| `g0` | `#141414` | wells, ground | | | | |
-| `g1` | `#1B1B1B` | panel | | | | |
-| `g2` | `#222222` | header | | | | |
-| `g3` | `#2B2B2B` | control | | | | |
-| `g4` | `#3A3A3A` | divider, **decorative only** (1.51 on g1) | | | | |
-| `boundary` | `#747474` | control outlines | 3.94 | **3.69** | **3.40** | **3.03** |
-| `ink` | `#E6E6E6` | primary text | 14.76 | 13.80 | 12.75 | 11.34 |
-| `ink-2` | `#B4B4B4` | secondary text | 8.89 | 8.31 | 7.67 | 6.83 |
-| `ink-3` | `#929292` | **dimmest text allowed anywhere** | 5.92 | 5.54 | 5.11 | 4.55 |
+| `g0` | `#0F0F0F` | wells, ground: bodies that hold content | | | | |
+| `g1` | `#1A1A1A` | panel: chrome behind controls | | | | |
+| `g2` | `#262626` | header, title strip | | | | |
+| `g3` | `#323232` | control | | | | |
+| `g4` | `#444444` | divider, **decorative only** (1.79 on g1) | | | | |
+| `boundary` | `#7C7C7C` | control outlines | 4.59 | **4.17** | **3.63** | **3.07** |
+| `ink` | `#E6E6E6` | primary text | 15.36 | 13.94 | 12.13 | 10.27 |
+| `ink-2` | `#B4B4B4` | secondary text | 9.24 | 8.39 | 7.30 | 6.18 |
+| `ink-3` | `#9A9A9A` | **dimmest text allowed anywhere** | 6.81 | 6.19 | 5.38 | 4.56 |
+
+**Round 3 widened the row.** Until then it was `#141414 / #1B1B1B / #222222 / #2B2B2B / #3A3A3A`: 23 luminance steps
+from g0 to g3, so neighbouring panels differed by about 7 and the shell read as one flat sheet (three greys covered 66 %
+of a 1080p screen). The row above spans 35. Because g3 rose, everything that must clear a floor on it rose with it:
+`ink-3` from `#929292` (4.12 on the new g3) and `boundary` from `#747474` (2.74), and `rec-text` (3.2). No hue was added.
+
+**Surface roles, applied the same way everywhere.** **g0** is any body that holds content: arrangement lanes, mixer
+strip bodies and the empty lane beside them, the Browser's list, the Patterns list, the Devices chain, display wells, the
+Preview surround. **g1** is panel chrome behind controls: the Inspector, device frames, the Master dock, the detail dock
+body. **g2** is a header or a title strip: the top bar, tab rows, strip heads, track header rows, toolbars. **g3** is a
+control. A slot that sits on a g0 body (a strip's meter) is drawn one step up, g1, so it does not disappear. Regions are
+told apart by fill first; a `g4` divider is the second signal, never the only one.
 
 **Adjustment from the original brief:** `boundary` was `#6B6B6B` (3.23 on g1 but 2.99 on g2
 and 2.66 on g3, below the 3:1 non-text floor on headers and control fills). `#707070` was
 tried and still fails on g3 (2.86). `#747474` clears 3:1 on g0–g3 (table above); the unit test
-asserts `boundary >= 3:1` on g1, g2 and g3.
+asserts `boundary >= 3:1` on g1, g2 and g3. (Round 3: `#7C7C7C` on the wider ramp, same floor.)
 
 Nothing dimmer than `ink-3` is permitted for text. "Disabled" is expressed with the 45% dim
 plus a glyph/state, not a darker text colour.
@@ -98,16 +110,24 @@ plus a glyph/state, not a darker text colour.
 
 | Token | Value | Job | Notes |
 |---|---|---|---|
-| `--ui-value` | `--theme-accent` (`#33CED6` default; 8.97:1 on g1) | value fills, active displays | user-themeable |
-| `--ui-on` | inverted chip: `ink` background, `g1` text | toggles that are on | deliberately not yellow/orange/lime |
+| `--ui-value` | `--theme-accent` (`#33CED6` default; 9.07:1 on g1) | value fills, active displays | user-themeable |
+| `--ui-on` | inverted chip: `ink` background, `g1` text | toggles that are on and that you watch: M / S / V, the active tool, loop armed, a device activator | deliberately not yellow/orange/lime |
+| quiet on (`tone="quiet"`) | `g3` fill, `boundary` outline, `ink` glyph | housekeeping toggles that are on nearly all the time: the four region toggles, the tempo lock | off is the borderless ghost, so the state is outline plus fill, never colour |
 | `--ui-select` | 1px `--ui-value` outline | selection | outline, never fill-only |
-| `--ui-rec` | `#E5484D` | record/arm **fills and glyphs only** | 4.40:1 on g1, so **never as text** |
-| `--ui-rec-text` | `#F06A6E` | record/arm **text** | 5.73 g1, 4.71 g3 |
-| `--ui-solo` | `#E8B53A` | solo | 9.11:1 on g1 |
+| `--ui-rec` | `#E5484D` | record/arm **fills and glyphs only** | 4.45:1 on g1, so **never as text** |
+| `--ui-rec-text` | `#F67073` | record/arm **text** | 6.20 g1, 4.57 g3 (round 3: lightened from `#F06A6E`, 4.27 on the new g3; same OKLCH hue and chroma) |
+| `--ui-solo` | `#E8B53A` | solo | 9.20:1 on g1 |
 | `--ui-clip` | `--theme-danger` | clipping / error | |
 | mute | content at 45% **plus** a mute glyph | never colour alone | |
 
 State is visible at rest, never hover-only. Muted content dims, not just its button.
+
+**Quiet on (round 3).** The inverted chip is the brightest thing in the chrome, and that is its job: it marks state you
+look for. Four region toggles and the tempo lock are on almost all the time, so as chips they made housekeeping the
+loudest part of the top bar. They use the kit's quiet on-state instead (`IconButton` and `Toggle` take `tone="quiet"`;
+`ui-kit/Button.module.css`): a raised g3 control with its 3:1 `boundary` outline and an ink glyph. g3 on the bar's g2 is
+only 1.2:1, so the outline carries the state and the fill supports it; the lock also swaps its glyph. Nothing else may
+use it: a toggle whose on-state is news keeps the chip.
 
 ### 3.3 Signal-type hues
 
@@ -118,10 +138,10 @@ other. OKLCH hues of the state colours: **accent 200°, rec 23°, danger 21°, s
 
 | Signal | OKLCH | Hex | on g1 | on g3 |
 |---|---|---|---|---|
-| audio | L.72 C.12 H255 | `#6FA7EE` | 6.92 | 5.69 |
-| events | L.72 C.12 H150 | `#69BA7C` | 7.31 | 6.01 |
-| parameter | L.72 C.12 H295 | `#AA95E8` | 6.70 | 5.51 |
-| video | L.72 C.12 H330 | `#CF88C8` | 6.57 | 5.40 |
+| audio | L.72 C.12 H255 | `#6FA7EE` | 6.99 | 5.15 |
+| events | L.72 C.12 H150 | `#69BA7C` | 7.39 | 5.44 |
+| parameter | L.72 C.12 H295 | `#AA95E8` | 6.77 | 4.99 |
+| video | L.72 C.12 H330 | `#CF88C8` | 6.64 | 4.89 |
 
 ### 3.3.1 Band palette (multiband devices)
 
@@ -208,16 +228,17 @@ nothing in `app.css` needed editing apart from one declaration.
 
 | Legacy token | Was | Now |
 |---|---|---|
-| `--theme-bg-primary`, `--theme-bg-inset` | `#0A0A0F`, `#0D0D14` | `#141414` (g0) |
-| `--theme-bg-surface` | `#1A1A24` | `#1B1B1B` (g1) |
-| `--theme-bg-secondary` / `-tertiary` / `-hover` / `-active` / `-elevated` | tinted, derived | grey, derived: `#1C1C1C` / `#202020` / `#252525` / `#2F2F2F` / `#252525` |
+| `--theme-bg-primary`, `--theme-bg-inset` | `#0A0A0F`, `#0D0D14` | `#0F0F0F` (g0) |
+| `--theme-bg-surface` | `#1A1A24` | `#1A1A1A` (g1) |
+| `--theme-bg-secondary` / `-tertiary` / `-hover` / `-active` / `-elevated` | tinted, derived | grey, derived: `#171717` / `#1B1B1B` / `#242424` / `#2E2E2E` / `#242424` |
 | `--theme-text` | `#E8E8ED` | `#E6E6E6` (ink) |
 | `--theme-text-muted` | `#8888A0` (derived) | `var(--theme-ui-ink-2)` `#B4B4B4` |
-| `--theme-border-subtle` | `#2A2A38` (derived) | `var(--theme-ui-g4)` `#3A3A3A` |
-| `--theme-text-on-accent` | `#0D0D14` | `#141414` |
-| `--xleth-flat-text-muted` (`app.css`) | `var(--theme-text-subtle)` (2.4:1) | `var(--ui-ink-3)` (5.54:1) |
+| `--theme-border-subtle` | `#2A2A38` (derived) | `var(--theme-ui-g4)` `#444444` |
+| `--theme-text-on-accent` | `#0D0D14` | `#0F0F0F` |
+| `--xleth-flat-text-muted` (`app.css`) | `var(--theme-text-subtle)` (2.4:1) | `var(--ui-ink-3)` (6.19:1) |
 
-The legacy three-tier text ladder therefore reads ink (13.8) > ink-2 (8.3) > ink-3 (5.5).
+The legacy three-tier text ladder therefore reads ink (13.9) > ink-2 (8.4) > ink-3 (6.2). (The "Now" column is the
+round 3 ramp; the Phase 0 values were `#141414`, `#1B1B1B` and the derived greys that followed from them.)
 `--theme-text-subtle` and `--theme-text-placeholder` stay derived (now `#595959`, 2.46:1 on g1, still below the floor):
 they are the legacy "below the floor" tier and disappear as components are rebuilt; the kit
 never uses them. Panel-local tinted tokens in the Default theme (for example
@@ -244,18 +265,24 @@ node ports, pattern hover) are `ref`s to the ramp, so they are neutral in every 
 
 | Theme | g0 | g1 | g2 | g3 | g4 | boundary | ink | ink-2 | ink-3 | accent |
 |---|---|---|---|---|---|---|---|---|---|---|
-| dark (Default) | `#141414` | `#1B1B1B` | `#222222` | `#2B2B2B` | `#3A3A3A` | `#747474` | `#E6E6E6` | `#B4B4B4` | `#929292` | `#33CED6` |
+| dark (Default) | `#0F0F0F` | `#1A1A1A` | `#262626` | `#323232` | `#444444` | `#7C7C7C` | `#E6E6E6` | `#B4B4B4` | `#9A9A9A` | `#33CED6` |
 | light | `#DCDCDC` | `#E9E9E9` | `#F0F0F0` | `#F7F7F7` | `#C4C4C4` | `#6E6E6E` | `#1A1A1A` | `#444444` | `#5C5C5C` | `#006C71` |
 | high contrast | `#000000` | `#0A0A0A` | `#141414` | `#1F1F1F` | `#595959` | `#D0D0D0` | `#FFFFFF` | `#E0E0E0` | `#C8C8C8` | `#33CED6` |
 
-On g1: dark ink 13.8 / ink-2 8.3 / ink-3 5.5 / boundary 3.7; light 14.3 / 8.0 / 5.5 / 4.2; high
+On g1: dark ink 13.9 / ink-2 8.4 / ink-3 6.2 / boundary 4.2; light 14.3 / 8.0 / 5.5 / 4.2; high
 contrast 19.8 / 15.0 / 11.8 / 12.8. Light's ground (g0) is its *darkest* step and controls are raised
 toward white; g4 is a decorative divider in dark and light, and a visible one (2.4:1) in high contrast.
 Semantic and signal colours keep the dark ramp's OKLCH hue and chroma and only move in lightness (light:
 darker; high contrast: brighter), so the hue-exclusion rules of 3.3 and 3.4 hold in every theme. High
 contrast also strengthens the grid: timeline and piano-roll bar / beat / step lines are 65 / 40 / 22 %
-white over g0 (7.4 / 3.7 / 1.8:1), asserted by test. In dark and light the bar line is about 2.3 and 2.0:1,
-below the 3:1 Floor for bar lines: **open**, left as designed to keep the grid's quiet look.
+white over g0 (7.4 / 3.7 / 1.8:1), asserted by test. Since round 3 the bar line clears the 3:1 Floor in dark and light
+as well: 34 % white over g0 in dark (`#616161`, 3.10:1; it was 26 %, 2.3:1) and 44 % black over g0 in light (3.09:1; it
+was 28 %, 2.0:1), for the timeline and the piano roll alike. Beat and step lines are unchanged, so the bar tier now
+stands clear of them. `themes.test.ts` asserts bar >= 3:1 and bar > beat > step in all five themes.
+
+**The light row was not widened in round 3.** Its 13 semantic colours are solved to sit at about 4.5:1 on its ground
+(`#DCDCDC`); a darker ground puts every one of them, and ink-3, under the floor. Its only free direction is g3 toward
+white, three steps. High contrast is unchanged.
 
 **Floors, asserted per theme** (`ui-kit/__tests__/themes.test.ts`, all five shipped themes): ink, ink-2,
 ink-3 at least 4.5:1 on g0..g3 (7:1 in high contrast); boundary at least 3:1 (7:1); `value`, `clip`
@@ -270,7 +297,7 @@ label rule on 14 of them.)
 
 **Warm and cool are accent variants.** Their JSON is Default's with the accent family changed
 (`--theme-accent`, its derived fills, the volume mod tint): warm amber `#E8943A`, cool cobalt
-`#6490F2` (lightened from `#5B8AF0`, which was 4.27:1 on g3). Surfaces and ink are identical to Default
+`#6B98FA` (round 3: lightened again from `#6490F2`, 4.16:1 on the wider ramp's g3; 4.58 now). Surfaces and ink are identical to Default
 (asserted). The amber hue sits within 20 degrees of three identity colours; the theme editor warns
 about any accent that does (`accentIdentityClashes`).
 
@@ -444,7 +471,8 @@ always full-fidelity. Below 720px the chips keep only their glyph; below 600px E
 
 **Top bar panel controls** (`components/TitleBarRegions.jsx`). Four region toggles (Browser, Preview, Inspector, Detail
 dock) and one **Tools** menu (Sample Sandbox F10, Quick Notation, Split Syllables, then the user's own launchers from
-Settings > Launchers), all kit controls with a `data-hint` that names the shortcut. The launchers that duplicated detail
+Settings > Launchers), all kit controls with a `data-hint` that names the shortcut. The region toggles and the tempo lock
+use the quiet on-state (3.2), not the inverted chip: they are on nearly all the time. The launchers that duplicated detail
 dock tabs (Piano Roll, Mixer, FX Graph, Sampler) and the Timeline toggle are gone; their F-keys and menu entries are
 unchanged. The dock-magnification plate and its hook were deleted with the legacy launcher CSS.
 
@@ -571,7 +599,12 @@ import a generic music, slider or tool glyph. The Gallery shows every glyph at 1
 ## 12. Known gaps (deliberately out of scope for Phase 0)
 
 - **Settings > Appearance, other shipped themes:** resolved in Phase 7 (3.6).
-- **Bar lines below 3:1** in dark and light (about 2.3 and 2.0:1); high contrast meets it. Open.
+- **Bar lines below 3:1:** closed in round 3 (3.6): 3.10:1 in dark, 3.09:1 in light, asserted per theme.
+- **Ramp copies outside the token system.** `welcome.html` and `splash.html` carry a frozen copy of the dark ramp
+  (section 23) and were not re-synced when round 3 widened it: g0 `#0F0F0F`, g1 `#1A1A1A`, g2 `#262626`, g3 `#323232`,
+  g4 `#444444`, boundary `#7C7C7C`, ink-3 `#9A9A9A`, danger text `#F67073`. `main.js` (`backgroundColor`) was.
+- **Canvas colour fallbacks.** About 25 canvas modules keep a literal fallback for a token read that returns nothing
+  (before `ThemeProvider` mounts). They still hold the old ramp values; they are never seen once a theme is applied.
 - **Mid-brightness Appearance:** semantic colours (accent, solo, signals) are the ramp's fixed values and are
   not re-solved for an arbitrary brightness; only ink, ink-2, ink-3 and boundary are guaranteed there.
 - **Narrow windows at high scale:** below about 683 CSS px (a window under 1366 px at 200 %) the Preview and

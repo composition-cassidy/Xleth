@@ -9,7 +9,8 @@
     min-height: 0;
     overflow-x: auto;
     overflow-y: hidden;
-    background: var(--ui-g1);
+    /* A well (g0): the device frames in it are the raised chrome (g1). */
+    background: var(--ui-g0);
     scrollbar-width: thin;
     scrollbar-color: var(--ui-g4) var(--ui-g1);
   }

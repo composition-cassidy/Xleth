@@ -2,6 +2,7 @@ import { forwardRef } from 'react';
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
 import { hintAttrs, type HintProps } from './hint';
 import buttonStyles from './Button.module.css';
+import type { OnTone } from './Button';
 import styles from './Toggle.module.css';
 import type { DataAttrs } from './valueProps';
 
@@ -16,14 +17,17 @@ export interface ToggleProps extends HintProps, DataAttrs, Omit<ButtonHTMLAttrib
    */
   glyph?: ReactNode;
   size?: 'sm' | 'md' | 'lg';
+  /** `quiet`: an always-on housekeeping toggle keeps a raised g3 control instead of the ink chip. */
+  tone?: OnTone;
 }
 
 /**
- * Off = neutral outline. On = the inverted ink chip (`--ui-on`). A real
+ * Off = neutral outline. On = the inverted ink chip (`--ui-on`), or with `tone="quiet"` a raised
+ * g3 control for toggles that are on nearly all the time (DESIGN.md 3.2). A real
  * `<button aria-pressed>`, so Space and Enter work and screen readers say "pressed".
  */
 export const Toggle = forwardRef<HTMLButtonElement, ToggleProps>(function Toggle(
-  { on, onChange, children, glyph, size = 'md', hint, hintMods, className, type = 'button', onClick, ...rest },
+  { on, onChange, children, glyph, size = 'md', tone, hint, hintMods, className, type = 'button', onClick, ...rest },
   ref,
 ) {
   return (
@@ -35,6 +39,7 @@ export const Toggle = forwardRef<HTMLButtonElement, ToggleProps>(function Toggle
       data-size={size}
       aria-pressed={on}
       data-on={on}
+      data-tone={tone === 'quiet' ? 'quiet' : undefined}
       onClick={(e) => {
         onClick?.(e);
         if (!e.defaultPrevented) onChange?.(!on);

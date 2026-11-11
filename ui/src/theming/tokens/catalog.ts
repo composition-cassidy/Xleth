@@ -523,7 +523,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
 
   // ─── Workspace: Piano roll (§3.4.14) ──────────────────────────────────
   ref('--theme-pianoroll-grid-bg', '--theme-ui-g0', 'any', 'Workspace panels', 'piano-roll'),
-  explicit('--theme-pianoroll-bar-line',         'rgba(255, 255, 255, 0.14)', 'solid', 'Workspace panels', 'piano-roll'),
+  explicit('--theme-pianoroll-bar-line',         'rgba(255, 255, 255, 0.34)', 'solid', 'Workspace panels', 'piano-roll'),
   explicit('--theme-pianoroll-beat-line',        'rgba(255, 255, 255, 0.06)', 'solid', 'Workspace panels', 'piano-roll'),
   explicit('--theme-pianoroll-subdivision-line', 'rgba(255, 255, 255, 0.04)', 'solid', 'Workspace panels', 'piano-roll'),
   ref('--theme-pianoroll-key-black-bg', '--theme-ui-g0', 'any', 'Workspace panels', 'piano-roll'),
@@ -636,7 +636,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   explicit('--theme-timeline-fade-curve-fill','rgba(0, 0, 0, 0.45)','any','Workspace panels','timeline'),
   ref('--theme-timeline-empty-region-bg', '--theme-bg-primary',   'any',   'Workspace panels', 'timeline'),
   ref('--theme-timeline-pattern-clip-bg', '--theme-accent',       'any',   'Workspace panels', 'timeline'),
-  explicit('--theme-timeline-bar-line',        'rgba(255, 255, 255, 0.26)', 'solid', 'Workspace panels', 'timeline'),
+  explicit('--theme-timeline-bar-line',        'rgba(255, 255, 255, 0.34)', 'solid', 'Workspace panels', 'timeline'),
   explicit('--theme-timeline-beat-line',       'rgba(255, 255, 255, 0.11)', 'solid', 'Workspace panels', 'timeline'),
   explicit('--theme-timeline-subdivision-line','rgba(255, 255, 255, 0.05)', 'solid', 'Workspace panels', 'timeline'),
   ref('--theme-timeline-playhead-line',   '--theme-accent',       'solid', 'Workspace panels', 'timeline'),

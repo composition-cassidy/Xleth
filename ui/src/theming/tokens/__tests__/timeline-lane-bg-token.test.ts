@@ -24,7 +24,7 @@ describe('--theme-timeline-lane-bg — Pass 5E.1 registration', () => {
   it('follows the ramp ground (g0) in the default theme', () => {
     const { values } = resolveTheme(defaultTheme as Parameters<typeof resolveTheme>[0]);
     expect(values[TOKEN]).toBe('var(--theme-ui-g0)');
-    expect(values['--theme-ui-g0']).toBe('#141414');
+    expect(values['--theme-ui-g0']).toBe('#0F0F0F');
   });
 
   it('follows the ramp ground (g0) in the light theme', () => {

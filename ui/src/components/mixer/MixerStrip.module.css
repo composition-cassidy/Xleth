@@ -16,7 +16,9 @@
     height: 100%;
     padding: 0 2px;
     border-right: 1px solid var(--ui-g4);
-    background: var(--ui-g1);
+    /* A strip body holds content, so it is a well (g0); its head is a header (g2) and its
+     * controls are g3. The meter slot inside it is one step up (Meter `well="panel"`). */
+    background: var(--ui-g0);
     color: var(--ui-ink);
     font-family: var(--ui-font);
     font-variant-numeric: tabular-nums;

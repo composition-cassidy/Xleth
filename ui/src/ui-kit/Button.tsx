@@ -7,6 +7,13 @@ import type { DataAttrs } from './valueProps';
 type Size = 'sm' | 'md' | 'lg';
 /** `primary` is the inverted ink chip (the one default action of a dialog); `danger` outlines in the error text colour. */
 type Variant = 'default' | 'ghost' | 'primary' | 'danger';
+/**
+ * How an "on" toggle reads. `chip` (default) is the inverted ink chip: state you watch (M / S / V,
+ * the active tool, loop armed). `quiet` is for housekeeping toggles that are on nearly all the time
+ * (region toggles, tempo lock): a raised g3 control with its outline and an ink glyph, so the
+ * brightest things in the chrome are not the ones that never change. DESIGN.md 3.2.
+ */
+export type OnTone = 'chip' | 'quiet';
 
 interface BaseProps extends HintProps, DataAttrs, Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'children' | 'aria-label'> {
   size?: Size;
@@ -46,11 +53,13 @@ export interface IconButtonProps extends BaseProps {
   children: ReactNode;
   /** Toggle state. When set the button is aria-pressed and, when on, the inverted ink chip. */
   pressed?: boolean;
+  /** `quiet`: an always-on housekeeping toggle (see OnTone). Only meaningful with `pressed`. */
+  tone?: OnTone;
 }
 
 /** Square icon button, hit area at least 24x24. `pressed` makes it a toggle. */
 export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(function IconButton(
-  { size = 'md', variant = 'ghost', label, pressed, hint, hintMods, className, type = 'button', children, ...rest },
+  { size = 'md', variant = 'ghost', label, pressed, tone, hint, hintMods, className, type = 'button', children, ...rest },
   ref,
 ) {
   return (
@@ -63,6 +72,7 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
       data-variant={variant}
       aria-label={label}
       aria-pressed={pressed}
+      data-tone={tone === 'quiet' ? 'quiet' : undefined}
       {...hintAttrs({ hint, hintMods })}
     >
       {children}

@@ -229,6 +229,7 @@ export default function TransportBar() {
         <IconButton
           label="Tempo lock"
           pressed={tempoLocked}
+          tone="quiet"
           onClick={() => {
             const next = !tempoLocked
             setTempoLocked(next)

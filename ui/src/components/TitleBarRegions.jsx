@@ -41,6 +41,7 @@ function RegionToggle({ id }) {
       size="sm"
       label={`Toggle ${REGION_NAMES[id]}`}
       pressed={!hidden}
+      tone="quiet"
       hint={REGION_HINTS[id]}
       hintMods={shortcut || 'No shortcut'}
       onClick={() => usePanelRegistry.getState().togglePanel(id)}
@@ -57,6 +58,7 @@ function DetailDockToggle() {
       size="sm"
       label="Toggle Detail dock"
       pressed={open}
+      tone="quiet"
       hint="Detail dock: show or hide Devices, Mixer, Piano Roll, Sampler and FX Graph"
       hintMods={`${formatCombo(resolveCombo('view.dockFocus'))} gives it the whole centre column`}
       onClick={toggleDetailDock}

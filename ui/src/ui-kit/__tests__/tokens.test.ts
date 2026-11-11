@@ -53,11 +53,11 @@ const SOLO = values['--theme-ui-solo'];
 
 describe('neutral ramp (DESIGN.md 3.1)', () => {
   it('resolves to the contract values from the Default base', () => {
-    expect(G).toEqual({ g0: '#141414', g1: '#1B1B1B', g2: '#222222', g3: '#2B2B2B', g4: '#3A3A3A' });
+    expect(G).toEqual({ g0: '#0F0F0F', g1: '#1A1A1A', g2: '#262626', g3: '#323232', g4: '#444444' });
     expect(INK).toBe('#E6E6E6');
     expect(INK_2).toBe('#B4B4B4');
-    expect(INK_3).toBe('#929292');
-    expect(BOUNDARY).toBe('#747474');
+    expect(INK_3).toBe('#9A9A9A');
+    expect(BOUNDARY).toBe('#7C7C7C');
   });
 
   it('carries no hue: every ramp step is an exact grey', () => {

@@ -243,7 +243,7 @@ export function deriveTheme(
   // Steps and semantic values come from the one ramp table (neutralRamp.ts). g0/g1/
   // ink are the base tokens themselves; the rest are signed lightness steps from
   // bg-surface (g2..g4) and from text (ink-2, ink-3, boundary). On the dark ramp
-  // the Default base (#141414 / #1B1B1B / #E6E6E6) reproduces the contract values
+  // the Default base (#0F0F0F / #1A1A1A / #E6E6E6) reproduces the contract values
   // exactly. Hue and saturation are inherited, so a neutral base yields a neutral
   // ramp.
   //

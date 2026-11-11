@@ -63,22 +63,24 @@ export interface RampSpec {
 }
 
 export const RAMPS: Readonly<Record<RampName, RampSpec>> = {
-  // Contract values from DESIGN.md 3.1: g0 #141414, g1 #1B1B1B, g2 #222222, g3 #2B2B2B,
-  // g4 #3A3A3A, ink #E6E6E6, ink-2 #B4B4B4, ink-3 #929292, boundary #747474.
+  // Contract values from DESIGN.md 3.1 (round 3 widened the row from a 23-step to a 35-step
+  // spread so regions read by fill): g0 #0F0F0F, g1 #1A1A1A, g2 #262626, g3 #323232,
+  // g4 #444444, ink #E6E6E6, ink-2 #B4B4B4, ink-3 #9A9A9A, boundary #7C7C7C. ink-3 and
+  // boundary rose with g3 (4.56 and 3.07 on it); rec-text rose for the same reason.
   dark: {
     name: 'dark',
     polarity: 'dark',
     base: {
-      '--theme-bg-primary': '#141414',
-      '--theme-bg-surface': '#1B1B1B',
+      '--theme-bg-primary': '#0F0F0F',
+      '--theme-bg-surface': '#1A1A1A',
       '--theme-text': '#E6E6E6',
       '--theme-accent': '#33CED6',
       '--theme-danger': '#FF4757',
     },
-    steps: { g2: 2.745, g3: 6.275, g4: 12.157, ink2: -19.608, ink3: -32.941, boundary: -44.706 },
+    steps: { g2: 4.706, g3: 9.412, g4: 16.471, ink2: -19.608, ink3: -29.804, boundary: -41.569 },
     semantic: {
       rec: '#E5484D',
-      recText: '#F06A6E',
+      recText: '#F67073',
       solo: '#E8B53A',
       signalAudio: '#6FA7EE',
       signalEvents: '#69BA7C',

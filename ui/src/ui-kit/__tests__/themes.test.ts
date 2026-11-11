@@ -270,6 +270,25 @@ describe('high contrast: grid lines survive the low-contrast check', () => {
   }
 });
 
+// Round 3 (DESIGN.md 3.6, 12): the bar line is a non-text boundary of the grid, so it clears
+// 3:1 on the lane ground in dark and light too, and stays the strongest of the three tiers.
+describe('bar lines reach 3:1 on the lane ground in every theme', () => {
+  for (const slug of SLUGS) {
+    const { values } = resolved(slug);
+    const bed = hex(slug, '--theme-ui-g0');
+    for (const prefix of ['timeline', 'pianoroll']) {
+      it(`${slug} ${prefix}: bar >= 3:1 over g0, and bar > beat > step`, () => {
+        const bar = contrastRatio(composite(values[`--theme-${prefix}-bar-line`], bed), bed);
+        const beat = contrastRatio(composite(values[`--theme-${prefix}-beat-line`], bed), bed);
+        const step = contrastRatio(composite(values[`--theme-${prefix}-subdivision-line`], bed), bed);
+        expect(bar, `${slug} ${prefix} bar line`).toBeGreaterThanOrEqual(3);
+        expect(bar).toBeGreaterThan(beat);
+        expect(beat).toBeGreaterThan(step);
+      });
+    }
+  }
+});
+
 describe('chromeTint', () => {
   it('measures exact greys as chroma 0 and a blue-grey as tinted', () => {
     expect(chromaOf('#1B1B1B')).toBeLessThan(0.001);

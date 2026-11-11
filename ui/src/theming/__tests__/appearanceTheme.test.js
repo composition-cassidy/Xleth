@@ -118,16 +118,16 @@ describe('appearance brightness — text stays legible', () => {
     // only ever land that close to an exact target. Measured, not padded to
     // make this pass — anything larger would hide a real regression.
     const QUANTIZATION_EPSILON = 0.1;
-    // The promise is the neutral ramp's own ink-2 / ink-3 against its panel (g1 #1B1B1B).
+    // The promise is the neutral ramp's own ink-2 / ink-3 against its panel (g1 #1A1A1A).
     // (Phase 7: it is no longer read back from this builder's own 0% output, because the
     // tiers are now solved against the least favourable surface and carry headroom there.)
     const SHIPPED_ANCHOR = {
       '--theme-text-muted': '#B4B4B4',
-      '--theme-text-subtle': '#929292',
-      '--theme-text-placeholder': '#929292',
+      '--theme-text-subtle': '#9A9A9A',
+      '--theme-text-placeholder': '#9A9A9A',
     };
     for (const tier of ['--theme-text-muted', '--theme-text-subtle', '--theme-text-placeholder']) {
-      const promised = contrast(SHIPPED_ANCHOR[tier], '#1B1B1B');
+      const promised = contrast(SHIPPED_ANCHOR[tier], '#1A1A1A');
       for (const d of STEPS) {
         const t = tokensAt(d);
         const bg = t['--theme-bg-surface'];
@@ -175,14 +175,14 @@ describe('appearance brightness — endpoints match the shipped palette', () => 
   it('reproduces the neutral ramp anchors at 0%', () => {
     const t = tokensAt(0);
     // Surfaces are an exact linear identity at darkness=0, and exact greys.
-    expect(t['--theme-bg-primary']).toBe('#141414');
-    expect(t['--theme-bg-surface']).toBe('#1B1B1B');
-    expect(t['--theme-bg-inset'].toUpperCase()).toBe('#141414');
+    expect(t['--theme-bg-primary']).toBe('#0F0F0F');
+    expect(t['--theme-bg-surface']).toBe('#1A1A1A');
+    expect(t['--theme-bg-inset'].toUpperCase()).toBe('#0F0F0F');
     // Text is solved from a luminance target, so allow 8-bit rounding drift.
     for (const [tier, want] of [
       ['--theme-text', '#E6E6E6'],
       ['--theme-text-muted', '#B4B4B4'],
-      ['--theme-text-subtle', '#929292'],
+      ['--theme-text-subtle', '#9A9A9A'],
     ]) {
       const got = hexToRgb(t[tier]);
       const expected = hexToRgb(want);

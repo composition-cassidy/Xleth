@@ -230,14 +230,14 @@ function lightnessForLuminance(h, chroma, targetLum) {
 const TEXT_ANCHORS = {
   '--theme-text': RAMPS.dark.base['--theme-text'],              // ink
   '--theme-text-muted': '#B4B4B4',                              // ink-2
-  '--theme-text-subtle': '#929292',                             // ink-3
-  '--theme-text-placeholder': '#929292',                        // ink-3
+  '--theme-text-subtle': '#9A9A9A',                             // ink-3
+  '--theme-text-placeholder': '#9A9A9A',                        // ink-3
 };
 
 // --theme-border-subtle is the ramp's g4 divider: a fixed lightness step off the
 // surface, flipping direction with the theme's polarity so it reads as a recess at
 // both ends instead of clamping to black.
-const BORDER_SUBTLE_ANCHOR = '#3A3A3A';
+const BORDER_SUBTLE_ANCHOR = '#444444';
 
 // Control outlines (ui-boundary) must clear 3:1 on EVERY surface step, not just the
 // panel; solved against the least favourable one with a little headroom.

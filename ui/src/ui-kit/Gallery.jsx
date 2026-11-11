@@ -268,6 +268,7 @@ export default function Gallery() {
           <IconButton label="Play"><Play /></IconButton>
           <IconButton label="Stop" data-state="hover"><Square /></IconButton>
           <IconButton label="Record" pressed><Mic /></IconButton>
+          <IconButton label="Region shown (quiet on)" pressed tone="quiet"><Settings /></IconButton>
           <IconButton label="Settings" data-state="focus"><Settings /></IconButton>
           <IconButton label="Close" disabled><X /></IconButton>
         </div></Spec>

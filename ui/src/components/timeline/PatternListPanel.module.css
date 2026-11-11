@@ -1,4 +1,4 @@
-/* The Patterns column (DESIGN.md 22): 24px list rows on g1. A pattern's identity is the
+/* The Patterns column (DESIGN.md 22): 24px list rows in a g0 well under a g2 header. A pattern's identity is the
  * 3px edge stripe; its length is in steps, with the unit. The pattern open in the
  * Piano Roll is the selected row: a 1px --ui-select outline, never fill alone. */
 @layer kit {
@@ -10,7 +10,7 @@
     width: 136px;
     overflow: hidden;
     border-right: 1px solid var(--ui-g4);
-    background: var(--ui-g1);
+    background: var(--ui-g0);
     color: var(--ui-ink);
     font-family: var(--ui-font);
     font-size: var(--type-12);

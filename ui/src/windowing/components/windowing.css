@@ -384,7 +384,7 @@
   overflow: visible;
   border: 0;
   border-right: 1px solid var(--ui-g4);
-  background: var(--ui-g1);
+  background: var(--ui-g0);
   color: var(--ui-ink);
 }
 
@@ -413,7 +413,7 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  background: var(--ui-g1);
+  background: var(--ui-g0);
 }
 
 @media (prefers-reduced-motion: reduce) {

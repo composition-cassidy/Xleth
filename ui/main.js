@@ -389,7 +389,7 @@ function createWindow() {
     icon: path.join(__dirname, 'assets', 'icon.ico'),
     // Opaque (Phase 7): the workspace backdrop modes needed a transparent window; with them
     // gone the window is a plain one on the neutral ground (--theme-ui-g0 of the default theme).
-    backgroundColor: '#141414',
+    backgroundColor: '#0F0F0F',
     frame: false,
     show: false,
     transparent: false,
