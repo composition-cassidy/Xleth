@@ -12,6 +12,7 @@ import MasterStrip from './MasterStrip.jsx'
 import FxChainMenuLayer from './FxChainMenuLayer.jsx'
 import MasterLoudnessMeter, { pollMasterLoudness } from '../MasterLoudnessMeter.jsx'
 import { buildMixerFolderLayout } from './mixerFolderLayout.js'
+import { insertRowsFor, longestInsertList } from './mixerMath.js'
 import RoutingBand from './RoutingBand.jsx'
 import useMixerIdentity from './useMixerIdentity.js'
 import useMixerUiStore, { STRIP_WIDTHS } from './mixerUiStore.js'
@@ -20,13 +21,6 @@ import strip from './MixerStrip.module.css'
 
 const ADD_TRACK_HINT = 'Adds an empty clip track to the project'
 
-/**
- * A strip's fixed rows with five insert rows and a 64px fader come to 316px. Under that (the
- * height left for strips: the panel minus the scroller's bar) a strip shows three insert
- * rows and lets its fader go down to 48px, which fits the 320px dock of a 1366x768 window.
- */
-export const FULL_STRIP_H = 316
-export const insertRowsForHeight = (stripAreaH) => (stripAreaH > 0 && stripAreaH < FULL_STRIP_H ? 3 : 5)
 
 /**
  * What every strip shares, printed once at the left of the scroller: the dB numerals of the
@@ -97,7 +91,8 @@ export default function MixerPanel() {
   const stripW = STRIP_WIDTHS[stripMode]
   const panelRef = useRef(null)
   const scrollRef = useRef(null)
-  const [insertRowCount, setInsertRowCount] = useState(5)
+  // The height left for strips (the panel minus the scroller's bar), measured.
+  const [stripAreaH, setStripAreaH] = useState(0)
   // Height of the strip scroller's horizontal bar, measured: the fixed columns (gutter,
   // master) leave exactly this much at the bottom so their rows line up with the strips'.
   const [barH, setBarH] = useState(0)
@@ -205,6 +200,16 @@ export default function MixerPanel() {
 
   const handleAddTrack = useCallback(() => addTrackFromMixer(trackOrder.length), [trackOrder.length])
 
+  // The insert area is one height for the whole mixer, so every fader is the same length: as
+  // many rows as the longest chain on any strip (or the Master) needs, and no more. A number,
+  // so this only re-renders when the longest chain changes, not on every chain edit.
+  const trackKeys = useMemo(() => orderedIds.map(String), [orderedIds])
+  const longestChain = useEffectChainStore((s) => Math.max(
+    longestInsertList(s.chains, s.fxModes, trackKeys),
+    longestInsertList(s.chains, s.fxModes, ['master']),
+  ))
+  const { rows: insertRowCount, short: shortDock } = insertRowsFor(longestChain, stripAreaH)
+
   // One observer on the panel: a short dock shows three insert rows instead of five.
   useEffect(() => {
     const el = panelRef.current
@@ -213,7 +218,7 @@ export default function MixerPanel() {
       const scroller = scrollRef.current
       const bar = scroller ? Math.max(0, scroller.offsetHeight - scroller.clientHeight) : 0
       setBarH(bar)
-      setInsertRowCount(insertRowsForHeight(el.clientHeight - bar))
+      setStripAreaH(el.clientHeight - bar)
     }
     measure()
     const ro = new ResizeObserver(measure)
@@ -229,7 +234,8 @@ export default function MixerPanel() {
       className={styles.panel}
       data-testid="mixer-panel"
       data-strip-width={stripMode}
-      data-short={insertRowCount < 5 ? 'true' : undefined}
+      data-short={shortDock ? 'true' : undefined}
+      data-insert-rows={insertRowCount}
       style={{ '--mx-ins-rows': insertRowCount, '--mx-bar-h': `${barH}px` }}
     >
       {orderedIds.length > 0 ? (

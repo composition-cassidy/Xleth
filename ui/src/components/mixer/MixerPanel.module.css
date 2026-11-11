@@ -73,8 +73,8 @@
     background: var(--ui-g0);
   }
 
-  /* A short dock (data-short, MixerPanel): three insert rows and a 48px fader floor, so the
-   * strips still fit a 320px dock without scrolling vertically. */
+  /* A short dock (data-short, MixerPanel): at most three insert rows and a 48px fader floor,
+   * so the strips still fit a 320px dock without scrolling vertically. */
   .panel[data-short="true"] {
     --mx-fader-floor: 48px;
   }

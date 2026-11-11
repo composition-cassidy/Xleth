@@ -59,6 +59,44 @@ export function insertLabel(chain, fxMode) {
 /** Volume fields and faders print an explicit plus on positive gain (+3.0 dB beside −12.9 dB). */
 export const GAIN_FORMAT = Object.freeze({ signed: true })
 
+// A strip's rows other than its insert list and its fader, in px (MixerStrip.module.css:
+// head 35, M/S/V 24, knobs 36, volume 24, cable 20, output 26, seven 1px gaps).
+export const STRIP_FIXED_H = 172
+export const INSERT_ROW_H = 16
+export const FADER_MIN_H = 64
+/** On a dock too short for three rows above a 64px fader, the fader may go down to this. */
+export const FADER_SHORT_MIN_H = 48
+export const INSERT_ROWS_MAX = 10
+
+/** The longest insert list any of these chains needs: its length, or one row for an FX-graph track. */
+export function longestInsertList(chains, fxModes, keys) {
+  let longest = 0
+  for (const key of keys) {
+    const n = fxModes?.[key] === 'graph' ? 1 : (chains?.[key]?.length ?? 0)
+    if (n > longest) longest = n
+  }
+  return longest
+}
+
+/**
+ * How many insert rows EVERY strip shows (ui/DESIGN.md 10). One number for the whole mixer,
+ * so every fader has the same length: the insert area is only as tall as the longest chain in
+ * the project needs, and the faders get the rest. It is never less than one row (an empty
+ * strip still has a slot to open its chain from) and never more than fits above the fader
+ * floor or than ten. `short` says the fader floor had to drop to fit even that.
+ */
+export function insertRowsFor(longest, stripAreaH) {
+  const want = Math.max(1, Math.min(INSERT_ROWS_MAX, Math.floor(longest) || 0))
+  if (!(stripAreaH > 0)) return { rows: Math.min(want, 5), short: false }
+  const fit = (faderMin) => Math.floor((stripAreaH - STRIP_FIXED_H - faderMin) / INSERT_ROW_H)
+  const full = fit(FADER_MIN_H)
+  if (full >= 3 || full >= want) return { rows: Math.max(1, Math.min(want, full)), short: false }
+  // A short dock: up to three rows over the shorter fader floor.
+  const cap = Math.max(1, Math.min(3, fit(FADER_SHORT_MIN_H)))
+  const rows = Math.min(want, cap)
+  return { rows, short: STRIP_FIXED_H + rows * INSERT_ROW_H + FADER_MIN_H > stripAreaH }
+}
+
 /**
  * What a strip's insert list shows in `rows` rows (ui/DESIGN.md 10).
  *

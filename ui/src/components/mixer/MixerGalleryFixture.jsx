@@ -29,6 +29,8 @@ const NAMES = [
   'Crowd', 'Bus drums', 'Stab', 'Sub', 'Riser', 'Vox', 'Vox double', 'FX tail',
 ]
 const IDS = NAMES.map((_, i) => i + 1)
+// The longest chain in the mock is seven devices, shown in five rows so one strip reads "+3 more".
+const GALLERY_ROWS = 5
 
 const MOCK_LOUDNESS = {
   enabled: true, momentary: -13.2, shortTerm: -14.6, integrated: -14.1, momentaryMax: -9, shortTermMax: -12,
@@ -130,7 +132,7 @@ export default function MixerGalleryFixture({ stripMode = 'compact' }) {
   }, [])
 
   return (
-    <div className={panel.panel} style={{ width: 1660, height: 380, flex: 'none' }} data-testid="mixer-gallery-fixture">
+    <div className={panel.panel} style={{ width: 1660, height: 380, flex: 'none', '--mx-ins-rows': GALLERY_ROWS }} data-testid="mixer-gallery-fixture">
       <div className={panel.gutterDock}>
         <MixerGutter stripMode={stripMode} onStripMode={() => {}} />
       </div>

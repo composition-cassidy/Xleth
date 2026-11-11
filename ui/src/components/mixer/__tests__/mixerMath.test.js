@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { formatValue } from '../../../ui-kit'
-import { GAIN_FORMAT, dbToGain, formatPan, formatWidth, gainToDb, insertLabel, insertRows, parsePan, parseWidth } from '../mixerMath.js'
+import {
+  FADER_MIN_H, GAIN_FORMAT, INSERT_ROW_H, STRIP_FIXED_H, dbToGain, formatPan, formatWidth, gainToDb, insertLabel, insertRows,
+  insertRowsFor, longestInsertList, parsePan, parseWidth,
+} from '../mixerMath.js'
 
 describe('mixerMath', () => {
   it('round-trips gain and dB, and treats the floor as silence', () => {
@@ -52,6 +55,55 @@ describe('mixerMath', () => {
     expect(formatValue(-12.9, 'dB', GAIN_FORMAT)).toBe('\u221212.9\u2009dB')
     expect(formatValue(0, 'dB', GAIN_FORMAT)).toBe('0.0\u2009dB')
     expect(formatValue(-Infinity, 'dB', GAIN_FORMAT)).toBe('\u2212inf\u2009dB')
+  })
+
+  // The insert area is one height for the whole mixer (every fader the same length), and only
+  // as tall as the longest chain needs.
+  describe('insertRowsFor', () => {
+    const chains = { 1: [{}, {}], 2: [{}, {}, {}, {}], 3: [], master: [{}] }
+
+    it('finds the longest list among the strips; an FX-graph track counts as one row', () => {
+      expect(longestInsertList(chains, {}, ['1', '2', '3'])).toBe(4)
+      expect(longestInsertList(chains, {}, ['1', '3'])).toBe(2)
+      expect(longestInsertList(chains, { 2: 'graph' }, ['2', '3'])).toBe(1)
+      expect(longestInsertList(chains, {}, ['9'])).toBe(0)
+      expect(longestInsertList({}, {}, [])).toBe(0)
+    })
+
+    it('is the longest chain, never less than one row, so short chains leave the faders the space', () => {
+      const tall = 400
+      expect(insertRowsFor(0, tall)).toEqual({ rows: 1, short: false })
+      expect(insertRowsFor(2, tall)).toEqual({ rows: 2, short: false })
+      expect(insertRowsFor(5, tall)).toEqual({ rows: 5, short: false })
+    })
+
+    it('grows past five for a longer chain while a 64px fader still fits, up to ten', () => {
+      // 360px for strips (a 409px dock in the app): 172 fixed + 64 fader leaves 124px = 7 rows.
+      expect(insertRowsFor(6, 360).rows).toBe(6)
+      expect(insertRowsFor(9, 360).rows).toBe(7)
+      expect(insertRowsFor(9, 600).rows).toBe(9)
+      expect(insertRowsFor(30, 2000).rows).toBe(10)
+      for (const h of [300, 360, 420, 600]) {
+        for (const longest of [1, 4, 8, 12]) {
+          const { rows, short } = insertRowsFor(longest, h)
+          if (!short) expect(STRIP_FIXED_H + rows * INSERT_ROW_H + FADER_MIN_H).toBeLessThanOrEqual(h)
+        }
+      }
+    })
+
+    it('on a short dock it shows at most three rows over the shorter fader floor', () => {
+      // 271px for strips (a 320px dock at 1366x768).
+      expect(insertRowsFor(6, 271)).toEqual({ rows: 3, short: true })
+      expect(insertRowsFor(2, 271)).toEqual({ rows: 2, short: false })
+      expect(insertRowsFor(1, 271)).toEqual({ rows: 1, short: false })
+      // Far too short for anything: still one row.
+      expect(insertRowsFor(6, 200).rows).toBe(1)
+    })
+
+    it('before the panel is measured it shows the chain up to five rows', () => {
+      expect(insertRowsFor(3, 0)).toEqual({ rows: 3, short: false })
+      expect(insertRowsFor(9, 0)).toEqual({ rows: 5, short: false })
+    })
   })
 
   describe('insertRows', () => {

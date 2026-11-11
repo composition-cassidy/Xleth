@@ -610,8 +610,12 @@ kept), one eight-row grid, top to bottom:
 
 1. **Head** (g2): the 3 px identity stripe (the same colour as lane, device and layer), the **number on
    its own row above the name**, so a 10-character name is whole at 72 px (11 px, weight 500).
-2. **Insert names** (`InsertList`): five 16 px rows naming the chain's devices in signal order, through the
-   device title bar's own name map (`deviceName`). A longer chain keeps four names and ends in **"+N more"**;
+2. **Insert names** (`InsertList`): 16 px rows naming the chain's devices in signal order, through the
+   device title bar's own name map (`deviceName`). **How many rows is one number for the whole mixer: the
+   longest chain on any strip or the Master** (`insertRowsFor`), never less than one, never more than ten or
+   than fits above a 64 px fader. So the insert area is no taller than the project needs, every fader is the
+   same length, and adding a sixth effect to one track grows the list and shortens every fader together. A
+   chain longer than the rows that fit keeps all but the last and ends in **"+N more"**;
    a track whose effects live in its FX Graph says "FX graph"; a bypassed insert is dimmer **and** struck
    through; rows past the end are empty slots (g1 on the strip's g0). The list is **one control**, a listbox
    far over the 24 px hit floor: the row under the pointer, or the arrow-key row, is the device it opens in
@@ -625,9 +629,13 @@ kept), one eight-row grid, top to bottom:
    kept, so the bars never move); peak hold as before.
 7. Routing cable row. 8. Output Select.
 
-Compact is 72, not the 68 it used to be: three 24 px toggles need 72. A short dock (under 316 px for the
-strips) shows three insert rows and lets the fader go down to 48 px, so a 320 px dock at 1366x768 still does not
-scroll vertically.
+Compact is 72, not the 68 it used to be: three 24 px toggles need 72. A dock too short for three rows above
+a 64 px fader shows at most three and lets the fader go down to 48 px, so a 320 px dock at 1366x768 still does
+not scroll vertically. At the 409 px dock of a 1080p window the list can reach seven rows.
+
+The kit Meter's canvas has `height: 0` and grows by flex: a canvas's natural height is its backing store (the
+height it was last painted at), which would otherwise stop a fader row from shrinking again once it had been
+tall.
 
 **Muted** dims every row but the head and the M/S/V row (`--ui-mute-opacity`) and shows a mute glyph;
 **selected** is a 1px `--ui-select` outline **plus the head one ramp step lighter** (g3). M/S/V are real

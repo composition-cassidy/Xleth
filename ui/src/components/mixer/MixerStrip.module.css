@@ -6,8 +6,9 @@
  * information is printed once, in the gutter (MixerPanel): the dB numerals and the words
  * Pan and Width. Flat: no shadow, no glow, no gradient. */
 @layer kit {
-  /* The row heights, set once for strips, master and gutter alike (MixerPanel's .panel
-   * overrides --mx-ins-rows on a short dock). */
+  /* The row heights, set once for strips, master and gutter alike. MixerPanel sets
+   * --mx-ins-rows for the whole mixer: the longest chain's length, so the insert area is no
+   * taller than it needs to be and every fader is the same length. */
   .strip,
   .gutter {
     --mx-head-h: 35px;                               /* 3px stripe + number row 14 + name row 18 */
@@ -231,7 +232,7 @@
   }
 
   /* The row's floor is --mx-fader-min; the kit meter's own 64px minimum must not raise it. */
-  .faderRow > * {
+  .strip > .faderRow > * {
     min-height: 0;
   }
 

@@ -180,6 +180,12 @@ describe('MixerPanel selection and layout', () => {
     expect(gutter.textContent).toContain('dB')
     expect(scroll.textContent).not.toContain('Pan')
     expect(gutter.querySelector('[role="img"]').getAttribute('aria-label')).toBe('Level scale, 0 to −60 dB')
+    // No chain on any strip: the insert area is one row for the whole mixer, not five empty ones.
+    expect(panel.getAttribute('data-insert-rows')).toBe('1')
+    expect(panel.style.getPropertyValue('--mx-ins-rows')).toBe('1')
+    for (const list of panel.querySelectorAll('[data-testid="mixer-inserts"]')) {
+      expect(list.querySelectorAll('[data-insert-row]')).toHaveLength(1)
+    }
     await act(async () => root.unmount())
   })
 

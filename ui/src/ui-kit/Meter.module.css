@@ -12,10 +12,14 @@
     min-height: 64px;
   }
 
+  /* height: 0 with flex-grow: the canvas takes the space it is given and never asks for any.
+   * A canvas's natural height is its backing store (the height it was last painted at), so
+   * without this a meter that had once been tall could stop its container from shrinking. */
   .canvas {
-    flex: 1;
+    flex: 1 1 0;
     display: block;
     width: var(--meter-w);
+    height: 0;
     min-height: 0;
   }
 
