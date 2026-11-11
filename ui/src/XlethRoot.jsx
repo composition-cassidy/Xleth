@@ -579,6 +579,9 @@ function XlethRootInner() {
     setCurrentPatternIdByTrack,
     activeCenterTab,
     availablePatterns,
+    // Every pattern in the project, by id: what the Piano Roll and Sampler tabs fall back on
+    // when nothing was chosen for them (windowing/panels/dockTabFallback.ts).
+    allPatterns,
     onSwitchPattern: handleSwitchPattern,
     onNewPattern: handleNewPatternFromPianoRoll,
     onOpenMidiImport,
@@ -590,6 +593,7 @@ function XlethRootInner() {
     currentPatternIdByTrack,
     activeCenterTab,
     availablePatterns,
+    allPatterns,
     handleSwitchPattern,
     handleNewPatternFromPianoRoll,
     onOpenMidiImport,

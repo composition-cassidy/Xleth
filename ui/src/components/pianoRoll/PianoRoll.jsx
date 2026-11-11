@@ -123,6 +123,9 @@ export default function PianoRoll({
   patternId, onClose,
   onDetach, onDock, floating = false,
   availablePatterns, currentPatternId, onSwitchPattern, onNewPattern,
+  // False only when the project is known to hold no pattern at all: the one case the empty
+  // state is left to say so. Otherwise the panel that hosts this opens one (PianoRollPanel).
+  projectHasPatterns = true,
 }) {
   const { isVisible } = usePanelVisibility()
   const { showToast } = useToast()
@@ -822,7 +825,9 @@ export default function PianoRoll({
       {!hasPattern ? (
         <div className={styles.empty}>
           <EmptyState
-            message="Select a pattern: double-click one in the Patterns list or a pattern block in the arrangement."
+            message={projectHasPatterns
+              ? 'Select a pattern: double-click one in the Patterns list or a pattern block in the arrangement.'
+              : 'This project has no patterns yet. A pattern holds the notes a pattern track plays.'}
             actionLabel={onNewPattern ? 'New pattern' : undefined}
             onAction={onNewPattern}
           />

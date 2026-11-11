@@ -6,6 +6,11 @@ let didInit = false
 
 const usePianoRollStore = create((set, get) => ({
   patternId: null,
+  // The last pattern that was open in the Piano Roll this session. Kept when the Piano Roll
+  // is closed (patternId goes null), so reopening its tab shows that pattern again instead
+  // of an empty dock (windowing/panels/dockTabFallback.ts). Session only: pattern ids
+  // belong to a project, so this is never persisted.
+  lastPatternId: null,
   activeCenterTab: 'timeline', // 'timeline' | 'piano-roll'
   detached: false,
 
@@ -33,7 +38,7 @@ const usePianoRollStore = create((set, get) => ({
       const nextPanel = usePanelRegistry.getState().panels.pianoRoll
       const floating = !nextPanel.hidden && nextPanel.mode === 'floating'
 
-      set({ patternId: pid, detached: floating })
+      set(pid != null ? { patternId: pid, lastPatternId: pid, detached: floating } : { patternId: pid, detached: floating })
       // When the Piano Roll is floating, update its pattern but keep the
       // main window's tab on Timeline — don't yank the user away.
       if (pid != null) set({ activeCenterTab: floating ? 'timeline' : 'piano-roll' })
@@ -61,7 +66,7 @@ const usePianoRollStore = create((set, get) => ({
     )
   },
 
-  setPatternId: (id) => set({ patternId: id }),
+  setPatternId: (id) => set(id != null ? { patternId: id, lastPatternId: id } : { patternId: id }),
   setActiveCenterTab: (tab) => set({ activeCenterTab: tab }),
   setDetached: (v) => set({ detached: v }),
 }))

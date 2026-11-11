@@ -69,4 +69,18 @@ describe('Piano Roll with no pattern', () => {
     expect(onNewPattern).toHaveBeenCalled()
     warn.mockRestore()
   })
+
+  // Round 3: the host panel opens a pattern whenever the project has one, so this state is
+  // for a project with none, and it says so.
+  it('says the project has no patterns when that is why nothing is open', async () => {
+    const onNewPattern = vi.fn()
+    await act(async () => {
+      root.render(<PianoRoll patternId={null} availablePatterns={[]} projectHasPatterns={false} onNewPattern={onNewPattern} />)
+      await Promise.resolve()
+    })
+    expect(container.textContent).toContain('This project has no patterns yet')
+    expect(container.textContent).not.toContain('Select a pattern')
+    expect(Array.from(container.querySelectorAll('button')).some((b) => b.textContent === 'New pattern')).toBe(true)
+    expect(timeline.getPattern).not.toHaveBeenCalled()
+  })
 })

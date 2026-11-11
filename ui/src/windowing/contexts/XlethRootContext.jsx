@@ -12,6 +12,7 @@ const defaultValue = {
   setCurrentPatternIdByTrack: NOOP,
   activeCenterTab: 'timeline',
   availablePatterns: [],
+  allPatterns: {},
   onSwitchPattern: null,
   onNewPattern: NOOP,
   onOpenMidiImport: NOOP,

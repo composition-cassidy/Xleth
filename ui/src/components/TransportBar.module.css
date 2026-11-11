@@ -43,7 +43,8 @@
     background: var(--ui-g0);
     color: var(--ui-ink);
     font-family: var(--ui-font-mono);
-    font-size: var(--type-13);
+    /* 16px (round 3): where you are in the song is the readout worth looking at in the bar. */
+    font-size: var(--type-16);
     font-weight: var(--weight-medium);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;

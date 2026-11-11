@@ -373,7 +373,9 @@ main renderer has no start-screen surface to host one (Welcome is its own window
 - **Weights:** 400 / 500 / 600. **Sentence case.** No letter-spaced uppercase labels.
 - **Numbers:** every value uses `font-variant-numeric: tabular-nums`. Timecode and bars|beats
   readouts use **IBM Plex Mono** 400/500 via `@fontsource/ibm-plex-mono` (imported in
-  `main.jsx`; `--ui-font-mono`). Legacy `app.css` already referenced the face, so timecode
+  `main.jsx`; `--ui-font-mono`). The top bar's time and bars.beats readouts are `--type-16` (round 3):
+  where you are in the song is the one readout in the bar worth reading from across the desk. It is the only
+  use of 16 outside a panel or dialog title. Legacy `app.css` already referenced the face, so timecode
   now renders in it instead of falling back to Consolas.
 
 ## 5. Spacing, size, radius
@@ -859,6 +861,12 @@ Selects) makes a route without dragging. Holding a source drag over the Main or 
 Lab's, removed in Phase 8). The Auto button's hint carries the result fields the engine returns (periods, spans kept of
 those considered, pitch drift, crossfade); telemetry (apply, 30 s nudge) is unchanged.
 
+**The tab never dead-ends (round 3).** Opened with no region handed to it (`openPanel('sampler')` with no props: the
+dock tab clicked cold), the Sampler shows **the open pattern's sampler, else the last open pattern's, else the first
+pattern's that plays a sample** (`fallbackSamplerRegionId`). A region handed over by whoever opened it (Sampler settings,
+a sample's own menu) still wins. Derived from renderer state; no engine call decides it. The empty state is left for a
+project where no pattern plays a sample.
+
 **Audit.** `tests/ui-audit/phases/p41-sampler-default-dock.mjs` shoots Main (31), Playback (32) and the four modulation
 sources (36-39) at the default dock height and reports any vertical scroller; p40 still shoots 30 / 35, p200 shoots 203.
 
@@ -911,6 +919,13 @@ one note with any tool; there is no right-drag sweep (no batch remove exists, so
 
 **No pattern.** `getPattern` is only called for a non-negative integer id still in the pattern list; otherwise the panel
 shows the kit EmptyState ("Select a pattern: …", New pattern).
+
+**The tab never dead-ends (round 3).** Shown with no pattern open, or with one that no longer exists, the Piano Roll
+opens **the pattern last open in it this session, else the first** (`windowing/panels/dockTabFallback.ts`,
+`PianoRollPanel`). A pattern's notes are only edited here, so the last one open is the most recently edited one. It sets
+the id in the renderer store and nothing else: no `open-piano-roll` event, so no dock tab is switched and no focus
+moves; and it does nothing while the panel is hidden, so closing the Piano Roll still closes it. The empty state is left
+for a project with no patterns, and says so ("This project has no patterns yet").
 
 **Audit.** `p30-pianoroll` shoots 20 to 23 and 24 (Sample view); p01 shoots 04 (no pattern open), p200 shoots 201.
 
@@ -1425,3 +1440,107 @@ Still short, for a follow-up (not fixed in step 21): the Inspector's flip previe
 ### 24.5 Running the audit
 
 `node tests/ui-audit/copy-project.mjs <project> <tmp>`, `node tests/ui-audit/mk-missing.mjs`, then `node tests/ui-audit/capture.mjs <copy>`: one launch runs every phase in the order the chain header in `capture.mjs` explains (including the 1366x768 pass), then builds `INVENTORY.md` and `metrics.json`. `node tests/ui-audit/compare.mjs` writes `COMPARE.md` against `out/baseline-2026-11-07/metrics.json`. The original project is never opened. The stress test (2,000 notes, 32 metered tracks, scrolling while playing) and the engine-dependent checks are manual: see `out/MANUAL-SHOTS.md`.
+
+## 26. Round 3: "FL-home" (2026-11-11)
+
+Rounds 1 and 2 gave Xleth a skeleton that section 1 itself calls "structurally close to Live". Round 3 keeps Xleth's
+own look (square, neutral, the inverted chip, the hard offset shadow) and changes the skeleton's habits to the ones an
+FL Studio user expects, without lifting anything of FL's: the arrangement owns the screen, content sits in dark wells
+under lighter chrome, strips and blocks show their content instead of labels, shared information is printed once, no
+window opens onto nothing. The brief is `xleth-ui-reference/SPEC.md` (amendments A1 to A7); the audit of it against
+the code is `ui/docs-round3/RECONCILE.md`.
+
+### 26.1 What changed and where each rule lives
+
+| Change | Rule lives in |
+|---|---|
+| A1. Dark ramp widened from a 23-step to a 35-step spread; ink-3, boundary, rec-text and the cool accent re-solved for the new g3; surface roles (g0 content, g1 chrome, g2 headers, g3 controls) | 3.1, 3.2, 3.5, 3.6 |
+| A1. Bar lines clear 3:1 on the lane ground in dark and light | 3.6, 12 |
+| A6. Quiet on-state for the region toggles and the tempo lock | 3.2, 8.1 |
+| A2. Compose layout as the default; the stacked side region; return-to-dock; arrangement chrome 95 to 83 | 8, 8.1 |
+| A3. Mixer: named inserts, one dB gutter, no repeated words, signed gain, Master on the same grid, loudness rail, audio-hue meters | 6, 10 |
+| A3 follow-up. The insert area is as tall as the longest chain, one number for the whole mixer | 10 |
+| A4. Track header gives the name the row; pattern blocks without a hatch; neutral lane tint; bar-group shading; ruler landmarks; Patterns rows with a note preview; zoom in bars | 22 |
+| A5. Piano Roll and Sampler tabs never dead-end | 14, 15 |
+| A7. Time and bars.beats at 16px mono | 4, 8.1 |
+
+### 26.2 Measured against the brief's targets
+
+Measured in the render harness (the real components over a fake engine: 16 to 24 tracks, 1920x1080, 100 %), not in the
+running app. "Before" is the brief's own measurement of the real app.
+
+| Thing | Before | Target | Now |
+|---|---|---|---|
+| Arrangement lanes, 1080px window, dock open | 8 rows | 14 | **14** (lane viewport 511px) |
+| Arrangement lanes, 1032px window | 7.4 | 13 | **13** (computed: column 974, dock 390) |
+| Arrangement lanes, 1366x768 | 7 | not set | **8** |
+| Preview row | 200px high, 76 % letterbox | gone; Preview 304x171 over the Browser | gone; Preview slot 304x199, **picture 302x169** (2px short: the panel's borders) |
+| Inspector at rest | 358x199, one sentence | hidden until asked | hidden; opens docked right at 280 |
+| Chrome above the first lane | 95 | 83 | **83** (32 + 26 + 24 + 1) |
+| Left region | 258 | 304 | **304** |
+| Track header column / name | 211 / about 4 characters | 211 / 120px or more | **232 / 124px.** Miss on the column: 120 is not reachable at 212 with a 24px chip and three 24px toggles |
+| Mixer strip pitch | 84 | 68 | **72.** Miss: three 24px toggles need 72 |
+| Strips visible beside the Master | 17 | 21 | **20.** One short, from the 72 |
+| Fader length, 409px dock, longest chain 3 | 171 (no insert names) | not set | 158 with the names shown |
+| Loudness dock while off | 147px | 28px rail | **28px rail** |
+| Surface tones g0 / g1 / g2 / g3 | 20 / 27 / 34 / 43 | 15 / 26 / 38 / 50 | **15 / 26 / 38 / 50** |
+| Screen share of the three commonest colours | 66 % | "falls out" (FL: 22 %) | **61 %.** A miss as a number: the three greys are now 15 / 38 / 26 instead of 27 / 34 / 20, so they read as three surfaces, but the share barely moved. The empty Browser list and the mixer's body are most of it |
+| Bar line on the lane ground | 2.3:1 | 3:1 | **3.10:1** (light 3.09:1) |
+| Grid repaint, 1242x576, raster forced | not measured | not set | 0.35 / 0.29 / 0.18 ms at 8 / 40 / 400 px/beat |
+
+### 26.3 Not done, and why
+
+- **Master peak mini-meter in the top bar (A7).** The master level is in the `getAllPeaks` snapshot, but the one poll
+  that fills it runs only while the Mixer tab is showing (`MixerPanel`, gated on `visible`), which is exactly when the
+  Master strip's own meter is on screen. A top-bar meter fed by the bus would be dead whenever it could be useful. Making
+  it live means moving that loop out of `MixerPanel` so it runs for the whole session: no second poll, but the existing
+  call would be made all the time instead of only with the Mixer open. That is a change of load, so it is a decision,
+  not a default. The Master strip has a peak readout from the same bus instead (section 10).
+- **Light ramp.** Not widened: its semantic colours sit at 4.5:1 on its ground (3.6).
+- **`welcome.html`, `splash.html`.** Their frozen copy of the dark ramp exists only in another session's uncommitted
+  rewrite of those files, so it was not re-synced (section 12 lists the values).
+- **Sampler "last sample used".** There is no record of one that outlives a session (a region id belongs to a project).
+  The tab follows the open pattern, then the pattern last open, then the first pattern that plays a sample (section 14).
+
+### 26.4 Verification
+
+Every phase: `npm run lint` (19 errors in 12 files, none in a file round 3 touched, identical before and after),
+`npm run lint:css`, `npm run check:legacy-css` (4,610 lines, unchanged), `npm test` (5,115 tests before round 3, 5,219
+after), `npm run build`, `npm run shots` with `--compare` against the previous label (0 text nodes under 4.5:1 or under
+10px in every run), and renders of the populated shell from the local harness.
+
+**Not run: the full audit of section 24.5.** `xleth_native.node` was built at 14:29 on 2026-11-11; the last engine and
+bridge commit is 14:56 the same day and the working tree holds further uncommitted engine and bridge edits, so the addon
+is not current, and round 3 was told not to build it. **Nothing in round 3 was run against the engine.** Owed in the
+real app: picture colour and video decode with the Preview docked left; splitter and region-resizer drags in Compose,
+including drag-to-dock onto the left edge; meter ballistics, the clip latch and the routing cables at 72px; insert
+names after undoing a chain load; the Patterns previews and bar-group shading while scrolling during playback; 2,000
+notes; lane heights 36 / 56 / 80; the Piano Roll and Sampler opening cold on a real project.
+
+**How round 3 was committed.** The working tree held about 115 uncommitted `ui/` files from other sessions, in the
+same files round 3 edits. Each commit holds only round 3's hunks (files that also carried foreign work were staged as
+`HEAD` plus those hunks), so the committed tree was never built on its own: the checks above ran on the working tree.
+Two things in it exist only as other sessions' uncommitted work and are assumed by the text of this document:
+section 25 (the block geometry rework: `blockGeometry.js`, `patternNoteIndex.js`) and section 8.2.
+
+### 26.5 Open items
+
+From the brief's "Later" list, not started:
+
+- Device bodies are sparse and repeat labels (a section header "Input" over a knob labelled "Input"; five controls in
+  650x255).
+- A folder lane could draw a summary of its children instead of an empty row.
+- An overview strip above the ruler.
+- Piano roll, channel-rack-style step entry and plugin windows against FL: no FL references were captured for these.
+
+From round 3 itself:
+
+- The top-bar master meter (26.3), waiting on the decision about the poll.
+- The chain cache is not refreshed by a chain change the renderer did not make (section 10).
+- A stacked Preview sits outside the floating layer's work area; the drag-to-dock ghost for the left edge is drawn at the
+  work area's edge, not over the Browser's column.
+- The sample picker sheet is as tall as the top region with a 280px floor; in Compose there is no top row, so it covers
+  the top of the arrangement instead of Preview and Inspector.
+- Metronome and auto-scroll are still inverted chips in the top bar; auto-scroll is on by default and is a candidate for
+  the quiet on-state.
+- About 25 canvas modules keep literal fallbacks from the old ramp (section 12).
