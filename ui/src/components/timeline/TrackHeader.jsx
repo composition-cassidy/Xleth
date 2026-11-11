@@ -14,7 +14,10 @@ const STACK_HEADER_FROM = 56
  * down the left edge and a colour chip that holds the type glyph (and opens the
  * colour popover); the clips already carry the full colour, so the header does
  * not. The name is ink on g2 in every state, muted included: only the stripe and
- * chip dim. M / S / V are kit Toggles, visible at rest.
+ * chip dim. M / S / V are kit Toggles, visible at rest. The track-menu button is
+ * not in the resting row (it gave its 28px to the name): it shows over the end of
+ * the name while the row is hovered or holds focus, and the same menu opens from
+ * a right-click or the menu key anywhere on the row.
  */
 export default function TrackHeader({
   track, index, trackColor, labelInks = null, isFocused, isSelected,
@@ -143,6 +146,7 @@ export default function TrackHeader({
         onMouseDown={(e) => { e.stopPropagation() }}
         onClick={handleOpenMenu}
         hint="Track menu"
+        hintMods="Right-click the row or press the menu key for the same menu"
       >
         <EllipsisIcon size={12} />
       </IconButton>

@@ -1242,8 +1242,12 @@ macro lanes' DOM geometry, the curve canvases).
   ink and is the 24x24 button that opens the colour popover. The clips already carry the full colour, so nine saturated
   slabs beside them are gone, and the colour still threads grid, lane, mixer and viewer. M / S / V are kit Toggles at
   rest (solo keeps `--ui-solo`). **A muted track dims only its stripe and chip** (to `--ui-mute-opacity`): the name, the
-  track menu and the toggles stay `ink` on g2 (12.8:1), so **names and controls never drop under 4.5:1**; dimmed *clip*
-  content is the only thing allowed to. From a 56px lane the controls stack under the name. Selection is a 1px
+  track menu and the toggles stay `ink` on g2 (12.1:1), so **names and controls never drop under 4.5:1**; dimmed *clip*
+  content is the only thing allowed to. **The name has the row (round 3):** the column starts at **232px**
+  (`HEADER_WIDTH`, still draggable) and the row is chip, name, M / S / V, which leaves the name **124px** (it had 62:
+  "Grow..."). The 24px chip and the three 24px toggles are hit-area floors, so at the old 212px the most a name could
+  have had is 104px. The **track-menu button is not in the resting row**: it sits over the end of the name while the row
+  is hovered or holds focus, and right-click or the menu key opens the same menu from anywhere on the row. From a 56px lane the controls stack under the name. Selection is a 1px
   `--ui-select` outline, focus a lighter row. The hover-only trash is gone (Delete Track is in the track menu). Folder
   rows use the browser's `Disclosure` triangle (`aria-expanded`), a folder glyph, the name and the **child count in
   tabular numerals**; the delete action shows on hover or focus. Macro and automation lane label rows share the column's
@@ -1251,11 +1255,30 @@ macro lanes' DOM geometry, the curve canvases).
 - **Toolbar** (`TimelineToolbar`): one 32px row (the height `shellLayout` budgets; 38 until round 3) of kit IconButtons in a `Toolbar`.
   Tools are named "Select tool" and so on with their key (S, P, C, D) and mouse grammar in the hint bar. **Snap is a
   labelled Select**; the sample indicator reads **"Painting with: Pitch 1"** and is absent with no sample (a syllable
-  template gets an outlined dot); the zoom is a tabular `40 px/beat` with the unit repeated in its hint; Quick notation
-  and Quantize say why they are disabled.
-- **Patterns column** (`PatternListPanel`): 24px list rows in a listbox: a 3px identity edge, the name, the length in
-  **steps with the unit** (`32 steps`, from `lengthTicks` and `ticksToBeats`; it used to print the note count). The
-  pattern open in the Piano Roll is the selected row (`--ui-select` outline). Enter or Space opens, F2 renames.
+  template gets an outlined dot); the **zoom reads in bars visible** (`9.9 bars`, whole bars from ten up, beats under
+  one bar: `zoomReadout`), which is what a zoom level means while arranging, with `33 pixels per beat` in its hint;
+  Quick notation and Quantize say why they are disabled.
+- **Patterns column** (`PatternListPanel`): 24px list rows in a listbox, in a g0 well: a 3px edge, the name, and a
+  **mini preview of the pattern's notes** (one 40x14 canvas per row, drawn when the pattern, colour, theme or pixel ratio
+  changes, never per frame). The edge and the notes are **the colour of the track the pattern's first block sits on**,
+  the Piano Roll's own rule (section 15): a pattern has no colour of its own in the project, and one that is not placed
+  takes the value colour. The length in **steps with the unit** (`32 steps`) and the note count are in the row's hint.
+  The pattern open in the Piano Roll is the selected row (`--ui-select` outline). Enter or Space opens, F2 renames.
+- **Pattern blocks** (round 3). A pattern block is the clip's shell with a different body: the **title strip in the
+  track's colour** with the name in the automatic label ink, a **body at the identity colour's low lightness** (22 % over
+  the lane ground), and the **mini piano roll** in the full colour. The notes are what say "pattern". The diagonal
+  hatch is gone: a hatch reads as disabled or offline media and sat on every block. `--theme-timeline-pattern-lane-tint`
+  was a blue wash (`rgba(106, 169, 255, 0.07)`) on every pattern lane; it is a neutral 3 % now, in every theme
+  (asserted), and the header's dashed stripe is what marks a pattern track.
+- **Bar groups** (round 3). Empty lane space carries the song's structure: on the grid layer, **every other group of
+  bars sits on a tone one small step above the ground** (`--theme-timeline-bar-group-shade`, a ramp step from g0:
+  `#131313` on dark, set per ramp in `neutralRamp.ts`). A group is 4 bars; once 4 bars are wider than 600px it is one
+  bar, and zoomed far out it doubles until a group is at least 48px wide (`barGroupBars`). Painted in `drawGrid` only,
+  under the lane tint and the lines, with edges on whole pixels: no extra layer, no DOM. A repaint of a 1242x576 grid
+  costs about 0.35 / 0.29 / 0.18 ms at 8 / 40 / 400 px/beat with the raster forced, under 0.1 ms of it the shading
+  (`window.__XLETH_TIMELINE_GRID_PERF = true` logs each repaint with a `[Timeline]` prefix).
+- **Ruler** (round 3). **Every fourth bar number is the landmark: 12px in ink**; the others are 10px in ink-3 and are
+  dropped wherever they would touch a neighbour (`rulerBarLabels`, `keepRulerLabels`). They were all 9px, under the Floor.
 - **Snapshot cue lane, loop bar, macro lanes.** The cue editor is a floating surface of kit controls: Selects, a Toggle
   for Transition, the 14 per-type parameters as NumberBoxes (same range and step, previewing locally and writing
   **one** `setCueTransition` on release; the old slider wrote per pointer step), IconButtons, the direction compass

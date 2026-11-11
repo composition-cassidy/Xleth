@@ -266,6 +266,8 @@ export function deriveTheme(
   put('--theme-ui-ink-2',    stepOf(text, st.ink2));
   put('--theme-ui-ink-3',    stepOf(text, st.ink3));
   put('--theme-ui-boundary', stepOf(text, st.boundary));
+  // The arrangement's alternate bar groups: one small step from the ground (DESIGN.md 22).
+  put('--theme-timeline-bar-group-shade', stepOf(bgPrimary, st.barGroup));
 
   const sem = ramp.semantic;
   put('--theme-ui-rec',              sem.rec);

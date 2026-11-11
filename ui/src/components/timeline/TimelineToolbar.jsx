@@ -10,7 +10,7 @@ import useTimelineDisplayStore from '../../stores/timelineDisplayStore.js'
 import TimelineDisplayPopover from './TimelineDisplayPopover.jsx'
 import styles from './TimelineToolbar.module.css'
 
-// The arrangement toolbar (DESIGN.md 22): one 38px row of kit controls, sentence
+// The arrangement toolbar (DESIGN.md 22): one 32px row of kit controls, sentence
 // case, every tool with its one-letter key in the hint bar. The sample
 // indicator says what it means ("Painting with: Pitch 1") and is absent when
 // no sample is selected.
@@ -33,12 +33,32 @@ const SNAP_OPTIONS = [
   { value: 'Bar', label: 'Bar' },
 ]
 
+/**
+ * What the zoom readout prints (DESIGN.md 22): how much music is on screen, in bars, which is
+ * what a zoom level means to someone arranging. Under one bar it counts beats. Pixels per beat
+ * (the engine-side zoom value) stays in the hint. With no measured width it falls back to it.
+ */
+export function zoomReadout(pixelsPerBeat, viewportWidth, beatsPerBar = 4) {
+  const ppb = Number(pixelsPerBeat)
+  const w = Number(viewportWidth)
+  if (!(ppb > 0) || !(w > 0)) return { text: `${Math.round(ppb) || 0}${THIN_SPACE}px/beat`, spoken: `${Math.round(ppb) || 0} pixels per beat`, bars: null }
+  const beats = w / ppb
+  const bars = beats / beatsPerBar
+  if (bars < 1) {
+    const n = beats >= 10 ? Math.round(beats) : Math.round(beats * 10) / 10
+    return { text: `${n}${THIN_SPACE}${n === 1 ? 'beat' : 'beats'}`, spoken: `${n} ${n === 1 ? 'beat' : 'beats'} visible`, bars }
+  }
+  const n = bars >= 10 ? Math.round(bars) : Math.round(bars * 10) / 10
+  return { text: `${n}${THIN_SPACE}${n === 1 ? 'bar' : 'bars'}`, spoken: `${n} ${n === 1 ? 'bar' : 'bars'} visible`, bars }
+}
+
 export default function TimelineToolbar({
   activeTool, setActiveTool,
   activeSampleId, regions,
   snapGranularity,
   onSnapGranularityChange,
   pixelsPerBeat,
+  viewportWidth,
   onAddTrack,
   onAddFolder,
   selectedTrackCount = 0,
@@ -74,6 +94,7 @@ export default function TimelineToolbar({
 
   const quickNotationReady = !!syllableRegion && syllableRegion.label === 'Quote' && selectableSyllables.length > 0
   const ppb = pixelsPerBeat.toFixed(pixelsPerBeat < 10 ? 1 : 0)
+  const zoom = zoomReadout(pixelsPerBeat, viewportWidth)
 
   return (
     <div className={`timeline-toolbar ${styles.bar}`}>
@@ -196,9 +217,9 @@ export default function TimelineToolbar({
 
       {/* ── Right side: zoom + add track ─────────────────────── */}
       <span className={styles.spacer} />
-      <span className={`timeline-zoom-display ${styles.zoom}`} role="status" aria-label={`Zoom ${ppb} pixels per beat`}
-        data-hint={`Zoom: ${ppb} pixels per beat`} data-hint-mods="Ctrl+wheel: zoom · Alt+wheel: lane height · Shift+wheel: scroll">
-        {ppb}{THIN_SPACE}px/beat
+      <span className={`timeline-zoom-display ${styles.zoom}`} role="status" aria-label={`Zoom: ${zoom.spoken}`}
+        data-hint={zoom.bars == null ? `Zoom: ${ppb} pixels per beat` : `Zoom: ${zoom.spoken} (${ppb} pixels per beat)`} data-hint-mods="Ctrl+wheel: zoom · Alt+wheel: lane height · Shift+wheel: scroll">
+        {zoom.text}
       </span>
       <IconButton
         size="sm"

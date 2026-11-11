@@ -1,16 +1,18 @@
 /* Track header (DESIGN.md 22): a neutral g2 row. Identity is a 6px stripe down the
  * left edge and a colour chip that carries the type glyph. The name is ink on g2
- * in every state; only the stripe and chip dim when the track is muted. */
+ * in every state; only the stripe and chip dim when the track is muted. At the
+ * default 232px column the name has 124px: chip, name, M / S / V, with the track
+ * menu out of the resting row. */
 @layer kit {
   .row {
     position: relative;
     box-sizing: border-box;
     display: grid;
-    grid-template-columns: var(--hit-min) minmax(0, 1fr) var(--hit-min) auto;
-    grid-template-areas: "chip name menu state";
+    grid-template-columns: var(--hit-min) minmax(0, 1fr) auto;
+    grid-template-areas: "chip name state";
     align-items: center;
-    column-gap: var(--space-1);
-    padding: 0 var(--space-1) 0 calc(6px + var(--space-1));
+    column-gap: 2px;
+    padding: 0 2px 0 8px;
     border-bottom: 1px solid var(--ui-g0);
     background: var(--ui-g2);
     color: var(--ui-ink);
@@ -32,10 +34,10 @@
 
   /* Tall lanes: the name row, then the M / S / V row under it. */
   .row[data-stack="true"] {
-    grid-template-columns: var(--hit-min) minmax(0, 1fr) var(--hit-min);
+    grid-template-columns: var(--hit-min) minmax(0, 1fr);
     grid-template-areas:
-      "chip name menu"
-      "state state state";
+      "chip name"
+      "state state";
     align-content: center;
     row-gap: var(--space-1);
   }
@@ -152,15 +154,34 @@
     text-align: center;
   }
 
-  .menu {
-    grid-area: menu;
+  /* The track menu shares the name's cell and sits over its end, drawn only while the row
+   * is hovered or holds focus: at rest the name has the whole cell. Right-click and the menu
+   * key open the same menu from anywhere on the row. */
+  .row > .menu {
+    grid-area: name;
+    justify-self: end;
+    z-index: 1;
+    background: var(--ui-g3);
+    border-color: var(--ui-boundary);
+    opacity: 0;
+    pointer-events: none;
   }
 
+  .row:hover > .menu,
+  .row:focus-within > .menu {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* Three 24px cells that share their borders. */
   .cluster {
     grid-area: state;
     display: flex;
     align-items: center;
-    gap: 2px;
+  }
+
+  .cluster > .state + .state {
+    margin-left: -1px;
   }
 
   /* Square 24px chips: the hit-area floor, glyph-only. */

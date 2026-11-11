@@ -4,8 +4,8 @@
 import React, { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createRoot } from 'react-dom/client'
-import TimelineToolbar from './TimelineToolbar.jsx'
-import PatternListPanel, { patternStepsLabel } from './PatternListPanel.jsx'
+import TimelineToolbar, { zoomReadout } from './TimelineToolbar.jsx'
+import PatternListPanel, { patternOwnerColors, patternPreviewRects, patternStepsLabel } from './PatternListPanel.jsx'
 import usePianoRollStore from '../../stores/usePianoRollStore.js'
 import { THIN_SPACE as T } from '../../ui-kit'
 
@@ -54,9 +54,29 @@ describe('arrangement toolbar', () => {
     renderToolbar()
     expect(container.textContent).toContain('Snap')
     expect(container.querySelector('[aria-label="Snap"]')).toBeTruthy()
+    // With no measured lane width (this render) the readout falls back to the engine-side zoom value.
     expect(container.querySelector('.timeline-zoom-display').textContent).toBe(`40${T}px/beat`)
     expect(container.querySelector('.timeline-zoom-display').getAttribute('data-hint')).toBe('Zoom: 40 pixels per beat')
     for (const caps of ['SNAP', 'QN', 'ON']) expect(container.textContent).not.toContain(caps)
+  })
+
+  it('reads the zoom in bars visible; pixels per beat stays in the hint', () => {
+    renderToolbar({ pixelsPerBeat: 33, viewportWidth: 1305 })
+    const zoom = container.querySelector('.timeline-zoom-display')
+    // 1305px at 33 px/beat is 39.5 beats: 9.9 bars.
+    expect(zoom.textContent).toBe(`9.9${T}bars`)
+    expect(zoom.getAttribute('aria-label')).toBe('Zoom: 9.9 bars visible')
+    expect(zoom.getAttribute('data-hint')).toBe('Zoom: 9.9 bars visible (33 pixels per beat)')
+  })
+
+  it('zoomReadout: whole bars from ten up, one decimal under ten, beats under one bar, px/beat without a width', () => {
+    expect(zoomReadout(8, 1280).text).toBe(`40${T}bars`)
+    expect(zoomReadout(40, 1280).text).toBe(`8${T}bars`)
+    expect(zoomReadout(40, 160).text).toBe(`1${T}bar`)
+    expect(zoomReadout(400, 1280).text).toBe(`3.2${T}beats`)
+    expect(zoomReadout(1280, 1280).text).toBe(`1${T}beat`)
+    expect(zoomReadout(40, 0).text).toBe(`40${T}px/beat`)
+    expect(zoomReadout(40, undefined).bars).toBeNull()
   })
 
   it('disables quantize with nothing selected and enables it with a selection', () => {
@@ -88,11 +108,49 @@ describe('patterns column', () => {
     act(() => { root.render(<PatternListPanel patterns={patterns} onOpenPianoRoll={onOpenPianoRoll} onToggleCollapsed={vi.fn()} />) })
     const rows = Array.from(container.querySelectorAll('[role="option"]'))
     expect(rows.map((r) => r.getAttribute('aria-selected'))).toEqual(['false', 'true'])
-    expect(rows[0].textContent).toContain(`16${T}steps`)
-    expect(rows[1].textContent).toContain(`32${T}steps`)
+    // A row is the name and a preview of the notes; the length in steps is in the hint.
+    expect(rows[0].textContent).toBe('Pattern 1')
+    expect(rows[0].getAttribute('data-hint')).toBe(`Pattern 1: 16${T}steps, 5 notes, not placed`)
+    expect(rows[1].getAttribute('data-hint')).toBe(`Pattern 2: 32${T}steps, 0 notes, not placed`)
+    expect(rows[0].querySelector('canvas')).not.toBeNull()
+    expect(container.querySelector('[role="listbox"]').getAttribute('aria-label')).toBe('Patterns')
     act(() => { rows[0].click() })
     expect(onOpenPianoRoll).toHaveBeenCalledWith(1)
     usePianoRollStore.setState({ patternId: null })
+  })
+
+  it('a row wears the colour of the track its first block sits on; an unplaced pattern takes the value colour', () => {
+    const tracks = [{ id: 7, name: 'bass', type: 'Pattern', trackColorMode: 'custom', trackColorCustom: '#D76A8F' }]
+    const blocks = [
+      { id: 2, patternId: 1, trackId: 9, positionTicks: 7680 },
+      { id: 1, patternId: 1, trackId: 7, positionTicks: 0 },
+    ]
+    expect(patternOwnerColors(blocks, { 7: '#D76A8F', 9: '#58B2CE' })).toEqual({ 1: '#D76A8F' })
+    expect(patternOwnerColors([], { 7: '#D76A8F' })).toEqual({})
+
+    act(() => { root.render(<PatternListPanel patterns={patterns} tracks={tracks} blocks={blocks} onToggleCollapsed={vi.fn()} />) })
+    const rows = Array.from(container.querySelectorAll('[role="option"]'))
+    const edge = (row) => row.firstElementChild.style.background
+    expect(edge(rows[0])).toMatch(/rgb\(215, 106, 143\)|#D76A8F/i)
+    expect(edge(rows[1])).toBe('var(--ui-value)')
+    expect(rows[0].getAttribute('data-hint')).toBe(`Pattern 1: 16${T}steps, 5 notes`)
+  })
+
+  it('patternPreviewRects: x by time, y by pitch within the pattern own range, every note at least 1px wide', () => {
+    const p = { lengthTicks: 3840, notes: [
+      { positionTicks: 0, durationTicks: 960, pitch: 60 },
+      { positionTicks: 1920, durationTicks: 1, pitch: 72 },
+      { positionTicks: 3840, durationTicks: 960, pitch: 66 },
+    ] }
+    const rects = patternPreviewRects(p, 40, 14)
+    // The note that starts at the pattern's end is outside the box.
+    expect(rects).toHaveLength(2)
+    expect(rects[0]).toEqual({ x: 0, y: 12, w: 10, h: 2 })
+    expect(rects[1]).toMatchObject({ x: 20, y: 0, w: 1 })
+    expect(patternPreviewRects({ lengthTicks: 3840, notes: [] }, 40, 14)).toEqual([])
+    expect(patternPreviewRects({ lengthTicks: 0, notes: [{ positionTicks: 0, durationTicks: 1, pitch: 60 }] }, 40, 14)).toEqual([])
+    // One pitch only: the notes sit on the bottom row, nothing divides by zero.
+    expect(patternPreviewRects({ lengthTicks: 960, notes: [{ positionTicks: 0, durationTicks: 960, pitch: 60 }] }, 40, 14)[0].y).toBe(12)
   })
 
   it('opens a pattern from the keyboard', () => {

@@ -1,5 +1,6 @@
-/* The Patterns column (DESIGN.md 22): 24px list rows in a g0 well under a g2 header. A pattern's identity is the
- * 3px edge stripe; its length is in steps, with the unit. The pattern open in the
+/* The Patterns column (DESIGN.md 22): 24px list rows in a g0 well under a g2 header. A row is the
+ * owning track's colour as a 3px edge, the name, and a mini preview of the pattern's notes in that
+ * colour; the length in steps is in the hint. The pattern open in the
  * Piano Roll is the selected row: a 1px --ui-select outline, never fill alone. */
 @layer kit {
   .panel {
@@ -125,12 +126,11 @@
     outline: none;
   }
 
-  .meta {
+  /* The mini piano roll: a slot one step up from the list's ground, notes in the pattern's colour. */
+  .preview {
     flex: none;
-    color: var(--ui-ink-2);
-    font-size: var(--type-11);
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
+    display: block;
+    background: var(--ui-g1);
   }
 
   .footer {

@@ -4425,6 +4425,7 @@ export default function TimelineView({
         snapGranularity={snapGranularity}
         onSnapGranularityChange={setSnapGranularity}
         pixelsPerBeat={pixelsPerBeat}
+        viewportWidth={canvasWidth}
         onAddTrack={handleAddTrackClick}
         onAddFolder={handleAddFolder}
         selectedTrackCount={selectedTrackIds.size}
@@ -4446,6 +4447,8 @@ export default function TimelineView({
             {/* Left-most: pattern list (FL-style strip) */}
             <PatternListPanel
               patterns={patterns}
+              tracks={tracks}
+              blocks={patternBlocks}
               collapsed={patternListCollapsed}
               onToggleCollapsed={() => setPatternListCollapsed(v => !v)}
               onOpenPianoRoll={(patternId) => {

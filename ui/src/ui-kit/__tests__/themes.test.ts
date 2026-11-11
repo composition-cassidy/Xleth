@@ -289,6 +289,34 @@ describe('bar lines reach 3:1 on the lane ground in every theme', () => {
   }
 });
 
+// Round 3 (DESIGN.md 22): nothing on the arrangement's ground carries a hue. The pattern-lane
+// tint used to be a blue wash; the bar-group shade is a small step from the ground.
+describe('the arrangement ground is neutral in every theme', () => {
+  for (const slug of SLUGS) {
+    const { values } = resolved(slug);
+    const bed = hex(slug, '--theme-ui-g0');
+
+    it(`${slug}: the pattern-lane tint is a grey at low alpha`, () => {
+      const m = /rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)/.exec(values['--theme-timeline-pattern-lane-tint']);
+      expect(m, values['--theme-timeline-pattern-lane-tint']).not.toBeNull();
+      expect(m![1]).toBe(m![2]);
+      expect(m![2]).toBe(m![3]);
+      expect(Number(m![4])).toBeLessThanOrEqual(0.06);
+      expect(isGrey(composite(values['--theme-timeline-pattern-lane-tint'], bed))).toBe(true);
+    });
+
+    it(`${slug}: the bar-group shade is an exact grey, one small step from the ground, far under a line`, () => {
+      const shade = hex(slug, '--theme-timeline-bar-group-shade');
+      expect(isGrey(shade), shade).toBe(true);
+      expect(shade).not.toBe(bed);
+      // Structure, not a surface: well under the 3:1 of a bar line and under g1's step from g0.
+      const c = contrastRatio(shade, bed);
+      expect(c).toBeGreaterThan(1.02);
+      expect(c).toBeLessThan(contrastRatio(hex(slug, '--theme-ui-g1'), bed));
+    });
+  }
+});
+
 describe('chromeTint', () => {
   it('measures exact greys as chroma 0 and a blue-grey as tinted', () => {
     expect(chromaOf('#1B1B1B')).toBeLessThan(0.001);

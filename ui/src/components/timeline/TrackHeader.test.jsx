@@ -85,6 +85,32 @@ describe('track header', () => {
     render()
     expect(container.querySelector('.track-delete-btn')).toBeNull()
   })
+
+  // Round 3: the name has the row. The track menu is still a real button (reachable by Tab,
+  // revealed on hover and focus) but it holds no column of its own; right-click opens the same menu.
+  it('gives the name the row: the track menu has no column, and the default column leaves the name 120px or more', async () => {
+    const { readFileSync } = await import('node:fs')
+    const path = await import('node:path')
+    const css = readFileSync(path.resolve(process.cwd(), 'src/components/timeline/TrackHeader.module.css'), 'utf8')
+    expect(css).toMatch(/grid-template-areas:\s*"chip name state"/)
+    expect(css).not.toMatch(/"chip name menu/)
+    // The menu sits in the name's cell and is undrawn at rest.
+    expect(css).toMatch(/\.row > \.menu \{[^}]*grid-area: name;[^}]*opacity: 0;[^}]*pointer-events: none;/)
+    expect(css).toMatch(/\.row:hover > \.menu,\s*\.row:focus-within > \.menu \{[^}]*opacity: 1;/)
+
+    const { HEADER_WIDTH } = await import('../../constants/timeline.js')
+    // Column - 1px border - 8px left padding (stripe) - 24 chip - 2 gap - 2 gap - three 24px
+    // toggles sharing two borders (70) - 2px right padding.
+    const nameCell = HEADER_WIDTH - 1 - 8 - 24 - 2 - 2 - 70 - 2
+    expect(nameCell).toBeGreaterThanOrEqual(120)
+
+    render()
+    const row = header('KICK')
+    const menu = row.querySelector('button[aria-label="Track menu"]')
+    expect(menu.getAttribute('data-hint-mods')).toMatch(/Right-click/)
+    // M / S / V stay in the row at rest.
+    expect(row.querySelectorAll('[role="group"] button[aria-pressed]')).toHaveLength(3)
+  })
 })
 
 describe('folder row', () => {

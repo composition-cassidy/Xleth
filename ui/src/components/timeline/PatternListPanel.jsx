@@ -3,6 +3,9 @@ import { ChevronLeft, ChevronRight, Plus } from 'lucide-react'
 import { timelineEvents } from '../../timelineEvents.js'
 import { ticksToBeats } from '../../constants/timeline.js'
 import { Button, IconButton, THIN_SPACE } from '../../ui-kit'
+import { tokenValue } from '../../theming/tokenValue.ts'
+import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
+import useTrackIdentityColors from '../inspector/useTrackIdentityColors.js'
 import usePianoRollStore from '../../stores/usePianoRollStore.js'
 import PatternPreviewTooltip from './patternPreview/PatternPreviewTooltip.jsx'
 import styles from './PatternListPanel.module.css'
@@ -24,6 +27,82 @@ const HOVER_PREVIEW_DELAY_MS = 220
 
 const PATTERN_ACCENT = 'var(--theme-drag-preview-default)'
 
+/**
+ * { [patternId]: '#RRGGBB' }: the identity colour of the track a pattern's first block sits on
+ * (the earliest block, as the Piano Roll colours its notes: DESIGN.md 15). A pattern has no
+ * colour of its own in the project; one that is not placed has no entry and takes the value colour.
+ */
+export function patternOwnerColors(blocks, trackColors) {
+  const first = {}
+  for (const b of blocks ?? []) {
+    const seen = first[b.patternId]
+    if (!seen || b.positionTicks < seen.positionTicks) first[b.patternId] = b
+  }
+  const out = {}
+  for (const [patternId, b] of Object.entries(first)) {
+    const c = trackColors?.[b.trackId]
+    if (c) out[patternId] = c
+  }
+  return out
+}
+
+/** Where a pattern's notes fall in a w x h box: x by time, y by pitch within the pattern's own range. */
+export function patternPreviewRects(pattern, w, h) {
+  const notes = pattern?.notes
+  const len = pattern?.lengthTicks
+  if (!Array.isArray(notes) || notes.length === 0 || !(len > 0) || !(w > 0) || !(h > 0)) return []
+  let lo = Infinity
+  let hi = -Infinity
+  for (const n of notes) {
+    if (!n || !Number.isFinite(n.pitch)) continue
+    if (n.pitch < lo) lo = n.pitch
+    if (n.pitch > hi) hi = n.pitch
+  }
+  if (lo === Infinity) return []
+  const range = Math.max(1, hi - lo)
+  const noteH = 2
+  const travel = Math.max(0, h - noteH)
+  const rects = []
+  for (const n of notes) {
+    if (!n || !Number.isFinite(n.pitch)) continue
+    const x = (Math.max(0, n.positionTicks || 0) / len) * w
+    if (x >= w) continue
+    rects.push({
+      x,
+      y: travel - ((n.pitch - lo) / range) * travel,
+      w: Math.max(1, Math.min(w - x, ((n.durationTicks || 0) / len) * w)),
+      h: noteH,
+    })
+  }
+  return rects
+}
+
+const PREVIEW_W = 40
+const PREVIEW_H = 14
+
+/**
+ * The row's mini piano roll: one small canvas per pattern, drawn when the pattern, the colour,
+ * the theme or the pixel ratio changes, never per frame. It reads the notes directly: a whole
+ * pattern at 40px needs no viewport index.
+ */
+function PatternRowPreview({ pattern, color }) {
+  const ref = useRef(null)
+  const epoch = useThemeEpoch()
+  useEffect(() => {
+    const canvas = ref.current
+    const ctx = canvas?.getContext?.('2d')
+    if (!ctx) return
+    const dpr = window.devicePixelRatio || 1
+    canvas.width = Math.round(PREVIEW_W * dpr)
+    canvas.height = Math.round(PREVIEW_H * dpr)
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.clearRect(0, 0, PREVIEW_W, PREVIEW_H)
+    ctx.fillStyle = color || tokenValue('--ui-value')
+    for (const r of patternPreviewRects(pattern, PREVIEW_W, PREVIEW_H)) ctx.fillRect(r.x, r.y, r.w, r.h)
+  }, [pattern, color, epoch])
+  return <canvas ref={ref} className={styles.preview} style={{ width: PREVIEW_W, height: PREVIEW_H }} aria-hidden="true" />
+}
+
 // A pattern's length in 16th-note steps, the unit the Piano Roll grid counts in
 // ("16 steps"). A fraction survives to one decimal; a whole number prints bare.
 export function patternStepsLabel(lengthTicks) {
@@ -33,6 +112,8 @@ export function patternStepsLabel(lengthTicks) {
 
 export default function PatternListPanel({
   patterns = {},          // { id: Pattern }
+  tracks = null,          // the project's tracks, for the owning track's colour
+  blocks = null,          // pattern blocks: a pattern takes the colour of its first block's track
   onOpenPianoRoll,        // (patternId) => void
   onNewPattern,           // () => void
   onRename,               // (patternId, name) => void
@@ -40,6 +121,8 @@ export default function PatternListPanel({
   onToggleCollapsed,
 }) {
   const [hoverId, setHoverId] = useState(null)
+  const trackColors = useTrackIdentityColors(tracks)
+  const ownerColors = useMemo(() => patternOwnerColors(blocks, trackColors), [blocks, trackColors])
   // The pattern open in the Piano Roll is the selected one.
   const selectedPatternId = usePianoRollStore((s) => s.patternId)
   const [editingId, setEditingId] = useState(null)
@@ -188,6 +271,8 @@ export default function PatternListPanel({
             const isEditing = editingId === p.id
             const label = p.name || `Pattern ${p.id}`
             const selected = selectedPatternId === p.id
+            const color = ownerColors[p.id] || null
+            const noteCount = p.notes?.length || 0
             return (
               <div
                 key={p.id}
@@ -211,10 +296,12 @@ export default function PatternListPanel({
                 }}
                 onMouseEnter={() => handleRowMouseEnter(p.id)}
                 onMouseLeave={handleRowMouseLeave}
-                data-hint={`${label}: ${p.notes?.length || 0} notes`}
+                data-hint={`${label}: ${patternStepsLabel(p.lengthTicks)}, ${noteCount} ${noteCount === 1 ? 'note' : 'notes'}${color ? '' : ', not placed'}`}
                 data-hint-mods="Click: open in the Piano Roll · Drag onto a pattern track · Double-click or F2: rename"
               >
-                <span className={styles.swatch} style={{ background: PATTERN_ACCENT }} aria-hidden="true" />
+                {/* The owning track's colour (the thread from lane to strip to here); the value
+                    colour while the pattern is not placed on any track. */}
+                <span className={styles.swatch} style={{ background: color || 'var(--ui-value)' }} aria-hidden="true" />
                 {isEditing ? (
                   <input
                     ref={inputRef}
@@ -235,7 +322,8 @@ export default function PatternListPanel({
                     {label}
                   </span>
                 )}
-                <span className={styles.meta}>{patternStepsLabel(p.lengthTicks)}</span>
+                {/* What is in it, not how long it is: the length moved to the hint. */}
+                <PatternRowPreview pattern={p} color={color} />
               </div>
             )
           })

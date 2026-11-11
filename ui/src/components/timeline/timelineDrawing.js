@@ -106,6 +106,8 @@ export function resolveTimelinePalette() {
     bg:                tokenValue('--theme-timeline-lane-bg'),
     laneSeparator:     tokenValue('--theme-border-strong'),
     patternLaneTint:   tokenValue('--theme-timeline-pattern-lane-tint'),
+    // Alternate bar groups on the lane ground (DESIGN.md 22): a tone a step above g0.
+    barGroupShade:     tokenValue('--theme-timeline-bar-group-shade'),
     // Grid (gridMinor is a base color whose alpha is scaled per subdivision level)
     gridMinor:         tokenValue('--theme-timeline-subdivision-line'),
     gridBeat:          tokenValue('--theme-timeline-beat-line'),
@@ -267,12 +269,52 @@ export function barStrideFor(ppb, minPx) {
   return stride
 }
 
+// Bar groups (DESIGN.md 22). Empty lane space carries the song's structure: every other
+// group of bars sits on a tone a step above the ground. A group is 4 bars; once 4 bars are
+// wider than BAR_GROUP_MAX_PX it is one bar, and zoomed far out it doubles until a group is
+// at least BAR_GROUP_MIN_PX wide, so the bands never turn into a texture.
+export const BAR_GROUP_MAX_PX = 600
+export const BAR_GROUP_MIN_PX = 48
+export function barGroupBars(ppb) {
+  const barPx = ppb * BEATS_PER_BAR
+  if (!(barPx > 0)) return 4
+  if (barPx * 4 > BAR_GROUP_MAX_PX) return 1
+  let bars = 4
+  while (bars * barPx < BAR_GROUP_MIN_PX && bars < 1 << 20) bars *= 2
+  return bars
+}
+
+// Dev flag: log what one grid repaint costs. Set `window.__XLETH_TIMELINE_GRID_PERF = true`
+// in the console; nothing is read or logged otherwise.
+function gridPerfEnabled() {
+  return typeof window !== 'undefined' && window.__XLETH_TIMELINE_GRID_PERF === true
+}
+
 export function drawGrid(ctx, w, h, scrollOffset, ppb, trackCount, tracks = null, palette = null, trackLayout = null, snapGranularity = '1/16') {
+  const perfT0 = gridPerfEnabled() ? performance.now() : 0
   ctx.clearRect(0, 0, w, h)
   const p = palette ?? resolveTimelinePalette()
 
   const startBeat = Math.floor(scrollOffset)
   const endBeat = Math.ceil(scrollOffset + w / ppb) + 1
+
+  // Bar-group shading: under everything else on this layer, edges on whole pixels so a band
+  // ends exactly on the bar line that closes it.
+  const shade = p.barGroupShade
+  if (shade && shade.trim() !== '' && shade.trim() !== 'transparent') {
+    const groupBeats = barGroupBars(ppb) * BEATS_PER_BAR
+    ctx.fillStyle = shade
+    for (let g = Math.floor(scrollOffset / groupBeats); ; g++) {
+      const x0 = Math.round(beatToPixel(g * groupBeats, scrollOffset, ppb))
+      if (x0 >= w) break
+      if (((g % 2) + 2) % 2 === 1) {
+        const x1 = Math.round(beatToPixel((g + 1) * groupBeats, scrollOffset, ppb))
+        const left = Math.max(0, x0)
+        const right = Math.min(w, x1)
+        if (right > left) ctx.fillRect(left, 0, right - left, h)
+      }
+    }
+  }
 
   // Pattern-track row tint (neutral — pattern tracks no longer bind to a region)
   if (tracks) {
@@ -428,9 +470,42 @@ export function drawGrid(ctx, w, h, scrollOffset, ppb, trackCount, tracks = null
     ctx.fillStyle = grad
     ctx.fillRect(0, 0, w, 14)
   }
+
+  if (perfT0) {
+    console.log(`[Timeline] grid repaint ${(performance.now() - perfT0).toFixed(2)} ms at ${ppb} px/beat (${Math.round(w)}x${Math.round(h)}, bar groups of ${barGroupBars(ppb)})`)
+  }
 }
 
 // ── Ruler ────────────────────────────────────────────────────────────────────
+
+/** The bar numbers a ruler labels between two beats, at one label every `labelStepBeats`. Every fourth label is major. */
+export function rulerBarLabels(startBeat, endBeat, labelStepBeats) {
+  const out = []
+  const first = Math.floor(startBeat / labelStepBeats) * labelStepBeats
+  const majorEveryBeats = labelStepBeats * 4
+  for (let beat = first; beat <= endBeat; beat += labelStepBeats) {
+    if (beat < 0) continue
+    out.push({ beat, text: String(Math.floor(beat / BEATS_PER_BAR) + 1), major: beat % majorEveryBeats === 0 })
+  }
+  return out
+}
+
+/** Drop the minor labels that would sit within RULER_LABEL_GAP of a major label or of the minor before them. Majors always stay. */
+export const RULER_LABEL_GAP = 4
+export function keepRulerLabels(boxes) {
+  const majors = boxes.filter((b) => b.major)
+  const clear = (a, b) => a.right + RULER_LABEL_GAP <= b.x || b.right + RULER_LABEL_GAP <= a.x
+  const kept = []
+  let lastMinor = null
+  for (const b of boxes) {
+    if (b.major) { kept.push(b); continue }
+    if (!majors.every((m) => clear(b, m))) continue
+    if (lastMinor && !clear(lastMinor, b)) continue
+    kept.push(b)
+    lastMinor = b
+  }
+  return kept
+}
 
 export function drawRuler(ctx, w, h, scrollOffset, ppb, palette = null) {
   const p = palette ?? resolveTimelinePalette()
@@ -493,18 +568,27 @@ export function drawRuler(ctx, w, h, scrollOffset, ppb, palette = null) {
     }
   }
 
-  // Bar numbers
-  ctx.fillStyle = p.rulerText
-  ctx.font = uiCanvasFont('600 9px')
+  // Bar numbers (DESIGN.md 22). Every fourth one is the landmark: 12px in ink. The others are
+  // 10px in ink-3 and are dropped wherever they would touch a neighbour, so at any zoom the
+  // ruler reads 1 . . . 5 . . . 9 before it reads anything else. (They were all 9px.)
   ctx.textBaseline = 'top'
-  const firstBar = Math.floor(startBeat / labelStepBeats) * labelStepBeats
-  for (let beat = firstBar; beat <= endBeat; beat += labelStepBeats) {
-    const x = beatToPixel(beat, scrollOffset, ppb)
-    if (x < -30) continue
-    if (x > w) break
-    const barNum = Math.floor(beat / BEATS_PER_BAR) + 1
-    ctx.fillText(String(barNum), x + 4, 4)
+  const majorFont = uiCanvasFont('600 12px')
+  const minorFont = uiCanvasFont('500 10px')
+  const labels = rulerBarLabels(startBeat, endBeat, labelStepBeats)
+  const boxes = []
+  for (const label of labels) {
+    const x = beatToPixel(label.beat, scrollOffset, ppb) + 4
+    if (x < -40 || x > w) continue
+    ctx.font = label.major ? majorFont : minorFont
+    boxes.push({ ...label, x, right: x + ctx.measureText(label.text).width })
   }
+  const kept = keepRulerLabels(boxes)
+  ctx.font = minorFont
+  ctx.fillStyle = p.rulerText
+  for (const b of kept) if (!b.major) ctx.fillText(b.text, b.x, 5)
+  ctx.font = majorFont
+  ctx.fillStyle = p.ink || p.rulerText
+  for (const b of kept) if (b.major) ctx.fillText(b.text, b.x, 3)
 
   // Bottom border
   ctx.strokeStyle = p.rulerBorder
@@ -920,58 +1004,32 @@ function drawMuteGlyph(ctx, x, cy, color) {
   ctx.restore()
 }
 
-// ── Pattern-track "tinted glass" material (Pass 7) ──────────────────────────
-// Fixed, non-configurable treatment — deliberately bypasses the Clip body-mode
-// system above. Everything here is derived from the track's own color at the
-// draw call (never cached/memoized across a theme change), same rule as
-// resolveTimelinePalette()'s tokenValue() reads.
-const PATTERN_FILL_ALPHA            = 0.10  // track color over the dark lane
-const PATTERN_HATCH_ALPHA           = 0.18
-const PATTERN_STRIP_FILL_ALPHA      = 0.16
-const PATTERN_STRIP_SEPARATOR_ALPHA = 0.45
+// ── Pattern block material (DESIGN.md 22) ───────────────────────────────────
+// Fixed, non-configurable treatment: it deliberately bypasses the Clip body-mode
+// system above. A pattern block is the same shell as a clip (the title strip in
+// the track's colour, the name in the automatic label ink) over a body at the
+// identity colour's low lightness, with the mini piano roll in the full colour.
+// The notes are what say "pattern". There is no hatch: a hatch reads as disabled
+// or offline media, and the body used to carry one over every block.
+// Everything here is derived from the track's own color at the draw call (never
+// cached/memoized across a theme change), same rule as resolveTimelinePalette()'s
+// tokenValue() reads.
+const PATTERN_FILL_ALPHA            = 0.22  // the body: the track colour, low, over the lane ground
+const PATTERN_STRIP_FILL_ALPHA      = 0.80  // the title strip, as on a clip
+const PATTERN_STRIP_SEPARATOR_ALPHA = 0.55
 const PATTERN_STROKE_WIDTH          = 2      // drawn fully inside the bounds
-const PATTERN_HATCH_STRIPE_PX       = 2
-const PATTERN_HATCH_GAP_PX          = 10     // 5:1 gap:stripe ratio
-// Perpendicular stripe spacing (stripe+gap) converted to the 45° diagonal's
-// own c = x+y parameterization — see drawPatternHatch().
-const PATTERN_HATCH_STEP = (PATTERN_HATCH_STRIPE_PX + PATTERN_HATCH_GAP_PX) * Math.SQRT2
 
 function getPatternGlassStyle(baseHex, selected, muted) {
   const mm = muted ? MUTE_OPACITY : 1.0
-  const sel = selected ? 1.2 : 1.0 // selection ring (drawn separately) carries most of the cue
+  const sel = selected ? 1.15 : 1.0 // selection ring (drawn separately) carries most of the cue
+  const stripAlpha = _clampAlpha(PATTERN_STRIP_FILL_ALPHA * sel * mm)
   return {
     fill:            hexToRgba(baseHex, _clampAlpha(PATTERN_FILL_ALPHA * sel * mm)),
-    hatch:           hexToRgba(baseHex, _clampAlpha(PATTERN_HATCH_ALPHA * sel * mm)),
     stroke:          hexToRgba(baseHex, _clampAlpha(1.0 * mm)),
-    stripFill:       hexToRgba(baseHex, _clampAlpha(PATTERN_STRIP_FILL_ALPHA * sel * mm)),
+    stripFill:       hexToRgba(baseHex, stripAlpha),
+    stripAlpha,
     stripSeparator:  hexToRgba(baseHex, _clampAlpha(PATTERN_STRIP_SEPARATOR_ALPHA * mm)),
   }
-}
-
-// Static 45° hatch, clipped to (x,y,w,h). Lines satisfy x+y = c for a
-// constant c; canvas measures lineWidth perpendicular to the stroke
-// direction regardless of angle, so PATTERN_HATCH_STRIPE_PX is the real
-// on-screen stripe width. Phase is anchored to absolute canvas coordinates
-// (not clip-local), so the hatch reads as one continuous field rather than
-// resetting per block.
-function drawPatternHatch(ctx, x, y, w, h, strokeColor) {
-  if (w <= 0.5 || h <= 0.5) return
-  ctx.save()
-  ctx.beginPath()
-  ctx.rect(x, y, w, h)
-  ctx.clip()
-  ctx.strokeStyle = strokeColor
-  ctx.lineWidth = PATTERN_HATCH_STRIPE_PX
-  const cMin = x + y
-  const cMax = x + w + y + h
-  const firstC = Math.floor(cMin / PATTERN_HATCH_STEP) * PATTERN_HATCH_STEP
-  ctx.beginPath()
-  for (let c = firstC; c <= cMax; c += PATTERN_HATCH_STEP) {
-    ctx.moveTo(c - y, y)
-    ctx.lineTo(c - (y + h), y + h)
-  }
-  ctx.stroke()
-  ctx.restore()
 }
 
 // Chip data is built from the same fields the existing inline metadata block
@@ -1830,17 +1888,9 @@ export function drawPatternBlocks(ctx, w, h, scrollOffset, ppb, blocks, trackIdT
     const accentText = pickPatternAccentText(hex)
     const _mat = getPatternGlassStyle(hex, selected, !!isMuted)
 
-    // ── Fill — track color at ~10% over the dark lane ("tinted glass") ────
+    // ── Body — the track colour at low lightness over the lane ground. No hatch.
     ctx.fillStyle = _mat.fill
     ctx.fillRect(x, y, blockW, clipH)
-
-    // ── Hatch — static 45° stripes over the fill, inside the stroke ───────
-    drawPatternHatch(
-      ctx,
-      x + PATTERN_STROKE_WIDTH, y + PATTERN_STROKE_WIDTH,
-      blockW - PATTERN_STROKE_WIDTH * 2, clipH - PATTERN_STROKE_WIDTH * 2,
-      _mat.hatch,
-    )
 
     // ── Stroke — 2px solid track color, drawn fully inside the bounds so
     // adjacent same-hue pattern blocks never visually merge ───────────────
@@ -1866,14 +1916,17 @@ export function drawPatternBlocks(ctx, w, h, scrollOffset, ppb, blocks, trackIdT
       showTitleStrip: _wantTitleStrip,
     })
 
-    // ── Title strip background — a slightly stronger glass tint so the
-    // name text sits on a touch more contrast than the body alone ────────
+    // ── Title strip — in the track's colour, as on a clip. What sits on it
+    // (the name, the mute and loop glyphs) takes the automatic label ink for
+    // that colour; with no strip the glyph is on the dark body and keeps the
+    // light accent ──────────────────────────────────────────────────────────
     if (layout.useStrip) {
       ctx.fillStyle = _mat.stripFill
       ctx.fillRect(layout.titleX, layout.titleY, layout.titleW, layout.titleH)
       ctx.fillStyle = _mat.stripSeparator
       ctx.fillRect(layout.titleX, layout.titleY + layout.titleH - 1, layout.titleW, 1)
     }
+    const stripInk = layout.useStrip ? clipLabelInk(p, hex, _mat.stripAlpha) : accentText
 
     // ── Note markers (if pattern has notes and zoom is sufficient) ────────
     // Pass 5C: gated by timelineShowPatternPreview.
@@ -1935,7 +1988,7 @@ export function drawPatternBlocks(ctx, w, h, scrollOffset, ppb, blocks, trackIdT
     const hasLoopGlyph = !!(pattern && pattern.lengthTicks > 0
                             && block.durationTicks > pattern.lengthTicks)
     if (hasLoopGlyph) {
-      ctx.fillStyle = accentText
+      ctx.fillStyle = stripInk
       ctx.font = uiCanvasFont('600 8px')
       ctx.textBaseline = 'top'
       // ↻ when loop active, ∣→ when disabled (extends as empty space)
@@ -1949,7 +2002,7 @@ export function drawPatternBlocks(ctx, w, h, scrollOffset, ppb, blocks, trackIdT
       const glyphReserve = hasLoopGlyph ? PATTERN_LOOP_GLYPH_RESERVE : 0
       const muteReserve = isMuted ? MUTE_GLYPH_W : 0
       if (isMuted && layout.titleW > MUTE_GLYPH_W + TITLE_TEXT_PAD_X * 2) {
-        drawMuteGlyph(ctx, layout.titleX + TITLE_TEXT_PAD_X, layout.titleY + layout.titleH / 2, accentText)
+        drawMuteGlyph(ctx, layout.titleX + TITLE_TEXT_PAD_X, layout.titleY + layout.titleH / 2, stripInk)
       }
       const titleAvailW = Math.max(
         0,
@@ -1975,7 +2028,7 @@ export function drawPatternBlocks(ctx, w, h, scrollOffset, ppb, blocks, trackIdT
           layout.titleH,
         )
         ctx.clip()
-        ctx.fillStyle = accentText
+        ctx.fillStyle = stripInk
         ctx.font = uiCanvasFont('600 10px')
         ctx.textBaseline = 'middle'
         const fitted = fitText(ctx, pattern?.name || '?', titleAvailW, { allowBareEllipsis })

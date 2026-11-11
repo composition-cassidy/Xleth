@@ -44,6 +44,11 @@ export interface RampSpec {
     ink2: number;
     ink3: number;
     boundary: number;
+    /**
+     * The arrangement's alternate bar groups: a step from the ground (g0), small enough to
+     * stay a texture of the ground and never read as a surface (DESIGN.md 22).
+     */
+    barGroup: number;
   };
   /** Semantic and signal colours, validated per ramp. */
   semantic: {
@@ -77,7 +82,7 @@ export const RAMPS: Readonly<Record<RampName, RampSpec>> = {
       '--theme-accent': '#33CED6',
       '--theme-danger': '#FF4757',
     },
-    steps: { g2: 4.706, g3: 9.412, g4: 16.471, ink2: -19.608, ink3: -29.804, boundary: -41.569 },
+    steps: { g2: 4.706, g3: 9.412, g4: 16.471, ink2: -19.608, ink3: -29.804, boundary: -41.569, barGroup: 1.569 },
     semantic: {
       rec: '#E5484D',
       recText: '#F67073',
@@ -106,7 +111,7 @@ export const RAMPS: Readonly<Record<RampName, RampSpec>> = {
       '--theme-accent': '#006C71',
       '--theme-danger': '#C30730',
     },
-    steps: { g2: 2.7, g3: 5.5, g4: -14.5, ink2: 16.5, ink3: 25.9, boundary: 32.9 },
+    steps: { g2: 2.7, g3: 5.5, g4: -14.5, ink2: 16.5, ink3: 25.9, boundary: 32.9, barGroup: 1.57 },
     semantic: {
       rec: '#E04349',
       recText: '#B2303C',
@@ -133,7 +138,7 @@ export const RAMPS: Readonly<Record<RampName, RampSpec>> = {
       '--theme-accent': '#33CED6',
       '--theme-danger': '#FD8888',
     },
-    steps: { g2: 3.9, g3: 8.3, g4: 31, ink2: -12.2, ink3: -21.6, boundary: -18.4 },
+    steps: { g2: 3.9, g3: 8.3, g4: 31, ink2: -12.2, ink3: -21.6, boundary: -18.4, barGroup: 3.2 },
     semantic: {
       rec: '#EB4E52',
       recText: '#FE8687',

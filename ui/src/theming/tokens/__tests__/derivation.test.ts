@@ -253,6 +253,8 @@ describe('deriveTheme — structural contracts', () => {
       '--theme-ui-ink-2',
       '--theme-ui-ink-3',
       '--theme-ui-boundary',
+      // The arrangement's alternate bar groups: a ramp step from the ground (ui/DESIGN.md §22)
+      '--theme-timeline-bar-group-shade',
       // Ramp-driven semantic + signal colours (neutralRamp.ts)
       '--theme-ui-rec',
       '--theme-ui-rec-text',

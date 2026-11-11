@@ -650,7 +650,9 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   explicit('--theme-timeline-hold-zone-fill', 'rgba(255, 255, 255, 0.06)', 'any', 'Workspace panels', 'timeline'),
   explicit('--theme-timeline-hold-zone-edge', 'rgba(255, 255, 255, 0.28)', 'any', 'Workspace panels', 'timeline'),
   derivedFormula('--theme-timeline-selection-rect', 'any', 'Workspace panels', 'timeline'),
-  explicit('--theme-timeline-pattern-lane-tint','rgba(106, 169, 255, 0.07)','any','Workspace panels', 'timeline'),
+  // Neutral since round 3 (it was rgba(106, 169, 255, 0.07): a blue cast on the lanes of every
+  // pattern track). The track header's dashed stripe is what marks a pattern track.
+  explicit('--theme-timeline-pattern-lane-tint','rgba(255, 255, 255, 0.03)','any','Workspace panels', 'timeline'),
   ref('--theme-timeline-section-marker',  '--theme-accent',       'solid', 'Workspace panels', 'timeline'),
   // Bezier control-point handle colors — must remain visually distinguishable
   // from each other in any theme (data encoding for bezier control points).
@@ -663,6 +665,9 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   // so the Timeline canvas bed contrast can be tuned independently of shared inset
   // surfaces (Piano Roll, SmartBalance). Not consumed until Pass 5E.3.
   ref('--theme-timeline-lane-bg', '--theme-ui-g0', 'any', 'Workspace panels', 'timeline'),
+  // Alternate bar groups on the lane ground: a step from g0, set per ramp (neutralRamp.ts
+  // `steps.barGroup`) and derived, so it is neutral in every theme and follows a custom ground.
+  derivedFormula('--theme-timeline-bar-group-shade', 'any', 'Workspace panels', 'timeline'),
 
   // ─── Workspace: Grid editor (§3.4.17) ─────────────────────────────────
   ref('--theme-grid-canvas-bg',          '--theme-bg-primary',   'any',   'Workspace panels', 'grid-editor'),

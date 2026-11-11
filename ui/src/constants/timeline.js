@@ -31,9 +31,11 @@ export function zoomTrackHeight(height, deltaY) {
   return clampTrackHeight(Math.round(clampTrackHeight(height) * factor))
 }
 export const RULER_HEIGHT = 26
-// 212: room for the name beside three 24px state toggles (M / S / V). Was 188
-// with 17px buttons (below the 24px hit-area floor).
-export const HEADER_WIDTH = 212
+// 232: the name gets 120px or more beside the 24px colour chip and three 24px state
+// toggles (M / S / V), which are hit-area floors and cannot shrink. It was 212 until round 3
+// (a 62px name: "Grow..."), and 188 with 17px buttons before that. The column is still
+// draggable (uiStore.timelineTrackHeaderWidth); this is where it starts.
+export const HEADER_WIDTH = 232
 
 // Height of the "Add Track" footer row at the bottom of the header column.
 // It lives inside the same scrollable list as the track rows (its own
