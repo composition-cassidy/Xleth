@@ -1,5 +1,6 @@
-/* Progress: a 6px rail with a value-colour fill and a printed readout. Indeterminate shows a static hatch
- * (and a sliding segment only when motion is allowed): the text always says what is happening. */
+/* Progress: a 6px rail with a value-colour fill and a printed readout. The determinate fill is real
+ * progress and is never eased. Indeterminate shows a static segment, which slides only when the motion
+ * tier lets ambient loops run (--mo-ambient, ui-kit/motion.css): the text always says what is happening. */
 @layer kit {
   .wrap {
     display: flex;
@@ -36,8 +37,9 @@
     opacity: 0.6;
   }
 
-  @media (prefers-reduced-motion: no-preference) {
-    .rail[data-indeterminate] .fill { animation: slide 1.2s linear infinite; }
+  .rail[data-indeterminate] .fill {
+    animation: slide var(--mo-loop-slow) linear infinite;
+    animation-play-state: var(--mo-ambient, paused);
   }
 
   @keyframes slide {

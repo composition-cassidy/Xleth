@@ -1,6 +1,9 @@
 import React from 'react'
-import { Check, Square } from 'lucide-react'
 import { Toggle } from '../../ui-kit'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcCheckSquareFill = iconComponent('check-square', 'fill')
+const IcSquareReg = iconComponent('square', 'regular')
 
 /**
  * The on/off control of an Inspector row: a kit Toggle with no text of its own,
@@ -15,7 +18,7 @@ export default function RowToggle({ label, on, onChange, hint, disabled, ...rest
       on={!!on}
       onChange={onChange}
       disabled={disabled}
-      glyph={on ? <Check aria-hidden="true" /> : <Square aria-hidden="true" />}
+      glyph={on ? <IcCheckSquareFill aria-hidden="true" /> : <IcSquareReg aria-hidden="true" />}
       aria-label={label}
       hint={hint}
       {...rest}

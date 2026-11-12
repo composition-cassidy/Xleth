@@ -1,3 +1,4 @@
+import { pearlPlan } from '../ui-kit/pearlRules'
 import { create } from 'zustand'
 import { flatTrackLayout, normalizeTrackLayout } from '../components/timeline/trackFolderLayout.js'
 import { timelineEvents } from '../timelineEvents.js'
@@ -427,6 +428,33 @@ const useMixerStore = create((set, get) => ({
     set(s => ({ tracks: { ...s.tracks, [trackId]: { ...s.tracks[trackId], solo: next } } }))
     window.xleth?.timeline?.setTrackSolo(trackId, next)
     dispatchTimelineTrackPatch(trackId, { solo: next })
+  },
+
+  // Output pearl (ui-kit/pearlRules.ts): 'toggle' = on/off, 'solo' = this one only, or everything
+  // back on when it is already the only one heard. Works on mute flags; clears legacy solo flags.
+  pearl: (trackId, action) => {
+    const all = Object.values(get().tracks).filter(Boolean)
+    const changes = pearlPlan(all.map(t => ({ id: t.id, muted: !!t.muted, soloed: !!t.solo })), trackId, action)
+    if (changes.length === 0) return
+    set(s => {
+      const tracks = { ...s.tracks }
+      for (const c of changes) {
+        const t = tracks[c.id]
+        if (!t) continue
+        tracks[c.id] = { ...t, muted: c.muted ?? t.muted, solo: c.clearSolo ? false : t.solo }
+      }
+      return { tracks }
+    })
+    for (const c of changes) {
+      if (c.clearSolo) {
+        window.xleth?.timeline?.setTrackSolo(c.id, false)
+        dispatchTimelineTrackPatch(c.id, { solo: false })
+      }
+      if (c.muted !== undefined) {
+        window.xleth?.timeline?.setTrackMuted(c.id, c.muted)
+        dispatchTimelineTrackPatch(c.id, { muted: c.muted })
+      }
+    }
   },
 
   toggleVisualOnly: (trackId) => {

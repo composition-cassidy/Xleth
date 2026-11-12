@@ -1,5 +1,6 @@
 /* Select. The popup is a FLOATING surface, so it alone carries the hard offset
- * shadow (DESIGN.md section 1). No entry animation. */
+ * shadow (DESIGN.md section 1). It enters with the `pop` recipe (ui-kit/motion.css), growing
+ * out of the trigger's edge. */
 @layer kit {
   .trigger {
     box-sizing: border-box;
@@ -35,6 +36,12 @@
   .chevron {
     flex: none;
     color: var(--ui-ink-2);
+    transition: rotate var(--mo-edit) var(--mo-ease-out);
+  }
+
+  /* The chevron turns to point back at the trigger while the list is open. */
+  .trigger[aria-expanded="true"] .chevron {
+    rotate: 180deg;
   }
 
   .trigger:is(:hover, [data-state="hover"]):not(:disabled) {
@@ -68,6 +75,11 @@
     background: var(--ui-g2);
     box-shadow: var(--ui-shadow-float);
     font-family: var(--ui-font);
+    --mo-origin: top center;
+  }
+
+  .popup[data-placement="top"] {
+    --mo-origin: bottom center;
   }
 
   .group {

@@ -1,8 +1,13 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
-import { AlertTriangle, Check, Info } from 'lucide-react'
+import { useGhostExit, useMotionEnter } from '../ui-kit'
 import styles from './Toast.module.css'
+import { iconComponent } from '../ui-kit/icons'
 
-const LEVEL_GLYPH = { info: Info, success: Check, error: AlertTriangle }
+const IcCheckCircle = iconComponent('check-circle')
+const IcInfo = iconComponent('info')
+const IcWarningCircle = iconComponent('warning-circle')
+
+const LEVEL_GLYPH = { info: IcInfo, success: IcCheckCircle, error: IcWarningCircle }
 
 const ToastCtx = createContext(null)
 
@@ -51,18 +56,30 @@ export function ToastStatusText() {
   const current = toasts[toasts.length - 1]
   if (!current) return null
 
-  const Glyph = LEVEL_GLYPH[current.level] || Info
+  // key: each toast is its own element, so it enters (and the one it replaces exits) on its own.
+  return <ToastLine key={current.id} toast={current} dismiss={dismiss} />
+}
+
+function ToastLine({ toast, dismiss }) {
+  const ref = useRef(null)
+  // Motion (ui-kit/motion.css): the line rises into the bar and sinks back out of it. The exit is
+  // pinned where the line stood, so the next toast never waits for it or shifts around it.
+  const enter = useMotionEnter('toast')
+  useGhostExit(ref, { pin: true, shiftY: 4 })
+  const Glyph = LEVEL_GLYPH[toast.level] || IcInfo
   return (
-    <span role={current.level === 'error' ? 'alert' : 'status'} key={current.id}>
+    <span role={toast.level === 'error' ? 'alert' : 'status'}>
       <button
+        ref={ref}
         type="button"
         className={styles.toast}
-        data-level={current.level}
-        onClick={() => dismiss(current.id)}
+        data-level={toast.level}
+        onClick={() => dismiss(toast.id)}
         title="Dismiss"
+        {...enter}
       >
         <span className={styles.glyph} aria-hidden="true"><Glyph size={12} /></span>
-        <span className={styles.message}>{current.message}</span>
+        <span className={styles.message}>{toast.message}</span>
       </button>
     </span>
   )

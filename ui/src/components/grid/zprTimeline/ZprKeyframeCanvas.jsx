@@ -4,6 +4,7 @@ import { evaluateTrack } from './zprCurveMath.js'
 
 import { useThemeEpoch } from '../../../theming/useThemeEpoch.js'
 import styles from './zprTimeline.module.css'
+import { Icon } from '../../../ui-kit/icons'
 // Canvas keyframe timeline for the ZPR effect card. Modeled on
 // pianoRoll/PianoRollCanvas.jsx: a DOM label gutter beside a single canvas
 // that owns the ruler, rows, curves, keyframes and playhead — never DOM
@@ -380,7 +381,7 @@ export default function ZprKeyframeCanvas({
                 aria-expanded={positionExpanded}
                 data-hint={positionExpanded ? 'Show X and Y as one Position row' : 'Show X and Y as separate rows'}
               >
-                {positionExpanded ? '▾' : '▸'} {row.label}
+                <Icon name={positionExpanded ? 'caret-down' : 'caret-right'} size={14} /> {row.label}
               </button>
             ) : (
               <span>{row.label}</span>

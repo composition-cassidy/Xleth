@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react'
-import { DeviceSection, DisplayWell, Knob, Toggle } from '../../ui-kit'
+import { DeviceSection, DisplayWell, Toggle } from '../../ui-kit'
+import AutomatableKnob from './AutomatableKnob.jsx'
 import FlangerVisualizerCanvas from '../mixer/FlangerVisualizerCanvas.jsx'
 import FlangerLfoCanvas from './FlangerLfoCanvas.jsx'
 import useDeviceParams from './useDeviceParams.js'
@@ -29,6 +30,10 @@ const VIEWS = [
 // Signal order: display (hero) -> Modulation -> Delay -> Feedback -> Output.
 // Hero control: Feedback. Its polarity is a toggle beside it (a sign flip, same
 // parameter and range).
+// The engine's NormalisableRange skew per parameter (only the automation maths
+// needs it; a knob's own travel comes from its range or scale).
+const SKEW = Object.freeze({ rate: 0.5, delay: 0.5 })
+
 export default function FlangerDevice({ target, registerApplied, deviceKey }) {
   const { params, preview, commit, syncParamsFromPreset } = useDeviceParams('flanger', DEFAULTS, target)
   useEffect(() => {
@@ -40,8 +45,11 @@ export default function FlangerDevice({ target, registerApplied, deviceKey }) {
   const setView = useDeviceUiStore((s) => s.setView)
 
   const knob = (id, label, unit, extra = {}) => (
-    <Knob
+    <AutomatableKnob
       key={id}
+      paramId={id}
+      target={target}
+      skew={SKEW[id] ?? 1}
       label={label}
       value={params[id]}
       min={RANGES[id][0]}

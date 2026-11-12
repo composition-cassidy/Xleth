@@ -37,15 +37,32 @@ SyncManager::SyncManager(Transport& transport,
 {
 }
 
+void SyncManager::setEvents(EventList events, SlideEventList slideEvents)
+{
+    events_      = std::make_shared<const EventList>(std::move(events));
+    slideEvents_ = std::make_shared<const SlideEventList>(std::move(slideEvents));
+}
+
 void SyncManager::addEvent(const VideoEvent& event)
 {
-    events_.push_back(event);
+    // Copy-append-publish. Only the legacy single-event RPC comes through
+    // here; the timeline rebuild publishes a whole list at once via setEvents.
+    auto next = std::make_shared<EventList>(*events_);
+    next->push_back(event);
+    events_ = std::move(next);
+}
+
+void SyncManager::addSlideEvent(const SlideAnimationEvent& e)
+{
+    auto next = std::make_shared<SlideEventList>(*slideEvents_);
+    next->push_back(e);
+    slideEvents_ = std::move(next);
 }
 
 void SyncManager::clearEvents()
 {
-    events_.clear();
-    slideEvents_.clear();
+    events_      = std::make_shared<const EventList>();
+    slideEvents_ = std::make_shared<const SlideEventList>();
 
     // Reset preview hold state (prevents stale holds across seek/stop/project switch)
     previewLastChorusFrame    = -1;

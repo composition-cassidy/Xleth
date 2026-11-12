@@ -414,6 +414,13 @@ public:
     // block the user had trimmed to exactly the NEW length. Callers that need
     // block durations back must snapshot them before mutating and restore them
     // explicitly (see ImportMidiCommand::UpdatedTrackSnapshot).
+    // Whole-list note edit that KEEPS ids: every note with id > 0 keeps it, a
+    // note with id <= 0 gets a fresh one from the pattern's counter (written
+    // back into `notes`). Then one recalcPatternLength, so the block cascade
+    // sees a single length transition. Used by EditPatternNotesCommand, whose
+    // undo is simply this call again with the before-list.
+    bool setPatternNotesKeepIds(int patternId, std::vector<PatternNote>& notes);
+
     bool restorePatternNotes(int patternId,
                              const std::vector<PatternNote>& notes,
                              int nextNoteId,

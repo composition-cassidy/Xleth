@@ -1,6 +1,7 @@
 import React, { useEffect } from 'react'
 import { DeviceSection, DisplayWell, SegmentedControl, logScale } from '../../ui-kit'
 import AutomatableKnob from './AutomatableKnob.jsx'
+import AutomationTarget from './AutomationTarget.jsx'
 import PhaserSweepCanvas from './PhaserSweepCanvas.jsx'
 import { plainFormat } from './deviceFormat.js'
 import useDeviceParams from './useDeviceParams.js'
@@ -95,14 +96,16 @@ export default function PhaserDevice({ target, registerApplied }) {
 
       <DeviceSection title="Notches" width={236}>
         <div className={deviceStyles.column}>
-          <SegmentedControl
-            size="sm"
-            label="Stages"
-            value={Math.max(1, Math.min(6, Math.round(Number(params.stages))))}
-            options={STAGE_OPTIONS}
-            onChange={(v) => commit('stages', v)}
-            hint="Allpass stages. Each stage makes one notch."
-          />
+          <AutomationTarget paramId="stages" target={target}>
+            <SegmentedControl
+              size="sm"
+              label="Stages"
+              value={Math.max(1, Math.min(6, Math.round(Number(params.stages))))}
+              options={STAGE_OPTIONS}
+              onChange={(v) => commit('stages', v)}
+              hint="Allpass stages. Each stage makes one notch."
+            />
+          </AutomationTarget>
           <div className={deviceStyles.pair}>
             {knob('feedback', 'Feedback', {
               size: 56, width: 88, unit: '%', bipolar: true, formatOptions: { signed: true },

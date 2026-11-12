@@ -59,8 +59,10 @@
     background: var(--ui-g1);
   }
 
-  /* The underline is the shape cue: 2px ink rule on the selected tab. */
-  .tab[data-selected="true"]::after {
+  /* The underline is the shape cue: 2px ink rule on the selected tab. Every tab carries the
+   * rule at zero width so selecting one can draw it out from the centre (--mo-state: instant
+   * until the lively tier). */
+  .tab::after {
     content: "";
     position: absolute;
     left: 0;
@@ -68,6 +70,12 @@
     bottom: -1px;
     height: 2px;
     background: var(--ui-ink);
+    transform: scaleX(0);
+    transition: transform var(--mo-state) var(--mo-ease-out);
+  }
+
+  .tab[data-selected="true"]::after {
+    transform: scaleX(1);
   }
 
   .tab:focus-visible {

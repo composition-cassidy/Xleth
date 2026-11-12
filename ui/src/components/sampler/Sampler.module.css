@@ -1,6 +1,10 @@
-/* Sampler (round 2, step 11). Neutral surfaces only; colour is the slot identity
- * (tab stripe, waveform), value fills, selection and the parameter-signal ring.
- * Height budget at the default dock (1080p): 28 header + 305 body + 28 audition. */
+/* Sampler. Neutral surfaces only; colour is the slot identity (tab stripe, slot
+ * bar edge, waveform), value fills, selection and the parameter-signal ring.
+ *
+ * The Sampler is a window of its own (800x640 by default). Its layout answers to
+ * the panel's own box, not the viewport: tall, it stacks (slots, slot bar, view
+ * tabs, body, audition); in a short wide box (the detail dock) the view tabs
+ * join the slot row and the body's parts sit side by side. */
 @layer kit {
   .root {
     box-sizing: border-box;
@@ -10,6 +14,7 @@
     min-width: 0;
     height: 100%;
     min-height: 0;
+    container: sampler / size;
     background: var(--ui-g1);
     color: var(--ui-ink);
     font-family: var(--ui-font);
@@ -17,23 +22,35 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* ── Header row: slot tabs | patch | views ─────────────────────────────── */
-  .header {
-    box-sizing: border-box;
-    display: flex;
-    flex: none;
-    align-items: stretch;
+  .shell {
+    display: grid;
+    flex: 1 1 auto;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: var(--panel-header-h) auto var(--panel-header-h) minmax(0, 1fr) var(--panel-header-h);
+    grid-template-areas:
+      "slots patch"
+      "bar   bar"
+      "views views"
+      "body  body"
+      "aud   aud";
     min-width: 0;
-    height: var(--panel-header-h);
+    min-height: 0;
+  }
+
+  /* ── Row 1: the slots (layers) and the patch ──────────────────────────── */
+  .slotRow {
+    grid-area: slots;
+    display: flex;
+    min-width: 0;
     background: var(--ui-g2);
     border-bottom: 1px solid var(--ui-g4);
   }
 
+  /* ── Row 3: the view tabs, directly over the body they switch ─────────── */
   .views {
-    flex: none;
-    height: calc(var(--panel-header-h) - 1px);
-    border-bottom: 0;
-    border-left: 1px solid var(--ui-g4);
+    grid-area: views;
+    min-width: 0;
+    background: var(--ui-g2);
   }
 
   .slotStrip {
@@ -168,12 +185,14 @@
   }
 
   .patch {
+    grid-area: patch;
     display: flex;
-    flex: none;
     align-items: center;
     gap: 2px;
     padding: 0 var(--space-2);
     border-left: 1px solid var(--ui-g4);
+    border-bottom: 1px solid var(--ui-g4);
+    background: var(--ui-g2);
   }
 
   .patchSelect {
@@ -190,38 +209,71 @@
     font-size: var(--type-11);
   }
 
+  /* ── Row 2: the selected slot's level and pitch, in every view ────────── */
+  .slotBar {
+    grid-area: bar;
+    box-sizing: border-box;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1);
+    min-width: 0;
+    min-height: var(--ctl-h-lg);
+    padding: var(--space-1) var(--space-2);
+    /* The slot's identity colour: the same one as its tab stripe and waveform. */
+    border-left: 2px solid var(--slot-color);
+    border-bottom: 1px solid var(--ui-g4);
+    background: var(--ui-g1);
+  }
+
+  /* Value boxes share the row: each starts at its own width and grows a little. */
+  .slotBar > [role="slider"] {
+    flex: 1 1 var(--box-w, 84px);
+    width: auto;
+    min-width: 72px;
+    max-width: 148px;
+  }
+
+  .barGap {
+    flex: none;
+    align-self: stretch;
+    width: 1px;
+    margin: 2px var(--space-1);
+    background: var(--ui-g4);
+  }
+
   /* ── Body ─────────────────────────────────────────────────────────────── */
   .body {
+    grid-area: body;
     display: flex;
-    flex: 1 1 auto;
     flex-direction: column;
     min-width: 0;
     min-height: 0;
+    overflow: hidden;
   }
 
+  /* Sample view: the waveform takes what the window has left over the sections. */
   .main {
-    display: grid;
-    flex: 1 1 auto;
-    grid-template-columns: minmax(0, 1fr) 240px;
-    min-height: 0;
-  }
-
-  .left {
+    box-sizing: border-box;
     display: flex;
+    flex: 1 1 auto;
     flex-direction: column;
     gap: var(--space-1);
     min-width: 0;
     min-height: 0;
     padding: var(--space-1);
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-width: thin;
   }
 
   /* The recessed hero well, on neutral g0. */
   .well {
     box-sizing: border-box;
     display: flex;
-    flex: 1 1 auto;
+    flex: 1 1 160px;
     flex-direction: column;
-    min-height: 72px;
+    min-height: 132px;
     border: 1px solid var(--ui-g4);
     background: var(--ui-g0);
   }
@@ -277,19 +329,6 @@
     gap: 2px;
   }
 
-  .flag {
-    min-width: var(--hit-min);
-    padding: 0;
-    justify-content: center;
-    font-weight: var(--weight-semibold);
-  }
-
-  .solo[data-on="true"] {
-    border-color: var(--ui-solo);
-    background: var(--ui-solo);
-    color: var(--ui-g1);
-  }
-
   .spacer {
     flex: 1 1 auto;
   }
@@ -310,45 +349,37 @@
     display: block;
   }
 
-  /* One row of section strips, in signal order. */
-  .strips {
-    box-sizing: border-box;
+  /* Titled sections in rows. A row wraps when the window is narrow, so nothing
+   * ever scrolls sideways. */
+  .sections {
     display: flex;
     flex: none;
-    align-items: stretch;
+    flex-direction: column;
+    gap: var(--space-1);
     min-width: 0;
-    border: 1px solid var(--ui-g4);
-    border-left: 0;
-    background: var(--ui-g1);
-    overflow-x: auto;
-    overflow-y: hidden;
-    scrollbar-width: thin;
   }
 
-  /* The strips size their spacing to their own width (1366x768 gets the tight
-   * rhythm, 1080p and up the open one); see the @container block below. */
-  .strips {
-    container: strips / inline-size;
+  .sectionRow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1);
+    min-width: 0;
   }
 
-  /* Every section grows with the row (folded ones stay a strip); a section that
-   * holds a single field keeps its own width. */
-  .strips > div:not([data-folded]) {
+  .sectionRow > .section {
     flex: 1 1 auto;
-  }
-
-  .strips > [data-section="mode"] {
-    flex: 0 0 auto;
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g1);
   }
 
   /* Section bodies: one padding rhythm everywhere. */
-  .strips > div > div:last-child {
+  .sectionRow > .section > div:last-child {
     padding: var(--space-2) var(--space-3);
   }
 
   /* Header actions (a status word, Auto, On) never touch each other. */
-  .strips [role="heading"] > span:last-child,
-  .side [role="heading"] > span:last-child {
+  .sectionRow [role="heading"] > span:last-child,
+  .envBox [role="heading"] > span:last-child {
     gap: var(--space-2);
   }
 
@@ -359,7 +390,7 @@
     gap: var(--space-1);
   }
 
-  .strips .knobRow {
+  .sectionRow .knobRow {
     align-self: stretch;
     justify-content: space-evenly;
   }
@@ -383,43 +414,10 @@
     gap: var(--space-2);
   }
 
-  /* ── Right column (240px): this slot's pitch, level, prep, process ─────── */
-  .side {
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    overflow-x: hidden;
-    overflow-y: auto;
-    border-left: 1px solid var(--ui-g4);
-    background: var(--ui-g1);
-    scrollbar-width: thin;
-  }
-
-  .sideSection {
-    flex: none;
-    border-bottom: 1px solid var(--ui-g4);
-  }
-
-  .side .sideStrip {
-    width: 100%;
-    border-left: 0;
-  }
-
-  .side .sideStrip > div:last-child {
-    align-items: stretch;
-    padding: var(--space-1) var(--space-3);
-  }
-
   .grid2 {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: var(--space-1) var(--space-2);
-  }
-
-  /* Value boxes fill their cell instead of their fixed default width. */
-  .grid2 > [role="slider"] {
-    width: 100%;
-    min-width: 0;
   }
 
   .fill {
@@ -430,12 +428,12 @@
   .prepRow {
     display: flex;
     align-items: center;
-    gap: 2px;
+    gap: var(--space-1);
   }
 
   .prepAlgo {
-    flex: 1 1 auto;
-    min-width: 0;
+    flex: none;
+    width: 124px;
   }
 
   /* A named dropdown (FieldSelect): label left, Select right. Stacked fields line up. */
@@ -456,8 +454,33 @@
     width: var(--field-w, 112px);
   }
 
+  /* ── Envelope view ────────────────────────────────────────────────────── */
+  .envelope {
+    box-sizing: border-box;
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    padding: var(--space-1);
+  }
+
+  .envBox {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g1);
+  }
+
+  .envEmpty {
+    padding: var(--space-3);
+  }
+
   /* ── Playback view ────────────────────────────────────────────────────── */
   .playback {
+    box-sizing: border-box;
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
@@ -465,24 +488,13 @@
     min-width: 0;
     min-height: 0;
     padding: var(--space-1);
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-width: thin;
   }
 
-  .playback > .strips {
-    flex: 1 1 auto;
-    min-height: 0;
-  }
-
-  .playback > .strips > [data-section="voice"],
-  .playback > .strips > [data-section="glide"] {
-    flex-grow: 1;
-  }
-
-  .playback > .strips > [data-section="arp"] {
-    flex-grow: 1.4;
-  }
-
-  .playback > .strips > [data-section="mangle"] {
-    flex-grow: 2.2;
+  .playback .section[data-section="arp"] {
+    flex-grow: 2;
   }
 
   .stack {
@@ -536,6 +548,7 @@
     box-sizing: border-box;
     display: flex;
     flex: none;
+    margin-top: auto;
     align-items: center;
     gap: var(--space-2);
     min-width: 0;
@@ -558,9 +571,9 @@
 
   /* ── Audition bar (every view) ────────────────────────────────────────── */
   .audition {
+    grid-area: aud;
     box-sizing: border-box;
     display: flex;
-    flex: none;
     align-items: center;
     gap: var(--space-2);
     min-width: 0;
@@ -603,9 +616,11 @@
 
   /* ── Modulation view ──────────────────────────────────────────────────── */
   .modulation {
+    box-sizing: border-box;
     display: grid;
     flex: 1 1 auto;
-    grid-template-columns: 344px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(96px, 22%);
     gap: var(--space-1);
     min-height: 0;
     padding: var(--space-1);
@@ -810,20 +825,42 @@
   .editorWell {
     position: relative;
     flex: 1 1 auto;
-    min-height: 56px;
+    min-height: 96px;
     border: 1px solid var(--ui-g4);
     background: var(--ui-g0);
     overflow: hidden;
   }
 
-  .editorWell > canvas {
+  .editorWell > canvas,
+  .timeWell > canvas {
     position: absolute;
     top: 0;
     left: 0;
   }
 
+  /* The LFO's to-scale strip under its shape: a fixed height, so the shape gets the rest. */
+  .timeWell {
+    position: relative;
+    flex: none;
+    height: 64px;
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g0);
+    overflow: hidden;
+  }
+
   .curveWell {
     max-width: 480px;
+  }
+
+  /* A column of small fields at the end of a knob row. */
+  .sideCol {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: center;
+    gap: var(--space-1);
+    align-self: center;
   }
 
   .rateBox {
@@ -859,22 +896,68 @@
     outline: 1px solid var(--ui-signal-parameter);
   }
 
-  /* Narrow strips (about 1366x768): tight spacing, so no section is pushed off the row. */
-  @container strips (max-width: 1150px) {
-    .strips > div > div:last-child {
-      padding: var(--space-1);
+  /* A short, wide box: the detail dock, or a window dragged flat. The view tabs
+   * join the slot row, and each view's parts sit side by side instead of stacked. */
+  @container sampler (max-height: 540px) and (min-width: 900px) {
+    .shell {
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      grid-template-rows: var(--panel-header-h) auto minmax(0, 1fr) var(--panel-header-h);
+      grid-template-areas:
+        "slots patch views"
+        "bar   bar   bar"
+        "body  body  body"
+        "aud   aud   aud";
     }
 
-    .strips .knobRow {
-      gap: 0;
+    .views {
+      border-left: 1px solid var(--ui-g4);
     }
 
-    .loopBody {
-      gap: var(--space-1);
+    .main {
+      display: grid;
+      grid-template-columns: minmax(240px, 1fr) minmax(0, min(784px, 60%));
+      overflow: hidden;
     }
 
-    .fieldLabel {
-      min-width: 0;
+    .well {
+      min-height: 0;
+    }
+
+    .main > .sections {
+      min-height: 0;
+      overflow-x: hidden;
+      overflow-y: auto;
+      scrollbar-width: thin;
+    }
+
+    .playback > .sections {
+      flex-direction: row;
+    }
+
+    /* The per-note effects row keeps its own width (its rows do not wrap); the
+     * Voice, Glide and Arpeggiator sections share what is left and wrap if short. */
+    .playback > .sections > .sectionRow:first-child {
+      flex: 1 1 0;
+    }
+
+    .playback > .sections > .sectionRow:last-child {
+      flex: none;
+      min-width: 40%;
+    }
+
+    .modulation {
+      grid-template-columns: 344px minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1fr);
+    }
+
+    .modulation > .routes {
+      grid-column: 1;
+      grid-row: 1;
+    }
+
+    .modulation > .modRight {
+      grid-column: 2;
+      grid-row: 1;
     }
   }
 }

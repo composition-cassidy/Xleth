@@ -144,6 +144,22 @@ export function automationClipBodyRect(clip, laneRow, pixelsPerBeat, scrollOffse
   return { x, y, w, h, headerH, contentTop, contentHeight }
 }
 
+// Ids of the automation clips whose painted rect the pixel band touches
+// (rubber-band select). Lane rows come from trackLayout.getAutomationLaneRows().
+export function automationClipIdsInPixelRect(clips, laneRows, x1, y1, x2, y2, pixelsPerBeat, scrollOffset) {
+  const ids = new Set()
+  if (!Array.isArray(clips) || !Array.isArray(laneRows)) return ids
+  const left = Math.min(x1, x2), right = Math.max(x1, x2)
+  const top = Math.min(y1, y2), bottom = Math.max(y1, y2)
+  const rowByLane = new Map(laneRows.map((r) => [r.laneId, r]))
+  for (const clip of clips) {
+    const rect = automationClipPixelRect(clip, rowByLane.get(clip.laneId), pixelsPerBeat, scrollOffset)
+    if (!rect) continue
+    if (rect.x + rect.w > left && rect.x < right && rect.y + rect.h > top && rect.y < bottom) ids.add(clip.id)
+  }
+  return ids
+}
+
 // Envelope tick 0 in TIMELINE ticks. A point at intra-envelope tick t sits at
 // `originTick + t`; the clip only SHOWS [offsetTicks, offsetTicks + duration).
 export function automationEnvelopeOriginTick(clip) {

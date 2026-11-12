@@ -1,8 +1,9 @@
 import { useState, useCallback, useRef } from 'react'
 import styles from './browser/Browser.module.css'
 
-const ALLOWED_EXT = /\.(mp4|avi|mov|mkv|wav|mp3|flac|mid|midi)$/i
-const MIDI_EXT = /\.(mid|midi)$/i
+const ALLOWED_EXT = /\.(mp4|avi|mov|mkv|wav|mp3|flac|mid|midi|flp)$/i
+// MIDI files and FL Studio projects both open the MIDI import dialog.
+const MIDI_EXT = /\.(mid|midi|flp)$/i
 
 /**
  * Wraps content with drag-and-drop file import. The whole wrapped region is the
@@ -57,7 +58,7 @@ export default function ImportDropZone({ onFilesDropped, onMidiFileDropped, chil
     // Electron 41+ removed File.path; use webUtils via the preload bridge.
     const getPath = (f) => window.xleth?.getDroppedFilePath?.(f) || f.path || f.name
 
-    // Route first .mid/.midi to the MIDI import dialog
+    // Route the first .mid/.midi/.flp to the MIDI import dialog
     const midiFile = files.find(f => MIDI_EXT.test(f.name))
     if (midiFile && onMidiFileDropped) {
       const path = getPath(midiFile)

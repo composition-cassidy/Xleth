@@ -18,6 +18,7 @@
 import { ticksToBeats } from '../../constants/timeline.js'
 import { pickLabelInk } from '../../ui-kit/colorMath.ts'
 import { PITCH_MAX, pitchLabel } from './pianoRollGeometry.js'
+import { drawIcon } from '../../ui-kit/icons/canvas.ts'
 
 const MINUS = '−'
 const HEX6 = /^#[0-9a-f]{6}$/i
@@ -103,17 +104,9 @@ export function noteStyle({ color, palette, labelMode = 'pitch', refSlot = null 
 }
 
 function drawSlideGlyph(ctx, x, y, h, ink) {
-  // A short rising ramp with a cap: "this note slides" without a second colour.
-  const w = 7
-  const top = y + 3
-  const bottom = y + h - 3
-  ctx.strokeStyle = ink
-  ctx.lineWidth = 1.5
-  ctx.beginPath()
-  ctx.moveTo(x, bottom)
-  ctx.lineTo(x + w, top)
-  ctx.lineTo(x + w, bottom)
-  ctx.stroke()
+  // XLETH's slide glyph (a rising ramp with a cap), from the shared icon table.
+  const s = Math.max(6, Math.min(10, h - 2))
+  drawIcon(ctx, 'xleth-slide', x, y + (h - s) / 2, s, ink)
 }
 
 /**
@@ -215,7 +208,7 @@ export function buildGhostNotes({ patternId, pattern, blocks, patternsById, maxN
         const T = bStart + (u - offset)
         if (T >= winEnd || T + n.durationTicks <= winStart) continue
         const end = Math.min(T + n.durationTicks, bEnd)
-        out.push({ positionTicks: toLocal(T), durationTicks: Math.max(1, end - T), pitch: n.pitch, kind })
+        out.push({ positionTicks: toLocal(T), durationTicks: Math.max(1, end - T), pitch: n.pitch, kind, patternId: b.patternId })
         if (out.length >= maxNotes) return out
       }
     }

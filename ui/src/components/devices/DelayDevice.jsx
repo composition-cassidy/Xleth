@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useState } from 'react'
 import {
   DeviceSection, DisplayWell, Knob, Select, formatValue, skewScale, syncCodec,
 } from '../../ui-kit'
+import AutomatableKnob from './AutomatableKnob.jsx'
+import AutomationTarget from './AutomationTarget.jsx'
 import DelayEchoFieldVisualizer from '../mixer/DelayEchoFieldVisualizer.jsx'
 import DelayFilterCurve from '../mixer/DelayFilterCurve.jsx'
 import { subscribe as subscribeTransport, getTransportState } from '../../transportStore.js'
@@ -52,6 +54,10 @@ const STEREO_MODE_OPTIONS = [
 
 // Signal order: echo field (hero) -> Time -> Model -> Feedback -> Output.
 // The engine has no input parameter, so there is no Input section.
+// The engine's NormalisableRange skew per parameter (only the automation maths
+// needs it; a knob's own travel comes from its range or scale).
+const SKEW = Object.freeze({ time_l: 0.4, time_r: 0.4, filter_lo: 0.3, filter_hi: 0.23, mod_rate: 0.5 })
+
 export default function DelayDevice({ target, registerApplied }) {
   const { params, preview, commit, syncParamsFromPreset } = useDeviceParams('delay', DEFAULTS, target)
   const [bpm, setBpm] = useState(() => getTransportState()?.bpm ?? 120)
@@ -83,8 +89,11 @@ export default function DelayDevice({ target, registerApplied }) {
   const widthLabel = stereoWidthLabel(stereoMode) === 'SPREAD' ? 'Spread' : 'Width'
 
   const knob = (id, label, unit, extra = {}) => (
-    <Knob
+    <AutomatableKnob
       key={id}
+      paramId={id}
+      target={target}
+      skew={SKEW[id] ?? 1}
       label={label}
       value={params[id]}
       min={extra.min}
@@ -111,6 +120,7 @@ export default function DelayDevice({ target, registerApplied }) {
       <div className={styles.cell} key={side}>
         {locked ? <span className={styles.caption}>{name}</span> : null}
         {synced ? (
+          <AutomationTarget paramId={divParam} target={target}>
           <Knob
             label={`${side} division`}
             value={clamp(divIndex, 0, 11)}
@@ -124,8 +134,12 @@ export default function DelayDevice({ target, registerApplied }) {
             data-param={divParam}
             hint="Delay length as a note value, from the project tempo"
           />
+          </AutomationTarget>
         ) : (
-          <Knob
+          <AutomatableKnob
+            paramId={timeParam}
+            target={target}
+            skew={0.4}
             label={`${side} time`}
             value={clamp(timeMs, TIME_MIN, TIME_MAX)}
             scale={TIME_SCALE}
@@ -174,13 +188,15 @@ export default function DelayDevice({ target, registerApplied }) {
       </DeviceSection>
 
       <DeviceSection title="Model" width={124}>
-        <Select
-          size="sm"
-          ariaLabel="Stereo mode"
-          value={stereoMode}
-          options={STEREO_MODE_OPTIONS}
-          onChange={(v) => commit('stereo_mode', v)}
-        />
+        <AutomationTarget paramId="stereo_mode" target={target}>
+          <Select
+            size="sm"
+            ariaLabel="Stereo mode"
+            value={stereoMode}
+            options={STEREO_MODE_OPTIONS}
+            onChange={(v) => commit('stereo_mode', v)}
+          />
+        </AutomationTarget>
         <div className={styles.pair}>
           {knob('mod_rate', 'Mod rate', 'Hz', { scale: MOD_RATE_SCALE, formatOptions: { decimals: 2 }, size: 28, width: 60 })}
           {knob('mod_depth', 'Mod depth', '%', { min: 0, max: 100, size: 28, width: 60 })}

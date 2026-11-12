@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Plus, VolumeX } from 'lucide-react'
 import { IconButton, hintAttrs } from '../../ui-kit'
 import { slotColorVar } from './samplerFormat.js'
 import styles from './Sampler.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcPlus = iconComponent('plus')
+const IcSpeakerSimpleXFill = iconComponent('speaker-simple-x', 'fill')
 
 // ── SlotTabs ────────────────────────────────────────────────────────────────
 // The sampler's sample slots (layers) as the left part of the panel's 28px header.
@@ -138,7 +141,7 @@ function SlotTab({
       ) : (
         <span className={styles.slotName}>{name}</span>
       )}
-      {audible ? null : <VolumeX className={styles.slotSilent} size={12} aria-hidden="true" />}
+      {audible ? null : <IcSpeakerSimpleXFill className={styles.slotSilent} size={14} aria-hidden="true" />}
     </div>
   )
 }
@@ -207,7 +210,7 @@ export default function SlotTabs({
           ? 'Add a sample slot (a layer). Or drop an audio file on this strip.'
           : `All ${MAX_SLOTS} slots are in use`}
       >
-        <Plus aria-hidden="true" />
+        <IcPlus aria-hidden="true" />
       </IconButton>
       <span className={styles.slotCount} data-hint="Slots in use">{count}/{MAX_SLOTS}</span>
     </div>

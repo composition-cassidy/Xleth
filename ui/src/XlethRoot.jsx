@@ -346,13 +346,15 @@ export async function handleXlethRootMenuAction(label, {
       xl.window.resetZoom?.()
       break
     case 'Undo':
-      await xl.undo.undo()
+      // The arrangement owns the gesture: it pops a compound edit (a paste is
+      // an overwrite plus an insert) as one step, exactly as Ctrl+Z does.
+      if (!(await runEditorCommand('undo', 'timeline'))) await xl.undo.undo()
       timelineEvents.dispatchEvent(new Event('timeline-tracks-changed'))
       timelineEvents.dispatchEvent(new Event('timeline-track-layout-changed'))
       timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
       break
     case 'Redo':
-      await xl.undo.redo()
+      if (!(await runEditorCommand('redo', 'timeline'))) await xl.undo.redo()
       timelineEvents.dispatchEvent(new Event('timeline-tracks-changed'))
       timelineEvents.dispatchEvent(new Event('timeline-track-layout-changed'))
       timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
@@ -639,10 +641,11 @@ function XlethRootInner() {
 
   const handleAppDrop = useCallback((e) => {
     const files = Array.from(e.dataTransfer.files)
-    const midiFile = files.find(f => /\.(mid|midi)$/i.test(f.name))
+    const midiFile = files.find(f => /\.(mid|midi|flp)$/i.test(f.name))
     if (midiFile) {
       e.preventDefault()
-      onOpenMidiImport(midiFile.path || midiFile.name)
+      // Electron 41+ removed File.path; the preload bridge resolves it.
+      onOpenMidiImport(window.xleth?.getDroppedFilePath?.(midiFile) || midiFile.path || midiFile.name)
     }
   }, [onOpenMidiImport])
 

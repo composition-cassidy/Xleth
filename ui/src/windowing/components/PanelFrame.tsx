@@ -13,11 +13,14 @@ import { ResizeHandles } from './ResizeHandles';
 import { Titlebar } from './Titlebar';
 import './windowing.css';
 import chrome from './PanelChrome.module.css';
+import { MotionDiv, hadUserInput } from '../../ui-kit';
 
 export interface PanelFrameProps {
   id: PanelId;
   children: ReactNode;
   titlebarContent?: ReactNode;
+  /** Let titlebarContent take the titlebar's free width (its own empty space still drags). */
+  titlebarContentFill?: boolean;
   /** Rendered above the titlebar when the panel shares a slot with others. */
   tabStrip?: ReactNode;
   /** A docked panel that is not the active tab of its slot renders nothing. */
@@ -35,6 +38,7 @@ export function PanelFrame({
   id,
   children,
   titlebarContent,
+  titlebarContentFill = false,
   tabStrip: tabStripOverride,
   inactiveTab: inactiveTabOverride,
 }: PanelFrameProps) {
@@ -160,7 +164,12 @@ export function PanelFrame({
 
   return (
     <PanelVisibilityProvider isVisible={!collapsed}>
-      <section
+      <MotionDiv
+        as="section"
+        // A window the user opened fades in; windows restored with the layout are just there.
+        recipe="window"
+        enter={hadUserInput()}
+        exit={{ fadeOnly: true }}
         ref={panelRef}
         tabIndex={-1}
         className={className}
@@ -172,12 +181,12 @@ export function PanelFrame({
         onMouseDownCapture={claimFocus}
         {...accessibility}
       >
-        <Titlebar id={id} focused={focused}>{titlebarContent}</Titlebar>
+        <Titlebar id={id} focused={focused} contentFill={titlebarContentFill}>{titlebarContent}</Titlebar>
         {collapsed ? null : <div className="xleth-panel-body" id={`xleth-panel-body-${id}`}>{children}</div>}
         {renderPath === 'floating' && !collapsed && entry.resizable !== false
           ? <ResizeHandles id={id} />
           : null}
-      </section>
+      </MotionDiv>
     </PanelVisibilityProvider>
   );
 }

@@ -1,7 +1,9 @@
 import { useEffect, useRef } from 'react'
-import { X } from 'lucide-react'
 import { IconButton } from '../../ui-kit'
 import styles from './ClipFxEditors.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcX = iconComponent('x')
 
 /**
  * The frame of a per-clip FX editor (Vibrato, Scratch), DESIGN.md 22. A floating, draggable,
@@ -38,7 +40,7 @@ export default function ClipFxWindow({
         <span className={styles.title}>{title}</span>
         <span className={styles.subtitle}>{subtitle}</span>
         <IconButton size="sm" label={`Close ${title.toLowerCase()} editor`} onClick={onClose} hint="Close the editor" hintMods="Esc">
-          <X size={14} aria-hidden="true" />
+          <IcX size={14} aria-hidden="true" />
         </IconButton>
       </div>
       {children}

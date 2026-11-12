@@ -6,12 +6,14 @@ import useFxChainDragStore from '../../stores/fxChainDragStore.js'
 import InsertList from './InsertList.jsx'
 import { METER_FLOOR_DB, subscribeMeter } from './mixerMeterBus.js'
 import { GAIN_FORMAT, dbToGain, gainToDb } from './mixerMath.js'
-import { openDevicesFor, useFxDropState, useMeterSubscribe } from './MixerStrip.jsx'
+import { VerticalName, openDevicesFor, useFxDropState, useMeterSubscribe } from './MixerStrip.jsx'
 import styles from './MixerStrip.module.css'
 
 const EMPTY_CHAIN = []
 const MASTER_FX_KEY = 'master'
 const NO_PEAK = '—'
+/** The master's meter prints numerals (a track's prints ticks), so the name beside it needs this much more than a strip. */
+const MASTER_NAME_W = 16
 
 /** "−3.2 dB", or a dash while nothing has been measured. */
 export function peakText(db) {
@@ -68,7 +70,7 @@ function MasterPeak() {
   )
 }
 
-export default function MasterStrip({ stripW = 72, insertRowCount = 5 }) {
+export default function MasterStrip({ stripW = 72, insertRowCount = 5, insertsOpen = false }) {
   const masterVolume = useMixerStore(s => s.master.volume)
   const setMasterVolume = useMixerStore(s => s.setMasterVolume)
   const selected = useMixerStore(s => s.selectedChainKey === MASTER_FX_KEY)
@@ -79,6 +81,7 @@ export default function MasterStrip({ stripW = 72, insertRowCount = 5 }) {
   const openFxChainMenu = useFxChainDragStore(s => s.openMenu)
   const fxDrop = useFxDropState(MASTER_FX_KEY)
   const subscribe = useMeterSubscribe(MASTER_FX_KEY)
+  const masterW = stripW + MASTER_NAME_W
 
   // Fill the chain cache for this strip's own insert list (see MixerStrip).
   useEffect(() => {
@@ -106,7 +109,7 @@ export default function MasterStrip({ stripW = 72, insertRowCount = 5 }) {
   return (
     <div
       className={`${styles.strip} ${styles.master}`}
-      style={{ '--strip-w': `${stripW}px` }}
+      style={{ '--strip-w': `${masterW}px` }}
       data-selected={selected}
       data-fx-drop={fxDrop}
       data-fx-key={MASTER_FX_KEY}
@@ -118,11 +121,12 @@ export default function MasterStrip({ stripW = 72, insertRowCount = 5 }) {
       onContextMenu={handleContextMenu}
     >
       <div className={styles.head}>
-        <span className={styles.numRow} aria-hidden="true" />
-        <span className={styles.name}>Master</span>
+        <span className={styles.numRow} aria-hidden="true">
+          <span className={styles.num}>M</span>
+        </span>
       </div>
 
-      <InsertList name="Master" chain={chain} fxMode={fxMode} rows={insertRowCount} onOpen={handleOpenInsert} />
+      <InsertList name="Master" chain={chain} fxMode={fxMode} rows={insertRowCount} expanded={insertsOpen} onOpen={handleOpenInsert} />
 
       {/* Where a track has M / S / V and pan + width. The master has neither; the same two
           rows hold its peak readout, so its fader and meter line up with every strip's. */}
@@ -130,7 +134,7 @@ export default function MasterStrip({ stripW = 72, insertRowCount = 5 }) {
 
       <div className={styles.field}>
         <NumberBox
-          label="Master volume" hideLabel fill={false} width={stripW - 7} scale={dbTaperScale} unit="dB"
+          label="Master volume" hideLabel fill={false} width={masterW - 7} scale={dbTaperScale} unit="dB"
           formatOptions={GAIN_FORMAT} defaultValue={0}
           value={db} onChange={handleLive} onCommit={handleCommit} hint="Master volume"
         />
@@ -144,6 +148,7 @@ export default function MasterStrip({ stripW = 72, insertRowCount = 5 }) {
         {/* The same tick set, at the same y, as every strip: same rows, same scale. Numerals
             are printed here too (the gutter is at the far left of a long mixer). */}
         <Meter label="Master" channels={2} tone="audio" clipLatch="latched" subscribe={subscribe} hint="Master level, in dB" />
+        <VerticalName name="Master" />
       </div>
       <div className={styles.cableSpace} aria-hidden="true" />
       <div className={styles.outSpace} aria-hidden="true" />

@@ -1,17 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ArrowLeft,
-  ArrowUp,
-  File,
-  Folder,
-  FolderPlus,
-  HardDrive,
-  Home,
-  Music,
-  Star,
-  Video,
-} from 'lucide-react'
-import {
   basename,
   dirname,
   ensureSaveExtension,
@@ -23,6 +11,19 @@ import {
 } from './filePickerHelpers.js'
 import { Button, Dialog, IconButton, TextField } from '../../ui-kit'
 import styles from './FilePicker.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcArrowElbowLeftUp = iconComponent('arrow-elbow-left-up')
+const IcArrowLeft = iconComponent('arrow-left')
+const IcDesktop = iconComponent('desktop')
+const IcFile = iconComponent('file')
+const IcFileAudio = iconComponent('file-audio')
+const IcFileVideo = iconComponent('file-video')
+const IcFolder = iconComponent('folder')
+const IcFolderPlus = iconComponent('folder-plus')
+const IcFolderSimple = iconComponent('folder-simple')
+const IcHardDrive = iconComponent('hard-drive')
+const IcStar = iconComponent('star')
 
 function pickerApi() {
   return window.xleth?.filePicker || null
@@ -49,11 +50,11 @@ function projectFolderItems(projectInfo) {
 }
 
 function iconForEntry(entry) {
-  if (entry.isDirectory) return Folder
+  if (entry.isDirectory) return IcFolder
   const ext = String(entry.extension || '').replace(/^\./, '')
-  if (['wav', 'mp3', 'flac', 'ogg', 'aac', 'm4a'].includes(ext)) return Music
-  if (['mp4', 'avi', 'mov', 'mkv', 'webm', 'wmv'].includes(ext)) return Video
-  return File
+  if (['wav', 'mp3', 'flac', 'ogg', 'aac', 'm4a'].includes(ext)) return IcFileAudio
+  if (['mp4', 'avi', 'mov', 'mkv', 'webm', 'wmv'].includes(ext)) return IcFileVideo
+  return IcFile
 }
 
 function actionLabelFor(options) {
@@ -369,24 +370,24 @@ export default function XlethFilePickerModal({ options, onCancel, onAccept }) {
   const sidebarSections = [
     {
       title: 'Favorite Folders',
-      items: (roots.favorites || []).map(path => ({ label: basename(path) || path, path, icon: Star })),
+      items: (roots.favorites || []).map(path => ({ label: basename(path) || path, path, icon: IcStar })),
       empty: 'No favorites yet',
     },
     {
       title: 'Project Folders',
-      items: projectFolderItems(projectInfo).map(item => ({ ...item, icon: Folder })),
+      items: projectFolderItems(projectInfo).map(item => ({ ...item, icon: IcFolder })),
     },
     {
       title: 'Source Folders',
-      items: sourceFolders.map(item => ({ ...item, icon: Music })),
+      items: sourceFolders.map(item => ({ ...item, icon: IcFolderSimple })),
     },
     {
       title: 'Locations',
-      items: (roots.locations || []).map(item => ({ ...item, icon: item.label === 'Desktop' ? Home : Folder })),
+      items: (roots.locations || []).map(item => ({ ...item, icon: item.label === 'Desktop' ? IcDesktop : IcFolder })),
     },
     {
       title: 'Drives',
-      items: (roots.drives || []).map(item => ({ ...item, icon: HardDrive })),
+      items: (roots.drives || []).map(item => ({ ...item, icon: IcHardDrive })),
     },
   ]
 
@@ -428,15 +429,15 @@ export default function XlethFilePickerModal({ options, onCancel, onAccept }) {
           autoFocus
           data-autofocus=""
         />
-        <IconButton label="Go back" onClick={goBack} disabled={history.length === 0}><ArrowLeft /></IconButton>
-        <IconButton label="Go up one folder" onClick={goUp} disabled={!canGoUp}><ArrowUp /></IconButton>
-        <IconButton label="Add new folder" onClick={() => setNewFolderOpen(v => !v)}><FolderPlus /></IconButton>
+        <IconButton label="Go back" onClick={goBack} disabled={history.length === 0}><IcArrowLeft /></IconButton>
+        <IconButton label="Go up one folder" onClick={goUp} disabled={!canGoUp}><IcArrowElbowLeftUp /></IconButton>
+        <IconButton label="Add new folder" onClick={() => setNewFolderOpen(v => !v)}><IcFolderPlus /></IconButton>
         <IconButton
           label={isFavorite ? 'Remove favorite' : 'Favorite current folder'}
           pressed={isFavorite}
           onClick={toggleFavorite}
         >
-          <Star fill={isFavorite ? 'currentColor' : 'none'} />
+          <IcStar weight={isFavorite ? 'fill' : 'regular'} />
         </IconButton>
       </div>
 
@@ -465,7 +466,7 @@ export default function XlethFilePickerModal({ options, onCancel, onAccept }) {
                 section.empty ? <div className={styles.sideEmpty}>{section.empty}</div> : null
               ) : (
                 section.items.map(item => {
-                  const Icon = item.icon || Folder
+                  const Icon = item.icon || IcFolder
                   return (
                     <button
                       type="button"

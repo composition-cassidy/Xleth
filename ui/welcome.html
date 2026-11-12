@@ -5,36 +5,38 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>XLETH - Welcome</title>
 <style>
-  /* ============ XLETH TOKENS ============ */
-  /* Dedicated, hardcoded CSS-variable block — same reasoning as splash.html:
-     this window renders before ThemeProvider exists (it IS the gate to the
-     workspace), so it can't consume live --theme-* tokens. Components below
-     only ever reference var(--*); no hex appears outside this block. */
+  /* ============ TOKENS ============ */
+  /* This window renders before ThemeProvider exists (it IS the gate to the
+     workspace), so it cannot read the live --theme-* tokens. The block below
+     is a frozen copy of the workspace's dark defaults (ui/DESIGN.md section 3):
+     the neutral ramp, the ink ramp and the default accent, so the gate looks
+     like the app it opens. Components only ever reference var(--*); no colour
+     literal appears outside this block. */
   :root {
-    --bg: #0b0b0b;
-    --surface: #111111;
-    --surface-2: #1c1c1c;
-    --surface-3: #242424;
-    --border: #2b2b2b;
-    --border-strong: #3a3a3a;
-    --text: #e8e8e8;
-    --text-dim: #9a9a9a;
-    --text-faint: #5c5c5c;
-    --accent: #00b896;
-    --accent-press: #009e82;
-    --accent-ink: #03251e;
-    --danger: #c94f4f;
-    --warn: #d8a13c;
-    /* Krasen's signature: hard drop shadow, zero blur */
-    --shadow-hard: 4px 5px 0 rgba(0, 0, 0, 0.5);
-    --shadow-hard-sm: 3px 3px 0 rgba(0, 0, 0, 0.5);
-    --shadow-press: 1px 1px 0 rgba(0, 0, 0, 0.5);
-    --ease-spring: cubic-bezier(0.16, 1, 0.3, 1);
-    --font: "Barlow", "Segoe UI", "Segoe UI Variable", system-ui, sans-serif;
+    --g0: #141414;        /* wells, ground */
+    --g1: #1b1b1b;        /* panel */
+    --g2: #222222;        /* header, hover */
+    --g3: #2b2b2b;        /* control */
+    --g4: #3a3a3a;        /* divider, decorative only */
+    --boundary: #747474;  /* control outlines, 3:1 on g0-g3 */
+    --ink: #e6e6e6;
+    --ink-2: #b4b4b4;
+    --ink-3: #929292;     /* dimmest text allowed, 4.5:1 on g0-g3 */
+    --value: #33ced6;     /* default accent: focus, value */
+    --value-ink: #141414; /* text on a value fill */
+    --warn: #e8b53a;
+    --danger: #e5484d;
+    --danger-text: #f06a6e;
+    --shadow-float: 4px 5px 0 rgba(0, 0, 0, 0.5); /* floating surfaces only: the toast */
+    --font: "Barlow", "Inter", "Noto Sans", "Segoe UI", system-ui, sans-serif;
+    --font-mono: "Cascadia Mono", "Consolas", monospace;
+    --type-11: 11px;
+    --type-12: 12px;
+    --type-13: 13px;
+    --type-16: 16px;
   }
 
-  /* assets/fonts/ sits beside this file (ui/) — self-contained, same
-     packaging tier as splash.html's xleth.svg. */
+  /* assets/fonts/ sits beside this file (ui/); same packaging tier as xleth.svg. */
   @font-face {
     font-family: "Barlow";
     src: url("assets/fonts/Barlow/Barlow-Light.ttf") format("truetype");
@@ -62,422 +64,253 @@
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
-
   html, body { height: 100%; }
 
   body {
     font-family: var(--font);
-    background: var(--bg);
-    color: var(--text);
+    font-size: var(--type-12);
+    font-variant-numeric: tabular-nums;
+    background: var(--g0);
+    color: var(--ink);
     overflow: hidden;
     -webkit-font-smoothing: antialiased;
   }
 
-  body::before {
-    content: "";
-    position: fixed; inset: 0;
-    background:
-      radial-gradient(1200px 700px at 30% 20%, rgba(0,184,150,0.04), transparent 60%),
-      var(--bg);
-    pointer-events: none;
-    z-index: -1;
+  button, input, select { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+
+  :focus-visible { outline: 2px solid var(--value); outline-offset: 1px; }
+
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip: rect(0 0 0 0); white-space: nowrap;
   }
 
-  /* ============ WINDOW CHROME ============ */
-  /* This IS the real (frameless) OS window's content area, not a mockup
-     floating inside a page — fill it edge to edge, no inset/border/shadow. */
+  /* ============ WINDOW ============ */
+  /* The frameless OS window's own content area: edge to edge. */
   .window {
-    width: 100%;
-    height: 100vh;
-    background: var(--bg);
-    display: flex;
-    flex-direction: column;
-    animation: window-in 0.55s var(--ease-spring) both;
-  }
-  @keyframes window-in {
-    from { opacity: 0; transform: translateY(18px) scale(0.975); }
-    to   { opacity: 1; transform: translateY(0) scale(1); }
-  }
-  .window.shake { animation: shake 0.4s ease; }
-  @keyframes shake {
-    0%, 100% { transform: translateX(0); }
-    20% { transform: translateX(-9px); }
-    40% { transform: translateX(8px); }
-    60% { transform: translateX(-5px); }
-    80% { transform: translateX(4px); }
+    width: 100%; height: 100vh;
+    background: var(--g1);
+    display: flex; flex-direction: column;
   }
 
   .titlebar {
-    height: 38px;
-    flex: none;
-    background: var(--surface);
-    border-bottom: 1px solid var(--border);
-    display: flex;
-    align-items: center;
-    padding: 0 0 0 12px;
+    height: 32px; flex: none;
+    background: var(--g2);
+    border-bottom: 1px solid var(--g4);
+    display: flex; align-items: center;
+    padding-left: 12px;
     user-select: none;
     -webkit-app-region: drag;
   }
-  /* xleth.svg has ~38% empty headroom in its viewBox (same file/crop trick
-     as splash.html) — the crop box trims it optically so the wordmark sits
-     tight at titlebar scale. */
-  .appmark {
-    flex: none;
-    width: 60px; height: 20px;
-    overflow: hidden;
-  }
+  /* xleth.svg has ~38% empty headroom in its viewBox: the crop box trims it
+     so the wordmark sits tight at titlebar scale. */
+  .appmark { flex: none; width: 54px; height: 18px; overflow: hidden; }
   .appmark img {
-    width: 60px;
-    display: block;
-    margin-top: -12px;
-    /* SVG paths carry no fill -> render black; force the white wordmark */
-    filter: brightness(0) invert(1) drop-shadow(2px 2px 0 rgba(0,0,0,0.5));
+    width: 54px; display: block; margin-top: -10px;
+    /* SVG paths carry no fill and render black; force the white wordmark. */
+    filter: brightness(0) invert(1);
   }
-  .titlebar .title {
-    margin-left: 10px;
-    font-size: 12.5px;
-    letter-spacing: 0.02em;
-    color: var(--text);
-  }
-  .titlebar .title b { font-weight: 600; }
-  .titlebar .title span { color: var(--text-faint); }
+  .titlebar .title { margin-left: 10px; font-size: var(--type-12); color: var(--ink-3); }
   .win-controls { margin-left: auto; display: flex; height: 100%; -webkit-app-region: no-drag; }
   .win-controls button {
     width: 46px; height: 100%;
-    background: transparent; border: none; color: var(--text-dim);
-    display: grid; place-items: center; cursor: pointer;
-    transition: background 0.12s ease, color 0.12s ease;
+    background: transparent; border: 0; color: var(--ink-2);
+    display: grid; place-items: center;
+    transition: background-color 0.1s linear, color 0.1s linear;
   }
-  .win-controls button:hover { background: var(--surface-3); color: var(--text); }
-  .win-controls button.close:hover { background: var(--danger); color: #fff; }
+  .win-controls button:hover { background: var(--g3); color: var(--ink); }
+  .win-controls button.close:hover { background: var(--danger); color: var(--ink); }
+  .win-controls button:focus-visible { outline-offset: -2px; }
 
-  /* ============ BODY LAYOUT ============ */
+  /* ============ BODY: recents left, new project right ============ */
   .body { flex: 1; display: flex; min-height: 0; }
 
-  /* ---- left rail ---- */
-  .rail {
-    width: 272px; flex: none;
-    background: var(--surface);
-    border-right: 1px solid var(--border);
+  .col-head {
+    flex: none; height: 48px;
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 0 16px 0 24px;
+    border-bottom: 1px solid var(--g4);
+  }
+  .col-head h2 { font-size: var(--type-13); font-weight: 600; }
+  .col-foot {
+    flex: none; height: 52px;
+    display: flex; align-items: center; gap: 16px;
+    padding: 0 24px;
+    border-top: 1px solid var(--g4);
+  }
+
+  /* ---- recents ---- */
+  .recents-col {
+    width: 400px; flex: none;
     display: flex; flex-direction: column;
-    padding: 14px 12px 10px;
+    border-right: 1px solid var(--g4);
+    background: var(--g1);
   }
-  .rail-action {
-    display: flex; align-items: center; gap: 11px;
-    width: 100%;
-    padding: 11px 12px;
-    background: transparent;
-    border: 1px solid transparent;
-    border-left: 3px solid transparent;
-    color: var(--text-dim);
-    font-family: var(--font);
-    font-size: 13.5px; font-weight: 500;
-    text-align: left; cursor: pointer;
-    transition: background 0.15s var(--ease-spring), color 0.15s ease,
-                border-color 0.15s ease, transform 0.12s var(--ease-spring);
+  .recents {
+    flex: 1; min-height: 0; overflow-y: auto;
+    padding: 8px 0;
+    scrollbar-width: thin; scrollbar-color: var(--boundary) transparent;
   }
-  .rail-action svg { flex: none; }
-  .rail-action:hover { background: var(--surface-2); color: var(--text); transform: translateX(2px); }
-  .rail-action:active { transform: translateX(2px) translateY(1px); }
-  .rail-action.active {
-    background: var(--surface-2);
-    border-left-color: var(--accent);
-    color: var(--text);
-  }
-  .rail-action.active svg { color: var(--accent); }
-
-  .rail-label {
-    margin: 18px 12px 8px;
-    font-size: 10.5px; font-weight: 600;
-    letter-spacing: 0.14em;
-    color: var(--text-faint);
-    display: flex; align-items: baseline; justify-content: space-between;
-  }
-  .rail-label .cap { font-weight: 400; letter-spacing: 0.04em; }
-
-  .recents { flex: 1; overflow-y: auto; min-height: 0; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
   .recents::-webkit-scrollbar { width: 8px; }
-  .recents::-webkit-scrollbar-thumb { background: var(--border-strong); }
+  .recents::-webkit-scrollbar-thumb { background: var(--boundary); }
 
-  .recent-row {
-    display: flex; align-items: center; gap: 9px;
-    width: 100%;
-    padding: 8px 10px;
-    background: transparent; border: none;
-    border-left: 3px solid transparent;
-    color: var(--text-dim);
-    font-family: var(--font);
-    text-align: left; cursor: pointer;
-    transition: background 0.15s ease, border-color 0.15s ease, transform 0.12s var(--ease-spring);
+  .recent {
+    display: flex; align-items: center;
+    padding-right: 8px;
+    border-left: 2px solid transparent;
   }
-  .recent-row:hover { background: var(--surface-2); border-left-color: var(--border-strong); transform: translateX(2px); }
-  .recent-row .meta { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 1px; }
-  .recent-row .name {
-    font-size: 12.5px; color: var(--text);
+  .recent:hover { background: var(--g2); border-left-color: var(--boundary); }
+  .recent-open {
+    flex: 1; min-width: 0;
+    display: flex; align-items: center; gap: 12px;
+    min-height: 44px;
+    padding: 6px 8px 6px 22px;
+    background: transparent; border: 0; text-align: left;
+  }
+  .recent-open:focus-visible { outline-offset: -2px; }
+  .recent-open svg { flex: none; color: var(--ink-2); }
+  .recent-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .recent-name {
+    font-size: var(--type-12); font-weight: 500; color: var(--ink);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .recent-row .when { font-size: 11px; color: var(--text-faint); }
-  .recent-row.missing .name { color: var(--text-faint); text-decoration: line-through; }
-  .recent-row.missing:hover { border-left-color: var(--warn); }
+  .recent-path {
+    font-size: var(--type-11); color: var(--ink-3);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .recent-when { flex: none; font-size: var(--type-11); color: var(--ink-3); }
+  .recent.missing .recent-open svg,
+  .recent.missing .recent-when { color: var(--warn); }
+  .recent.missing .recent-name { color: var(--ink-2); }
 
-  .recents-empty {
-    margin: 6px 10px;
-    padding: 18px 14px;
-    border: 1px dashed var(--border-strong);
-    color: var(--text-faint);
-    font-size: 12px; line-height: 1.55;
+  .icon-btn {
+    flex: none; width: 24px; height: 24px;
+    display: grid; place-items: center;
+    background: transparent; border: 0; border-radius: 2px;
+    color: var(--ink-3);
+    transition: background-color 0.1s linear, color 0.1s linear;
+  }
+  .icon-btn:hover { background: var(--g3); color: var(--danger-text); }
+
+  .empty {
+    margin: 8px 24px; padding: 16px 0;
+    color: var(--ink-3); font-size: var(--type-12); line-height: 1.6;
   }
 
-  .rail-foot {
-    flex: none;
-    padding: 10px 12px 2px;
-    border-top: 1px solid var(--border);
-  }
   .checkline {
     display: flex; align-items: center; gap: 8px;
-    font-size: 12px; color: var(--text-dim);
-    cursor: pointer; user-select: none;
+    color: var(--ink-2); user-select: none; cursor: pointer;
+    min-height: 24px;
   }
-  .checkline input { accent-color: var(--accent); width: 14px; height: 14px; cursor: pointer; }
+  .checkline input { accent-color: var(--value); width: 14px; height: 14px; cursor: pointer; }
 
-  /* ---- main ---- */
-  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
-  .main-scroll { flex: 1; overflow-y: auto; padding: 30px 36px 20px; min-height: 0; }
+  /* ---- new project ---- */
+  .new-col { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--g1); }
+  .new-col form { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .form-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 24px 32px 16px; }
+  .lede { color: var(--ink-2); line-height: 1.6; max-width: 62ch; margin-bottom: 24px; }
 
-  .view-head { margin-bottom: 24px; }
-  .view-head h1 {
-    font-size: 21px; font-weight: 600; letter-spacing: -0.01em;
+  .field { margin-bottom: 20px; max-width: 560px; }
+  .field > label, .field > .label, .select-row label {
+    display: block; margin-bottom: 6px;
+    font-size: var(--type-11); color: var(--ink-2);
   }
-  .view-head p {
-    margin-top: 7px;
-    font-size: 12.5px; line-height: 1.6; color: var(--text-dim);
-    max-width: 56ch;
-  }
-  .view-head p b { color: var(--text); font-weight: 600; }
-
-  .stagger > * {
-    animation: rise 0.5s var(--ease-spring) both;
-  }
-  .stagger > *:nth-child(1) { animation-delay: 0.05s; }
-  .stagger > *:nth-child(2) { animation-delay: 0.11s; }
-  .stagger > *:nth-child(3) { animation-delay: 0.17s; }
-  .stagger > *:nth-child(4) { animation-delay: 0.23s; }
-  .stagger > *:nth-child(5) { animation-delay: 0.29s; }
-  @keyframes rise {
-    from { opacity: 0; transform: translateY(14px); }
-    to   { opacity: 1; transform: translateY(0); }
-  }
-
-  .field { margin-bottom: 20px; }
-  .field label {
-    display: block;
-    font-size: 10.5px; font-weight: 600; letter-spacing: 0.13em;
-    color: var(--text-dim);
-    margin-bottom: 7px;
-  }
-  .field .hint { font-size: 11.5px; color: var(--text-faint); margin-top: 6px; }
-  .field .hint.error { color: var(--danger); }
+  .hint { margin-top: 6px; font-size: var(--type-11); color: var(--ink-3); }
+  .hint.error { color: var(--danger-text); }
 
   .text-input {
-    width: 100%; max-width: 420px;
-    background: var(--surface-2);
-    border: 1px solid var(--border-strong);
-    color: var(--text);
-    font-family: var(--font); font-size: 13.5px;
-    padding: 9px 12px;
-    outline: none;
-    caret-color: var(--accent);
-    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    width: 100%; height: 32px;
+    background: var(--g0); border: 1px solid var(--boundary); border-radius: 2px;
+    padding: 0 10px; font-size: var(--type-13);
+    caret-color: var(--value);
   }
-  .text-input::placeholder { color: var(--text-faint); }
-  .text-input:focus { border-color: var(--accent); box-shadow: var(--shadow-hard-sm); }
+  .text-input::placeholder { color: var(--ink-3); }
+  .text-input:focus { outline: 2px solid var(--value); outline-offset: 0; border-color: var(--value); }
 
-  .path-row { display: flex; gap: 10px; align-items: stretch; max-width: 560px; }
+  .path-row { display: flex; gap: 8px; }
   .path-display {
-    flex: 1; min-width: 0;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    padding: 9px 12px;
-    font-family: "Cascadia Mono", "Consolas", monospace;
-    font-size: 12px; color: var(--text-faint);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    flex: 1; min-width: 0; height: 32px;
     display: flex; align-items: center;
-    transition: color 0.2s ease, border-color 0.2s ease;
+    background: var(--g0); border: 1px solid var(--g4); border-radius: 2px;
+    padding: 0 10px;
+    font-family: var(--font-mono); font-size: var(--type-12); color: var(--ink-3);
+    white-space: nowrap; overflow: hidden;
   }
-  .path-display.set { color: var(--text-dim); border-color: var(--border-strong); }
-  .path-display .fname { color: var(--accent); }
+  .path-display.set { color: var(--ink-2); }
+  /* the folder part truncates; the file name stays pinned and readable */
+  .path-display .dirpart { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .path-display .fname { flex: none; color: var(--ink); }
 
-  .aspect-grid {
-    display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-    gap: 14px;
-    max-width: 640px;
+  .btn {
+    height: 32px; padding: 0 14px;
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    background: var(--g3); border: 1px solid var(--boundary); border-radius: 2px;
+    font-size: var(--type-12); font-weight: 500; white-space: nowrap;
+    transition: background-color 0.1s linear;
   }
-  .aspect-card {
-    background: var(--surface-2);
-    border: 1px solid var(--border-strong);
-    padding: 14px 6px 10px;
-    display: flex; flex-direction: column; align-items: center; gap: 10px;
-    cursor: pointer;
-    color: var(--text-dim);
-    font-family: var(--font);
-    box-shadow: var(--shadow-hard-sm);
-    transition: transform 0.18s var(--ease-spring), border-color 0.18s ease,
-                color 0.18s ease, box-shadow 0.18s var(--ease-spring), background 0.18s ease;
-  }
-  .aspect-card:hover { transform: translateY(-3px); box-shadow: 4px 7px 0 rgba(0,0,0,0.5); color: var(--text); background: var(--surface-3); }
-  .aspect-card:active { transform: translateY(0); box-shadow: var(--shadow-press); }
-  .aspect-card.selected {
-    border-color: var(--accent);
-    color: var(--text);
-    box-shadow: var(--shadow-hard);
-  }
-  .aspect-card.selected .ratio-shape { border-color: var(--accent); }
-  .aspect-card.selected .ratio-num { color: var(--accent); }
-  .ratio-frame { height: 42px; display: flex; align-items: flex-end; justify-content: center; }
-  .ratio-shape { border: 2px solid var(--text-faint); transition: border-color 0.18s ease; }
-  .ratio-num { font-size: 12.5px; font-weight: 600; transition: color 0.18s ease; }
-  .ratio-name { font-size: 10.5px; color: var(--text-faint); letter-spacing: 0.03em; }
+  .btn:hover:not(:disabled) { background: var(--g4); }
+  .btn.small { height: 28px; padding: 0 10px; }
+  .btn.primary { background: var(--value); border-color: var(--value); color: var(--value-ink); font-weight: 600; }
+  .btn.primary:hover:not(:disabled) { background: var(--value); filter: brightness(1.12); }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
-  .select-row { display: flex; gap: 22px; flex-wrap: wrap; }
+  /* aspect ratio: a radio group. The selected cell is the inverted ink chip
+     (the workspace's "on" state), never a coloured fill. */
+  .aspect-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+  .aspect-cell { position: relative; display: block; }
+  .aspect-cell input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+  .aspect-face {
+    height: 72px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+    background: var(--g3); border: 1px solid var(--boundary); border-radius: 2px;
+    color: var(--ink-2);
+    transition: background-color 0.1s linear;
+  }
+  .aspect-cell:hover .aspect-face { background: var(--g4); }
+  .aspect-cell input:checked + .aspect-face { background: var(--ink); border-color: var(--ink); color: var(--g1); }
+  .aspect-cell input:focus-visible + .aspect-face { outline: 2px solid var(--value); outline-offset: 2px; }
+  .ratio-frame { height: 28px; display: flex; align-items: center; justify-content: center; }
+  .ratio-shape { border: 2px solid currentColor; }
+  .ratio-text { font-size: var(--type-12); font-weight: 600; line-height: 1; }
+  .ratio-name { font-size: var(--type-11); line-height: 1; }
+
+  .select-row { display: flex; gap: 16px; flex-wrap: wrap; }
   .select-wrap { position: relative; }
   .select-wrap select {
     appearance: none; -webkit-appearance: none;
-    background: var(--surface-2);
-    border: 1px solid var(--border-strong);
-    color: var(--text);
-    font-family: var(--font); font-size: 13px;
-    padding: 9px 34px 9px 12px;
-    cursor: pointer; outline: none;
-    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    height: 32px; min-width: 190px;
+    background: var(--g3); border: 1px solid var(--boundary); border-radius: 2px;
+    padding: 0 32px 0 10px; font-size: var(--type-12);
   }
-  .select-wrap select:focus { border-color: var(--accent); box-shadow: var(--shadow-hard-sm); }
+  .select-wrap select option { background: var(--g1); color: var(--ink); }
   .select-wrap::after {
-    content: "";
-    position: absolute; right: 12px; top: 50%;
-    width: 7px; height: 7px;
-    border-right: 2px solid var(--text-dim);
-    border-bottom: 2px solid var(--text-dim);
+    content: ""; position: absolute; right: 12px; top: 50%;
+    width: 6px; height: 6px;
+    border-right: 2px solid var(--ink-2); border-bottom: 2px solid var(--ink-2);
     transform: translateY(-70%) rotate(45deg);
     pointer-events: none;
   }
 
-  .actionbar {
-    flex: none;
-    border-top: 1px solid var(--border);
-    background: var(--surface);
-    padding: 13px 36px;
-    display: flex; align-items: center; gap: 14px;
-  }
-  .mandate {
-    display: flex; align-items: center; gap: 8px;
-    font-size: 11.5px; color: var(--text-faint);
-    min-width: 0;
-  }
-  .mandate svg { flex: none; color: var(--warn); }
-  .actionbar .spacer { flex: 1; }
+  .status { flex: 1; min-width: 0; color: var(--ink-3); }
+  .status.ready { color: var(--ink-2); }
 
-  .btn {
-    font-family: var(--font); font-size: 13px; font-weight: 600;
-    padding: 10px 20px;
-    border: 1px solid var(--border-strong);
-    background: var(--surface-2); color: var(--text);
-    cursor: pointer;
-    box-shadow: var(--shadow-hard-sm);
-    transition: transform 0.14s var(--ease-spring), box-shadow 0.14s var(--ease-spring),
-                background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
-    display: inline-flex; align-items: center; gap: 8px;
-    white-space: nowrap;
-  }
-  .btn:hover { background: var(--surface-3); transform: translateY(-2px); box-shadow: 4px 6px 0 rgba(0,0,0,0.5); }
-  .btn:active { transform: translate(2px, 2px); box-shadow: var(--shadow-press); }
-  .btn:disabled { cursor: not-allowed; opacity: 0.6; transform: none; box-shadow: var(--shadow-hard-sm); }
-  .btn:focus-visible, .rail-action:focus-visible, .aspect-card:focus-visible, .recent-row:focus-visible {
-    outline: 1px solid var(--accent); outline-offset: 2px;
-  }
-  .btn.primary {
-    background: var(--accent); border-color: var(--accent); color: var(--accent-ink);
-  }
-  .btn.primary:hover { background: #0dcda9; border-color: #0dcda9; }
-  .btn.primary:disabled {
-    background: var(--surface-2); border-color: var(--border); color: var(--text-faint);
-    cursor: not-allowed; box-shadow: none; transform: none;
-  }
-
-  /* ---- open view ---- */
-  .open-list { max-width: 640px; display: flex; flex-direction: column; gap: 10px; }
-  .open-row {
-    display: flex; align-items: center; gap: 14px;
-    background: var(--surface-2);
-    border: 1px solid var(--border-strong);
-    border-left: 3px solid var(--border-strong);
-    padding: 12px 14px;
-    cursor: pointer;
-    font-family: var(--font); color: var(--text); text-align: left;
-    box-shadow: var(--shadow-hard-sm);
-    transition: transform 0.16s var(--ease-spring), border-color 0.15s ease, box-shadow 0.16s var(--ease-spring);
-  }
-  .open-row:hover { transform: translateY(-2px); border-left-color: var(--accent); box-shadow: 4px 6px 0 rgba(0,0,0,0.5); }
-  .open-row:active { transform: translate(1px, 1px); box-shadow: var(--shadow-press); }
-  .open-row .meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-  .open-row .name { font-size: 13.5px; font-weight: 600; }
-  .open-row .path {
-    font-family: "Cascadia Mono", "Consolas", monospace;
-    font-size: 11px; color: var(--text-faint);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
-  .open-row .when { font-size: 11px; color: var(--text-faint); flex: none; }
-  .open-row.missing { border-left-color: var(--warn); cursor: default; opacity: 0.75; }
-  .open-row.missing:hover { transform: none; }
-  .open-row .tag {
-    flex: none; font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em;
-    color: var(--warn); border: 1px solid var(--warn);
-    padding: 3px 7px;
-  }
-  .icon-btn {
-    flex: none;
-    width: 28px; height: 28px;
-    display: grid; place-items: center;
-    background: transparent; border: none; color: var(--text-faint);
-    cursor: pointer;
-    transition: color 0.15s ease, background 0.15s ease;
-  }
-  .icon-btn:hover { color: var(--danger); background: var(--surface-3); }
-
-  /* toast */
+  /* toast: a floating surface, so it carries the hard offset shadow */
   .toast {
-    position: fixed; left: 50%; bottom: 34px;
-    transform: translateX(-50%) translateY(20px);
-    background: var(--surface-2);
-    border: 1px solid var(--border-strong);
-    border-left: 3px solid var(--accent);
-    box-shadow: var(--shadow-hard);
-    color: var(--text);
-    font-size: 13px;
-    padding: 11px 18px;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.25s var(--ease-spring), transform 0.25s var(--ease-spring);
-    max-width: 80vw;
+    position: fixed; left: 50%; bottom: 68px; transform: translateX(-50%);
+    background: var(--g3); border: 1px solid var(--boundary); border-left: 3px solid var(--value);
+    box-shadow: var(--shadow-float);
+    color: var(--ink); font-size: var(--type-12);
+    padding: 10px 16px; max-width: 80vw;
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.12s linear;
     z-index: 50;
   }
-  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .toast.show { opacity: 1; }
   .toast.error { border-left-color: var(--danger); }
 
-  .rail > * { animation: rise 0.45s var(--ease-spring) both; }
-  .rail > *:nth-child(1) { animation-delay: 0.10s; }
-  .rail > *:nth-child(2) { animation-delay: 0.15s; }
-  .rail > *:nth-child(3) { animation-delay: 0.20s; }
-  .rail > *:nth-child(4) { animation-delay: 0.25s; }
-  .rail > *:nth-child(5) { animation-delay: 0.30s; }
-  .rail > *:nth-child(6) { animation-delay: 0.34s; }
-
   @media (prefers-reduced-motion: reduce) {
-    *, *::before, *::after {
-      animation-duration: 0.01ms !important;
-      animation-delay: 0ms !important;
-      transition-duration: 0.01ms !important;
-    }
+    *, *::before, *::after { transition-duration: 0.01ms !important; }
   }
 </style>
 </head>
@@ -486,109 +319,114 @@
 <div class="window" id="window">
   <div class="titlebar">
     <div class="appmark"><img src="xleth.svg" alt="XLETH"></div>
-    <div class="title"><span>Welcome</span></div>
+    <div class="title">Welcome</div>
     <div class="win-controls">
-      <button title="Minimize" tabindex="-1">
-        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg>
+      <button id="btnMin" type="button" aria-label="Minimize">
+        <svg width="14" height="14" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M224,128a8,8,0,0,1-8,8H40a8,8,0,0,1,0-16H216A8,8,0,0,1,224,128Z"/></svg>
       </button>
-      <button title="Maximize" tabindex="-1">
-        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16"/></svg>
-      </button>
-      <button class="close" id="btnClose" title="Close">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      <button class="close" id="btnClose" type="button" aria-label="Close and quit XLETH">
+        <svg width="14" height="14" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M205.66,194.34a8,8,0,0,1-11.32,11.32L128,139.31,61.66,205.66a8,8,0,0,1-11.32-11.32L116.69,128,50.34,61.66A8,8,0,0,1,61.66,50.34L128,116.69l66.34-66.35a8,8,0,0,1,11.32,11.32L139.31,128Z"/></svg>
       </button>
     </div>
   </div>
 
   <div class="body">
-    <aside class="rail">
-      <button class="rail-action active" id="actNew">
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 15h6"/><path d="M12 12v6"/></svg>
-        New Project
-      </button>
-      <button class="rail-action" id="actOpen">
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>
-        Open Project&hellip;
-      </button>
-
-      <div class="rail-label">RECENT PROJECTS <span class="cap" id="capLabel"></span></div>
-      <div class="recents" id="railRecents"></div>
-
-      <div class="rail-foot">
+    <!-- ================= recent projects + open ================= -->
+    <section class="recents-col" aria-labelledby="recentsTitle">
+      <div class="col-head">
+        <h2 id="recentsTitle">Recent projects</h2>
+        <button class="btn small" id="btnBrowseOpen" type="button">
+          <svg width="14" height="14" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M245,110.64A16,16,0,0,0,232,104H216V88a16,16,0,0,0-16-16H130.67L102.94,51.2a16.14,16.14,0,0,0-9.6-3.2H40A16,16,0,0,0,24,64V208h0a8,8,0,0,0,8,8H211.1a8,8,0,0,0,7.59-5.47l28.49-85.47A16.05,16.05,0,0,0,245,110.64ZM93.34,64,123.2,86.4A8,8,0,0,0,128,88h72v16H69.77a16,16,0,0,0-15.18,10.94L40,158.7V64Zm112,136H43.1l26.67-80H232Z"/></svg>
+          Open project&hellip;
+        </button>
+      </div>
+      <div class="recents" id="recents"></div>
+      <div class="col-foot">
         <label class="checkline">
           <input type="checkbox" id="chkStartup" checked>
           Show this window on startup
         </label>
       </div>
-    </aside>
+    </section>
 
-    <main class="main">
-      <div class="main-scroll">
+    <!-- ================= new project ================= -->
+    <section class="new-col" aria-labelledby="newTitle">
+      <div class="col-head">
+        <h2 id="newTitle">New project</h2>
+      </div>
 
-        <section id="viewNew" class="stagger">
-          <div class="view-head">
-            <h1>Create a new project</h1>
-            <p>XLETH needs your project <b>saved on disk before the workspace opens</b>. Autosave, proxy media, and crash recovery all anchor to that file, so there is no untitled session to lose.</p>
-          </div>
+      <form id="newForm" novalidate>
+        <div class="form-scroll">
+          <p class="lede">A project is saved to a folder on disk before the workspace opens. Autosave, proxy media and crash recovery all live in that folder.</p>
 
           <div class="field">
-            <label for="inpName">PROJECT NAME</label>
+            <label for="inpName">Name</label>
             <input class="text-input" id="inpName" type="text" placeholder="Untitled Remix" autocomplete="off" spellcheck="false">
           </div>
 
           <div class="field">
-            <label>LOCATION</label>
+            <span class="label" id="lblLocation">Location</span>
             <div class="path-row">
-              <div class="path-display" id="pathDisplay">Choose a folder&hellip;</div>
-              <button class="btn" id="btnBrowse">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
+              <div class="path-display" id="pathDisplay" role="textbox" aria-readonly="true" aria-labelledby="lblLocation">Choose a folder&hellip;</div>
+              <button class="btn" id="btnBrowse" type="button">
+                <svg width="14" height="14" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M216,72H131.31L104,44.69A15.86,15.86,0,0,0,92.69,40H40A16,16,0,0,0,24,56V200.62A15.4,15.4,0,0,0,39.38,216H216.89A15.13,15.13,0,0,0,232,200.89V88A16,16,0,0,0,216,72ZM40,56H92.69l16,16H40ZM216,200H40V88H216Z"/></svg>
                 Browse&hellip;
               </button>
             </div>
-            <div class="hint" id="pathHint">The project file is created the moment you continue.</div>
+            <div class="hint" id="pathHint" role="status">The project folder is created the moment you continue.</div>
           </div>
 
-          <div class="field">
-            <label>ASPECT RATIO</label>
+          <div class="field" role="radiogroup" aria-labelledby="lblAspect">
+            <span class="label" id="lblAspect">Aspect ratio</span>
             <div class="aspect-grid" id="aspectGrid">
-              <button class="aspect-card selected" data-ratio="16:9">
-                <span class="ratio-frame"><span class="ratio-shape" style="width:44px;height:25px"></span></span>
-                <span class="ratio-num">16:9</span><span class="ratio-name">Widescreen</span>
-              </button>
-              <button class="aspect-card" data-ratio="4:3">
-                <span class="ratio-frame"><span class="ratio-shape" style="width:36px;height:27px"></span></span>
-                <span class="ratio-num">4:3</span><span class="ratio-name">Fullscreen</span>
-              </button>
-              <button class="aspect-card" data-ratio="9:16">
-                <span class="ratio-frame"><span class="ratio-shape" style="width:21px;height:37px"></span></span>
-                <span class="ratio-num">9:16</span><span class="ratio-name">Portrait</span>
-              </button>
-              <button class="aspect-card" data-ratio="1:1">
-                <span class="ratio-frame"><span class="ratio-shape" style="width:29px;height:29px"></span></span>
-                <span class="ratio-num">1:1</span><span class="ratio-name">Square</span>
-              </button>
-              <button class="aspect-card" data-ratio="2.39:1">
-                <span class="ratio-frame"><span class="ratio-shape" style="width:48px;height:20px"></span></span>
-                <span class="ratio-num">2.39:1</span><span class="ratio-name">Scope</span>
-              </button>
+              <label class="aspect-cell">
+                <input type="radio" name="aspect" value="16:9" checked>
+                <span class="aspect-face">
+                  <span class="ratio-frame"><span class="ratio-shape" style="width:36px;height:20px"></span></span>
+                  <span class="ratio-text">16:9</span><span class="ratio-name">Widescreen</span>
+                </span>
+              </label>
+              <label class="aspect-cell">
+                <input type="radio" name="aspect" value="4:3">
+                <span class="aspect-face">
+                  <span class="ratio-frame"><span class="ratio-shape" style="width:30px;height:23px"></span></span>
+                  <span class="ratio-text">4:3</span><span class="ratio-name">Fullscreen</span>
+                </span>
+              </label>
+              <label class="aspect-cell">
+                <input type="radio" name="aspect" value="9:16">
+                <span class="aspect-face">
+                  <span class="ratio-frame"><span class="ratio-shape" style="width:16px;height:28px"></span></span>
+                  <span class="ratio-text">9:16</span><span class="ratio-name">Portrait</span>
+                </span>
+              </label>
+              <label class="aspect-cell">
+                <input type="radio" name="aspect" value="1:1">
+                <span class="aspect-face">
+                  <span class="ratio-frame"><span class="ratio-shape" style="width:24px;height:24px"></span></span>
+                  <span class="ratio-text">1:1</span><span class="ratio-name">Square</span>
+                </span>
+              </label>
+              <label class="aspect-cell">
+                <input type="radio" name="aspect" value="2.39:1">
+                <span class="aspect-face">
+                  <span class="ratio-frame"><span class="ratio-shape" style="width:40px;height:17px"></span></span>
+                  <span class="ratio-text">2.39:1</span><span class="ratio-name">Scope</span>
+                </span>
+              </label>
             </div>
           </div>
 
           <div class="field">
             <div class="select-row">
               <div>
-                <label>RESOLUTION</label>
+                <label for="selRes">Resolution</label>
                 <div class="select-wrap">
-                  <select id="selRes">
-                    <option value="3840x2160">3840 × 2160 (4K UHD)</option>
-                    <option value="2560x1440">2560 × 1440 (QHD)</option>
-                    <option value="1920x1080" selected>1920 × 1080 (Full HD)</option>
-                    <option value="1280x720">1280 × 720 (HD)</option>
-                  </select>
+                  <select id="selRes"></select>
                 </div>
               </div>
               <div>
-                <label>FRAME RATE</label>
+                <label for="selFps">Frame rate</label>
                 <div class="select-wrap">
                   <select id="selFps">
                     <option value="23.976">23.976 fps</option>
@@ -604,56 +442,38 @@
               </div>
             </div>
           </div>
-        </section>
-
-        <section id="viewOpen" class="stagger" hidden>
-          <div class="view-head">
-            <h1>Open a project</h1>
-            <p>Pick up where you left off, or browse for a project folder anywhere on disk.</p>
-          </div>
-          <div class="field">
-            <button class="btn" id="btnBrowseOpen">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
-              Browse for project folder&hellip;
-            </button>
-          </div>
-          <div class="open-list" id="openList"></div>
-        </section>
-
-      </div>
-
-      <div class="actionbar">
-        <div class="mandate" id="mandateNew">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
-          <span id="mandateText">Name your project and pick a folder to continue.</span>
         </div>
-        <div class="spacer"></div>
-        <button class="btn" id="btnAdvanced">Advanced Settings&hellip;</button>
-        <button class="btn primary" id="btnCreate" disabled>Create Project</button>
-      </div>
-    </main>
+
+        <div class="col-foot">
+          <div class="status" id="status" role="status">Name your project and pick a folder to continue.</div>
+          <button class="btn primary" id="btnCreate" type="submit" disabled>Create project</button>
+        </div>
+      </form>
+    </section>
   </div>
 </div>
 
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script>
 (function () {
   "use strict";
 
   // Real IPC surface (welcome-preload.js) when running inside Electron. In a
-  // plain browser tab (e.g. previewing this file directly) it's undefined —
-  // fall back to an in-memory demo so the page is still inspectable, exactly
-  // like splash.html's __xlethSplashPreloadActive-gated fallback does.
+  // plain browser tab (previewing this file directly) it's undefined: fall
+  // back to an in-memory demo so the page is still inspectable, exactly like
+  // splash.html's __xlethSplashPreloadActive-gated fallback does.
   var xl = window.xlethWelcome || null;
   var MAX_RECENTS = 10;
 
   var now = Date.now();
+  var MIN = 60000;
+  var HOUR = 3600000;
   var DAY = 86400000;
 
   function demoRecents() {
     return [
-      { name: "Adubuyrus Tribute (WIP)",   dir: "C:\\Users\\Krasen\\Documents\\XLETH Projects\\Adubuyrus Tribute (WIP)", lastOpened: now - 2 * 3600000, exists: true },
+      { name: "Adubuyrus Tribute (WIP)",   dir: "C:\\Users\\Krasen\\Documents\\XLETH Projects\\Adubuyrus Tribute (WIP)", lastOpened: now - 2 * HOUR, exists: true },
       { name: "SpongeBob Sparta Pulse V3", dir: "C:\\Users\\Krasen\\Documents\\XLETH Projects\\SpongeBob Sparta Pulse V3", lastOpened: now - DAY, exists: true },
       { name: "Old Laptop Backup Mix",     dir: "E:\\Backups\\XLETH\\Old Laptop Backup Mix", lastOpened: now - 20 * DAY, exists: false }
     ];
@@ -694,7 +514,7 @@
     loadProject:   function () { return Promise.resolve(true); },
     getShowOnStartup: function () { return Promise.resolve(demoState.showOnStartup); },
     setShowOnStartup: function (v) { demoState.showOnStartup = v; return Promise.resolve(); },
-    minimize: function () {},
+    minimize: function () { toast("Preview mode: no window to minimize.", true); },
     close:    function () { toast("Preview mode: no window to close.", true); },
     projectReady: function (dir, name) { toast("Preview mode: would open workspace with \u201c" + name + "\u201d now."); },
   };
@@ -703,67 +523,66 @@
 
   function relTime(ts) {
     var d = now - ts;
-    if (d < 3600000) return "just now";
-    if (d < DAY) return Math.round(d / 3600000) + "h ago";
-    if (d < 7 * DAY) return Math.round(d / DAY) + "d ago";
-    if (d < 30 * DAY) return Math.round(d / (7 * DAY)) + "w ago";
-    return Math.round(d / (30 * DAY)) + "mo ago";
+    if (d < MIN) return "just now";
+    if (d < HOUR) return Math.round(d / MIN) + " min ago";
+    if (d < DAY) return Math.round(d / HOUR) + " h ago";
+    if (d < 7 * DAY) return Math.round(d / DAY) + " d ago";
+    if (d < 30 * DAY) return Math.round(d / (7 * DAY)) + " wk ago";
+    return Math.round(d / (30 * DAY)) + " mo ago";
   }
 
-  var folderIcon = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>';
-  var warnIcon = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>';
-  var xIcon = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+  var folderIcon = '<svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M216,72H131.31L104,44.69A15.86,15.86,0,0,0,92.69,40H40A16,16,0,0,0,24,56V200.62A15.4,15.4,0,0,0,39.38,216H216.89A15.13,15.13,0,0,0,232,200.89V88A16,16,0,0,0,216,72ZM40,56H92.69l16,16H40ZM216,200H40V88H216Z"/></svg>';
+  var warnIcon = '<svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M236.8,188.09,149.35,36.22h0a24.76,24.76,0,0,0-42.7,0L19.2,188.09a23.51,23.51,0,0,0,0,23.72A24.35,24.35,0,0,0,40.55,224h174.9a24.35,24.35,0,0,0,21.33-12.19A23.51,23.51,0,0,0,236.8,188.09ZM222.93,203.8a8.5,8.5,0,0,1-7.48,4.2H40.55a8.5,8.5,0,0,1-7.48-4.2,7.59,7.59,0,0,1,0-7.72L120.52,44.21a8.75,8.75,0,0,1,15,0l87.45,151.87A7.59,7.59,0,0,1,222.93,203.8ZM120,144V104a8,8,0,0,1,16,0v40a8,8,0,0,1-16,0Zm20,36a12,12,0,1,1-12-12A12,12,0,0,1,140,180Z"/></svg>';
+  var xIcon = '<svg width="14" height="14" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M205.66,194.34a8,8,0,0,1-11.32,11.32L128,139.31,61.66,205.66a8,8,0,0,1-11.32-11.32L116.69,128,50.34,61.66A8,8,0,0,1,61.66,50.34L128,116.69l66.34-66.35a8,8,0,0,1,11.32,11.32L139.31,128Z"/></svg>';
 
-  var railRecents = document.getElementById("railRecents");
-  var openList = document.getElementById("openList");
-  var capLabel = document.getElementById("capLabel");
+  var recentsEl = document.getElementById("recents");
 
   function projectFileOf(dir) { return dir + "\\project.json"; }
 
   function renderRecents() {
-    capLabel.textContent = recents.length > 0 ? Math.min(recents.length, MAX_RECENTS) + " / " + MAX_RECENTS : "";
-    railRecents.innerHTML = "";
-    openList.innerHTML = "";
+    recentsEl.innerHTML = "";
 
     if (recents.length === 0) {
-      railRecents.innerHTML = '<div class="recents-empty">No recent projects yet.<br>Projects you create or open will show up here.</div>';
-      openList.innerHTML = '<div class="recents-empty">Nothing here yet. Browse for a project folder, or start a new project.</div>';
+      var empty = document.createElement("p");
+      empty.className = "empty";
+      empty.textContent = "No recent projects yet. Projects you create or open show up here.";
+      recentsEl.appendChild(empty);
       return;
     }
 
     recents.forEach(function (p, i) {
-      var r = document.createElement("button");
-      r.className = "recent-row" + (p.exists ? "" : " missing");
-      r.title = p.dir;
-      r.innerHTML = (p.exists ? folderIcon : warnIcon) +
-        '<span class="meta"><span class="name"></span><span class="when">' + (p.exists ? relTime(p.lastOpened) : "file not found") + "</span></span>";
-      r.querySelector(".name").textContent = p.name;
-      r.addEventListener("click", function () { openRecent(i); });
-      railRecents.appendChild(r);
+      var row = document.createElement("div");
+      row.className = "recent" + (p.exists ? "" : " missing");
 
-      var o = document.createElement("div");
-      o.className = "open-row" + (p.exists ? "" : " missing");
-      o.setAttribute("role", "button");
-      o.innerHTML =
-        (p.exists ? folderIcon : warnIcon) +
-        '<span class="meta"><span class="name"></span><span class="path"></span></span>' +
-        (p.exists ? '<span class="when">' + relTime(p.lastOpened) + "</span>" : '<span class="tag">MISSING</span>') +
-        '<button class="icon-btn" title="Remove from list">' + xIcon + "</button>";
-      o.querySelector(".name").textContent = p.name;
-      o.querySelector(".path").textContent = projectFileOf(p.dir);
-      o.addEventListener("click", function (e) {
-        if (e.target.closest(".icon-btn")) return;
-        openRecent(i);
-      });
-      o.querySelector(".icon-btn").addEventListener("click", function (e) {
-        e.stopPropagation();
+      var open = document.createElement("button");
+      open.type = "button";
+      open.className = "recent-open";
+      open.title = projectFileOf(p.dir);
+      open.innerHTML = (p.exists ? folderIcon : warnIcon) +
+        '<span class="recent-meta"><span class="recent-name"></span><span class="recent-path"></span></span>' +
+        '<span class="recent-when"></span>';
+      open.querySelector(".recent-name").textContent = p.name;
+      open.querySelector(".recent-path").textContent = p.dir;
+      open.querySelector(".recent-when").textContent = p.exists ? relTime(p.lastOpened) : "Missing";
+      open.addEventListener("click", function () { openRecent(i); });
+      row.appendChild(open);
+
+      var rm = document.createElement("button");
+      rm.type = "button";
+      rm.className = "icon-btn";
+      rm.title = "Remove from recent projects";
+      rm.setAttribute("aria-label", "Remove " + p.name + " from recent projects");
+      rm.innerHTML = xIcon;
+      rm.addEventListener("click", function () {
         api.removeRecent(p.dir).then(function (next) {
-          recents = next;
+          recents = next || [];
           renderRecents();
           toast("Removed from recent projects.");
         });
       });
-      openList.appendChild(o);
+      row.appendChild(rm);
+
+      recentsEl.appendChild(row);
     });
   }
 
@@ -774,88 +593,96 @@
     });
   }
 
-  /* ---- view switching ---- */
-  var actNew = document.getElementById("actNew");
-  var actOpen = document.getElementById("actOpen");
-  var viewNew = document.getElementById("viewNew");
-  var viewOpen = document.getElementById("viewOpen");
-  var btnCreate = document.getElementById("btnCreate");
-  var btnAdvanced = document.getElementById("btnAdvanced");
-  var mandateText = document.getElementById("mandateText");
-
-  function restartStagger(el) {
-    el.querySelectorAll(":scope > *, :scope .field").forEach(function (n) {
-      n.style.animation = "none";
-      void n.offsetWidth;
-      n.style.animation = "";
-    });
-  }
-
-  function showView(which) {
-    var isNew = which === "new";
-    actNew.classList.toggle("active", isNew);
-    actOpen.classList.toggle("active", !isNew);
-    viewNew.hidden = !isNew;
-    viewOpen.hidden = isNew;
-    btnCreate.style.display = isNew ? "" : "none";
-    btnAdvanced.style.display = isNew ? "" : "none";
-    if (isNew) validate();
-    else mandateText.textContent = "Opening a project loads its saved settings automatically.";
-    restartStagger(isNew ? viewNew : viewOpen);
-  }
-  actNew.addEventListener("click", function () { showView("new"); });
-  actOpen.addEventListener("click", function () { showView("open"); });
-
   /* ---- new project form ---- */
+  var form = document.getElementById("newForm");
   var inpName = document.getElementById("inpName");
   var pathDisplay = document.getElementById("pathDisplay");
   var pathHint = document.getElementById("pathHint");
   var btnBrowse = document.getElementById("btnBrowse");
+  var btnCreate = document.getElementById("btnCreate");
+  var statusEl = document.getElementById("status");
   var selRes = document.getElementById("selRes");
   var selFps = document.getElementById("selFps");
   var aspectGrid = document.getElementById("aspectGrid");
   var chosenFolder = null;
 
-  // Client-side mirror of welcome.js's sanitizeFolderName — display only;
-  // the main process re-sanitizes authoritatively before touching disk.
+  // Client-side mirror of welcome.js's sanitizeFolderName: display only; the
+  // main process re-sanitizes authoritatively before touching disk.
   function sanitizeForPreview(name) {
     var cleaned = String(name || "").replace(/[<>:"/\\|?*\x00-\x1f]/g, "").trim().replace(/[. ]+$/, "");
     return cleaned || "Untitled Project";
   }
 
   function selectedAspectRatio() {
-    var card = aspectGrid.querySelector(".aspect-card.selected");
-    return card ? card.getAttribute("data-ratio") : "16:9";
+    var r = aspectGrid.querySelector("input:checked");
+    return r ? r.value : "16:9";
+  }
+
+  // The resolution menu lists the SHORT side (1080p) and shows the pixel size
+  // it works out to for the chosen aspect ratio, so the two controls can never
+  // contradict each other (4:3 at 1920 x 1080 is not a 4:3 canvas).
+  var SHORT_SIDES = [2160, 1440, 1080, 720];
+
+  function dimsFor(ratio, shortSide) {
+    var parts = ratio.split(":");
+    var a = parseFloat(parts[0]);
+    var b = parseFloat(parts[1]);
+    var even = function (n) { return Math.max(2, Math.round(n / 2) * 2); };
+    if (a >= b) return { width: even(shortSide * a / b), height: shortSide };
+    return { width: shortSide, height: even(shortSide * b / a) };
+  }
+
+  function rebuildResolutionOptions() {
+    var keep = selRes.value || "1080";
+    var ratio = selectedAspectRatio();
+    selRes.innerHTML = "";
+    SHORT_SIDES.forEach(function (s) {
+      var d = dimsFor(ratio, s);
+      var o = document.createElement("option");
+      o.value = String(s);
+      o.textContent = s + "p  \u00b7  " + d.width + " \u00d7 " + d.height;
+      selRes.appendChild(o);
+    });
+    selRes.value = keep;
   }
 
   function fullDir() {
     if (!chosenFolder) return null;
-    var name = sanitizeForPreview(inpName.value.trim() || "Untitled Remix");
-    return chosenFolder + "\\" + name;
+    return chosenFolder + "\\" + sanitizeForPreview(inpName.value.trim() || "Untitled Remix");
   }
 
   function validate() {
-    var ok = inpName.value.trim().length > 0 && !!chosenFolder;
+    var hasName = inpName.value.trim().length > 0;
+    var ok = hasName && !!chosenFolder;
     btnCreate.disabled = !ok;
-    mandateText.textContent = ok
-      ? "Ready: the project file is created on disk and the workspace opens with it."
+    statusEl.classList.toggle("ready", ok);
+    statusEl.textContent = ok
+      ? "Ready. The project folder is created and the workspace opens with it."
       : "Name your project and pick a folder to continue.";
+
     if (chosenFolder) {
       pathDisplay.classList.add("set");
-      pathDisplay.innerHTML = "";
-      var dir = fullDir();
-      pathDisplay.appendChild(document.createTextNode(dir + "\\"));
+      pathDisplay.textContent = "";
+      var dp = document.createElement("span");
+      dp.className = "dirpart";
+      dp.textContent = fullDir();
+      pathDisplay.appendChild(dp);
       var f = document.createElement("span");
       f.className = "fname";
-      f.textContent = "project.json";
+      f.textContent = "\\project.json";
       pathDisplay.appendChild(f);
-      pathHint.textContent = "The project file is created the moment you continue.";
+      pathDisplay.title = fullDir() + "\\project.json";
+      pathHint.textContent = "The project folder is created the moment you continue.";
       pathHint.classList.remove("error");
-    } else if (inpName.value.trim().length > 0) {
-      pathHint.textContent = "Still need a folder: XLETH cannot run a project with no file path.";
+    } else if (hasName) {
+      pathDisplay.classList.remove("set");
+      pathDisplay.textContent = "Choose a folder\u2026";
+      pathHint.textContent = "Pick a folder: XLETH cannot run a project with no place on disk.";
       pathHint.classList.add("error");
     } else {
-      pathHint.textContent = "The project file is created the moment you continue.";
+      pathDisplay.classList.remove("set");
+      pathDisplay.textContent = "Choose a folder\u2026";
+      pathHint.textContent = "The project folder is created the moment you continue.";
       pathHint.classList.remove("error");
     }
   }
@@ -869,13 +696,7 @@
       validate();
     }, function () { btnBrowse.disabled = false; });
   });
-
-  aspectGrid.addEventListener("click", function (e) {
-    var card = e.target.closest(".aspect-card");
-    if (!card) return;
-    aspectGrid.querySelectorAll(".aspect-card").forEach(function (c) { c.classList.remove("selected"); });
-    card.classList.add("selected");
-  });
+  aspectGrid.addEventListener("change", rebuildResolutionOptions);
 
   /* ---- actions ---- */
   var toastEl = document.getElementById("toast");
@@ -894,31 +715,32 @@
     });
   }
 
-  btnCreate.addEventListener("click", function () {
+  form.addEventListener("submit", function (e) {
+    e.preventDefault();
     if (btnCreate.disabled) return;
-    var res = selRes.value.split("x");
-    var form = {
+    var d = dimsFor(selectedAspectRatio(), parseInt(selRes.value, 10));
+    var payload = {
       parentDir: chosenFolder,
       name: inpName.value.trim(),
-      width: parseInt(res[0], 10),
-      height: parseInt(res[1], 10),
+      width: d.width,
+      height: d.height,
       fps: parseFloat(selFps.value),
       aspectRatio: selectedAspectRatio(),
     };
     btnCreate.disabled = true;
     btnCreate.textContent = "Creating\u2026";
-    api.createProject(form).then(function (result) {
+    api.createProject(payload).then(function (result) {
       if (!result || !result.ok) {
-        btnCreate.disabled = false;
-        btnCreate.textContent = "Create Project";
+        btnCreate.textContent = "Create project";
+        validate();
         toast((result && result.error) || "Could not create the project.", true);
         return;
       }
-      toast("Created \u201c" + result.name + "\u201d \u2014 opening workspace\u2026");
+      toast("Created \u201c" + result.name + "\u201d. Opening workspace\u2026");
       proceedToWorkspace(result.dir, result.name);
     }, function (err) {
-      btnCreate.disabled = false;
-      btnCreate.textContent = "Create Project";
+      btnCreate.textContent = "Create project";
+      validate();
       toast(String((err && err.message) || err || "Could not create the project."), true);
     });
   });
@@ -926,7 +748,7 @@
   function openRecent(i) {
     var p = recents[i];
     if (!p.exists) {
-      toast("File not found: " + projectFileOf(p.dir) + " \u2014 remove it or locate the project on disk.", true);
+      toast("Project not found: " + projectFileOf(p.dir) + ". Remove it from the list or open the folder it moved to.", true);
       return;
     }
     toast("Opening " + p.name + "\u2026");
@@ -952,19 +774,11 @@
     });
   });
 
-  btnAdvanced.addEventListener("click", function () {
-    toast("Advanced settings: audio device, buffer size, proxy quality, PPQ.");
-  });
-
-  /* ---- the mandatory gate: closing the window cannot skip the project ---- */
-  var winEl = document.getElementById("window");
-  document.getElementById("btnClose").addEventListener("click", function () {
-    winEl.classList.remove("shake");
-    void winEl.offsetWidth;
-    winEl.classList.add("shake");
-    toast("XLETH cannot start without a project file. Create one or open an existing project.", true);
-    setTimeout(function () { api.close(); }, 380);
-  });
+  /* ---- window controls ---- */
+  document.getElementById("btnMin").addEventListener("click", function () { api.minimize(); });
+  // The mandatory gate: this does not skip to the workspace. Closing Welcome
+  // quits the app (no other window exists yet; see welcome-preload.js).
+  document.getElementById("btnClose").addEventListener("click", function () { api.close(); });
 
   /* ---- startup toggle persistence ---- */
   var chk = document.getElementById("chkStartup");
@@ -976,8 +790,11 @@
     toast(chk.checked ? "Welcome screen will show on startup." : "Welcome screen hidden: XLETH will reopen your last project instead.");
   });
 
+  rebuildResolutionOptions();
+  selRes.value = "1080";
   loadRecents();
   validate();
+  inpName.focus();
 })();
 </script>
 </body>

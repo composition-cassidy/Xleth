@@ -1,7 +1,10 @@
 import { useId, useRef, useState } from 'react'
-import { Search, X } from 'lucide-react'
 import useBrowserStore from '../../stores/browserStore.js'
 import styles from './Browser.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcMagnifyingGlass = iconComponent('magnifying-glass')
+const IcX = iconComponent('x')
 
 /**
  * The Browser's search field. Typing filters live; Enter (or leaving the field
@@ -29,7 +32,7 @@ export default function SearchField({ tab, value, onChange, placeholder, ariaLab
 
   return (
     <div className={styles.search}>
-      <Search size={12} className={styles.searchGlyph} aria-hidden="true" />
+      <IcMagnifyingGlass size={14} className={styles.searchGlyph} aria-hidden="true" />
       <input
         ref={inputRef}
         type="text"
@@ -61,7 +64,7 @@ export default function SearchField({ tab, value, onChange, placeholder, ariaLab
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => { onChange(''); inputRef.current?.focus() }}
         >
-          <X size={12} aria-hidden="true" />
+          <IcX size={14} aria-hidden="true" />
         </button>
       )}
       {showHistory && (

@@ -1,4 +1,15 @@
 @layer kit {
+  /* A floating/maximized Preview's controls live in its titlebar. The slot is
+   * the size container the header's narrow-width queries read. */
+  .titlebarSlot {
+    container-type: inline-size;
+    display: flex;
+    align-items: center;
+    flex: 1 1 0;
+    min-width: 0;
+    height: 100%;
+  }
+
   /* The docked Preview's pop-out: it has no titlebar, so the control sits at
    * the end of the Preview's own header row. 24x24 hit area. */
   .popOut {

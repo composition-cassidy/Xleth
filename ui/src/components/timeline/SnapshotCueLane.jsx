@@ -10,7 +10,6 @@
 import {
   forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState,
 } from 'react'
-import { Check, Plus, Trash2, X } from 'lucide-react'
 import { IconButton, NumberBox, Select, Toggle, formatValue, THIN_SPACE } from '../../ui-kit'
 import styles from './SnapshotCueLane.module.css'
 import {
@@ -21,6 +20,12 @@ import SnapshotTransitionBezierEditor, {
   normalizeTransitionEasing,
 } from './SnapshotTransitionBezierEditor.jsx'
 import LineSweepDirectionControl, { normalizeLineSweepAngle } from './LineSweepDirectionControl.jsx'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcCheckFill = iconComponent('check', 'fill')
+const IcPlus = iconComponent('plus')
+const IcTrash = iconComponent('trash')
+const IcX = iconComponent('x')
 
 const PLAYHEAD_LINE_WIDTH = 1
 
@@ -312,7 +317,7 @@ function CueMarker({
               label={'Close cue editor at tick ' + cue.tick}
               hint="Close the cue editor"
             >
-              <X size={14} aria-hidden="true" />
+              <IcX size={14} aria-hidden="true" />
             </IconButton>
             <IconButton
               size="sm"
@@ -322,7 +327,7 @@ function CueMarker({
               label={'Delete cue at tick ' + cue.tick}
               hint="Delete this cue"
             >
-              <Trash2 size={13} aria-hidden="true" />
+              <IcTrash size={14} aria-hidden="true" />
             </IconButton>
           </div>
           {/* Boundary animation. The pin (this marker) stays put; only the
@@ -335,7 +340,7 @@ function CueMarker({
               onChange={(enabled) => onSetCueTransition(
                 cue.tick, buildCueTransition(cue.transition, { enabled }),
               )}
-              glyph={<Check size={12} aria-hidden="true" />}
+              glyph={<IcCheckFill size={14} aria-hidden="true" />}
               hint="Transition: blend between the two snapshots around this cue instead of cutting"
             >Transition</Toggle>
             {cue.transition?.enabled && (
@@ -925,7 +930,7 @@ export function SnapshotCueLaneHeader({ onAddCue, disabled }) {
     <div className={styles.header} style={{ height: CUE_LANE_HEIGHT }} data-testid="snapshot-cue-lane-header">
       <span>Snapshots</span>
       <IconButton size="sm" label="Add snapshot cue at playhead" onClick={onAddCue} disabled={disabled} hint="Add a snapshot cue at the playhead">
-        <Plus aria-hidden="true" />
+        <IcPlus aria-hidden="true" />
       </IconButton>
     </div>
   )

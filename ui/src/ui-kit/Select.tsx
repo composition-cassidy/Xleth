@@ -1,16 +1,20 @@
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, ChevronDown } from 'lucide-react';
 import { hintAttrs, type HintProps } from './hint';
+import MotionDiv from './MotionDiv';
 import styles from './Select.module.css';
 import type { DataAttrs } from './valueProps';
+import { iconComponent } from './icons';
+
+const IcCaretDown = iconComponent('caret-down');
+const IcCheck = iconComponent('check');
 
 // Behaviourally the same as components/common/XlethSelect.jsx (same keys, same
 // `openSignal`, same option matching), restyled onto the kit. XlethSelect stays
 // for panels that have not migrated yet and is removed in Phase 8.
 
-export interface SelectOption<T = unknown> {
+export interface SelectOption<T = unknown> extends HintProps {
   value: T;
   label: string;
   disabled?: boolean;
@@ -31,6 +35,8 @@ export interface SelectProps<T = unknown> extends HintProps, DataAttrs {
   /** Bump to pop the list open without a click (a middle-drag that commits a region). */
   openSignal?: number;
   size?: 'sm' | 'md' | 'lg';
+  /** Fixed trigger width in px, so the control does not resize as the choice changes. */
+  width?: number;
 }
 
 const clamp = (value: number, min: number, max: number): number => (max < min ? min : Math.min(Math.max(value, min), max));
@@ -66,7 +72,7 @@ interface Position {
 export default function Select<T = unknown>(props: SelectProps<T>) {
   const {
     id, value, options, onChange, disabled = false, ariaLabel, placeholder = 'Select…', className, openSignal = 0,
-    size = 'md', hint, hintMods, ...rest
+    size = 'md', width, hint, hintMods, ...rest
   } = props;
   const generatedId = useId();
   const triggerId = id || `ui-select-${generatedId}`;
@@ -200,7 +206,9 @@ export default function Select<T = unknown>(props: SelectProps<T>) {
 
   const popup = open && position && typeof document !== 'undefined'
     ? createPortal(
-        <div
+        <MotionDiv
+          recipe="pop"
+          exit
           ref={popupRef}
           className={styles.popup}
           data-placement={position.placement}
@@ -225,17 +233,18 @@ export default function Select<T = unknown>(props: SelectProps<T>) {
                   disabled={option.disabled}
                   data-value={String(option.value)}
                   data-highlighted={index === highlighted}
+                  {...hintAttrs({ hint: option.hint, hintMods: option.hintMods })}
                   className={styles.option}
                   onMouseEnter={() => setHighlighted(index)}
                   onClick={() => selectIndex(index)}
                 >
                   <span className={styles.optionLabel}>{option.label}</span>
-                  {selected ? <Check size={14} aria-hidden="true" /> : null}
+                  {selected ? <IcCheck size={14} aria-hidden="true" /> : null}
                 </button>
               </Fragment>
             );
           })}
-        </div>,
+        </MotionDiv>,
         document.body,
       )
     : null;
@@ -249,6 +258,7 @@ export default function Select<T = unknown>(props: SelectProps<T>) {
         type="button"
         className={`${styles.trigger}${className ? ` ${className}` : ''}`}
         data-size={size}
+        style={width ? { width } : undefined}
         aria-label={ariaLabel}
         aria-haspopup="listbox"
         aria-expanded={open}
@@ -262,7 +272,7 @@ export default function Select<T = unknown>(props: SelectProps<T>) {
         onKeyDown={onTriggerKeyDown}
       >
         <span className={styles.triggerLabel}>{selectedOption?.label ?? placeholder}</span>
-        <ChevronDown className={styles.chevron} size={14} aria-hidden="true" />
+        <IcCaretDown className={styles.chevron} size={14} aria-hidden="true" />
       </button>
       {popup}
     </>

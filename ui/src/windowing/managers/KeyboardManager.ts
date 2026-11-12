@@ -40,17 +40,31 @@ const panelFocusListeners = new Map<PanelId, Set<() => void>>();
 const panelBlurListeners = new Map<PanelId, Set<() => void>>();
 let lastFocusedPanel: PanelId | null = null;
 let unsubscribeRegistry: (() => void) | null = null;
+// Where the mouse last was. The panel under it is worked out when a key
+// arrives (see resolveHoveredPanel), never remembered: a remembered panel goes
+// stale whenever the page changes under a still pointer, and a pointerover-only
+// tracker cannot recover inside one large element such as the arrangement
+// canvas, because no boundary is crossed there to fire another pointerover.
+// See dispatchMain for why the hovered panel outranks focus.
+let pointerInWindow = false;
+let pointerX = 0;
+let pointerY = 0;
+let pointerTarget: Element | null = null;
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
+
+// <input> types that take no typed text. A focused checkbox, radio, colour
+// well or slider is not "typing", so it must not switch every shortcut off.
+// (Space/Enter on a checkbox or radio stay theirs: isNativelyActivatedElement.)
+const NON_TEXT_INPUT_TYPES = new Set([
+  'button', 'checkbox', 'color', 'file', 'image', 'radio', 'range', 'reset', 'submit',
+]);
 
 function isTextEntryElement(element: Element | null): boolean {
   if (!element) return false;
   if (element instanceof HTMLElement && element.isContentEditable) return true;
-  return (
-    element instanceof HTMLInputElement
-    || element instanceof HTMLTextAreaElement
-    || element instanceof HTMLSelectElement
-  );
+  if (element instanceof HTMLInputElement) return !NON_TEXT_INPUT_TYPES.has(element.type);
+  return element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement;
 }
 
 // A focused control the browser itself activates on Space/Enter (buttons,
@@ -66,7 +80,8 @@ function isNativelyActivatedElement(element: Element | null): boolean {
   if (!element) return false;
   if (element instanceof HTMLButtonElement) return true;
   if (element instanceof HTMLAnchorElement && element.hasAttribute('href')) return true;
-  if (element instanceof HTMLInputElement && (element.type === 'checkbox' || element.type === 'radio')) return true;
+  // Every non-text <input> except the slider opens or toggles on Space/Enter.
+  if (element instanceof HTMLInputElement) return NON_TEXT_INPUT_TYPES.has(element.type) && element.type !== 'range';
   if (element instanceof HTMLElement && element.getAttribute('role') === 'button') return true;
   return false;
 }
@@ -128,10 +143,74 @@ export function resolveFocusedPanel(): PanelId | null {
   return PANEL_IDS.find((id) => panels[id].focused && !panels[id].hidden) ?? null;
 }
 
+// The panel under the mouse, if it can take keys: visible, not collapsed, and
+// the active tab of its slot (an inactive tab is display:none, so the pointer
+// can't truly be over it, but a stale pointerover from before a tab switch can).
+export function resolveHoveredPanel(): PanelId | null {
+  const hoveredPanel = panelIdOfTarget(elementUnderPointer());
+  if (!hoveredPanel) return null;
+  const panel = usePanelRegistry.getState().panels[hoveredPanel];
+  if (!panel || panel.hidden || panel.collapsed) return null;
+  if (panel.mode === 'docked' && panel.docked.tabActive === false) return null;
+  return hoveredPanel;
+}
+
+function panelIdOfTarget(target: EventTarget | null): PanelId | null {
+  if (typeof Element === 'undefined' || !(target instanceof Element)) return null;
+  const id = target.closest('[data-panel-id]')?.getAttribute('data-panel-id');
+  return id && (PANEL_IDS as readonly string[]).includes(id) ? (id as PanelId) : null;
+}
+
+// What is under the mouse right now. Hit-tested at the last known position, so
+// a menu that closed, a tab that switched or a window that opened under a still
+// pointer is seen as it is at this instant. Environments with no layout (the
+// unit tests) fall back to the element the last pointer event was aimed at.
+function elementUnderPointer(): Element | null {
+  if (!pointerInWindow || typeof document === 'undefined') return null;
+  if (typeof document.elementFromPoint === 'function') {
+    return document.elementFromPoint(pointerX, pointerY);
+  }
+  return pointerTarget && pointerTarget.isConnected ? pointerTarget : null;
+}
+
+const onPointerSeen = (event: Event) => {
+  const pointer = event as PointerEvent;
+  pointerInWindow = true;
+  pointerX = pointer.clientX;
+  pointerY = pointer.clientY;
+  pointerTarget = event.target instanceof Element ? event.target : null;
+};
+// relatedTarget null = the pointer left the window entirely. If that reading is
+// ever wrong, the next pointermove puts it right.
+const onPointerOut = (event: Event) => {
+  if (!(event as PointerEvent).relatedTarget) pointerInWindow = false;
+};
+const POINTER_SEEN_EVENTS = ['pointerover', 'pointermove', 'pointerdown'] as const;
+
 function tryFire(reg: Registration, event: KeyboardEvent): boolean {
   if (reg.when && !reg.when()) return false;
   const result = reg.handler(event);
   return result === 'handled' || result === true || event.defaultPrevented;
+}
+
+function firePanelScope(panel: PanelId, combos: string[], event: KeyboardEvent): boolean {
+  const panelScope: ScopeId = `panel:${panel}`;
+  for (const reg of registrations) {
+    if (reg.scope !== panelScope) continue;
+    if (!comboMatches(reg, combos)) continue;
+    if (tryFire(reg, event)) return true;
+  }
+  return false;
+}
+
+// A panel just answered a shortcut aimed at it by the mouse: make it the
+// focused panel for real, so the control the user last clicked elsewhere stops
+// holding the keyboard (Space/Enter would otherwise still press that button).
+function claimKeyboardFor(panel: PanelId): void {
+  usePanelRegistry.getState().focusPanel(panel);
+  if (typeof document === 'undefined') return;
+  const frame = document.querySelector<HTMLElement>(`[data-panel-id="${panel}"][tabindex]`);
+  if (frame && !frame.contains(document.activeElement)) frame.focus({ preventScroll: true });
 }
 
 // ─── Dispatch ──────────────────────────────────────────────────────────────
@@ -183,15 +262,27 @@ function dispatchMain(event: KeyboardEvent): boolean {
     return false;
   }
 
+  // The panel under the mouse is asked first, then the focused panel.
+  //
+  // "Focused" means "last panel that received a mousedown", and that goes stale
+  // easily: click an Inspector toggle, move back over the timeline, press
+  // Ctrl+C — the Inspector still owned the keyboard, had no Ctrl+C, and the
+  // copy silently went nowhere until something in the timeline was clicked
+  // again. Kit knobs/faders preventDefault their pointerdown (no mousedown, so
+  // no focus claim), which made it worse: whether the timeline kept the keys
+  // depended on WHICH kind of control had been touched. Where the mouse is is
+  // where the user is working. Panels with no binding for the key (Inspector,
+  // Preview, Mixer…) fall through to the focused panel exactly as before.
   const focused = resolveFocusedPanel();
-  if (focused) {
-    const panelScope: ScopeId = `panel:${focused}`;
-    for (const reg of registrations) {
-      if (reg.scope !== panelScope) continue;
-      if (!comboMatches(reg, combos)) continue;
-      if (tryFire(reg, event)) return true;
-    }
+  const hovered = resolveHoveredPanel();
+  if (hovered && firePanelScope(hovered, combos, event)) {
+    // Also when it already is the focused panel: DOM focus can still sit on a
+    // control outside every panel (a transport button), which would keep
+    // answering Enter.
+    claimKeyboardFor(hovered);
+    return true;
   }
+  if (focused && focused !== hovered && firePanelScope(focused, combos, event)) return true;
   for (const reg of registrations) {
     if (reg.scope !== 'global') continue;
     if (!comboMatches(reg, combos)) continue;
@@ -391,6 +482,10 @@ export function init(): void {
   if (typeof window !== 'undefined') {
     window.addEventListener('keydown', onKeyDownWindowCapture, { capture: true });
   }
+  for (const type of POINTER_SEEN_EVENTS) {
+    document.addEventListener(type, onPointerSeen, { capture: true, passive: true });
+  }
+  document.addEventListener('pointerout', onPointerOut, true);
   lastFocusedPanel = resolveFocusedPanel();
   unsubscribeRegistry = usePanelRegistry.subscribe(() => syncFocusedPanel());
 }
@@ -401,6 +496,12 @@ export function destroy(): void {
   if (typeof window !== 'undefined') {
     window.removeEventListener('keydown', onKeyDownWindowCapture, { capture: true });
   }
+  for (const type of POINTER_SEEN_EVENTS) {
+    document.removeEventListener(type, onPointerSeen, { capture: true });
+  }
+  document.removeEventListener('pointerout', onPointerOut, true);
+  pointerInWindow = false;
+  pointerTarget = null;
   unsubscribeRegistry?.();
   unsubscribeRegistry = null;
 }
@@ -480,6 +581,8 @@ export function resetBindingsForTest(): void {
   panelFocusListeners.clear();
   panelBlurListeners.clear();
   lastFocusedPanel = null;
+  pointerInWindow = false;
+  pointerTarget = null;
   registerDefaultBindings();
 }
 

@@ -2847,6 +2847,84 @@ int MixEngine::getPreviewRouteTrack(int regionId) const
     return it->second->routeTrackId.load(std::memory_order_acquire);
 }
 
+// ── Pattern audition (main thread) ───────────────────────────────────────────
+
+bool MixEngine::startPatternAudition(int patternId, bool loop)
+{
+    if (timeline_ == nullptr) return false;
+    const Pattern* pattern = timeline_->getPattern(patternId);
+    if (pattern == nullptr || pattern->regionId < 0 || pattern->length.ticks <= 0)
+        return false;
+    const int regionId = pattern->regionId;
+
+    // The audio thread only ever looks the sampler up, so it must exist before
+    // the start is published. Never rebuilt here when present: that would swap
+    // a sampler out from under a running audition.
+    if (!hasPreviewSampler(regionId)) ensurePreviewSampler(regionId);
+    auto it = previewSamplers_.find(regionId);
+    if (it == previewSamplers_.end() || !it->second || !it->second->sampler
+        || !it->second->sampler->hasSample())
+        return false;
+
+    // Route: the track this pattern is actually placed on, so the audition
+    // carries that track's effect rack. Deliberately NOT subject to the
+    // piano-roll key-audition routing preference — "hear the pattern with its
+    // mixer effects" is the whole point of this mode. A pattern that is not on
+    // the timeline yet falls back to that preference.
+    int hostTrackId = xleth::kPreviewRouteNone;
+    {
+        const PatternBlock* best = nullptr;
+        for (const PatternBlock* b : timeline_->getAllPatternBlocks())
+        {
+            if (b == nullptr || b->patternId != patternId) continue;
+            const TrackInfo* t = timeline_->getTrack(b->trackId);
+            if (t == nullptr || t->type != TrackInfo::Type::Pattern) continue;
+            if (best == nullptr || b->position.ticks < best->position.ticks) best = b;
+        }
+        if (best != nullptr) hostTrackId = best->trackId;
+    }
+    if (hostTrackId == xleth::kPreviewRouteNone)
+    {
+        refreshPreviewRoute(regionId);
+    }
+    else
+    {
+        int slot = -1;
+        {
+            std::shared_lock<std::shared_mutex> lock(slotMutex_);
+            auto slotIt = trackIdToSlot_.find(hostTrackId);
+            if (slotIt != trackIdToSlot_.end()) slot = slotIt->second;
+        }
+        it->second->routeTrackSlot.store(slot, std::memory_order_relaxed);
+        it->second->routeTrackId.store(hostTrackId, std::memory_order_release);
+    }
+
+    auditionLoop_.store(loop, std::memory_order_relaxed);
+    auditionPatternId_.store(patternId, std::memory_order_relaxed);
+    auditionStartSeq_.fetch_add(1, std::memory_order_release);
+    return true;
+}
+
+void MixEngine::stopPatternAudition()
+{
+    auditionPatternId_.store(-1, std::memory_order_release);
+}
+
+void MixEngine::setPatternAuditionLoop(bool loop)
+{
+    auditionLoop_.store(loop, std::memory_order_relaxed);
+}
+
+MixEngine::PatternAuditionState MixEngine::getPatternAuditionState() const
+{
+    PatternAuditionState s;
+    s.patternId     = auditionPatternId_.load(std::memory_order_acquire);
+    s.active        = s.patternId >= 0 && auditionActive_.load(std::memory_order_acquire);
+    s.loop          = auditionLoop_.load(std::memory_order_relaxed);
+    s.positionTicks = auditionPosTicks_.load(std::memory_order_relaxed);
+    return s;
+}
+
 // ── Preview render (audio thread) ────────────────────────────────────────────
 //
 // Preview samplers are grouped by their resolved route so each track's chain
@@ -6092,6 +6170,121 @@ void MixEngine::triggerPatternNotes(const ActivePatternBlock& apb,
     }
 }
 
+// ── Pattern audition (audio thread) ──────────────────────────────────────────
+// Transport-stopped only. A private sample clock (auditionPosSamples_) drives
+// triggerPatternNotes() with a synthetic PatternBlock at tick 0, so slides,
+// note-offs, the event sort and the loop arithmetic are exactly what the
+// arrangement uses. Notes land on the region's PREVIEW sampler; the stopped
+// path's renderPreviewSamplers() then runs them through the routed track chain.
+
+void MixEngine::haltPatternAudition()
+{
+    if (auditionRunningRegionId_ >= 0)
+    {
+        auto it = previewSamplers_.find(auditionRunningRegionId_);
+        if (it != previewSamplers_.end() && it->second && it->second->sampler)
+            it->second->sampler->allNotesOff();   // release envelope, not a hard cut
+    }
+    auditionRunningPatternId_ = -1;
+    auditionRunningRegionId_  = -1;
+    auditionActive_.store(false, std::memory_order_release);
+}
+
+void MixEngine::runPatternAudition(int numSamples, double bpm, double sampleRate)
+{
+    const int requested = auditionPatternId_.load(std::memory_order_acquire);
+
+    if (requested < 0)
+    {
+        if (auditionRunningPatternId_ >= 0) haltPatternAudition();
+        return;
+    }
+
+    const int srInt = static_cast<int>(sampleRate);
+    const uint32_t seq = auditionStartSeq_.load(std::memory_order_acquire);
+    const bool loop = auditionLoop_.load(std::memory_order_relaxed);
+
+    const Pattern* pattern = timeline_ != nullptr ? timeline_->getPattern(requested) : nullptr;
+    if (pattern == nullptr || pattern->regionId < 0 || pattern->length.ticks <= 0)
+    {
+        if (auditionRunningPatternId_ >= 0) haltPatternAudition();
+        auditionActive_.store(false, std::memory_order_release);
+        return;
+    }
+    const int64_t lenTicks = pattern->length.ticks;
+
+    if (seq != auditionSeenSeq_)
+    {
+        // (Re)start. Cut whatever the previous run left sounding first.
+        auditionSeenSeq_ = seq;
+        if (auditionRunningPatternId_ >= 0) haltPatternAudition();
+        auditionRunningPatternId_ = requested;
+        auditionRunningRegionId_  = pattern->regionId;
+        auditionSeenLoop_   = loop;
+        auditionPosSamples_ = 0;
+        auditionEndTick_    = loop ? (int64_t(1) << 50) : lenTicks;
+        auditionEndSample_  = loop ? INT64_MAX
+                                   : RenderClock::ppqToSample(lenTicks, srInt, bpm, AV_ROUND_ZERO);
+        auditionActive_.store(true, std::memory_order_release);
+    }
+
+    if (!auditionActive_.load(std::memory_order_acquire)) return;   // one-shot already ended
+
+    // Live loop switch. Off: finish the pass in progress, then end. On: go on.
+    if (loop != auditionSeenLoop_)
+    {
+        auditionSeenLoop_ = loop;
+        if (loop)
+        {
+            auditionEndTick_   = int64_t(1) << 50;
+            auditionEndSample_ = INT64_MAX;
+        }
+        else
+        {
+            const int64_t curTick = RenderClock::sampleToPPQ(auditionPosSamples_, srInt, bpm, AV_ROUND_ZERO);
+            auditionEndTick_   = (curTick / lenTicks + 1) * lenTicks;
+            auditionEndSample_ = RenderClock::ppqToSample(auditionEndTick_, srInt, bpm, AV_ROUND_ZERO);
+        }
+    }
+
+    auto pv = previewSamplers_.find(pattern->regionId);
+    if (pv == previewSamplers_.end() || !pv->second || !pv->second->sampler
+        || !pv->second->sampler->hasSample())
+    {
+        haltPatternAudition();
+        return;
+    }
+    Sampler* sampler = pv->second->sampler.get();
+    sampler->setBPM(bpm);
+
+    auditionBlock_.id          = -1;
+    auditionBlock_.patternId   = requested;
+    auditionBlock_.position    = TickTime{};
+    auditionBlock_.offset      = TickTime{};
+    auditionBlock_.duration.ticks = auditionEndTick_;
+    auditionBlock_.loopEnabled = true;     // the end tick is what bounds a one-shot
+
+    const int64_t bufStart = auditionPosSamples_;
+    const int64_t bufEnd   = bufStart + numSamples;
+
+    ActivePatternBlock apb { &auditionBlock_, pattern, sampler, 0, auditionEndSample_ };
+    triggerPatternNotes(apb, bufStart, bufEnd, bpm, sampleRate);
+
+    auditionPosSamples_ = bufEnd;
+    const int64_t tick = RenderClock::sampleToPPQ(bufEnd, srInt, bpm, AV_ROUND_ZERO);
+    auditionPosTicks_.store(tick % lenTicks, std::memory_order_relaxed);
+
+    if (bufEnd >= auditionEndSample_)
+    {
+        // One-shot done. Every note-off was clamped to the pass end, so the
+        // voices are already releasing; leave the tail to ring out.
+        auditionRunningPatternId_ = -1;
+        auditionRunningRegionId_  = -1;
+        auditionPosTicks_.store(0, std::memory_order_relaxed);
+        auditionActive_.store(false, std::memory_order_release);
+    }
+}
+
 // ── processBlock ─────────────────────────────────────────────────────────────
 // AUDIO THREAD — no alloc (after first call), no locks, no I/O.
 
@@ -6178,6 +6371,13 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     // Play start after an audition: reset the chains it ran through (see
     // auditionDirtiedChains_). Not done while stopped — that would wipe the
     // tail the user is auditioning.
+    // Play start cancels a pattern audition: from here the arrangement owns
+    // the track chains, and the audition's private clock has no meaning.
+    if (isPlaying && auditionRunningPatternId_ >= 0)
+    {
+        auditionPatternId_.store(-1, std::memory_order_release);
+        haltPatternAudition();
+    }
     if (!wasPlaying_ && isPlaying && auditionDirtiedChains_)
     {
         requestJumpChainReset();
@@ -6212,6 +6412,16 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                                         transport.getRenderPositionSamples(),
                                         transport.getBPM(),
                                         transport.getSampleRate()));
+
+        // Pattern audition: schedule this block's notes onto the preview
+        // sampler BEFORE it renders. Tempo-synced effects in the borrowed chain
+        // need the BPM, which the stopped path otherwise never publishes.
+        if (auditionPatternId_.load(std::memory_order_relaxed) >= 0
+            || auditionRunningPatternId_ >= 0)
+        {
+            XlethEffectBase::setGlobalBPM(transport.getBPM());
+            runPatternAudition(numSamples, transport.getBPM(), sampleRateForPreview);
+        }
 
         if (!previewSamplers_.empty())
             renderPreviewSamplers(outputBuffer, numSamples, sampleRateForPreview,

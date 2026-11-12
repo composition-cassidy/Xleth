@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle } from 'lucide-react'
 import {
   DeviceSection, DisplayWell, NumberBox, Select, Toggle, Button, THIN_SPACE, formatValue, logScale, parseValue,
 } from '../../../ui-kit'
@@ -22,6 +21,9 @@ import { subscribe as subscribeTransport, getTransportState } from '../../../tra
 import { playheadClock } from '../../../services/PlayheadClock.js'
 import { beatsToTicks } from '../../../constants/timeline.js'
 import styles from './zprTimeline.module.css'
+import { iconComponent } from '../../../ui-kit/icons'
+
+const IcWarning = iconComponent('warning')
 
 const DEFAULT_RECORD_TOLERANCE = 0.03  // fraction of each channel's own recorded range
 
@@ -570,7 +572,7 @@ export default function ZprTimelineCard({
           className={styles.warn}
           data-hint="The last keyframe differs from the first, so Loop jumps back at the seam without smoothing"
         >
-          <AlertTriangle aria-hidden="true" />
+          <IcWarning aria-hidden="true" />
           Seam jumps
         </span>
       ) : null}

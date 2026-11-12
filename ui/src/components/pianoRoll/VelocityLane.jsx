@@ -21,6 +21,8 @@ const HEAD_HIT = 8   // px hit window around each stem
 const TAIL_PX = 6
 const PAD_TOP = HEAD_R + 2
 const PAD_BOTTOM = 3
+// What Alt+click resets velocity to: the engine's default for a new note.
+export const DEFAULT_VELOCITY = 1.0
 
 /** Lane y for a 0..1 value, and back. Shared by drawing and the drag so they agree. */
 export function valueToY(v, height) {
@@ -209,18 +211,75 @@ const VelocityLane = forwardRef(function VelocityLane({
     }
   }, [selectedNoteIds])
 
+  // Shift-sweep drag: same commit path as a stem drag (targets + preview).
+  const buildSweep = useCallback((localX, localY) => {
+    const sweep = {
+      sweep: true,
+      anchorId: null,
+      lastX: localX,
+      targets: [],
+      preview: new Map(),
+      value: yToValue(localY, height),
+      cross(x0, x1, value) {
+        this.value = value
+        const ppb = pixelsPerBeatRef.current
+        const sX = scrollXRef.current
+        const lo = Math.min(x0, x1) - HEAD_HIT / 2
+        const hi = Math.max(x0, x1) + HEAD_HIT / 2
+        for (const n of notesRef.current) {
+          const x = Math.round(ticksToBeats(n.positionTicks) * ppb - sX)
+          if (x < lo || x > hi) continue
+          if (!this.preview.has(n.id)) {
+            this.targets.push({ id: n.id, orig: n.velocity ?? 1.0 })
+            if (this.anchorId == null) this.anchorId = n.id
+          }
+          this.preview.set(n.id, value)
+        }
+        // Everything already swept follows the pointer's value: all equal.
+        for (const t of this.targets) this.preview.set(t.id, value)
+        this.lastX = x1
+      },
+      apply(value, x) { this.cross(this.lastX, x ?? this.lastX, value) },
+    }
+    sweep.cross(localX, localX, sweep.value)
+    return sweep
+  }, [height, pixelsPerBeatRef, scrollXRef])
+
   const handleMouseDown = useCallback((e) => {
     if (e.button !== 0) return
     const pos = getLocalXY(e)
     if (!pos) return
+    // Shift+drag: every stem the pointer crosses takes the pointer's value,
+    // so the swept notes all end up equal (FL event editor).
+    if (e.shiftKey) {
+      e.preventDefault()
+      dragRef.current = buildSweep(pos.localX, pos.localY)
+      setDragTick((t) => t + 1)
+      return
+    }
     const note = findNoteAt(pos.localX, pos.localY)
     if (!note) return
+    // Alt+click: reset to the default velocity (the selection, if the stem
+    // belongs to it).
+    if (e.altKey) {
+      e.preventDefault()
+      const sel = selectedNoteIds
+      const targets = sel && sel.size > 1 && sel.has(note.id)
+        ? [note, ...notesRef.current.filter((n) => sel.has(n.id) && n.id !== note.id)]
+        : [note]
+      const changed = targets
+        .filter((n) => (n.velocity ?? 1) !== DEFAULT_VELOCITY)
+        .map((n) => ({ noteId: n.id, velocity: DEFAULT_VELOCITY }))
+      if (changed.length > 1 && onSetVelocities) onSetVelocities(changed)
+      else if (changed.length === 1) onSetVelocity?.(changed[0].noteId, DEFAULT_VELOCITY)
+      return
+    }
     const vel = yToValue(pos.localY, height)
     const drag = buildDrag(note)
     drag.apply(vel)
     dragRef.current = drag
     setDragTick((t) => t + 1)
-  }, [buildDrag, findNoteAt, getLocalXY, height])
+  }, [buildDrag, buildSweep, findNoteAt, getLocalXY, height, onSetVelocity, onSetVelocities, selectedNoteIds])
 
   useEffect(() => {
     const onMove = (e) => {
@@ -229,7 +288,10 @@ const VelocityLane = forwardRef(function VelocityLane({
       const rect = containerRef.current?.getBoundingClientRect()
       if (!rect) return
       const vel = yToValue(e.clientY - rect.top, height)
-      if (vel !== d.preview.get(d.anchorId)) {
+      if (d.sweep) {
+        d.apply(vel, e.clientX - rect.left)
+        setDragTick((t) => t + 1)
+      } else if (vel !== d.preview.get(d.anchorId)) {
         d.apply(vel)
         setDragTick((t) => t + 1)
       }
@@ -261,7 +323,7 @@ const VelocityLane = forwardRef(function VelocityLane({
       className={`${styles.cell} ${styles.lane}`}
       onMouseDown={handleMouseDown}
       data-hint="Velocity"
-      data-hint-mods="Drag a stem: set velocity · Selected stems move together · Keys 1–9, 0: set the selection"
+      data-hint-mods="Drag a stem: set velocity · Selected stems move together · Shift+drag: set every stem crossed to one value · Alt+click: reset · Keys 1–9, 0: set the selection"
     >
       <canvas ref={canvasRef} className={styles.layer} role="img" aria-label="Velocity lane" />
     </div>

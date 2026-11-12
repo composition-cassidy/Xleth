@@ -63,6 +63,34 @@
     stroke-width: 1.5;
   }
 
+  /* Minimal dial: a flat disc (a control, so g3) and the pointer; nothing else. */
+  .body {
+    fill: var(--ui-g3);
+    stroke: var(--ui-boundary);
+    stroke-width: 1;
+  }
+
+  /* No readout to take the value colour while dragging, so the pointer does. */
+  .cell[data-minimal]:is([data-dragging="true"], [data-state="active"]) .pointer {
+    stroke: var(--ui-value);
+  }
+
+  /* No value under the dial: the dial is centred in the hit area, and the typing field
+   * (double-click) is drawn over it rather than growing the cell. */
+  .cell[data-no-value] {
+    position: relative;
+    justify-content: center;
+  }
+
+  .cell[data-no-value] .input {
+    position: absolute;
+    top: 50%;
+    right: 1px;
+    left: 1px;
+    width: auto;
+    transform: translateY(-50%);
+  }
+
   .value {
     max-width: 100%;
     overflow: hidden;

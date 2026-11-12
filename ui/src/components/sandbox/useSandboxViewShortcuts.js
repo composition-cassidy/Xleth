@@ -70,4 +70,13 @@ export function useSandboxViewShortcuts() {
     return true
   })
   useViewAction('sandbox.toggleLoop', (state) => { state.toggleLoopPlayback(); return true })
+
+  // ── Tools ───────────────────────────────────────────────────────────────
+  // One letter each, the same grammar the timeline's tools use. They go
+  // through the store's selectTool, which is also what the tool bar's buttons
+  // call, so a key and its button cannot arm a tool differently.
+  useViewAction('sandbox.toolSelect', (state) => { state.selectTool('select'); return true })
+  useViewAction('sandbox.toolEnvelope', (state) => { state.selectTool('envelope'); return true })
+  useViewAction('sandbox.toolPaint', (state) => { state.selectTool('paint'); return true })
+  useViewAction('sandbox.toolRegion', (state) => { state.selectTool('region'); return true })
 }

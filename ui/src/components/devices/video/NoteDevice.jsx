@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp } from 'lucide-react'
 import {
-  DeviceFrame, DeviceSection, DisplayWell, Knob, NumberBox, SegmentedControl, Select, formatValue,
+  DeviceFrame, DeviceSection, DisplayWell, Knob, NumberBox, Select, formatValue,
 } from '../../../ui-kit'
 import { subscribe as subscribeTransport, getTransportState } from '../../../transportStore.js'
 import useEffectPresets from '../../../fx-presets/useEffectPresets.js'
@@ -109,10 +108,10 @@ function PingPongBody({ track }) {
 // ── Bounce ───────────────────────────────────────────────────────────────────
 
 const DIRECTIONS = [
-  { value: 90, label: 'Up', glyph: <ArrowUp aria-hidden="true" />, ariaLabel: 'Up' },
-  { value: 270, label: 'Down', glyph: <ArrowDown aria-hidden="true" />, ariaLabel: 'Down' },
-  { value: 180, label: 'Left', glyph: <ArrowLeft aria-hidden="true" />, ariaLabel: 'Left' },
-  { value: 0, label: 'Right', glyph: <ArrowRight aria-hidden="true" />, ariaLabel: 'Right' },
+  { value: 90, label: 'Up' },
+  { value: 270, label: 'Down' },
+  { value: 180, label: 'Left' },
+  { value: 0, label: 'Right' },
 ]
 
 /** Direction, distance and repeat: shared by the Bounce device and the Slide note effect's bounce. */
@@ -122,10 +121,11 @@ function BounceControls({ bounce, write, withDuration = true }) {
   const distance = draft.get('distance', b.distance ?? 0.15)
   return (
     <>
-      <DeviceSection title="Direction" width={176}>
-        <SegmentedControl
+      <DeviceSection title="Direction" width={128}>
+        <Select
           size="sm"
-          label="Bounce direction"
+          width={104}
+          ariaLabel="Bounce direction"
           value={b.directionDeg ?? 270}
           options={DIRECTIONS}
           onChange={(v) => write({ directionDeg: v })}

@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useState, useCallback, useRef } from 'react'
+import { pearlPlan } from '../ui-kit/pearlRules'
 import TrackHeaderList from './timeline/TrackHeaderList.jsx'
 import PatternListPanel from './timeline/PatternListPanel.jsx'
 import TimelineCanvas from './timeline/TimelineCanvas.jsx'
@@ -80,6 +81,7 @@ import {
   resolveOverwritePlan,
   resolveTimelinePaste,
 } from './timeline/timelineClipboard.js'
+import { planAutomationLoop } from './timeline/automationLoop.js'
 import { deleteUndoSteps, moveUndoSteps, pitchShiftUndoSteps } from './timeline/undoSteps.js'
 import {
   flatTrackLayout,
@@ -107,42 +109,17 @@ import { usePanelRegistry } from '../windowing/registry/PanelRegistry.ts'
 import useInspectorStore, { revealInspector, deriveInspectorSelection } from '../stores/useInspectorStore.js'
 import { register as registerKeyboardBinding } from '../windowing/managers/KeyboardManager'
 import { registerEditorCommand } from '../windowing/managers/EditorCommandRegistry'
+import {
+  TIMELINE_GLOBAL_KEY_COMBOS,
+  TIMELINE_KEY_COMBOS,
+  TIMELINE_PASSTHROUGH_COMMANDS,
+  resolveTimelineKeyCommand,
+} from './timeline/timelineKeymap.js'
 
 const CLIP_CONTROL_TUNER_ENABLED = import.meta.env.VITE_XLETH_CLIP_CONTROL_TUNER === '1'
 const ClipControlTuner = CLIP_CONTROL_TUNER_ENABLED
   ? lazy(() => import('./timeline/clipControlTuner/ClipControlTuner.jsx'))
   : null
-
-// Combos the timeline panel claims. Listed once at module scope so the
-// useEffect that registers them stays empty-deps — handler reads fresh
-// state through a ref, so re-registration on state changes is gone (the
-// 14-dep churn that compounded Bug 1).
-const TIMELINE_KEY_COMBOS = [
-  // Undo / redo
-  'Ctrl+z', 'Ctrl+Z', 'Meta+z', 'Meta+Z',
-  'Ctrl+y', 'Ctrl+Y', 'Meta+y', 'Meta+Y',
-  'Ctrl+Shift+z', 'Ctrl+Shift+Z', 'Meta+Shift+z', 'Meta+Shift+Z',
-  // Select all
-  'Ctrl+a', 'Ctrl+A', 'Meta+a', 'Meta+A',
-  // Delete selected
-  'Delete',
-  // Cut / copy / paste / duplicate
-  'Ctrl+x', 'Ctrl+X', 'Meta+x', 'Meta+X',
-  'Ctrl+c', 'Ctrl+C', 'Meta+c', 'Meta+C',
-  'Ctrl+v', 'Ctrl+V', 'Meta+v', 'Meta+V',
-  'Ctrl+d', 'Ctrl+D', 'Meta+d', 'Meta+D',
-  // Loop toggle
-  'l', 'L',
-  // Pitch shift (no-mod = ±1 semitone, Ctrl/Meta = ±1 cent, Shift = ±12 semitones/octave)
-  '+', '=', '-', '_',
-  'Ctrl++', 'Ctrl+=', 'Ctrl+-', 'Ctrl+_',
-  'Meta++', 'Meta+=', 'Meta+-', 'Meta+_',
-  'Shift++', 'Shift+=', 'Shift+-', 'Shift+_',
-  // Tools
-  's', 'S', 'p', 'P', 'c', 'C', 'd', 'D',
-  // Syllable pick
-  '1', '2', '3', '4', '5', '6', '7', '8', '9',
-]
 
 function isInteractiveFocusElement(element) {
   if (!element) return false
@@ -321,7 +298,6 @@ export default function TimelineView({
     editGateRef.current = run.then(() => {}, () => {})
     return run
   }, [])
-  const timelineFocusedRef = useRef(false)
   const timelineViewRef = useRef(null)
 
   // FXG.4-h: graphStates needed to render macro automation lane clips on the timeline.
@@ -358,6 +334,8 @@ export default function TimelineView({
   automationClipsRef.current = automationClips
   const [automationEnvelopes, setAutomationEnvelopes] = useState([])
   const [selectedAutomationClipIds, setSelectedAutomationClipIds] = useState(new Set())
+  const selectedAutomationClipIdsRef = useRef(selectedAutomationClipIds)
+  selectedAutomationClipIdsRef.current = selectedAutomationClipIds
   // Phase C — the envelope point the user last clicked, so Delete can remove it
   // and the canvas can draw it as the active one. { envelopeId, pointIndex }.
   const [selectedAutomationPoint, setSelectedAutomationPoint] = useState(null)
@@ -829,6 +807,17 @@ export default function TimelineView({
       regionName: region.name,
       syllableCount: syllables.length,
       regionDurationTicks: regionDurationToTicks(region.startTime, region.endTime, bpmRef.current),
+      region: {
+        id: region.id,
+        name: region.name,
+        sourceId: region.sourceId,
+        startTime: region.startTime,
+        endTime: region.endTime,
+        audioFilePath: region.audioFilePath,
+        hasSwappedAudio: region.hasSwappedAudio,
+        swappedAudioPath: region.swappedAudioPath,
+      },
+      syllables: region.syllables ?? [],
     })
     usePanelRegistry.getState().openPanel('quickNotation')
   }, [activeSampleId, regions, setQuickNotationContext])
@@ -1851,31 +1840,36 @@ export default function TimelineView({
   }, [pixelsPerBeat])
 
   // ── Redraw content layer when clips/regions/selection change ───────────────
+  // These are "the data changed" notifications, so they REQUEST a repaint
+  // rather than doing one each: a single commit often trips several of them
+  // (an edit that changes clips and selection, a project load that changes
+  // everything), and the canvas coalesces the requests into one repaint before
+  // the browser paints. See TimelineCanvas requestContentRedraw.
 
   useEffect(() => {
-    canvasRef.current?.redrawContent('clips')
+    canvasRef.current?.requestContentRedraw('clips')
   }, [clips, regions, tracks])
 
   // Grid needs a redraw when tracks/regions change because Pattern-track rows
   // get a tint based on the assigned region's label color.
   useEffect(() => {
-    canvasRef.current?.redrawGrid('tracks-or-regions')
+    canvasRef.current?.requestGridRedraw('tracks-or-regions')
   }, [tracks, regions])
 
   useEffect(() => {
-    canvasRef.current?.redrawContent('pattern-blocks')
+    canvasRef.current?.requestContentRedraw('pattern-blocks')
   }, [patternBlocks, patterns])
 
   useEffect(() => {
-    canvasRef.current?.redrawContent('selection')
+    canvasRef.current?.requestContentRedraw('selection')
   }, [selectedClipIds, selectedBlockIds, selectedAutomationClipIds])
 
   useEffect(() => {
-    canvasRef.current?.redrawContent('automation-clips')
+    canvasRef.current?.requestContentRedraw('automation-clips')
   }, [automationClips, automationEnvelopes, automationBindingLabels, selectedAutomationPoint])
 
   useEffect(() => {
-    canvasRef.current?.redrawContent('display-settings')
+    canvasRef.current?.requestContentRedraw('display-settings')
   }, [timelineDisplaySettings])
 
   // ── Total song length (independent of container width) ────────────────────
@@ -2225,6 +2219,29 @@ export default function TimelineView({
     setTracks((prev) =>
       prev.map((t) => (t.id === id ? { ...t, solo: next } : t))
     )
+  }, [tracks, fetchTracks])
+
+  // The output pearl (ui-kit/pearlRules.ts): click = on/off, right-click = solo, right-click the
+  // only lit track = everything back on. Works on the mute flags; any legacy solo flag is cleared
+  // in the same action so what is lit is what is heard.
+  const handlePearl = useCallback(async (id, action) => {
+    const changes = pearlPlan(tracks.map((t) => ({ id: t.id, muted: !!t.muted, soloed: !!t.solo })), id, action)
+    if (changes.length === 0) return
+    const tl = window.xleth?.timeline
+    if (tl?.setTrackMuted) {
+      try {
+        for (const c of changes) {
+          if (c.clearSolo && tl.setTrackSolo) await tl.setTrackSolo(c.id, false)
+          if (c.muted !== undefined) await tl.setTrackMuted(c.id, c.muted)
+        }
+        await fetchTracks()
+        return
+      } catch { /* fall through */ }
+    }
+    setTracks((prev) => prev.map((t) => {
+      const c = changes.find((x) => x.id === t.id)
+      return c ? { ...t, muted: c.muted ?? t.muted, solo: c.clearSolo ? false : t.solo } : t
+    }))
   }, [tracks, fetchTracks])
 
   const handleVisualOnly = useCallback(async (id) => {
@@ -3145,6 +3162,24 @@ export default function TimelineView({
     }
   }, [fetchAutomationClips])
 
+  // "Loop to Edit Cursor": repeats the selected automation clips (or just the
+  // right-clicked one) as a group until the edit cursor, as ONE undo step.
+  // Copies share the source envelope, exactly like a drag-duplicate.
+  const handleLoopAutomationClips = useCallback(async (clickedClipId) => {
+    const all = automationClipsRef.current ?? []
+    const sel = selectedAutomationClipIdsRef.current
+    const ids = sel?.has(clickedClipId) ? sel : new Set([clickedClipId])
+    const sources = all.filter(c => ids.has(c.id))
+    const endTick = beatsToTicks(Math.max(0, editCursor.getPosition()))
+    const plan = planAutomationLoop(sources, endTick, all)
+    if (plan.length === 0) {
+      console.log('[Loop] Nothing to loop — move the edit cursor to the right of the selected automation clip(s)')
+      return
+    }
+    await handleDuplicateAutomationClips(plan)
+    console.log(`[Loop] Looped ${sources.length} automation clip(s) to tick ${endTick} (${plan.length} copies)`)
+  }, [handleDuplicateAutomationClips])
+
   const handleDeleteAutomationClip = useCallback(async (clipId) => {
     try {
       await window.xleth?.automation?.removeClip(clipId)
@@ -3219,6 +3254,32 @@ export default function TimelineView({
       console.error('[Timeline] moveAutomationPoint failed:', err)
     }
   }, [refreshAutomationAfterPointEdit])
+
+  // Deletes a whole automation lane (and its clips) — one undoable engine
+  // command. The parameter's envelope and base value survive, so re-automating
+  // the knob later starts from where it was.
+  const handleDeleteAutomationLane = useCallback(async (laneId) => {
+    const fn = window.xleth?.automation?.removeLane
+    if (typeof fn !== 'function') {
+      console.warn('[Timeline] automation.removeLane is unavailable — lane not deleted')
+      return
+    }
+    try {
+      const doomed = new Set(automationClips.filter(c => c.laneId === laneId).map(c => c.id))
+      const ok = await fn(laneId)
+      if (ok === false) console.warn(`[Timeline] automation.removeLane rejected (lane ${laneId})`)
+      setSelectedAutomationClipIds(prev => {
+        if (![...prev].some(id => doomed.has(id))) return prev
+        return new Set([...prev].filter(id => !doomed.has(id)))
+      })
+      setSelectedAutomationPoint(null)
+      await fetchAutomationAll()
+      canvasRef.current?.redrawContent('automation-points')
+      timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
+    } catch (err) {
+      console.error('[Timeline] removeAutomationLane failed:', err)
+    }
+  }, [automationClips, fetchAutomationAll])
 
   const handleToggleAutomationGroup = useCallback((ownerTrackId, collapsed) => {
     setCollapsedAutomationGroups(prev => {
@@ -3616,14 +3677,33 @@ export default function TimelineView({
   // TEXTAREA target are gone. Handler is held in a ref so state changes don't
   // re-register; the registration useEffect is empty-deps and runs once.
 
-  const timelineKeyHandlerRef = useRef(null)
-  timelineKeyHandlerRef.current = async (e) => {
-      const ctrl = e.ctrlKey || e.metaKey
+  // Syllables the digit keys can pick: only with the Pencil on a Quote sample.
+  const pencilQuoteSyllables = () => {
+    if (activeTool !== 'pencil') return []
+    const tmpl = pencilTemplateRef.current
+    const regionId = tmpl ? tmpl.regionId : activeSampleId
+    const region = regionId != null ? regions[regionId] : null
+    return region?.label === 'Quote' ? getSelectableSyllables(region.syllables) : []
+  }
 
+  // Whether a command has anything to act on right now. A command that does
+  // not apply leaves the key unclaimed, so it can still reach whoever else
+  // binds it (Ctrl+minus with no clip selected is the window zoom).
+  const timelineKeyCommandApplies = (command) => {
+    switch (command.id) {
+      case 'delete':
+        return selectedClipIds.size > 0 || selectedBlockIds.size > 0
+          || selectedAutomationClipIds.size > 0 || Boolean(selectedAutomationPoint)
+      case 'toggleLoop': return selectedBlockIds.size > 0
+      case 'pitch': return selectedClipIds.size > 0
+      case 'syllable': return pencilQuoteSyllables().length > 0
+      default: return true
+    }
+  }
+
+  const runTimelineKeyCommand = async (command) => {
       // ── Undo / Redo (global, no focus gate) ───────────────────────────
-      if (e.key === 'z' && ctrl && !e.shiftKey) {
-        e.preventDefault()
-        e.stopPropagation()
+      if (command.id === 'undo') {
         // A compound edit (paste = overwrite + insert, split = 3) pushed more
         // than one engine entry. Pop them together, and hand the same count to
         // redo — popping N but replaying 1 would leave the timeline in the
@@ -3645,9 +3725,7 @@ export default function TimelineView({
         timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
         return
       }
-      if ((e.key === 'y' && ctrl) || (e.key === 'z' && ctrl && e.shiftKey)) {
-        e.preventDefault()
-        e.stopPropagation()
+      if (command.id === 'redo') {
         const count = Math.max(1, compoundRedoCountRef.current)
         compoundRedoCountRef.current = 0
         for (let i = 0; i < count; i++) await window.xleth?.undo?.redo()
@@ -3668,10 +3746,9 @@ export default function TimelineView({
       }
 
       // ── Select all (global) ───────────────────────────────────────────
-      if (e.key === 'a' && ctrl) {
-        e.preventDefault()
-        e.stopPropagation()
+      if (command.id === 'selectAll') {
         setSelectedClipIds(new Set(clipsRef.current.map((c) => c.id)))
+        setSelectedAutomationClipIds(new Set((automationClipsRef.current ?? []).map((c) => c.id)))
         console.log('[Keyboard] Select all')
         return
       }
@@ -3680,18 +3757,13 @@ export default function TimelineView({
       // The automation selections belong in this gate too: without them Delete
       // never reaches deleteSelectedTimelineItems when the only thing selected
       // is an automation clip (Phase B) or an envelope point (Phase C).
-      if (e.key === 'Delete' && (selectedClipIds.size > 0 || selectedBlockIds.size > 0
-                                 || selectedAutomationClipIds.size > 0 || selectedAutomationPoint)) {
-        e.preventDefault()
-        e.stopPropagation()
+      if (command.id === 'delete') {
         await deleteSelectedTimelineItems()
         return
       }
 
       // ── Cut / Copy clips + pattern blocks (Ctrl+X / Ctrl+C) ──────────
-      if ((e.key === 'c' || e.key === 'x') && ctrl) {
-        e.preventDefault()
-        e.stopPropagation()
+      if (command.id === 'copy' || command.id === 'cut') {
 
         const next = buildTimelineClipboard({
           clips: clipsRef.current.filter(c => selectedClipIds.has(c.id)),
@@ -3705,7 +3777,7 @@ export default function TimelineView({
         const nClips = next.clips?.length ?? 0
         const nBlocks = next.patternBlocks?.length ?? 0
         const nAuto = next.automationClips?.length ?? 0
-        if (e.key === 'x') {
+        if (command.id === 'cut') {
           await deleteSelectedTimelineItems()
           console.log(`[Keyboard] Cut ${nClips} clip(s), ${nBlocks} pattern block(s), ${nAuto} automation clip(s)`)
         } else {
@@ -3720,9 +3792,7 @@ export default function TimelineView({
       // internal tick and track offset preserved, and OVERWRITES whatever it
       // covers. The clip half is a single atomic pasteClipsBatch, so a 200-clip
       // paste is ONE round trip and ONE undo entry instead of 200 of each.
-      if (e.key === 'v' && ctrl) {
-        e.preventDefault()
-        e.stopPropagation()
+      if (command.id === 'paste') {
 
         const cb = clipboardRef.current
         if (!cb || (!cb.clips && !cb.patternBlocks && !cb.automationClips)) return
@@ -3855,9 +3925,7 @@ export default function TimelineView({
       // Duplicates the WHOLE selection, shifted right by the selection's own
       // span, so a copied phrase repeats seamlessly. It used to duplicate only
       // the first selected clip and slide it to the nearest free slot.
-      if (e.key === 'd' && ctrl) {
-        e.preventDefault()
-        e.stopPropagation()
+      if (command.id === 'duplicate') {
         // Reading the sources and resolving the overwrite plan both queue: a
         // held Ctrl+D otherwise duplicates from a list the previous repeat has
         // not written back yet, and buries the wrong items.
@@ -3956,9 +4024,7 @@ export default function TimelineView({
       }
 
       // ── Toggle pattern-block loop (L) ─────────────────────────────────
-      if (!ctrl && (e.key === 'l' || e.key === 'L') && selectedBlockIds.size > 0) {
-        e.preventDefault()
-        e.stopPropagation()
+      if (command.id === 'toggleLoop') {
         const ids = [...selectedBlockIds]
         // Determine new state from the first selected block's current loopEnabled
         // (treat undefined as true for backward compat) — toggle to the opposite,
@@ -3980,17 +4046,12 @@ export default function TimelineView({
       }
 
       // ── Pitch shift selected clips (+/- keys) ────────────────────────
-      if ((e.key === '+' || e.key === '=' || e.key === '-' || e.key === '_') && selectedClipIds.size > 0) {
-        e.preventDefault()
-        e.stopPropagation()
-        const direction = (e.key === '+' || e.key === '=') ? 1 : -1
+      if (command.id === 'pitch') {
+        const { direction, semitones: semis, cents, unit } = command
         const ids = [...selectedClipIds]
         // N× pitchShiftClip, N engine entries — every branch below.
         compoundUndoCountRef.current = pitchShiftUndoSteps(ids)
         // Shift +/- = ±12 semitones (one octave); Ctrl +/- = ±1 cent; bare = ±1 semitone.
-        const [semis, cents] = e.shiftKey ? [direction * 12, 0]
-                             : ctrl       ? [0, direction]
-                                          : [direction, 0]
         // pitchShiftClip answers with the clip's post-state, so the whole
         // selection reconciles from the replies — no getClips over the project.
         const shifted = await Promise.all(ids.map(id =>
@@ -4001,59 +4062,75 @@ export default function TimelineView({
             })
         ))
         applyClipDelta({ updated: shifted.filter(Boolean) })
-        const unit = e.shiftKey ? '12 semitones (1 octave)' : ctrl ? '1 cent' : '1 semitone'
         console.log(`[Keyboard] Pitch ${direction > 0 ? '+' : '-'}${unit} on ${ids.length} clip(s)`)
         return
       }
 
-      // ── Tool shortcuts (only when timeline is focused, no Ctrl) ───────
-      if (!ctrl && timelineFocusedRef.current) {
-        const key = e.key.toLowerCase()
-        if (key === 's') {
-          const splitTick = beatsToTicks(playheadBeatRef.current)
-          const didSplice = await handleSpliceSelectedClips(splitTick)
-          if (didSplice) { e.preventDefault(); e.stopPropagation(); return }
-          setActiveTool('select')
-          console.log('[Keyboard] Tool → Select')
-          return
-        }
-        if (key === 'p') { setActiveTool('pencil');  console.log('[Keyboard] Tool → Pencil');  return }
-        if (key === 'c') { setActiveTool('split');   console.log('[Keyboard] Tool → Split');   return }
-        if (key === 'd') { setActiveTool('delete');  console.log('[Keyboard] Tool → Delete');  return }
+      // ── Tools ─────────────────────────────────────────────────────────
+      // S splits the selection at the playhead when there is one to split,
+      // and is the Select tool otherwise.
+      if (command.id === 'splitOrSelect') {
+        const splitTick = beatsToTicks(playheadBeatRef.current)
+        if (await handleSpliceSelectedClips(splitTick)) return
+        setActiveTool('select')
+        console.log('[Keyboard] Tool → select')
+        return
+      }
+      if (command.id === 'tool') {
+        setActiveTool(command.tool)
+        console.log(`[Keyboard] Tool → ${command.tool}`)
+        return
+      }
 
-        // ── Syllable pick (1-9) when pencil + Quote with syllables is active ─
-        if (activeTool === 'pencil' && /^[1-9]$/.test(e.key)) {
-          const tmpl = pencilTemplateRef.current
-          const regionId = tmpl ? tmpl.regionId : activeSampleId
-          const region = regionId != null ? regions[regionId] : null
-          const selectableSyllables = getSelectableSyllables(region?.syllables)
-          if (region?.label === 'Quote' && selectableSyllables.length > 0) {
-            const idx = parseInt(e.key, 10) - 1
-            const selected = selectableSyllables[idx]
-            if (selected) {
-              handleSelectSyllable(selected.sourceIndex)
-              console.log(`[Keyboard] Syllable → ${idx + 1}`)
-            }
-            return
-          }
+      // ── Syllable pick (1-9) when pencil + Quote with syllables is active ─
+      if (command.id === 'syllable') {
+        const selected = pencilQuoteSyllables()[command.index]
+        if (selected) {
+          handleSelectSyllable(selected.sourceIndex)
+          console.log(`[Keyboard] Syllable → ${command.index + 1}`)
         }
       }
   }
 
+  // The one entry point for a key the router sends here. It decides whether
+  // the key is the timeline's and claims it BEFORE any await: the router reads
+  // the answer the moment this returns, so a claim made after an engine round
+  // trip (as S used to make it) arrived too late and the key was also offered
+  // to the next panel. Whether the timeline should get the key at all is the
+  // router's decision alone; there is no second focus check in here.
+  const timelineKeyHandlerRef = useRef(null)
+  timelineKeyHandlerRef.current = (e) => {
+    const command = resolveTimelineKeyCommand(e)
+    if (!command || !timelineKeyCommandApplies(command)) return false
+    e.preventDefault()
+    if (!TIMELINE_PASSTHROUGH_COMMANDS.has(command.id)) e.stopPropagation()
+    runTimelineKeyCommand(command)
+      .catch((err) => console.error(`[Keyboard] ${command.id} failed:`, err))
+    return true
+  }
+
+  // Edit > Undo / Redo run the same command as the keys, so the menu also pops
+  // a compound edit whole and refreshes the same lists.
+  const runTimelineKeyCommandRef = useRef(runTimelineKeyCommand)
+  runTimelineKeyCommandRef.current = runTimelineKeyCommand
   useEffect(() => {
-    const dispatch = (e) => {
-      // Each handled branch in the ref'd handler calls preventDefault
-      // synchronously before any await, so defaultPrevented after invoke
-      // is a reliable claim signal. No-op branches (e.g. Delete with no
-      // selection) leave the event unclaimed and the router falls
-      // through to lower-priority scopes — no global binding overlaps
-      // TIMELINE_KEY_COMBOS today, but this preserves correct semantics.
-      timelineKeyHandlerRef.current?.(e)
-      return e.defaultPrevented ? 'handled' : undefined
-    }
-    const unsubscribers = TIMELINE_KEY_COMBOS.map((combo) =>
-      registerKeyboardBinding({ scope: 'panel:timeline', combo, handler: dispatch }),
-    )
+    const unregister = ['undo', 'redo'].map((id) =>
+      registerEditorCommand('timeline', id, () => runTimelineKeyCommandRef.current({ id })))
+    return () => { unregister.forEach((u) => u()) }
+  }, [])
+
+  useEffect(() => {
+    const dispatch = (e) => (timelineKeyHandlerRef.current?.(e) ? 'handled' : undefined)
+    const unsubscribers = [
+      ...TIMELINE_KEY_COMBOS.map((combo) =>
+        registerKeyboardBinding({ scope: 'panel:timeline', combo, handler: dispatch })),
+      // Undo and redo act on the project's one undo stack, so they also answer
+      // when the mouse and the last click are on a panel with no undo of its
+      // own (Inspector, Preview, Mixer, Browser). A panel that has one (Piano
+      // Roll, FX Graph, Sample Sandbox) is asked first and keeps the key.
+      ...TIMELINE_GLOBAL_KEY_COMBOS.map((combo) =>
+        registerKeyboardBinding({ scope: 'global', combo, handler: dispatch })),
+    ]
     return () => { unsubscribers.forEach((u) => u()) }
   }, [])
 
@@ -4269,10 +4346,8 @@ export default function TimelineView({
       const timelinePanel = timelineViewRef.current?.closest?.('[data-panel-id="timeline"]')
       if (timelinePanel instanceof HTMLElement) {
         timelinePanel.focus()
-        timelineFocusedRef.current = true
       } else if (timelineViewRef.current instanceof HTMLElement) {
         timelineViewRef.current.focus()
-        timelineFocusedRef.current = true
       }
 
       if (usePianoRollStore.getState().activeCenterTab !== 'timeline') {
@@ -4370,6 +4445,7 @@ export default function TimelineView({
         : contextMenu.type === 'automationClip'
         ? [
             { label: 'Make Unique Copy', onClick: () => { handleMakeUniqueAutomationClip(contextMenu.clipId); closeClipContextMenu() } },
+            { label: 'Loop to Edit Cursor', onClick: () => { handleLoopAutomationClips(contextMenu.clipId); closeClipContextMenu() } },
             { type: 'separator' },
             { label: 'Delete', danger: true, onClick: () => { handleDeleteAutomationClip(contextMenu.clipId); closeClipContextMenu() } },
           ]
@@ -4378,7 +4454,8 @@ export default function TimelineView({
             { label: 'Auto-Trim Silence (−54 dB)', onClick: () => handleAutoTrimClip(contextMenu.clipId) },
             { type: 'separator' },
             {
-              label: contextMenuClip?.reversed ? '✓ Reverse' : 'Reverse',
+              label: 'Reverse',
+              checked: !!contextMenuClip?.reversed,
               onClick: () => handleReverseClip(contextMenu.clipId),
             },
             { type: 'separator' },
@@ -4395,12 +4472,13 @@ export default function TimelineView({
           ])
     : []
 
-  // ── Timeline focus tracking (for keyboard shortcut gating) ─────────────────
+  // ── Centre-tab claim ───────────────────────────────────────────────────────
+  // Which panel gets a key is the keyboard router's call; nothing here gates a
+  // shortcut. This only keeps the legacy activeCenterTab flag in step.
 
   useEffect(() => {
     const onMouseDown = (e) => {
       const inTimeline = !!timelineViewRef.current?.contains(e.target)
-      timelineFocusedRef.current = inTimeline
       // Scenario A: user clicks into timeline while piano roll was active.
       // Claim activeCenterTab so the keyboard gate at line 1791 passes through.
       // TODO: remove when central keyboard router replaces activeCenterTab —
@@ -4477,6 +4555,7 @@ export default function TimelineView({
               onAddTrack={handleAddTrackClick}
               onMute={handleMute}
               onSolo={handleSolo}
+              onPearl={handlePearl}
               onVisualOnly={handleVisualOnly}
               onRename={handleRename}
               onRemove={handleRemove}
@@ -4491,6 +4570,7 @@ export default function TimelineView({
               automationGroupRows={trackLayout.automationGroupRows}
               automationLaneRows={trackLayout.automationLaneRows}
               onToggleAutomationGroup={handleToggleAutomationGroup}
+              onDeleteAutomationLane={handleDeleteAutomationLane}
               onAddClipTrack={() => handleAddTrack('Clip')}
               onAddPatternTrack={() => handleAddTrack('Pattern')}
               pinnedHeader={(

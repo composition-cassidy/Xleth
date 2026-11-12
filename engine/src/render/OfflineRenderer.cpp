@@ -21,7 +21,7 @@
 #include "export/FFmpegMuxer.h"
 #include "SyncManager.h"          // VideoEvent
 #include "render/ArpVideoExpander.h"
-#include "render/VideoFlipApplier.h"  // single resolver call site
+#include "render/VideoEventBuilder.h"  // the one timeline -> VideoEvent builder
 #include "ProxyTranscoder.h"          // resolution-aware render proxies
 
 extern "C" {
@@ -219,36 +219,6 @@ inline void applyCanvasFitToCompositor(GridCompositor& compositor,
         modeName, vp.x, vp.y, vp.w, vp.h);
 }
 
-struct PatternNoteRef {
-    const PatternNote* note = nullptr;
-    int sourceOrder = 0;
-};
-
-bool patternNoteRefLess(const PatternNoteRef& a, const PatternNoteRef& b) {
-    if (a.note->position.ticks != b.note->position.ticks)
-        return a.note->position.ticks < b.note->position.ticks;
-
-    const int orderA = a.note->id > 0 ? a.note->id : a.sourceOrder;
-    const int orderB = b.note->id > 0 ? b.note->id : b.sourceOrder;
-    if (orderA != orderB) return orderA < orderB;
-
-    if (a.note->pitch != b.note->pitch) return a.note->pitch < b.note->pitch;
-    return a.sourceOrder < b.sourceOrder;
-}
-
-std::vector<PatternNoteRef> sortedPatternNoteRefs(const Pattern& pattern) {
-    std::vector<PatternNoteRef> refs;
-    refs.reserve(pattern.notes.size());
-    for (int i = 0; i < static_cast<int>(pattern.notes.size()); ++i)
-        refs.push_back({&pattern.notes[static_cast<std::size_t>(i)], i});
-    std::sort(refs.begin(), refs.end(), patternNoteRefLess);
-    return refs;
-}
-
-int sourceOrderFor(const PatternNote& note, int fallbackOrder) {
-    return note.id > 0 ? note.id : fallbackOrder;
-}
-
 } // namespace
 
 // ===========================================================================
@@ -338,262 +308,20 @@ std::vector<VideoEvent> OfflineRenderer::buildVideoEvents(
     std::vector<SlideAnimationEvent>* outSlideEvents,
     double eventSampleRate)
 {
-    std::vector<VideoEvent> events;
-    if (outSlideEvents) outSlideEvents->clear();
-    const double bpm = timeline.getBPM();
+    // The event list comes from the ONE shared builder the live preview also
+    // uses (render/VideoEventBuilder.h). This function used to carry its own
+    // copy of the clip and pattern loops, and the two copies had drifted: see
+    // that header for the ways export and preview disagreed.
     const double sampleRate = eventSampleRate > 0.0
         ? eventSampleRate
         : timeline.getSampleRate();
 
-    // ── Clip tracks: each clip → one VideoEvent ──────────────────────────
-    int noteCounterPerTrack_clip = 0;
-    int lastTrackId_clip = -1;
-
-    // Sort clips by track, then position, for stable globalNoteIndex
-    auto allClips = timeline.getAllClips();
-    std::sort(allClips.begin(), allClips.end(),
-        [](const Clip* a, const Clip* b) {
-            if (a->trackId != b->trackId) return a->trackId < b->trackId;
-            return a->position < b->position;
-        });
-
-    for (const Clip* clip : allClips) {
-        if (!clip) continue;
-
-        const TrackInfo* track = timeline.getTrack(clip->trackId);
-        if (!track) continue;
-
-        // Find the region to get sourceId
-        const SampleRegion* region = timeline.getRegion(clip->regionId);
-        if (!region) continue;
-
-        const SourceMedia* source = timeline.getSource(region->sourceId);
-        if (!source || !source->hasVideo) continue;
-
-        // Track-level note counter for flip mode cycling
-        if (clip->trackId != lastTrackId_clip) {
-            noteCounterPerTrack_clip = 0;
-            lastTrackId_clip = clip->trackId;
-        }
-
-        VideoEvent ev;
-        ev.startBeat      = clip->position.toBeats();
-        ev.durationBeats   = clip->duration.toBeats();
-        ev.sourceId        = region->sourceId;
-        ev.trackId         = clip->trackId;
-        ev.regionId        = clip->regionId;
-        // Source anchor = region start + syllable offset + clip trim, via the ONE
-        // shared helper (model/ClipSourceAnchor.h). Syllable times are
-        // REGION-RELATIVE seconds (0 == region->startTime), matching the audio
-        // readhead (MixEngine::findActiveClips / enqueueClipRender both do
-        // `syl.startTime + regionOffset`) and the realtime preview's event build
-        // (XlethEngineService rebuildVideoEvents). This expression used to be
-        // duplicated in both video builders; omitting the syllable term here
-        // pinned every syllable clip's video to the region head while its audio
-        // played the correct syllable — a render-only A/V desync that grew with
-        // the syllable's distance into the region. Sharing the helper is what
-        // stops the two builders drifting apart again.
-        const double syllableStart =
-            (clip->syllableIndex >= 0
-             && clip->syllableIndex < static_cast<int>(region->syllables.size()))
-                ? region->syllables[clip->syllableIndex].startTime
-                : 0.0;
-        ev.sourceStartTime = xleth::anchoring::clipSourceAnchorSeconds(
-            region->startTime, clip->regionOffset.ticks, bpm, syllableStart);
-        ev.sourceEndTime   = region->endTime;
-        ev.sourceClampStartTime = region->startTime;
-        ev.clipId          = clip->id;
-        ev.hasClipModulation = clip->modulation.enabled
-            && (clip->modulation.vibrato.enabled || clip->modulation.scratch.enabled);
-        ev.modulation = clip->modulation;
-        ev.clipReversed = clip->reversed;
-        ev.clipStretchRatio = clip->stretchRatio;
-        ev.clipFormantPreserve = clip->formantPreserve;
-        ev.clipPitchOffsetSemis = clip->pitchOffset;
-        ev.clipPitchOffsetCents = clip->pitchOffsetCents;
-        ev.clipStartTimelineSamples = static_cast<int64_t>(
-            std::llround(ev.startBeat * 60.0 / bpm * sampleRate));
-        ev.layerIndex      = 0;  // not used in grid compositor path
-        ev.x               = track->videoX;
-        ev.y               = track->videoY;
-        ev.width           = track->videoW;
-        ev.height          = track->videoH;
-        ev.opacity         = track->videoOpacity * clip->velocity;
-        ev.fadeInPercent   = clip->fadeInPercent;
-        ev.fadeOutPercent  = clip->fadeOutPercent;
-        normalizeClipFadePercents(ev.fadeInPercent, ev.fadeOutPercent);
-        ev.fadeInX1        = clip->fadeInX1;
-        ev.fadeInY1        = clip->fadeInY1;
-        ev.fadeInX2        = clip->fadeInX2;
-        ev.fadeInY2        = clip->fadeInY2;
-        ev.fadeOutX1       = clip->fadeOutX1;
-        ev.fadeOutY1       = clip->fadeOutY1;
-        ev.fadeOutX2       = clip->fadeOutX2;
-        ev.fadeOutY2       = clip->fadeOutY2;
-        const int clipEmissionOrder = noteCounterPerTrack_clip++;
-        ev.globalNoteIndex = clipEmissionOrder;
-        ev.hasSourceTriggerOrder = true;
-        ev.sourceTriggerOrder = clip->id > 0 ? clip->id : clipEmissionOrder;
-        ev.originalEmissionOrder = clipEmissionOrder;
-        // Flip-v2: pitch identifier consumed by the resolver. Spec §1: clip
-        // tracks use the clip's pitch-shift value (semitones from source).
-        ev.pitch = clip->pitchOffset;
-
-        events.push_back(ev);
-    }
-
-    // ── Pattern tracks: each note onset → one VideoEvent ─────────────────
-    auto allBlocks = timeline.getAllPatternBlocks();
-    std::sort(allBlocks.begin(), allBlocks.end(),
-        [](const PatternBlock* a, const PatternBlock* b) {
-            if (a->trackId != b->trackId) return a->trackId < b->trackId;
-            return a->position < b->position;
-        });
-
-    int lastTrackId_pat = -1;
-    int noteCounterPerTrack_pat = 0;
-
-    for (const PatternBlock* block : allBlocks) {
-        if (!block) continue;
-
-        const Pattern* pattern = timeline.getPattern(block->patternId);
-        if (!pattern) continue;
-
-        const SampleRegion* region = timeline.getRegion(pattern->regionId);
-        if (!region) continue;
-
-        const SourceMedia* source = timeline.getSource(region->sourceId);
-        if (!source || !source->hasVideo) continue;
-
-        const TrackInfo* track = timeline.getTrack(block->trackId);
-        if (!track) continue;
-
-        if (block->trackId != lastTrackId_pat) {
-            noteCounterPerTrack_pat = 0;
-            lastTrackId_pat = block->trackId;
-        }
-
-        const double blockStartBeats = block->position.toBeats();
-        const double blockDurBeats   = block->duration.toBeats();
-        const double patLenBeats     = pattern->length.toBeats();
-        if (patLenBeats <= 0.0) continue;
-
-        if (region->arpEnabled) {
-            // ── Arp expansion: simulate arpeggiator in beat-space ────────
-            const int64_t bpTicks = block->position.ticks;
-            const int64_t bdTicks = block->duration.ticks;
-            const int64_t boTicks = block->offset.ticks;
-            const int64_t wStart  = boTicks;
-            const int64_t wEnd    = boTicks + bdTicks;
-            const int64_t firstL  = wStart / pattern->length.ticks;
-            int64_t       lastL   = (wEnd - 1) / pattern->length.ticks;
-            if (!block->loopEnabled)
-                lastL = std::min<int64_t>(lastL, 0);
-
-            const auto noteRefs = sortedPatternNoteRefs(*pattern);
-            std::vector<const PatternNote*> notesPtrs;
-            notesPtrs.reserve(noteRefs.size());
-            for (const auto& ref : noteRefs) notesPtrs.push_back(ref.note);
-
-            auto arpEvts = ArpVideoExpander::expandArpVideoEvents(
-                notesPtrs, bpTicks, bdTicks,
-                pattern->length.ticks, block->loopEnabled,
-                firstL, lastL, wStart, wEnd,
-                region->arpTempoSync, region->arpDivision,
-                region->arpFreeTimeMs, region->arpGate,
-                region->arpRange, region->arpDirection,
-                bpm, region->sourceId, block->trackId,
-                pattern->regionId,
-                region->startTime, region->endTime,
-                noteCounterPerTrack_pat);
-
-            for (auto& aev : arpEvts) {
-                aev.x       = track->videoX;
-                aev.y       = track->videoY;
-                aev.width   = track->videoW;
-                aev.height  = track->videoH;
-                aev.opacity *= track->videoOpacity;
-            }
-            events.insert(events.end(), arpEvts.begin(), arpEvts.end());
-        } else {
-            // ── Standard per-note emission (unchanged) ───────────────────
-            const auto noteRefs = sortedPatternNoteRefs(*pattern);
-            for (const auto& noteRef : noteRefs) {
-                const PatternNote& note = *noteRef.note;
-                const double noteOffsetBeats = note.position.toBeats() - block->offset.toBeats();
-                const double noteDurBeats    = note.duration.toBeats();
-
-                // Handle looping: emit events for each loop iteration
-                double loopOffset = 0.0;
-                while (true) {
-                    double evStartInBlock = noteOffsetBeats + loopOffset;
-                    if (evStartInBlock >= blockDurBeats) break;
-                    if (evStartInBlock < 0.0) {
-                        loopOffset += patLenBeats;
-                        continue;
-                    }
-
-                    double evDur = std::min(noteDurBeats, blockDurBeats - evStartInBlock);
-                    if (evDur <= 0.0) { loopOffset += patLenBeats; continue; }
-
-                    // Slide notes don't emit a VideoEvent — they fire a
-                    // per-track visual effect on the existing cell.
-                    if (note.isSlide) {
-                        if (outSlideEvents) {
-                            SlideAnimationEvent se;
-                            se.startBeat     = blockStartBeats + evStartInBlock;
-                            se.durationBeats = evDur;
-                            se.trackId       = block->trackId;
-                            se.slideVelocity = note.velocity;
-                            se.slideCurveCx  = note.slideCurveCx;
-                            se.slideCurveCy  = note.slideCurveCy;
-                            outSlideEvents->push_back(se);
-                        }
-                        if (!block->loopEnabled) break;
-                        loopOffset += patLenBeats;
-                        continue;
-                    }
-
-                    VideoEvent ev;
-                    ev.startBeat       = blockStartBeats + evStartInBlock;
-                    ev.durationBeats   = evDur;
-                    ev.sourceId        = region->sourceId;
-                    ev.trackId         = block->trackId;
-                    ev.regionId        = pattern->regionId;
-                    ev.sourceStartTime = region->startTime;
-                    ev.sourceEndTime   = region->endTime;
-                    ev.sourceClampStartTime = region->startTime;
-                    ev.layerIndex      = 0;
-                    ev.x               = track->videoX;
-                    ev.y               = track->videoY;
-                    ev.width           = track->videoW;
-                    ev.height          = track->videoH;
-                    ev.opacity         = track->videoOpacity * note.velocity;
-                    const int noteEmissionOrder = noteCounterPerTrack_pat++;
-                    ev.globalNoteIndex = noteEmissionOrder;
-                    ev.hasSourceTriggerOrder = true;
-                    ev.sourceTriggerOrder = sourceOrderFor(note, noteRef.sourceOrder);
-                    ev.originalEmissionOrder = noteEmissionOrder;
-                    ev.pitch           = note.pitch;  // flip-v2 resolver input
-
-                    events.push_back(ev);
-
-                    if (!block->loopEnabled) break;
-                    loopOffset += patLenBeats;
-                }
-            }
-        }
-    }
-
-    // ── Flip-v2 resolution (single call site for all event-build paths) ──
-    // Per-track chord detection + pure resolver + write-back of
-    // monoOrdinal / stateIndex / orientation. No-op for tracks with
-    // VideoFlipConfig.enabled = false.
-    videoFlipApplier::applyAll(events, timeline);
+    auto built = xleth::videoevents::build(timeline, timeline.getBPM(), sampleRate);
+    if (outSlideEvents) *outSlideEvents = std::move(built.slideEvents);
 
     std::fprintf(stderr, "[Renderer] Built %d video events from timeline\n",
-                 static_cast<int>(events.size()));
-    return events;
+                 static_cast<int>(built.events.size()));
+    return std::move(built.events);
 }
 
 // ===========================================================================

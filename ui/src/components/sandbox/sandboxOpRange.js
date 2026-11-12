@@ -27,10 +27,20 @@ export function opSampleRange(op) {
       return rangeOf(p.startSample, p.endSample)
     case 'denoise':
       return rangeOf(p.noiseStartSample, p.noiseEndSample)
+    case 'gain':
+      // Only a gain scoped to a range has somewhere to point. endSample -1 is
+      // the engine's "to the end", i.e. the whole layer, and rangeOf would
+      // happily sort (0, -1) into a one-sample range — so it is ruled out here.
+      return p.endSample > p.startSample ? rangeOf(p.startSample, p.endSample) : null
     case 'fade':
-      // A fade's params carry a length and an edge, not two endpoints: fade-in
-      // runs from the start of the buffer, fade-out ends at its end — which
-      // this cannot know without the buffer length, so the caller supplies it.
+      // The engine fades [startSample, startSample + lengthSamples) — a fade
+      // can sit anywhere, not only against an edge (FadeParams, applyFade).
+      // This used to assume the edge, so a fade drawn over a selection in the
+      // middle of the layer was highlighted at the start or the end instead.
+      if (Number.isFinite(p.startSample)) return rangeOf(p.startSample, p.startSample + (p.lengthSamples ?? 0))
+      // Params with no start (older stacks): fade-in runs from the start of the
+      // buffer, fade-out ends at its end — which this cannot know without the
+      // buffer length, so the caller supplies it.
       return p.fadeIn ? rangeOf(0, p.lengthSamples) : { fromEnd: true, lengthSamples: p.lengthSamples }
     case 'crossfade':
       return rangeOf(p.atSample - (p.lengthSamples ?? 0) / 2, p.atSample + (p.lengthSamples ?? 0) / 2)

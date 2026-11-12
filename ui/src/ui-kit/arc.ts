@@ -36,6 +36,24 @@ export interface KnobGeometry {
   zero: { x1: number; y1: number; x2: number; y2: number } | null;
 }
 
+export interface MinimalDialGeometry {
+  /** Centre of the disc, and its radius (the stroke stays inside the box). */
+  c: number;
+  r: number;
+  /** A spoke from near the centre to the rim at the current value. */
+  pointer: { x1: number; y1: number; x2: number; y2: number };
+}
+
+/** A plain dial: a disc and one pointer, on the same 270 degree sweep as the full knob. */
+export function minimalDialGeometry(norm: number, size: number): MinimalDialGeometry {
+  const c = size / 2;
+  const r = c - 1;
+  const deg = normToDeg(Math.max(0, Math.min(1, norm)));
+  const [x1, y1] = polar(c, c, r * 0.2, deg);
+  const [x2, y2] = polar(c, c, r - 0.5, deg);
+  return { c, r, pointer: { x1, y1, x2, y2 } };
+}
+
 /**
  * @param norm        current value, normalised 0..1
  * @param centreNorm  normalised centre for a bipolar control, or null for a unipolar one

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import {
   IconButton, Knob, Toggle, skewScale,
 } from '../../../ui-kit'
@@ -6,7 +6,10 @@ import FieldSelect from '../FieldSelect.jsx'
 import { ModKnob, ModNumberBox } from '../kitMod.jsx'
 import { formatSigned2, formatTime, noteValueCodec, parseOffset } from '../samplerFormat.js'
 import ModShapeCanvas from './ModShapeCanvas.jsx'
+import LfoTimeline from './LfoTimeline.jsx'
+import SpanSelect from './SpanSelect.jsx'
 import { useBoxSize } from './useBoxSize.js'
+import { formatSeconds, resolveSpan, useModSpanStore } from './modTime.js'
 import {
   SEG_STEP, SEG_LINE, SEG_CURVE, BEHAVIORS,
   NOTE_VALUES, modTimeSeconds,
@@ -18,9 +21,13 @@ import {
 import styles from '../Sampler.module.css'
 
 // ── LFO editor ───────────────────────────────────────────────────────────────
-// The drawable shape (canvas point editor: Step / Line / Curve segments on a snap
-// grid) with rate, depth shaping and behaviour. A drag on the canvas streams
-// through preview(); release commits once. Discrete controls commit immediately.
+// Two displays. The SHAPE (canvas point editor: Step / Line / Curve segments on a
+// snap grid) is one cycle on a phase ruler, and says how long that cycle lasts.
+// OVER TIME, under it, is that cycle as it actually plays from a note start, to
+// scale on the time ruler the envelopes share: rate, delay, rise, phase and
+// smooth are all visible there, so a slow LFO looks slow. A drag on the shape
+// streams through preview(); release commits once. Discrete controls commit
+// immediately.
 
 // Shape starters. Each returns a fresh `{t,v,seg,tension}[]`.
 const PRESETS = {
@@ -91,6 +98,8 @@ export default function LfoEditor({ lfo, color, bpm, preview, commit, source = n
   const [snapX, setSnapX] = useState(0)
   const [snapY, setSnapY] = useState(0)
   const [wellRef, size] = useBoxSize()
+  const [timeRef, timeSize] = useBoxSize({ width: 460, height: 64 })
+  const span = useModSpanStore((s) => s.span)
 
   const points = Array.isArray(lfo.points) ? lfo.points : []
   const sync = !!lfo.tempoSync
@@ -106,6 +115,19 @@ export default function LfoEditor({ lfo, color, bpm, preview, commit, source = n
   const setTimeFinal = (key, patch) => { preview({ [key]: { ...lfo[key], ...patch } }); commit() }
 
   const syncedRateMs = sync ? modTimeSeconds(lfo.syncRate, true, bpm) * 1000 : null
+
+  // The timing the engine resolves (advanceModLfo): a synced note value is a
+  // PERIOD, and a note value of Off falls back to the free rate.
+  const period = sync ? modTimeSeconds(lfo.syncRate, true, bpm) : 0
+  const rateHz = Math.max(1e-4, Math.min(400, period > 1e-9 ? 1 / period : (lfo.rateHz ?? 1)))
+  const timing = useMemo(() => ({
+    rateHz,
+    delaySec: modTimeSeconds(lfo.delay, sync, bpm),
+    riseSec: modTimeSeconds(lfo.rise, sync, bpm),
+  }), [rateHz, lfo.delay, lfo.rise, sync, bpm])
+  // Fit: the delay or rise, then four cycles.
+  const spanSec = resolveSpan(span, Math.max(timing.delaySec, timing.riseSec) + 4 / rateHz)
+  const cycleText = `1 cycle = ${formatSeconds(1 / rateHz)}`
 
   const timeKnob = (key, name, target) => (sync ? (
     <Knob
@@ -131,6 +153,7 @@ export default function LfoEditor({ lfo, color, bpm, preview, commit, source = n
   return (
     <div className={styles.editor} data-editor="lfo">
       <div className={styles.editorHead}>
+        <SpanSelect />
         <FieldSelect
           label="Mode" width={84} value={lfo.behavior ?? 0}
           options={BEHAVIORS.map((b) => ({ value: b.v, label: b.l }))}
@@ -152,17 +175,6 @@ export default function LfoEditor({ lfo, color, bpm, preview, commit, source = n
             </IconButton>
           ))}
         </div>
-        <FieldSelect
-          label="Segment" width={84} value={selPoint ? (selPoint.seg ?? SEG_LINE) : -1}
-          options={SEG_TOOLS.map((t) => ({ value: t.value, label: t.label }))} disabled={!selPoint} placeholder="—"
-          onChange={(seg) => { if (selPoint) setPointsFinal(withSel({ seg: Number(seg) })) }}
-          hint={selPoint ? SEG_TOOLS.map((t) => t.hint).join('. ') : 'Select a point on the shape first'}
-          data-lfo-field="segment"
-        />
-        <FieldSelect label="Snap time" width={64} value={snapX} options={SNAP_X}
-          onChange={(v) => setSnapX(Number(v))} hint="Snap points in time: divisions per cycle" />
-        <FieldSelect label="Snap value" width={64} value={snapY} options={SNAP_Y}
-          onChange={(v) => setSnapY(Number(v))} hint="Snap points in value: divisions of the range" />
         <span className={styles.spacer} />
         <ModNumberBox
           label="Out" width={96} min={0} max={100} unit="%" quantize={round} defaultValue={100}
@@ -178,7 +190,7 @@ export default function LfoEditor({ lfo, color, bpm, preview, commit, source = n
       <div
         className={styles.editorWell}
         ref={wellRef}
-        data-hint={`${label} shape: one cycle, drawn`}
+        data-hint={`${label} shape: one cycle. The ruler is the phase; the strip below shows it in time.`}
         data-hint-mods="Double-click: add a point · Drag: move · Alt+click or right-click: delete"
       >
         <ModShapeCanvas
@@ -189,9 +201,21 @@ export default function LfoEditor({ lfo, color, bpm, preview, commit, source = n
           color={color}
           width={size.width}
           height={size.height}
+          cycleText={cycleText}
           onPreview={setPointsLive}
           onCommit={setPointsFinal}
           onSelect={setSelectedIdx}
+        />
+      </div>
+
+      <div
+        className={styles.timeWell}
+        ref={timeRef}
+        data-hint={`${label} over time, to scale from a note start: ${formatSeconds(1 / rateHz)} per cycle, with Delay, Rise, Phase and Smooth applied${(lfo.behavior ?? 0) === 0 ? '. Free mode follows the transport, so the real starting phase depends on where the note lands.' : ''}`}
+      >
+        <LfoTimeline
+          lfo={lfo} color={color} width={timeSize.width} height={timeSize.height}
+          spanSec={spanSec} sync={sync} bpm={bpm} timing={timing} label={label}
         />
       </div>
 
@@ -264,6 +288,21 @@ export default function LfoEditor({ lfo, color, bpm, preview, commit, source = n
           hint="Bend of the selected Curve segment"
           data-lfo-field="tension"
         />
+        <span className={styles.spacer} />
+        {/* What the selected point's segment is, and the grid points snap to. */}
+        <div className={styles.sideCol} role="group" aria-label="Shape editing">
+          <FieldSelect
+            label="Segment" width={84} value={selPoint ? (selPoint.seg ?? SEG_LINE) : -1}
+            options={SEG_TOOLS.map((t) => ({ value: t.value, label: t.label }))} disabled={!selPoint} placeholder="—"
+            onChange={(seg) => { if (selPoint) setPointsFinal(withSel({ seg: Number(seg) })) }}
+            hint={selPoint ? SEG_TOOLS.map((t) => t.hint).join('. ') : 'Select a point on the shape first'}
+            data-lfo-field="segment"
+          />
+          <FieldSelect label="Snap time" width={64} value={snapX} options={SNAP_X}
+            onChange={(v) => setSnapX(Number(v))} hint="Snap points in time: divisions per cycle" />
+          <FieldSelect label="Snap value" width={64} value={snapY} options={SNAP_Y}
+            onChange={(v) => setSnapY(Number(v))} hint="Snap points in value: divisions of the range" />
+        </div>
       </div>
     </div>
   )

@@ -59,8 +59,9 @@ function mockPeaks() {
   return snap
 }
 
-export default function MixerGalleryFixture({ stripMode = 'compact' }) {
+export default function MixerGalleryFixture({ stripMode = 'compact', insertsOpen: initialOpen = true }) {
   const stripW = STRIP_WIDTHS[stripMode]
+  const [insertsOpen, setInsertsOpen] = useState(initialOpen)
   const identity = Object.fromEntries(IDS.map((id, i) => [id, TRACK_PALETTE_FALLBACK[i % 16]]))
   // The dock reads its on/off preference once, at mount: set it before the first render.
   useState(() => {
@@ -88,7 +89,7 @@ export default function MixerGalleryFixture({ stripMode = 'compact' }) {
     const fx = (nodeId, pluginId, extra) => ({ nodeId, pluginId, ...extra })
     const mockChains = {
       1: [fx(1, 'xletheq'), fx(2, 'compressor'), fx(3, 'reverb', { bypassed: true })],
-      2: [fx(4, 'limiter')],
+      2: [fx(4, 'limiter'), fx(14, 'resonancesuppressor'), fx(15, 'transientproc'), fx(16, 'smartbalance'), fx(17, 'varimu')],
       7: [fx(5, 'xletheq'), fx(6, 'compressor'), fx(7, 'uniflange'), fx(8, 'delay'), fx(9, 'reverb'), fx(10, 'limiter'), fx(11, 'apex')],
       master: [fx(12, 'xletheq'), fx(13, 'limiter')],
     }
@@ -132,20 +133,20 @@ export default function MixerGalleryFixture({ stripMode = 'compact' }) {
   }, [])
 
   return (
-    <div className={panel.panel} style={{ width: 1660, height: 380, flex: 'none', '--mx-ins-rows': GALLERY_ROWS }} data-testid="mixer-gallery-fixture">
+    <div className={panel.panel} style={{ width: 1660, height: 380, flex: 'none', '--mx-ins-rows': insertsOpen ? GALLERY_ROWS : 0 }} data-testid="mixer-gallery-fixture">
       <div className={panel.gutterDock}>
-        <MixerGutter stripMode={stripMode} onStripMode={() => {}} />
+        <MixerGutter stripMode={stripMode} onStripMode={() => {}} insertsOpen={insertsOpen} onInsertsOpen={setInsertsOpen} />
       </div>
       <div className={panel.scroll}>
         <div className={panel.lane}>
           {IDS.map((id, i) => (
-            <MixerStrip key={id} trackId={id} index={i + 1} color={identity[id]} stripW={stripW} />
+            <MixerStrip key={id} trackId={id} index={i + 1} color={identity[id]} stripW={stripW} insertRowCount={GALLERY_ROWS} insertsOpen={insertsOpen} />
           ))}
           <RoutingBand orderedIds={IDS} stripW={stripW} idColors={identity} />
         </div>
       </div>
       <div className={panel.dock}>
-        <MasterStrip stripW={stripW} />
+        <MasterStrip stripW={stripW} insertRowCount={GALLERY_ROWS} insertsOpen={insertsOpen} />
         <MasterLoudnessMeter />
       </div>
     </div>

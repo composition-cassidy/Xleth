@@ -9,7 +9,9 @@ import useTimelineFocusStore from '../../stores/timelineFocusStore.js';
 import { editCursor } from '../../services/EditCursor.js';
 import { PPQ } from '../../constants/timeline.js';
 import { timelineEvents } from '../../timelineEvents.js';
+import { getTransportState } from '../../transportStore.js';
 import { Button, Checkbox, NumberBox } from '../../ui-kit';
+import { auditionBase, useNotationAudition, type AuditionEvent } from './useNotationAudition';
 import styles from './QuickNotation.module.css';
 
 declare const window: Window & {
@@ -17,13 +19,18 @@ declare const window: Window & {
     timeline?: {
       addClipsBatch?: (clips: unknown[]) => Promise<number[]>;
       addNotesBatch?: (patternId: number, notes: unknown[]) => Promise<number[]>;
+      setSyllables?: (regionId: unknown, syllables: unknown[]) => Promise<unknown>;
     };
   };
 };
 
 type SamplePlacement = { syllableIndex: number; startTick: number; lengthTicks: number; audioOffsetPercent: number };
 type ChordPlacement = { pitch: number; startTick: number; lengthTicks: number };
+type QuickSyllable = { startTime: number; endTime: number; number?: number; text?: string; quickOffsetPercent?: number };
 
+const DEFAULT_OFFSET_PERCENT = 50;
+const SAVE_DEBOUNCE_MS = 400;
+const offsetOf = (syllable: QuickSyllable | undefined) => syllable?.quickOffsetPercent ?? DEFAULT_OFFSET_PERCENT;
 
 // The symbol key: what each symbol means, in the user's terms. Clicking one inserts it at the caret.
 type LegendItem = { symbol: string; insert: string; title: string; text: string; tone?: 'accent' | 'rest' };
@@ -52,6 +59,9 @@ function QuickNotationContent({ onClose }: { onClose: () => void }) {
   const regionDurationTicks = useQuickNotationStore((s) => s.regionDurationTicks);
   const patternId = useQuickNotationStore((s) => s.patternId);
   const cursorTick = useQuickNotationStore((s) => s.cursorTick);
+  const region = useQuickNotationStore((s) => s.region);
+  const syllables = useQuickNotationStore((s) => s.syllables) as QuickSyllable[];
+  const setStoreSyllables = useQuickNotationStore((s) => s.setSyllables);
   const clearQuickNotationContext = useQuickNotationStore((s) => s.clearContext);
   const setGhostClips = useGhostClipStore((s) => s.setGhostClips);
   const clearGhostClips = useGhostClipStore((s) => s.clearGhostClips);
@@ -59,7 +69,6 @@ function QuickNotationContent({ onClose }: { onClose: () => void }) {
   const isChordMode = mode === 'chord';
 
   const [notation, setNotation] = useState('');
-  const [offsetPercent, setOffsetPercent] = useState(50);
   const [previewOn, setPreviewOn] = useState(true);
   const [parseResult, setParseResult] = useState<{
     placements: Array<SamplePlacement | ChordPlacement>;
@@ -88,18 +97,19 @@ function QuickNotationContent({ onClose }: { onClose: () => void }) {
       return;
     }
 
-    const result = parseNotation(notation, syllableCount, 0, offsetPercent);
+    const result = parseNotation(notation, syllableCount, 0, (index: number) => offsetOf(syllables[index]));
     setParseResult(result);
-    if (previewOn && result.placements.length > 0) {
+    // The ghosts sit on the track the clips will be inserted on, nowhere else.
+    if (previewOn && focusedTrackId != null && result.placements.length > 0) {
       const sampleCursorTick = Math.round(editCursor.getPosition() * PPQ);
       setGhostClips(result.placements.map((placement) => ({
         ...placement,
         startTick: placement.startTick + sampleCursorTick,
-      })));
+      })), focusedTrackId);
     } else {
       clearGhostClipsRef.current();
     }
-  }, [notation, offsetPercent, syllableCount, previewOn, setGhostClips, isChordMode, cursorTick]);
+  }, [notation, syllables, syllableCount, previewOn, focusedTrackId, setGhostClips, isChordMode, cursorTick]);
 
   useEffect(() => () => { clearGhostClipsRef.current(); }, []);
 
@@ -123,23 +133,88 @@ function QuickNotationContent({ onClose }: { onClose: () => void }) {
   const handleInsertSample = useCallback(() => {
     if (regionId == null || focusedTrackId == null || parseResult.placements.length === 0) return;
     const sampleCursorTick = Math.round(editCursor.getPosition() * PPQ);
-    const clips = (parseResult.placements as SamplePlacement[]).map((placement) => ({
-      trackId: focusedTrackId,
-      regionId,
-      positionTicks: placement.startTick + sampleCursorTick,
-      durationTicks: placement.lengthTicks,
-      regionOffsetTicks: Math.round(placement.audioOffsetPercent * regionDurationTicks / 100),
-      syllableIndex: placement.syllableIndex,
-    }));
+    const ticksPerSecond = (getTransportState().bpm / 60) * PPQ;
+    const clips = (parseResult.placements as SamplePlacement[]).map((placement) => {
+      // The offset is a share of THIS syllable, so it lands inside the syllable's own audio.
+      const syllable = syllables[placement.syllableIndex];
+      const syllableTicks = syllable ? (syllable.endTime - syllable.startTime) * ticksPerSecond : regionDurationTicks;
+      return {
+        trackId: focusedTrackId,
+        regionId,
+        positionTicks: placement.startTick + sampleCursorTick,
+        durationTicks: placement.lengthTicks,
+        regionOffsetTicks: Math.round(placement.audioOffsetPercent * syllableTicks / 100),
+        syllableIndex: placement.syllableIndex,
+      };
+    });
 
     void window.xleth?.timeline?.addClipsBatch?.(clips).then(() => {
       timelineEvents.dispatchEvent(new Event('timeline-clips-changed'));
       clearGhostClipsRef.current();
       onClose();
     });
-  }, [regionId, focusedTrackId, parseResult, regionDurationTicks, onClose]);
+  }, [regionId, focusedTrackId, parseResult, regionDurationTicks, syllables, onClose]);
 
   const handleInsert = isChordMode ? handleInsertChord : handleInsertSample;
+
+  // ── Audition ──────────────────────────────────────────────────────────────
+  const audition = useNotationAudition(isChordMode ? null : region);
+
+  const sourceSeconds = useCallback((syllableIndex: number, offsetPercent: number) => {
+    const syllable = syllables[syllableIndex];
+    if (!syllable) return null;
+    const length = syllable.endTime - syllable.startTime;
+    return { start: auditionBase(region) + syllable.startTime + (offsetPercent / 100) * length, length };
+  }, [syllables, region]);
+
+  const playNotation = () => {
+    if (audition.playingKey === 'notation') { audition.stop(); return; }
+    const secondsPerTick = 60 / (getTransportState().bpm * PPQ);
+    const events: AuditionEvent[] = [];
+    for (const placement of parseResult.placements as SamplePlacement[]) {
+      const at = sourceSeconds(placement.syllableIndex, placement.audioOffsetPercent);
+      if (!at) continue;
+      events.push({
+        atMs: placement.startTick * secondsPerTick * 1000,
+        start: at.start,
+        end: at.start + placement.lengthTicks * secondsPerTick,
+      });
+    }
+    audition.play('notation', events, parseResult.totalTicks * secondsPerTick * 1000);
+  };
+
+  const playSyllable = (index: number, at32nd: boolean) => {
+    const key = `${at32nd ? 'off' : 'full'}:${index}`;
+    if (audition.playingKey === key) { audition.stop(); return; }
+    const at = sourceSeconds(index, at32nd ? offsetOf(syllables[index]) : 0);
+    if (!at) return;
+    const length = at32nd ? 120 * (60 / (getTransportState().bpm * PPQ)) : at.length;
+    audition.play(key, [{ atMs: 0, start: at.start, end: at.start + length }], length * 1000);
+  };
+
+  // 32nd offsets live on the syllables and are saved with the project: edit locally for an
+  // instant result, then write the whole list back shortly after the last change.
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingSaveRef = useRef<{ regionId: unknown; syllables: QuickSyllable[] } | null>(null);
+  const flushSave = useCallback(() => {
+    if (saveTimerRef.current) { clearTimeout(saveTimerRef.current); saveTimerRef.current = null; }
+    const pending = pendingSaveRef.current;
+    pendingSaveRef.current = null;
+    if (!pending) return;
+    void window.xleth?.timeline?.setSyllables?.(pending.regionId, pending.syllables).then(() => {
+      timelineEvents.dispatchEvent(new Event('timeline-regions-changed'));
+    });
+  }, []);
+  useEffect(() => flushSave, [flushSave]);
+
+  const setSyllableOffset = (index: number, value: number) => {
+    if (regionId == null) return;
+    const next = syllables.map((syllable, i) => (i === index ? { ...syllable, quickOffsetPercent: value } : syllable));
+    setStoreSyllables(next);
+    pendingSaveRef.current = { regionId, syllables: next };
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(flushSave, SAVE_DEBOUNCE_MS);
+  };
 
   const handleClear = () => {
     setNotation('');
@@ -208,23 +283,70 @@ function QuickNotationContent({ onClose }: { onClose: () => void }) {
       </div>
 
       {!isChordMode && (
-        <div className={styles.controls}>
-          <NumberBox
-            label="32nd offset"
-            width={96}
-            min={0}
-            max={100}
-            step={1}
-            unit="%"
-            quantize={Math.round}
-            defaultValue={50}
-            value={offsetPercent}
-            onChange={setOffsetPercent}
-            hint="32nd offset"
-            hintMods="Where inside the sample the 32nd notes start"
-          />
-          <Checkbox checked={previewOn} onChange={setPreviewOn}>Preview on the timeline</Checkbox>
-        </div>
+        <>
+          <div className={styles.controls}>
+            <Button
+              onClick={playNotation}
+              disabled={!audition.ready || count === 0}
+              hint={audition.ready ? 'Hear this notation without placing anything' : 'Loading the sample audio…'}
+            >
+              {audition.playingKey === 'notation' ? 'Stop' : 'Play'}
+            </Button>
+            <Checkbox checked={previewOn} onChange={setPreviewOn}>Show on the timeline</Checkbox>
+            <span className={styles.target} data-missing={focusedTrackId == null ? '' : undefined}>
+              {focusedTrackId == null
+                ? 'Click a track to choose where the clips go.'
+                : 'Clips go on the selected track, from the edit cursor.'}
+            </span>
+          </div>
+
+          <section className={styles.syllables} aria-label="Syllables and 32nd offsets">
+            <h3 className={styles.legendTitle}>Syllables</h3>
+            <p className={styles.syllablesNote}>
+              The 32nd offset is where inside each syllable its 32nd notes start. Each syllable keeps its own, saved with the project.
+            </p>
+            <ul className={styles.syllableList}>
+              {syllables.map((syllable, index) => (
+                <li className={styles.syllableRow} key={index}>
+                  <span className={styles.syllableNumber}>{index + 1}</span>
+                  <span className={styles.syllableText}>{syllable.text || ''}</span>
+                  <NumberBox
+                    label={`Syllable ${index + 1} 32nd offset`}
+                    hideLabel
+                    width={72}
+                    min={0}
+                    max={100}
+                    step={1}
+                    unit="%"
+                    quantize={Math.round}
+                    defaultValue={DEFAULT_OFFSET_PERCENT}
+                    value={offsetOf(syllable)}
+                    onChange={(value: number) => setSyllableOffset(index, value)}
+                    hint="32nd offset"
+                    hintMods="Where inside this syllable its 32nd notes start"
+                  />
+                  <Button
+                    size="sm"
+                    disabled={!audition.ready}
+                    onClick={() => playSyllable(index, true)}
+                    hint="Hear a 32nd note at this offset"
+                  >
+                    {audition.playingKey === `off:${index}` ? 'Stop' : '32nd'}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={!audition.ready}
+                    onClick={() => playSyllable(index, false)}
+                    hint="Hear the whole syllable"
+                  >
+                    {audition.playingKey === `full:${index}` ? 'Stop' : 'Whole'}
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        </>
       )}
 
       <div className={styles.actions}>

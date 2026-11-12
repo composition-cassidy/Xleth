@@ -531,11 +531,16 @@ sample picker ends focus mode. State lives in `layout/shellLayoutStore.ts`, not 
 render resolution (25 % to 100 %) changes only how soft it is, never how big. The placeholder ("No frame yet") is a real
 element that exists only until the first frame has been drawn. The header (`components/PreviewHeader.jsx`) is one 28px
 row: timecode and frame number left; right, FPS (only while playing), state chips, **View** menu (renderer, resolution,
-quality: Poster frames or Live frames), then FX, Edit grid and Import as kit controls. A chip appears only when its state
+quality: Poster frames or Live frames), then FX, **Edit** (its grid glyph after the word, so it reads "Edit grid";
+accessible name "Edit grid") and Import as kit controls. A chip appears only when its state
 differs from the default and is neutral with an info glyph and a `data-hint`: **Poster** while Poster frames are on,
 and the renderer by name when it is not WebGL. There is no "Preview = Render" badge; the Poster hint says exports are
-always full-fidelity. Below 720px the chips keep only their glyph; below 600px Edit grid and Import do too; below 360px
+always full-fidelity. Below 720px the chips keep only their glyph; below 600px Edit and Import do too; below 360px
 (the Compose column) View keeps only its chevron and the frame number reads `f 231`, so the row fits 304px unclipped.
+That row is the docked Preview's only header. A **floating or maximized** Preview already has a window titlebar, so the
+controls are portaled into it (`PreviewPanel` owns a fill slot in the titlebar, `PreviewHeader inTitlebar`) instead of
+taking a second row; the slot's empty space still drags the window. The slot is narrower than a full row, so there the
+same steps come at 460 / 300 / 200px.
 
 **Top bar panel controls** (`components/TitleBarRegions.jsx`). Four region toggles (Browser, Preview, Inspector, Detail
 dock) and one **Tools** menu (Sample Sandbox F10, Quick Notation, Split Syllables, then the user's own launchers from
@@ -543,6 +548,49 @@ Settings > Launchers), all kit controls with a `data-hint` that names the shortc
 use the quiet on-state (3.2), not the inverted chip: they are on nearly all the time. The launchers that duplicated detail
 dock tabs (Piano Roll, Mixer, FX Graph, Sampler) and the Timeline toggle are gone; their F-keys and menu entries are
 unchanged. The dock-magnification plate and its hook were deleted with the legacy launcher CSS.
+
+### 8.2 Edit Grid: rails, not rows (round 2)
+
+The Preview is usually wide and short, so a 16:9 picture is limited by **height** and the width beside it is empty.
+Edit Grid used to add a toolbar row above the picture and a tray (tab row plus a wrapping chip row) below it: 152px of
+a 346px panel, so the picture shrank to 345x194 (23 % of the panel) and 34 % of the panel was black gutter. The
+controls now sit **beside** the picture, in the width that was empty:
+
+```
+┌ timecode · frame · FPS · chips · View FX Edit▦ Import ┐ 28
+├ Tracks rail ┬ picture (full height, project aspect) ┬ Settings rail ┤
+│ Place|Layers│                                        │ Grid          │
+│ All|Un|Pl   │                                        │ Snapshot      │
+│ 24px rows   │                                        │ Output        │
+│             │                                        │ Clear layout  │
+└─────────────┴────────────────────────────────────────┴───────────────┘
+```
+
+- **Layout.** `.stage[data-grid-editing]` is one row and a size container (`pv-stage`). The picture's area takes the full stage height at the project aspect
+  (`--xleth-canvas-aspect`), capped at `100cqw - 2 * --pv-rail-min` (176px). The rails share the rest, 176 to 240px each.
+  Same panel, 860x346: picture 506x285 (48 %), up from 345x194.
+- **Narrow Preview** (under 560px, e.g. Compose's 304px corner): the rails do not fit beside the picture, and stacking
+  them as bands left a postage-stamp picture and cut the settings rail off. They open together in a **flyout** beside the
+  panel instead (`grid/GridEditFlyout.jsx`, portaled to body, z 200: above panels, below the canvas popover and menus):
+  416px wide, up to 560px tall, right of the Preview when there is room, else left, following the panel while open. The
+  picture keeps the whole stage. Its close button leaves Edit Grid, like the header's Edit toggle.
+- **Tracks rail** (`GridEditorDock`): Place | Layers, then the filter (All / Unplaced / Placed, counts as before: placed
+  means a grid slot), then one 24px row per track: identity stripe, grip, name, its cell as `col,row` (matches the
+  Inspector's "Grid 2,0"), `Behind` / `Front` for fullscreen layers, `Not placed`. Tracks still to place read first (ink,
+  semibold); placed ones recede. Layers is the existing `VideoTrackList` with short badges (`compact`).
+- **Every drag has an alternative.** Drag a row (or a cell) as before; **Enter** on an unplaced row puts it in the next
+  free cell (`assignTrackToGrid`); Enter on a placed row shows it in the Inspector; Up and Down move between rows; the
+  context menu carries the placement actions (`buildPlacementMenuItems`).
+- **Settings rail** (`GridEditToolbar`, same test id): kit section strips **Grid** (Cols and Rows boxes either side of
+  the link toggle; Gap and the Snap toggle), **Snapshot** (Select, then New / Duplicate / Rename / Delete),
+  **Output** (canvas button, fullscreen readout) and **Clear layout** at the bottom, away from the controls you drag.
+  `NumberBox` gained `caption` (short visible text, "Cols"; `label` stays the accessible name, "Grid columns").
+- **The canvas popover is portalled** to `<body>` and fixed under its button: the rail scrolls and clips, so an
+  absolutely positioned popover would be cut off.
+- The old instruction line ("Drag a track onto the picture") is now a hint in the rail's footer when it is 400px or
+  taller, and the rows' `data-hint` text in the hint bar otherwise.
+- The IPC calls, the `timeline-grid-changed` contract, the drag payload (`application/x-xleth-track`) and
+  `GridEditorOverlay` are unchanged.
 
 ## 9. Device system (Phase 4a)
 
@@ -553,12 +601,12 @@ Every stock effect is a **device**: one frame, one title bar, one height. Kit:
 **Size.** `--device-h` **256px** for every device, docked or floating; `--device-title-h` 24px;
 the body is the rest. Only the width varies with complexity. A folded device is a vertical title
 strip `--device-fold-w` 28px wide. The detail dock opens at **304px** (1px border, 28px tab strip,
-4px padding, the 256px device, the chain's thin horizontal scrollbar).
+4px padding, the 256px device, the chain's 18px horizontal scrollbar, FL-style so it reads as left/right).
 
 **Title bar, identical on every device, in this order:**
 1. **Activator**: the bypass `Toggle` (power glyph), shown at rest. On = inverted ink chip.
 2. **Fold**: collapses the device to the vertical strip (state per device instance).
-3. **Name**: sentence case from the one map, `DEVICE_NAMES`. Also the drag handle (reorder in
+3. **Name**: Title Case from the one map, `DEVICE_NAMES`. Also the drag handle (reorder in
    the chain, move when floating). A 2px stripe in the owning track's identity colour runs
    along the top edge: the identity thread continues from the strip to the device.
 4. **Preset menu**: kit `Select` driven by `useEffectPresets` (the same presetManager /
@@ -613,10 +661,18 @@ strip, and drew its level three times (number, fill bar, fader). Now:
 **Strip** (**72 px compact, the default**; 84 px normal; renderer-only UI state, and a stored choice is
 kept), one eight-row grid, top to bottom:
 
-1. **Head** (g2): the 3 px identity stripe (the same colour as lane, device and layer), the **number on
-   its own row above the name**, so a 10-character name is whole at 72 px (11 px, weight 500).
-2. **Insert names** (`InsertList`): 16 px rows naming the chain's devices in signal order, through the
-   device title bar's own name map (`deviceName`). **How many rows is one number for the whole mixer: the
+1. **Head** (g2, 21 px): the 3 px identity stripe (the same colour as lane, device and layer) and **the number
+   alone** (the Master's is "M"). **The name is not in the head: it is written up the side of the meter**
+   (`VerticalName`, the fader row's last cell, a 14 px column; 11 px, weight 500), the way a hardware strip
+   prints it. It **reads bottom to top**: `writing-mode: vertical-rl` turned half a turn, so it starts at the
+   bottom of the row and a long name takes its ellipsis at the top; the full name is in the tooltip. It sits in an
+   absolutely placed child, so it never lends the fader row height, and it is `aria-hidden` (the strip's group
+   label already names the track). A muted strip dims its fader and meter but **not its name** (4.5:1).
+2. **Insert names** (`InsertList`), **closed by default**: one 24 px cell per strip reading "3 FX" / "No FX" / "FX graph"
+   (still a click into the chain). The **FX button in the gutter** opens every strip's list at once (mixer-wide, remembered in
+   `mixerUiStore.insertsOpen`). Open, 16 px rows name the chain's devices in signal order, by the **short** name from
+   `DEVICE_SHORT_NAMES` ("Res. Suppr.", "Trans. Proc."; a 72 px row fits about 12 characters; the tooltip spells the full
+   `deviceName` out). **How many rows is one number for the whole mixer: the
    longest chain on any strip or the Master** (`insertRowsFor`), never less than one, never more than ten or
    than fits above a 64 px fader. So the insert area is no taller than the project needs, every fader is the
    same length, and adding a sixth effect to one track grows the list and shortens every fader together. A
@@ -627,29 +683,36 @@ kept), one eight-row grid, top to bottom:
    the Devices tab (`deviceRevealStore`: the chain scrolls to it and outlines it until the next press there);
    an empty row opens the chain. Sixteen-pixel rows that were each their own button would break the Floor.
 3. **M / S / V** Toggles at rest, three 24 px cells.
-4. **Pan** (bipolar) and **Width** Knobs with their values printed under them and **no word above**: the
-   words are in the gutter. Each keeps its accessible name, `aria-valuetext` and hint.
+4. **Pan** (bipolar) and **Width** Knobs as **plain dials: no word and no number anywhere**. Each is a 20 px
+   disc and one pointer (kit `Knob` `minimal`, no track arc, value arc or centre tick; straight up is centre
+   and 100 %, and the pointer takes the value colour while it is dragged) with the readout hidden (`hideValue`),
+   in a 24 px row. Each keeps its accessible name, `aria-valuetext` and hint, and a double-click still types a
+   value, drawn over the dial so the row never grows. The pointer is the whole reading; there is no live number
+   to drag against (a number would be a word on the strip), so the typed value is how you set an exact one.
 5. **Volume** NumberBox, signed (section 6), **without the value-fill rule**: the fader below is the slider.
-6. **Fader + Meter**: the meter draws **ticks only** and its **clip latch only once latched** (its space is
-   kept, so the bars never move); peak hold as before.
+6. **Fader + Meter + name**: the meter draws **ticks only** and its **clip latch only once latched** (its space is
+   kept, so the bars never move); peak hold as before. The name (item 1) stands at the meter's right.
 7. Routing cable row. 8. Output Select.
 
-Compact is 72, not the 68 it used to be: three 24 px toggles need 72. A dock too short for three rows above
-a 64 px fader shows at most three and lets the fader go down to 48 px, so a 320 px dock at 1366x768 still does
-not scroll vertically. At the 409 px dock of a 1080p window the list can reach seven rows.
+Compact is 72, not the 68 it used to be: three 24 px toggles need 72. The fixed rows add up to 146 px
+(`STRIP_FIXED_H`: head 21, M/S/V 24, knobs 24, volume 24, cable 20, output 26, seven 1 px gaps), 26 px less than
+when the name had a row of its own and the knobs printed a value. A dock too short for three rows above
+a 64 px fader shows at most three and lets the fader go down to 48 px, so a 320 px dock at 1366x768 now fits three
+rows over a full 64 px fader and still does not scroll vertically. At the 409 px dock of a 1080p window the list
+can reach nine rows.
 
 The kit Meter's canvas has `height: 0` and grows by flex: a canvas's natural height is its backing store (the
 height it was last painted at), which would otherwise stop a fader row from shrinking again once it had been
 tall.
 
-**Muted** dims every row but the head and the M/S/V row (`--ui-mute-opacity`) and shows a mute glyph;
+**Muted** dims every row but the head, the M/S/V row and the name (`--ui-mute-opacity`; the fader row dims its fader and meter) and shows a mute glyph;
 **selected** is a 1px `--ui-select` outline **plus the head one ramp step lighter** (g3). M/S/V are real
 engine state; **there is no arm** (the engine has no record-arm) and **no sends** (`TrackInfo.sends` is
 reserved and always empty), so neither is drawn.
 
 **Gutter** (`MixerGutter`, 40 px, fixed left of the scroller): the meters' **dB numerals, printed once**
-(kit `MeterScale`), the words **Pan** and **Width** beside the knob row (left and right, like the knobs),
-and the strip-width switch. The gutter, every strip and the Master are equal-height columns on the same row
+(kit `MeterScale`), the FX button and the strip-width switch. The pan and width knob row has no legend: the knobs
+carry no words. The gutter, every strip and the Master are equal-height columns on the same row
 grid, and `MeterScale` has a meter's own box, so each numeral sits at the y of the strips' ticks at any dock
 height. Which marks a height shows is one function (`visibleScaleMarks`: a mark at least 12 px under the one
 before it), shared by a meter's numerals, a meter's bare ticks and the scale. The scroller's bar is always
@@ -659,7 +722,9 @@ that much at the bottom.
 **Master** is the same grid: head, its own insert list, then a **peak readout** in the two rows a track
 gives to M/S/V and pan + width (the highest master level since the last reset, from the same meter bus, "—"
 until a level arrives, "Over" in words above 0 dB, click to reset), volume, fader and a meter **with
-numerals** (the gutter is at the far left of a long mixer). Same tick set at the same y as every strip.
+numerals** (the gutter is at the far left of a long mixer), then its name "Master" up the meter's side. Its
+meter is 37 px against a track's 20, so 72 px has no room left for the name: the Master is 16 px wider than a
+strip (88 px compact). Same tick set at the same y as every strip.
 
 **Meters.** The mixer's one existing 125 ms `getAllPeaks` poll writes `peaksSnapshot` and then
 fans levels out through `mixerMeterBus` to the kit Meters (dB, own rAF ballistics, asleep at
@@ -717,9 +782,33 @@ keeps one `AppShell` mounted, and the sheet is absolutely positioned at the top 
 region (floor 280px) and as wide as that column, so it covers **Preview and Inspector only**. The Browser stays beside it as the
 source list (double-click another source and the picker retargets, remounting so the old source unloads), and the arrangement, the
 transport and the detail dock stay visible and live. It carries the one hard offset shadow, as a floating surface. Inside:
-source picture, waveform + controls, marked list. **Keyboard:** opening moves focus into the sheet and closing returns it to where
-it was; Esc, Space, I and O act only for events *inside* the sheet (`samplePickerGate.isSamplePickerKeyTarget`), so out in the
-arrangement Space is the transport's again. The controls row, waveform canvas and marked rows inside are still their legacy styles.
+source picture, waveform + controls, marked list. Opening moves focus into the sheet and closing returns it to where it was.
+
+**Sample editor** (`components/SamplePicker/`, rebuilt on the kit; what it adds to the project is unchanged:
+`{ sourceId, startTime, endTime, label, name }`).
+- **Who owns the keyboard is a state, not a hit test** (`stores/samplePickerGate.js`). The editor is *active* from the moment it
+  opens and for as long as the pointer and focus stay in it; a click or a tab elsewhere hands the keys back. While active, a key
+  that lands on nothing (`<body>`: the focused control unmounted or disabled itself, as Add sample does) is the editor's, so Space
+  never falls through to the transport. The header says which it is in words ("Space previews this source" / "Space plays the
+  timeline") with the selection outline on the active one. Space is preview from any control except text entry; plain character
+  keys never reach a panel behind the sheet; keys with a modifier and F-keys pass through.
+- **Keys:** Space play/pause, L loop, I / O set In / Out (Shift: go to), Left / Right nudge the playhead one frame (10 ms for
+  audio; Shift x10), Home / End, Z zoom to selection, F fit, 1 to 9 pick the label, Enter add, Esc close.
+- **Waveform** (`PickerWaveform.jsx`, canvas; `pickerView.js` is the one px-to-time conversion, `null` = fit). Rows: overview
+  (whole source, drag the window to pan, double-click to fit), ruler (1-2-5 ticks), an optional lane of marked samples as named
+  bars, the waveform at whatever height is left. Left-drag scrubs, or moves an In / Out line it starts on; middle-drag or
+  Shift+left-drag sweeps In to Out. Wheel zooms at the cursor (down to 20 ms across), Shift+wheel pans. Zoomed peaks are padded
+  tiles kept in a small cache (`pickerPeaks.js`), so a pan or a zoom draws from what is held instead of falling back to the
+  whole-file peaks. The playhead is drawn on its own canvas every frame, interpolated between engine position polls.
+- **Signature: a span wears its label.** The source is neutral ink; the selection's waveform takes the colour of the label it
+  will be added as, with a stripe, the name and the length on it, and (with "show marks" on) every marked sample wears its own
+  in the waveform, the lane, the overview and its list row. Label hues are fixed and pastel, so on a light ramp they are mixed
+  toward the ink until they reach 3:1 (`legibleOn`; the DOM stripes use `color-mix` under `[data-xleth-ramp="light"]`).
+- **Audition.** A selection plays through the engine's `playRegionPreview`, which stops on the exact sample (it used to be stopped
+  by a 60 ms poll); Loop restarts the pass with whatever In / Out are by then. No selection plays from the playhead to the end.
+- **Controls** are two rows of kit controls: play, loop, In and Out as `NumberBox`es (drag by the waveform's own px scale, type
+  `m:ss.mmm`, arrows 1 ms), Set In / Set Out, length, zoom; then label swatch + `Select`, name, Add sample. Marked rows are 24px
+  with Split and Remove always visible. Time is `m:ss.mmm`, lengths are seconds with a thin space (`pickerFormat.js`).
 
 **Icons** (`ui-kit/icons/`). One family: 16px grid, 1.5px stroke, square caps, mitred joins, `currentColor`, no fills; the stroke
 cannot be overridden. Drawn from Xleth's own vocabulary (cells, pattern blocks, syllable cuts, patch cables), never music notes
@@ -755,7 +844,7 @@ import a generic music, slider or tool glyph. The Gallery shows every glyph at 1
 ### 13.1 Overlays: Dialog, Menu, Toast
 
 `ui-kit/Dialog.tsx` and `ui-kit/Menu.tsx` are the two floating-surface primitives; both carry the hard offset
-shadow and nothing else (no blur, no glow, no entry animation).
+shadow and nothing else (no blur, no glow). How they enter and leave is the motion tier's call (section 27).
 
 - **Dialog** (`Dialog`, `DialogText`, `DialogList`, `DialogListItem`): a modal. The title is 16px and **the body is
   16px / 1.5**: dialogs are read like prose, the one DAW Floor exception (controls inside keep their 12px kit sizes).
@@ -802,8 +891,8 @@ them with `npm run baseline` on a machine with a fresh addon (see `tests/baselin
 track-card polish pass`) style those surfaces and are not superseded. Largest consumers by rule lines: the plugin-ui
 runtime (about 860), Settings (about 620) and the Phanjer panel (Amp and Filter moved to devices in step 15). (The sampler panel and its modulation cards,
 once the largest, moved to the kit in round 2 step 11; see section 14.) Export, MIDI import, the file picker, Settings, the Sample Sandbox, Quick
-Notation and Split Syllables moved to the kit in round 2 step 20 (section 23). The picker sheet's controls row is
-legacy. `UpdateBanner` is a stub that renders nothing.
+Notation and Split Syllables moved to the kit in round 2 step 20 (section 23). The picker sheet's contents (the sample
+editor) moved to the kit after that; see section 11. `UpdateBanner` is a stub that renders nothing.
 
 ### 13.5 Floor status after the populated-shell audit
 
@@ -817,27 +906,55 @@ It moved onto the kit in round 2 step 20 (section 23).
 
 ## 14. Sampler (round 2, step 11)
 
-The per-region sampler every pattern track's notes play through (`components/sampler/`, opened in the detail dock by
-**Sampler settings** in the Piano Roll). Built on the kit and `Sampler.module.css`; the legacy sampler and modulation-tray
+The per-region sampler every pattern track's notes play through (`components/sampler/`, opened by **Sampler settings**
+in the Piano Roll, its dock tab, or F12). Built on the kit and `Sampler.module.css`; the legacy sampler and modulation-tray
 CSS (about 2,600 lines of `app.css`) is gone. Engine calls, ranges, defaults and undo paths are unchanged: every drag
 previews locally and commits once through `updateSamplerSettings` (one `SetSamplerSettingsCommand`).
 
-**Layout** (one height for every view, so switching never resizes the panel and nothing animates):
+**A window of its own (round 4).** The Sampler is a tall instrument page, and the detail dock's short row squeezed it:
+a 115px waveform over one row of knobs that scrolled sideways, the amp envelope folded to its title. It now **opens
+floating** (`opensFloating` in the catalog): 800x640, resizable down to 560x440, maximizable. Its tab stays in the detail
+dock strip as the launcher: a click opens the window or brings it forward, and the tab's own control (**Dock Sampler
+here**) or the title bar's return control docks it. A docked Sampler stays docked until it is popped out again. A saved
+v4 layout is moved once (`LAYOUT_SCHEMA_VERSION` 5, `StatePersistence`), then where the user puts it is kept.
+
+**Layout** (the views share one body, so switching never resizes the window and nothing animates):
 
 ```
-┌ slot tabs (identity stripe, silent glyph) + │ Patch ▾ Save Delete │ Main · Playback · Modulation ┐ 28
-├ waveform well: slot header (name · rate · length · Root · M S ⋯ · Snap · Zoom to trim · Fit) ┬ 240px ┤
-│ overview + ms ruler + waveform (g0, slot colour)                                            │ Pitch  │
-├ Mode │ Trim │ Loop (Auto · On) │ Amp envelope (= Env 1)                                       │ Prep   │
-│                                                                                             │ Process│
-└ Audition: held-key mark · keys · range · Key octave · Velocity ·                 Root ▶      ┘ 28
+┌ slot tabs (identity stripe, silent glyph) + n/8              │ Patch ▾ Save Delete ┐ 28   which layer, which patch
+├ Volume Pan │ Root Octave Semi Fine Coarse                               M S ⋯      ┤ 32   this slot, in every view
+├ Sample · Envelope · Playback · Modulation                                          ┤ 28   directly over the body
+│ file row: name · rate · length · Replace…          Snap · Zoom to trim · Fit       │
+│ overview + ms ruler + waveform (g0, slot colour): every pixel the window has left  │
+│ ┌ Trim ─────────────────────┐ ┌ Loop ─────────────────────────── Auto · On ┐       │
+│ ┌ Mode ───┐ ┌ Time stretch ──── Off · Reset ┐ ┌ Process ────────────────────┐      │
+└ Audition: held-key mark · keys · range · Key octave · Velocity          Root ▶     ┘ 28
 ```
 
-At the default dock (1080p: 361px frame) the Main body is 305px and nothing scrolls. Below about 1,230px of strip width the
-Amp envelope folds to its title (it is Env 1, also in Modulation); at 1366x768 the right column scrolls inside itself.
-**Playback** is Voice → Glide → Arpeggiator → Per-note effects (the selected slot's Mangle chain as 24px rows) plus a
-stretch-details and Preview-through row. **Modulation** replaced the pull-out tray (its handle sat at the window edge, off
-screen in the docked shell): routes on the left, a source strip (Env 1-6, LFO 1-6, Velocity, Note), and one editor.
+- **Slot bar** (`SlotBar.jsx`): the selected slot's level and pitch as value boxes, its mute, solo and menu, with a 2px edge
+  in the slot's identity colour. It sits under the slot tab it belongs to and stays in every view, so the controls reached
+  for most are never a view switch away and a modulation source drops on them straight from the Modulation view.
+- **Sample** is the waveform plus titled sections in two rows: what is drawn on the waveform first (Trim, Loop), then Mode,
+  Time stretch (the engine's Prep bake; "Off" at 100 % and 0 ct) and Process. The rows wrap in a narrow window, so nothing
+  scrolls sideways. The file row names the loaded file and carries **Replace…**, the same action as the slot menu's.
+- **Envelope** is the amp envelope on a page of its own: the shape drawn large over its stage knobs, curves, the
+  ms / note-value switch and Out. It is Env 1 of the modulation config on the same `EnvEditor`, store and commit, so an
+  edit here and an edit to Env 1 in Modulation are one thing.
+- **Playback** is a row of Voice → Glide → Arpeggiator, then Per-note effects (the selected slot's Mangle chain as 24px
+  rows), plus a stretch-details and Preview-through row. **Modulation** is the source strip (Env 1-6, LFO 1-6, Velocity,
+  Note) over one editor, with the routes under it.
+
+**One layout, two shapes.** The root is a size container (`container: sampler / size`); the layout answers to the panel's
+own box, never the viewport. In a short wide box (`max-height: 540px` and `min-width: 900px`: the detail dock, or a window
+dragged flat) the view tabs join the slot row and each view's parts sit side by side: waveform beside the sections, the
+two Playback rows in one line, routes left of the editor. Measured with the render harness against a fake engine:
+
+| Where | Box | Waveform | Scrolls |
+|---|---|---|---|
+| Window, default | 800x640 | 788x225 | nothing, in any view |
+| Window, minimum | 560x440 | 548x104 | Sample view down (the slot bar takes two rows) |
+| Docked, 1920x1080 | 1616x380 | 816x253 | nothing, in any view |
+| Docked, 1366x768 | 1062x291 | 415x164 | the sections column and Playback, down |
 
 **Labels.** `crossfadeEnabled` is the region's **One-shot / Sustained** switch (engine `setCrossfadeMode`), never shown as a
 crossfade toggle; in One-shot the Loop strip says "Needs Sustained" because the engine only loops when it is on. Modulation
@@ -858,20 +975,46 @@ inner arc in the knob's own SVG or a 2px top band on the box; drag that mark or 
 Shift fine, Escape cancels, one commit on release); right-click = bipolar; `data-mod-target` makes it a drop target. Absent
 `mod` = the ordinary control. `components/sampler/kitMod.jsx` (`ModKnob`, `ModNumberBox`) binds a registration to it.
 Every drag has a typed alternative: route depth is a NumberBox in the target's own unit, and **Add route** (source + target
-Selects) makes a route without dragging. Holding a source drag over the Main or Playback tab for 400 ms opens that view.
+Selects) makes a route without dragging. Holding a source drag over another view's tab for 400 ms opens that view.
+
+**Envelope and LFO displays are to scale (round 4).** The envelope picture used to stretch whatever it showed to the full
+width, so a 10 ms release and a 5 s one drew the same line. Time now has a scale (`modulation/modTime.js`, pure and tested):
+
+- **Span** (`SpanSelect`, one view setting shared by every envelope and LFO display, never sent to the engine): 100 ms to
+  30 s, default **1 s**, or Fit. A stage is as wide as it is long; an envelope longer than the span runs off the right edge
+  and prints how much is not shown ("▸ 2.43 s more"). Fit follows the content and the ruler still says what the scale is.
+- **Ruler**: 16px strip, 1-2-5 steps in ms / s, a minor tick between labels; in note-value mode the ticks fall on beats at
+  the project tempo and are labelled in beats. Level axis 0 / 50 / 100 %.
+- **The sustain is not a time**, so it is a hatched 44px break labelled "held" (the trace is dashed across it) and the
+  release is measured from its far side ("+100 ms").
+- **The display is the editor** (`EnvCanvas`): drag a point sideways for its stage time (that stage alone; the decay point
+  also moves up and down for sustain), drag a diamond up or down for that segment's curve. The value is printed beside the
+  point while it is hovered or dragged. One preview per move, one commit on release; the scale is frozen for the length
+  of a drag. In note-value mode a dragged stage snaps to the nearest note value. The knobs and the three curve boxes
+  beside them are the typed and keyboard alternative. Handles are ink, hollow at rest and filled when active.
+- **LFO**: the shape editor is one cycle on a phase ruler (0, 1/4, 1/2, 3/4, and "1 cycle = 167 ms"), with a +1 / 0 / −1
+  axis and the selected point's position printed. Under it, **over time** (`LfoTimeline`, read-only, 64px): the cycle as
+  it plays from a note start on the shared time ruler, with Rate, Delay, Rise, Phase and Smooth applied as the engine's
+  `advanceModLfo` applies them (Delay holds depth at 0 then jumps, Rise ramps from the note start, they multiply; Env
+  mode plays once and holds). A column that holds more than a cycle draws the range it covers, so a fast LFO is a band
+  and never an alias. It is drawn from the configured values, not from a running voice, so it does not move.
+- Fills are flat (14 % of `--ui-signal-parameter`); the gradient fills are gone. `ModEnvPreview` and
+  `buildEnvelopePath` are deleted. The Velocity and Note curve editors are unchanged.
 
 **Auto loop** keeps its single result: `autoLoopForSelection` returns one loop, not a ranked list (the candidate list was Loop
 Lab's, removed in Phase 8). The Auto button's hint carries the result fields the engine returns (periods, spans kept of
 those considered, pitch drift, crossfade); telemetry (apply, 30 s nudge) is unchanged.
 
 **The tab never dead-ends (round 3).** Opened with no region handed to it (`openPanel('sampler')` with no props: the
-dock tab clicked cold), the Sampler shows **the open pattern's sampler, else the last open pattern's, else the first
+dock tab clicked cold, which now opens the window), the Sampler shows **the open pattern's sampler, else the last open pattern's, else the first
 pattern's that plays a sample** (`fallbackSamplerRegionId`). A region handed over by whoever opened it (Sampler settings,
 a sample's own menu) still wins. Derived from renderer state; no engine call decides it. The empty state is left for a
 project where no pattern plays a sample.
 
-**Audit.** `tests/ui-audit/phases/p41-sampler-default-dock.mjs` shoots Main (31), Playback (32) and the four modulation
-sources (36-39) at the default dock height and reports any vertical scroller; p40 still shoots 30 / 35, p200 shoots 203.
+**Audit.** `tests/ui-audit/phases/p40-sampler.mjs` and `p41-sampler-default-dock.mjs` were written for the docked
+Sampler (they expect the panel inside the dock and a view named "Main") and have **not** been updated or
+re-run against the window: they need the Sampler docked first, and the view named Sample. The window was
+checked with the render harness only (fake engine); nothing here has been run in Electron against the real engine.
 
 ## 15. Piano Roll (round 2, step 12)
 
@@ -1345,7 +1488,7 @@ no letter-spaced uppercase and at most 4 font sizes**, audit capture at 1920x108
 
 **Kit additions.** `TextField` (single-line input, 24 / 28 / 32, `mono` for code-like text), `Checkbox` (a real input,
 inverted-chip check, indeterminate), `Progress` (rail plus a printed readout; `null` is a labelled indeterminate state,
-and the slide only runs when motion is allowed). `Dialog` gained `width="xl"`, `fill` (a tall panel), `flush` (a body of
+and the slide only runs when the motion tier lets ambient loops run, section 27). `Dialog` gained `width="xl"`, `fill` (a tall panel), `flush` (a body of
 controls: no padding, 12px, panes scroll themselves) and `above` (stacks over popovers: the file picker opens from other
 dialogs). `formatValue` gained `Mbps`, `kbps`, `MB`, `LUFS`, `dBTP`, `dBFS` and `s` (a duration: `12.5 s`, then `2:05`).
 
@@ -1373,6 +1516,52 @@ controls, and the separation strip uses `Progress`, Checkbox and Select. States 
 spectrogram, ruler, overview strip and overlays are still canvas; their stacking rules live in `SandboxCanvas.module.css`.
 **Open:** the black keys of the autotune note picker are narrower than 24px (canvas-like geometry); each key has a name and
 `aria-pressed`.
+
+**Sample Sandbox layout (2026-11-11 rework).** Five bands, each with one job, and only the display takes its height from
+the display (`SandboxPanelContent.jsx`):
+
+```
+action bar   commands: undo/redo | cut copy paste | Trim Silence | Fade in Fade out | Gain Normalize Reverse | Effects
+tool bar     modes: Select Envelope Paint Region + the armed tool's settings ...... zoom | Waveform/Spectral | sidebar
+body         overview (always) / ruler / display            | sidebar: Layers, then the active layer's Edit stack
+transport    play loop follow [clock] | Start End Length ................. Swap in (the one primary button) | Bake
+status       what the pointer does ................................. View | Clipboard | Mix state | Keys
+```
+
+- **Commands and modes never share a band.** The action bar only holds things that change the audio; the tool bar only
+  holds things that change the pointer or the picture. The old layout mixed them (zoom beside Swap in, the view switch in
+  a menu beside the effects) and spent 148px on a column of two tool buttons.
+- **The common edits are buttons**, and they run the same registry entries as the Effects menu and the right-click menu
+  through one hook, `useSandboxEffects.js` (`reasonFor`, `hintFor`, `run`). The menu lists only what the bar has no button
+  for. A button's hint-bar text is computed for the current state: it says what it will act on, or why it cannot.
+- **No selection means the whole layer.** A click leaves a zero-width selection (the cursor), not `null`, so
+  `sandboxStore._editRange` decides the range for Gain, Normalize and Reverse: a meaningful selection, else the whole layer
+  (`endSample: -1`). Fades use `_fadeRange`: the selection, else between the cursor and the layer's edge, else the whole
+  layer. Trim, Cut, Copy and Silence still need a range.
+- **The selection is three NumberBoxes** (Start, End, Length, in seconds; they accept `0.25`, `250ms`, `1:02.5`), and the
+  clock beside Play is a recessed well that reads the cursor when stopped and the playhead when playing (written to the
+  node from a rAF loop, never through the store).
+- **All four tools are always offered**; Paint and Region switch to the spectral view, and switching back to Waveform
+  hands the pointer back to Select. Keys: S, E, B, R (`sandbox.tool*`), Ctrl+A select all, double-click select all.
+- **Sidebar** (332px, hideable from the tool bar): Layers as one-line rows (audition, state, name, length, M, S,
+  duplicate, close); the **active** row opens a second line with labelled Gain / Pan / Offset. Under it the Edit stack
+  ("Op stack" before), with an Add button in its header that opens the same Effects menu. A newly added entry that has
+  controls opens itself.
+- **Overview strip is always mounted** and draws the selection, so the ruler and waveform never shift on the first zoom
+  step. The waveform lanes carry a dBFS scale (0, −6, −12, −18 as the lane height allows) and L / R.
+- **Envelope tool: a press on a breakpoint grabs it.** It never did: the handle hit-test was a callback with an empty
+  dependency list, holding the sample-to-x mapping from the canvas's first render, which happens before the layer's audio
+  arrives (a zero-width view). No handle was ever found, so every press on the line added a breakpoint and right-click
+  never deleted one. The geometry is now pure and takes the current mappings as arguments (`sandboxEnvelopeHit.js`:
+  `hitEnvelopeHandle`, `envelopeTargetAt`). The cursor says what a press will do (grab on a breakpoint, add on the bare
+  line, the selection I-beam elsewhere) and the breakpoint under the pointer is drawn larger. Canvas labels are 10px (were
+  9px); the waveform's level scale hides while the envelope's own gain axis is showing.
+- **Narrow panel:** under 760px (container query on the panel) the sidebar moves below the display with Layers and Edit
+  stack side by side; under 480px they stack. The bars wrap rather than clip.
+- **Checked on renders** (harness without the engine: 1180x612, 1700x900, 700x560, 420x560, 150% scale; Default, Light,
+  High contrast): no text under 4.5:1 except muted layers and bypassed entries (the app-wide mute dim), nothing under
+  10px, no clipped controls. **Not run against the engine:** the edits themselves, playback and the live clock,
+  separation, Swap in.
 
 **Quick Notation** is a mono notation input (a highlight layer under a transparent textarea, so rests dim and length marks
 take the value colour), an always-visible **symbol key** (each symbol inserts at the caret, with a sentence-case
@@ -1423,7 +1612,7 @@ Notation entry, Split Syllables, an export, a MIDI import and the Welcome window
 
 Text nodes 6,643 to 6,994; below 4.5:1 181 to 69; under 10px 839 to 10; letter-spaced uppercase 653 to 21 (sums over shots). 71 of 83 surfaces meet all four targets (0 below 4.5:1, 0 under 10px, no letter-spaced uppercase, at most 4 font sizes). The report with the per-surface table and the surfaces still short is `tests/ui-audit/out/COMPARE.md`; the shots and `metrics.json` ship in `ui-audit-<date>.zip` at the repo root (git-ignored).
 
-Still short, for a follow-up (not fixed in step 21): the Inspector's flip preview (34 nodes below 4.5:1 with a clip track selected), the Glue Comp's Freq cells, the EQ ruler's letter-spaced capitals, the video devices' dimmed captions (9 nodes), the SamplePicker sheet and the Browser's sample thumbnails (legacy global classes: 9px, caps, 5 sizes), one RESET button in the View menu, and single labels in the Sandbox rail, the theme list and the MIDI import dialog.
+Still short, for a follow-up (not fixed in step 21): the Inspector's flip preview (34 nodes below 4.5:1 with a clip track selected), the Glue Comp's Freq cells, the EQ ruler's letter-spaced capitals, the video devices' dimmed captions (9 nodes), the Browser's sample thumbnails (legacy global classes: 9px, caps, 5 sizes; the SamplePicker sheet that shared them is rebuilt, section 11), one RESET button in the View menu, and single labels in the Sandbox rail, the theme list and the MIDI import dialog.
 
 ### 24.3 Stylesheets that are left
 
@@ -1443,6 +1632,50 @@ Still short, for a follow-up (not fixed in step 21): the Inspector's flip previe
 ### 24.5 Running the audit
 
 `node tests/ui-audit/copy-project.mjs <project> <tmp>`, `node tests/ui-audit/mk-missing.mjs`, then `node tests/ui-audit/capture.mjs <copy>`: one launch runs every phase in the order the chain header in `capture.mjs` explains (including the 1366x768 pass), then builds `INVENTORY.md` and `metrics.json`. `node tests/ui-audit/compare.mjs` writes `COMPARE.md` against `out/baseline-2026-11-07/metrics.json`. The original project is never opened. The stress test (2,000 notes, 32 metered tracks, scrolling while playing) and the engine-dependent checks are manual: see `out/MANUAL-SHOTS.md`.
+
+## 25. Arrangement blocks: one geometry, one shell (2026-11-11)
+
+Clips and pattern blocks are both **blocks**. The canvas draw path, pointer hit-testing in all four tools, and the DOM
+overlays on top of blocks (FX badges, the pattern rename input) all resolve a block through
+`timeline/blockGeometry.js`. Nothing else may turn ticks into a block rectangle.
+
+- **Rectangle.** `blockRect()` rounds a block's two **edges** to whole pixels, so blocks that share a tick boundary share
+  a pixel boundary at every scroll offset and zoom, and the grid lines (already snapped) land on block edges. It also
+  carries the exact `timeX` / `timeW` for content that must stay time-accurate (waveform, pattern notes), which is
+  clipped to the painted rectangle. A block is never painted under 4px wide, and it is hit-tested at that width too.
+- **Stacking.** Blocks paint in array order, so the last one is on top; every hit test walks the array backwards. The
+  block you click is the block you see.
+- **Edges.** A resize zone is 6px, capped at a third of the block, so a narrow block always keeps a middle that moves
+  it. Handles are painted on a selected block wider than 12px, on **both** edges for clips and pattern blocks alike.
+- **Borders** are drawn inside the block on whole pixels (1px, 2px when selected, with the 1px `selectionHighlight` ring
+  just inside). A stroke centred on the block edge straddles the pixel grid and spills onto the neighbour.
+- **Shell.** Selection ring, title strip, fitted name, mute glyph and handles are shared painters in
+  `timelineDrawing.js` (`paint*`); `drawClips(view, data)` and `drawPatternBlocks(view, data)` take one `view` object
+  per frame and only differ in body material and content (waveform or mini piano roll). Since round 3 a pattern block's
+  title strip is the track's colour with the automatic label ink, as on a clip, and its body has no hatch (section 22).
+- **Mute** dims the whole block to the mute opacity: body, border, waveform and notes, plus the glyph. Handles and the
+  gain / fade controls stay full strength (they are controls, not content).
+- **Colour.** A block takes its track's colour; the region-label colour is only the fallback, read from the per-theme
+  palette (`labelColors`). Drag and pencil previews use the same colour. The draw loop reads no computed style.
+- **Pattern preview** visits only the notes that can reach the viewport (`patternNoteIndex.js`). The loop glyph is not
+  drawn on a block of 24px or less, and sits left of the right handle.
+- **Repaints.** `redrawContent` / `redrawGrid` paint now and are for per-frame drivers (view animator, drags).
+  `requestContentRedraw` / `requestGridRedraw` are for "the data changed" effects and coalesce into one paint per commit
+  (`coalescedRedraw.js`). The WORLD processing spinner lives on the overlay layer: animating it must not rebuild the
+  content layer.
+- **Tools.** Split cuts the block under the pointer (the snapped position only picks the block when the pointer is over
+  empty lane). The pencil ghost shows what the click creates: a clip slid past whatever it would overlap, or on a pattern
+  track a block of the current pattern at its full length.
+
+**Verified** without the engine: the restructure alone was pixel-identical to the previous draw path across 28 scenarios
+(zooms 8 to 30,000 px/beat, three lane heights, three device pixel ratios, every body mode, hi-res peaks and samples, a
+control drag), then the visible changes above were applied on top. Unit tests cover the geometry, the note index against
+a brute-force reference, the text-fit cache, the painters and the four tools.
+
+**Open.** The three canvas layers are still sized to the full track stack, not the visible rows, so very tall projects
+pay memory for rows off screen and nothing is culled vertically. Snapping is in CSS pixels, so at a fractional UI scale
+edges are aligned but not device-pixel crisp. The delete tool's sweep still sends one delete per clip. **Owed with the
+engine:** the same checks in the running app on a real project.
 
 ## 26. Round 3: "FL-home" (2026-11-11)
 
@@ -1547,3 +1780,82 @@ From round 3 itself:
 - Metronome and auto-scroll are still inverted chips in the top bar; auto-scroll is on by default and is a candidate for
   the quiet on-state.
 - About 25 canvas modules keep literal fallbacks from the old ramp (section 12).
+
+## 27. Motion tiers (2026-11-12)
+
+How much the interface moves is a setting: **Settings > Application > Appearance > Motion**. Three tiers, one
+stylesheet, no duration anywhere else.
+
+| Tier | Name | What moves |
+|---|---|---|
+| 1 | **Flat** | Nothing. Every change is an instant cut, the pre-rebuild sheets and inline styles included. |
+| 2 | **Smooth** (default) | The sanctioned set: hover colour (120 ms, on the control under the pointer only), dialogs (240 ms), mouse-opened menus, selects and popovers (200 ms), the status toast, a settings page swap, and their exits (150 ms). The edit loop and anything opened from the keyboard stay instant. Nothing exceeds 240 ms; no overshoot, no travel. |
+| 3 | **Lively** | Everything above with more character, plus the edit loop: right-click menus, dock tabs and revealed panels, toggles and tabs changing state, a device or strip being added, the play / pause glyph, the focus ring settling, kit buttons pressing in, menu rows cascading. Floating surfaces overshoot slightly. Nothing exceeds 400 ms. |
+
+"Follow the system setting" (on by default) makes the tier **in force** Flat while Windows has animation effects turned
+off (`prefers-reduced-motion: reduce`), whatever was picked; the section says so when that is happening.
+
+### 27.1 What no tier touches (the DAW Floor)
+
+- **Class A, information:** playhead, meters, GR traces, spectra, scopes, real progress fills. Canvas, on engine time,
+  never eased. A DOM element that shows engine state carries `data-mo-live` and never transitions (the play control).
+- **Class B, direct manipulation:** clip, note, knob, fader, number-box and splitter drags, snapping and resizes are 1:1
+  with the pointer. No channel is ever applied to a value or a position under the cursor.
+- Only `opacity`, `translate`, `scale`, `rotate`, colour and outline are animated. Never width, height or position.
+- Whatever mounts before the user's first input, and any list that draws complete (a project load, a track switch),
+  appears fully drawn in every tier: an item enters only when it is **added** to a list already on screen.
+
+### 27.2 Where it lives
+
+- **`ui-kit/motion.css`** is the only stylesheet that gives motion a time, a curve or a distance.
+  - `@layer tokens`: the **channels** (`--mo-hover-in`, `--mo-hover-out`, `--mo-state`, `--mo-press`, `--mo-popover`,
+    `--mo-context`, `--mo-dialog`, `--mo-toast`, `--mo-page`, `--mo-edit`, `--mo-kbd`, `--mo-exit`, `--mo-focus`,
+    `--mo-item`, `--mo-stagger`, `--mo-ambient`) and the **amounts** (`--mo-pop-from`, `--mo-rise`, `--mo-press-scale`
+    and so on). `:root` is Flat (all zero); `:root[data-motion-tier="smooth" | "lively"]` override it. **No attribute is
+    Flat**, so unit tests, the render harness and the moment before the setting loads never animate.
+  - `@layer reset`: app-wide colour feedback for every interactive element (zero specificity, lowest layer, so any
+    component rule replaces it), the focus-ring settle, the `data-mo-live` opt-out, and the Flat kill switch that zeroes
+    every transition and animation in the app.
+  - `@layer kit`: the **recipes**, applied with `data-mo="…"` on the element that enters: `pop`, `context`, `dialog`,
+    `scrim`, `window`, `sheet`, `toast`, `page`, `reveal` (+ `data-mo-from`), `insert`, `glyph`. Each is a keyframe from
+    an offset to the element's own resting style (`backwards` fill), timed by one channel, so a 0 ms channel is a no-op.
+- **`ui-kit/motion.ts`**: `setRootMotionTier` / `currentMotionTier`, `motionMs(channel)` for the few JS timers,
+  `lastInputWasKeyboard()` (a surface opened from the keyboard gets `data-mo-kbd` and the `--mo-kbd` channel),
+  `useMotionEnter(recipe, enabled)` (decided once, at mount), `useAfterMount()`, `hadUserInput()`, and exits.
+- **`ui-kit/MotionDiv.tsx`**: a div (or `as` section / aside / span / li) that enters with a recipe and optionally exits.
+  A `key` replays the enter when content is swapped (a dock tab's panel, a settings page).
+- **`stores/motionStore.js`**: the picked tier, "follow system", the system state, the tier in force; persisted as
+  `uiMotion` in `xleth-settings.json`; other windows follow through a `BroadcastChannel`. Hydrated in `main.jsx`.
+- **Exits** (`ghostExit`, `useGhostExit`): menus, dialogs and popovers are rendered conditionally by their owners, so
+  nothing is kept mounted for an exit. Once React has released the element, the same node is put back for `--mo-exit`,
+  inert and scrubbed of ids and roles, and faded with the Web Animations API. Focus has already returned and the ghost
+  takes no input, so an exit never delays the next action.
+
+### 27.3 Rules for new work
+
+- Never write a duration, a curve or `prefers-reduced-motion` in a kit or module stylesheet: name a channel
+  (`transition: opacity var(--mo-state) var(--mo-ease-out)`) or put a recipe attribute on the element.
+  `ui-kit/__tests__/motion.test.ts` fails the suite for a literal time or curve, for an unknown recipe name, for a tier
+  table that breaks its budget (Flat all zero; Smooth edit loop and keyboard at 0 and at most 240 ms; Lively at most
+  400 ms; exits shorter than enters; no ease-in), and for any keyframe that animates a layout property.
+- Pick the channel by **how the thing is asked for**, not by how it looks: `--mo-edit` / `--mo-state` / `--mo-context`
+  for anything in the edit loop (they are 0 until Lively), `--mo-popover` / `--mo-dialog` / `--mo-page` for occasional,
+  mouse-opened surfaces.
+- An element that shows engine state gets `data-mo-live`. A canvas gets nothing.
+- Add a recipe attribute only at mount (`useMotionEnter`, `MotionDiv`): adding it to an element already on screen
+  starts the animation on it.
+
+### 27.4 Verified, and not
+
+Verified in a browser against the gallery (`?view=ui-kit`, "Motion tiers") and the real shell without an engine, per
+tier: menu, context menu, keyboard-opened menu, dialog, select, app menus, dock tab swap, settings open / page / close,
+toast in and out, insert, focus ring, ambient progress; Flat produced no animation and no exit ghost anywhere.
+**Not verified in Electron against the engine**: the sample picker sheet, floating windows, a real device insert and a
+real mixer strip insert (wired, covered by unit tests only where they render).
+
+Still literal, all in the frozen legacy sheets and all silenced by Flat: the Browser drawer's collapse tween
+(`windowing.css` `flex-basis 180ms`, paired with `SAMPLE_SELECTOR_DRAWER_TWEEN_MS`), the two `--theme-chrome-transition*`
+theme tokens, and ten declarations in `app.css` (old tooltip, spinner, width fills, the parked Plugin UI Designer's
+meters). The timeline and piano-roll zoom / scroll spring (`hooks/useViewAnimator.js`) predates the tiers and keeps its
+behaviour in Smooth and Lively; in Flat every target lands at once. `welcome.html` and `splash.html` are separate pages
+with their own CSS and do not read the tier.

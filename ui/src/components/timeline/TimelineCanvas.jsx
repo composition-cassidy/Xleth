@@ -3,8 +3,14 @@ import { drawGrid, drawClips, drawHoldZones, drawDropPreview, drawPatternBlocks,
 import { buildResolvedTrackColorMap } from './trackColorResolver.js'
 import useWorldProcessingStore from '../../stores/worldProcessingStore.js'
 import useGhostClipStore from '../../stores/ghostClipStore.js'
-import { TRACK_HEIGHT, PPQ, pixelToBeat, beatToPixel, beatToPlayheadPixel } from '../../constants/timeline.js'
-import { getClipRect, clipHasFxIntent } from './clipGeometry.js'
+import { TRACK_HEIGHT, beatToPixel, beatToPlayheadPixel, tickToPixel } from '../../constants/timeline.js'
+import { clipHasFxIntent } from './clipGeometry.js'
+import {
+  TITLE_TEXT_PAD_X,
+  blockInnerLayout, blockRect, blockWantsTitleStrip,
+  buildTrackIdToIndex, getClipRect, hitTestBlockAt,
+  trackIndexAtY, trackTopOf as trackTopForLayout,
+} from './blockGeometry.js'
 import { playheadClock } from '../../services/PlayheadClock.js'
 import { timelineEvents } from '../../timelineEvents.js'
 import { createSelectTool } from './tools/selectTool.js'
@@ -12,6 +18,7 @@ import { createPencilTool } from './tools/pencilTool.js'
 import { createSplitTool } from './tools/splitTool.js'
 import { createDeleteTool } from './tools/deleteTool.js'
 import { didMiddleMousePanStart } from './middleMousePan.js'
+import { createCoalescedRedraw } from './coalescedRedraw.js'
 import './clipControls.css'
 import {
   CLIP_CONTROL_DEFAULTS,
@@ -137,6 +144,9 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   const ghostClips    = useGhostClipStore(s => s.ghostClips)
   const ghostClipsRef = useRef(ghostClips)
   ghostClipsRef.current = ghostClips
+  const ghostTrackId    = useGhostClipStore(s => s.trackId)
+  const ghostTrackIdRef = useRef(ghostTrackId)
+  ghostTrackIdRef.current = ghostTrackId
   const spinAngleRef       = useRef(0)
   const spinRafRef         = useRef(null)
   // Memoized track-id→index map; rebuilt only when the tracks prop changes so
@@ -216,18 +226,6 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     return ctx
   }
 
-  // ── Track ID → index map ──────────────────────────────────────────────────
-  // buildTrackIdToIndex() is kept for use outside the spinner hot path.
-  // trackIdToIndexRef is rebuilt via useEffect on tracks changes so the 60fps
-  // rAF spinner loop never allocates a new object per tick.
-
-  function buildTrackIdToIndex() {
-    const map = {}
-    const t = tracksRef.current
-    if (t) for (let i = 0; i < t.length; i++) map[t[i].id] = i
-    return map
-  }
-
   // ── Per-redraw derived track state (memoised) ─────────────────────────────
   // Keyed by identity of (tracks array, palette object). Both change rarely —
   // a zoom/pan gesture changes neither — so this collapses two per-frame
@@ -246,8 +244,45 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   }
 
   // ── Drawing wrappers ───────────────────────────────────────────────────────
+  //
+  // Two ways to ask for a repaint:
+  //
+  //   redrawGrid / redrawContent      paint NOW. For anything driven per frame
+  //                                   (the view animator, a drag) or that must
+  //                                   be on screen before the caller continues.
+  //   requestGridRedraw /             mark the layer stale and paint it once,
+  //   requestContentRedraw            in a microtask. For "the data changed"
+  //                                   notifications from React effects.
+  //
+  // One React commit routinely fires several of those effects together (clips
+  // changed AND selection changed AND the row layout changed), and each used to
+  // do its own full content rebuild, all but the last immediately painted
+  // over. See coalescedRedraw.js.
+  //
+  // The coalescers outlive a render, so they call through `paintersRef` to
+  // reach the CURRENT render's paint functions rather than the ones that
+  // existed when the request was made.
+  const paintersRef = useRef({ grid: null, content: null })
+  const coalescedRef = useRef(null)
+  if (!coalescedRef.current) {
+    coalescedRef.current = {
+      grid: createCoalescedRedraw((reason) => paintersRef.current.grid?.(reason)),
+      content: createCoalescedRedraw((reason) => paintersRef.current.content?.(reason)),
+    }
+  }
+  paintersRef.current.grid = redrawGrid
+  paintersRef.current.content = redrawContent
+
+  function requestGridRedraw(reason) {
+    coalescedRef.current.grid.request(reason)
+  }
+
+  function requestContentRedraw(reason) {
+    coalescedRef.current.content.request(reason)
+  }
 
   function redrawGrid(reason) {
+    coalescedRef.current.grid.settle()
     const { w, h } = sizeRef.current
     if (w === 0 || h === 0) return
     const t0 = performance.now()
@@ -266,7 +301,8 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     if (dt > 16) console.warn(`[Timeline] WARNING grid redraw took ${dt.toFixed(1)}ms (reason: ${reason})`)
   }
 
-  function redrawContent(reason) {
+  function redrawContent() {
+    coalescedRef.current.content.settle()
     const { w, h } = sizeRef.current
     if (w === 0 || h === 0) return
     const ctx = ctRef.current?.getContext('2d')
@@ -281,16 +317,30 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     // per theme now, so its identity is a valid cache key: re-derive only when
     // the track array or the theme actually changed.
     const { mutedTrackIds, trackColorById } = derivedTrackState(tracksRef.current, palette)
-    drawClips(
+    // One description of the viewport for every block painter this frame.
+    const view = {
       ctx, w, h,
-      scrollOffsetRef.current, pixelsPerBeatRef.current,
-      clipsRef.current, tidx, regionsRef.current,
-      selectedRef.current, waveformCacheRef?.current, hiResCacheRef?.current, clipPeakCacheRef?.current, bpmRef?.current,
-      mutedTrackIds, palette,
-      timelineDisplaySettingsRef.current, trackColorById, trackLayoutRef.current,
-      clipControlDraftRef.current,
-      { spec: clipControlSpecRef.current, hoveredControl: hoveredClipControlRef.current }
-    )
+      scrollOffset: scrollOffsetRef.current,
+      ppb: pixelsPerBeatRef.current,
+      trackIdToIndex: tidx,
+      trackLayout: trackLayoutRef.current,
+      palette,
+      displaySettings: timelineDisplaySettingsRef.current,
+      trackColorById,
+      mutedTrackIds,
+    }
+    drawClips(view, {
+      clips: clipsRef.current,
+      regions: regionsRef.current,
+      selectedClipIds: selectedRef.current,
+      bpm: bpmRef?.current,
+      waveformCache: waveformCacheRef?.current,
+      hiResCache: hiResCacheRef?.current,
+      clipPeakCache: clipPeakCacheRef?.current,
+      activeClipControl: clipControlDraftRef.current,
+      hoveredClipControl: hoveredClipControlRef.current,
+      clipControlSpec: clipControlSpecRef.current,
+    })
     // Hold Last Frame zones: how far past each clip's end a held frame stays on
     // screen. Drawn only by the Video tab's mirror until Phase 3; the
     // arrangement is the one timeline now. Returns at once when no track holds.
@@ -299,14 +349,12 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       scrollOffsetRef.current, pixelsPerBeatRef.current,
       clipsRef.current, tidx, tracksRef.current, palette, trackLayoutRef.current
     )
-    drawPatternBlocks(
-      ctx, w, h,
-      scrollOffsetRef.current, pixelsPerBeatRef.current,
-      patternBlocksRef.current, tidx,
-      patternsRef.current, regionsRef.current,
-      selectedBlockIdsRef.current, mutedTrackIds, palette,
-      timelineDisplaySettingsRef.current, trackColorById, trackLayoutRef.current
-    )
+    drawPatternBlocks(view, {
+      blocks: patternBlocksRef.current,
+      patterns: patternsRef.current,
+      regions: regionsRef.current,
+      selectedBlockIds: selectedBlockIdsRef.current,
+    })
     if (automationClipsRef.current?.length) {
       const laneRows = trackLayoutRef.current?.getAutomationLaneRows?.() ?? []
       const laneRowsByLaneId = new Map(laneRows.map((r) => [r.laneId, r]))
@@ -318,24 +366,21 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
         selectedAutomationPointRef.current, automationPointDragRef.current
       )
     }
-    if (ghostClipsRef.current?.length) {
-      const so  = scrollOffsetRef.current
-      const ppb = pixelsPerBeatRef.current
-      const lay = trackLayoutRef.current
-      const tickToPixelFn = (tick) => beatToPixel(tick / PPQ, so, ppb)
-      const trackYFn = (idx) => (lay?.trackTop?.(idx) ?? idx * TRACK_HEIGHT)
-      drawGhostClips(ctx, ghostClipsRef.current, clipsRef.current, tickToPixelFn, trackYFn, palette)
+    if (ghostClipsRef.current?.length && ghostTrackIdRef.current != null) {
+      const gIdx = tidx[ghostTrackIdRef.current]
+      if (gIdx != null) {
+        const so  = scrollOffsetRef.current
+        const ppb = pixelsPerBeatRef.current
+        const lay = trackLayoutRef.current
+        const tickToPixelFn = (tick) => tickToPixel(tick, so, ppb)
+        const rowTop = trackTopForLayout(gIdx, lay)
+        const trackClips = clipsRef.current.filter(c => c.trackId === ghostTrackIdRef.current)
+        drawGhostClips(ctx, ghostClipsRef.current, trackClips, tickToPixelFn, rowTop, palette)
+      }
     }
-    const wpc = worldProcessingClipsRef.current
-    if (wpc?.size) {
-      // Use palette-resolved accent rather than per-frame getComputedStyle.
-      const accentColor = palette.accent || '#5b8aff'
-      drawWorldSpinners(
-        ctx, clipsRef.current, tidx, wpc,
-        scrollOffsetRef.current, pixelsPerBeatRef.current,
-        spinAngleRef.current, accentColor, trackLayoutRef.current
-      )
-    }
+    // WORLD spinners live on the overlay layer (see redrawOverlay). They sit on
+    // clips, so when the content moves they have to move in the same frame.
+    if (worldProcessingClipsRef.current?.size) redrawOverlay()
     if (import.meta.env.DEV) {
       const stats = drawStatsRef.current
       stats.samples[stats.index] = performance.now() - t0
@@ -372,6 +417,18 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       scrollOffset: scrollOffsetRef.current,
       pixelsPerBeat: pixelsPerBeatRef.current,
     })
+    // WORLD processing spinners. On this layer because they animate at 60fps
+    // for as long as a render job runs: repainting them from the content layer
+    // meant rebuilding every clip, waveform and pattern block each frame.
+    const wpc = worldProcessingClipsRef.current
+    if (wpc?.size) {
+      drawWorldSpinners(
+        ctx, clipsRef.current, trackIdToIndexRef.current, wpc,
+        scrollOffsetRef.current, pixelsPerBeatRef.current,
+        spinAngleRef.current, resolveTimelinePalette().accent || '#5b8aff',
+        trackLayoutRef.current, w,
+      )
+    }
   }
 
   // ── Position the DOM playhead element ─────────────────────────────────────
@@ -421,6 +478,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   // Expose to parent
   useImperativeHandle(ref, () => ({
     redrawGrid, redrawContent, redrawOverlay, positionPlayhead, getDrawStats,
+    requestGridRedraw, requestContentRedraw,
     repositionFxBadges,
   }), [trackCount])
 
@@ -431,6 +489,10 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       clipsRef, tracksRef, regionsRef, selectedRef,
       pixelsPerBeatRef, scrollOffsetRef, bpmRef,
       trackIdToIndexRef,
+      // The colour a track's blocks are painted in, for drag / draw previews.
+      trackColorOf: (trackId) => (
+        derivedTrackState(tracksRef.current, resolveTimelinePalette()).trackColorById[trackId]
+      ),
       activeSampleIdRef, stickyNoteLengthRef, pencilTemplateRef,
       snapGranularityRef, trackLayoutRef,
       onCreateClip, onDeleteClip, onMoveClips, onDuplicateClips, onResizeClip, onResizeClipLeft,
@@ -542,10 +604,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   // processing — the map rebuilds only when the track list structurally changes.
 
   useEffect(() => {
-    const map = {}
-    const t = tracksRef.current
-    if (t) for (let i = 0; i < t.length; i++) map[t[i].id] = i
-    trackIdToIndexRef.current = map
+    trackIdToIndexRef.current = buildTrackIdToIndex(tracksRef.current)
   }, [tracks])
 
   // ── Redraw when the row layout changes (macro lane add/remove/visibility) ──
@@ -553,16 +612,16 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   // leaves height unchanged still shifts track tops, so force a grid+content
   // repaint on any layout identity change.
   useEffect(() => {
-    redrawGrid('track-layout')
-    redrawContent('track-layout')
+    requestGridRedraw('track-layout')
+    requestContentRedraw('track-layout')
   }, [trackLayout])
 
   useEffect(() => {
-    redrawGrid('snap-granularity')
+    requestGridRedraw('snap-granularity')
   }, [snapGranularity])
 
   useEffect(() => {
-    redrawContent('clip-control-spec')
+    requestContentRedraw('clip-control-spec')
   }, [clipControlSpec])
 
   useEffect(() => () => {
@@ -571,24 +630,25 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
 
   // ── Redraw when notation ghost clips change ───────────────────────────────
   useEffect(() => {
-    redrawContent('ghost-clips')
-  }, [ghostClips])
+    requestContentRedraw('ghost-clips')
+  }, [ghostClips, ghostTrackId])
 
   // ── WORLD spinner rAF loop ────────────────────────────────────────────────
-  // Runs at ~60fps only while at least one clip is being WORLD-processed.
+  // Runs at ~60fps only while at least one clip is being WORLD-processed, and
+  // repaints the overlay layer only (the spinners are the one thing changing).
 
   useEffect(() => {
     if (worldProcessingClips.size === 0) {
       if (spinRafRef.current) {
         cancelAnimationFrame(spinRafRef.current)
         spinRafRef.current = null
-        redrawContent('spinner-stop')
       }
+      redrawOverlay() // clear the last spinner frame
       return
     }
     function tick() {
       spinAngleRef.current = (spinAngleRef.current + 0.08) % (Math.PI * 2)
-      redrawContent('spinner-tick')
+      redrawOverlay()
       spinRafRef.current = requestAnimationFrame(tick)
     }
     if (!spinRafRef.current) spinRafRef.current = requestAnimationFrame(tick)
@@ -623,16 +683,18 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   // FXG.4-h-r1: resolve a local Y to a track index through the row layout so
   // macro automation lane bands map to their parent track (clips never land on a
   // lane). Falls back to contiguous geometry when no layout is present.
-  const trackIndexAtLocalY = useCallback((localY) => {
-    const layout = trackLayoutRef.current
-    if (layout && typeof layout.trackIndexAtY === 'function') return layout.trackIndexAtY(localY)
-    return Math.floor(localY / TRACK_HEIGHT)
-  }, [])
-  const trackTopOf = useCallback((trackIndex) => {
-    const layout = trackLayoutRef.current
-    if (layout && typeof layout.trackTop === 'function') return layout.trackTop(trackIndex)
-    return trackIndex * TRACK_HEIGHT
-  }, [])
+  const trackIndexAtLocalY = useCallback(
+    (localY) => trackIndexAtY(localY, trackLayoutRef.current),
+    [],
+  )
+
+  // Pointer geometry for the current viewport (see blockGeometry.js).
+  const currentView = useCallback(() => ({
+    scrollOffset: scrollOffsetRef.current,
+    ppb: pixelsPerBeatRef.current,
+    trackIdToIndex: trackIdToIndexRef.current,
+    trackLayout: trackLayoutRef.current,
+  }), [])
 
   const buildPencilTemplateFromHitClip = useCallback((hitClip) => {
     if (!hitClip) return null
@@ -675,24 +737,11 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     // ── Middle-click: tap copies a clip, hold+drag pans the playlist. ─────
     if (e.button === 1) {
       e.preventDefault()
-      const beat = pixelToBeat(pos.localX, scrollOffsetRef.current, pixelsPerBeatRef.current)
       const trackIndex = trackIndexAtLocalY(pos.localY)
-      const clips = clipsRef.current || []
       const tks = tracksRef.current || []
-
-      let hitClip = null
-      if (trackIndex >= 0 && trackIndex < tks.length) {
-        for (let i = 0; i < clips.length; i++) {
-          const clip = clips[i]
-          const clipBeat = clip.positionTicks / PPQ
-          const clipEnd = clipBeat + clip.durationTicks / PPQ
-          const clipTrackIdx = tks.findIndex(t => t.id === clip.trackId)
-          if (beat >= clipBeat && beat < clipEnd && trackIndex === clipTrackIdx) {
-            hitClip = clip
-            break
-          }
-        }
-      }
+      const hitClip = trackIndex >= 0 && trackIndex < tks.length
+        ? hitTestBlockAt(clipsRef.current, pos.localX, trackIndex, currentView())
+        : null
 
       middleMouseGestureRef.current = {
         startClientX: e.clientX,
@@ -850,46 +899,38 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
         return
       }
     }
-    const beat = pixelToBeat(pos.localX, scrollOffsetRef.current, pixelsPerBeatRef.current)
     const trackIndex = trackIndexAtLocalY(pos.localY)
     const tks = tracksRef.current
-    const blocks = patternBlocksRef.current
-    if (!tks || !blocks || trackIndex < 0 || trackIndex >= tks.length) return
-    const trackId = tks[trackIndex].id
-    // Hit-test PatternBlocks on this track
-    for (let i = 0; i < blocks.length; i++) {
-      const b = blocks[i]
-      if (b.trackId !== trackId) continue
-      const bBeat = b.positionTicks / PPQ
-      const bEnd = bBeat + b.durationTicks / PPQ
-      if (beat >= bBeat && beat < bEnd) {
-        // If the double-click lands in the name-label strip at the top of the
-        // block, start an inline rename instead of opening the Piano Roll.
-        const bStartPx = beatToPixel(bBeat, scrollOffsetRef.current, pixelsPerBeatRef.current)
-        const bEndPx   = beatToPixel(bEnd,  scrollOffsetRef.current, pixelsPerBeatRef.current)
-        const blockY   = trackTopOf(trackIndex)
-        const labelX1  = bStartPx + 6
-        const labelX2  = bEndPx - 6
-        const labelY1  = blockY + 3
-        const labelY2  = blockY + 18
-        const inLabel  = pos.localX >= labelX1 && pos.localX <= labelX2
-                      && pos.localY >= labelY1 && pos.localY <= labelY2
-        if (inLabel && labelX2 > labelX1 + 20) {
-          setRenamingBlock({
-            patternId: b.patternId,
-            x: labelX1,
-            y: blockY + 2,
-            w: Math.max(60, labelX2 - labelX1),
-            h: 18,
-            initial: patternsRef.current?.[b.patternId]?.name ?? `Pattern ${b.patternId}`,
-          })
-          return
-        }
-        onOpenPianoRoll?.(b.patternId, b.id)
-        return
-      }
+    if (!tks || trackIndex < 0 || trackIndex >= tks.length) return
+    const view = currentView()
+    const b = hitTestBlockAt(patternBlocksRef.current, pos.localX, trackIndex, view)
+    if (!b) return
+
+    // A double-click on the block's NAME renames the pattern in place; anywhere
+    // else on the block opens the Piano Roll. "The name" is the title strip the
+    // draw path actually painted (same layout function), so there is no rename
+    // zone on a block too short or too narrow to show one.
+    const rect = blockRect(b, trackIndex, view.scrollOffset, view.ppb, view.trackLayout)
+    const showNames = timelineDisplaySettingsRef.current?.timelineShowClipNames
+    const layout = blockInnerLayout(rect, blockWantsTitleStrip(rect, showNames))
+    const labelX1 = layout.titleX + TITLE_TEXT_PAD_X
+    const labelX2 = layout.titleX + layout.titleW - TITLE_TEXT_PAD_X
+    const inLabel = layout.useStrip
+      && pos.localX >= labelX1 && pos.localX <= labelX2
+      && pos.localY >= layout.titleY && pos.localY <= layout.titleY + layout.titleH
+    if (inLabel && labelX2 > labelX1 + 20) {
+      setRenamingBlock({
+        patternId: b.patternId,
+        x: labelX1,
+        y: layout.titleY,
+        w: Math.max(60, labelX2 - labelX1),
+        h: 18,
+        initial: patternsRef.current?.[b.patternId]?.name ?? `Pattern ${b.patternId}`,
+      })
+      return
     }
-  }, [activeTool, getLocalXY, onBeginClipControlEdit, onCancelClipControlEdit, onCommitClipControlEdit, onOpenPianoRoll, onSetClipFade, onSetClipVelocity])
+    onOpenPianoRoll?.(b.patternId, b.id)
+  }, [activeTool, currentView, getLocalXY, onBeginClipControlEdit, onCancelClipControlEdit, onCommitClipControlEdit, onOpenPianoRoll, onSetClipFade, onSetClipVelocity, trackIndexAtLocalY])
 
   const handleContextMenu = useCallback((e) => {
     const pos = getLocalXY(e)
@@ -928,8 +969,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   const fxBadges = useMemo(() => {
     if (!clips || !tracks || !onOpenClipFxQuickMenu) return []
     if (typeof scrollOffset !== 'number' || typeof pixelsPerBeat !== 'number') return []
-    const trackIdToIndex = {}
-    for (let i = 0; i < tracks.length; i++) trackIdToIndex[tracks[i].id] = i
+    const trackIdToIndex = buildTrackIdToIndex(tracks)
     // getClipRect only returns null for an unknown trackId — it never culls
     // by x, so without this a project with hundreds of modulated clips mounts
     // one <button> per clip project-wide, most of them off-screen (drawClips

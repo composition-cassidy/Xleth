@@ -1,5 +1,4 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from 'react'
-import { Play, Square, Trash2 } from 'lucide-react'
 import { Button, IconButton, TextField } from '../../ui-kit'
 import styles from './SyllableSplitter.module.css'
 import { downsamplePeaks3, drawEnvelope } from '../../utils/waveformRenderer.js'
@@ -17,6 +16,11 @@ import {
 } from './splitSyllablesMipmap.js'
 
 import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcPlay = iconComponent('play')
+const IcStopFill = iconComponent('stop', 'fill')
+const IcTrash = iconComponent('trash')
 // ── Constants ────────────────────────────────────────────────────────────────
 const CANVAS_H   = 138   // waveform canvas height
 const HANDLE_HIT = 8     // hit-test radius around marker (px)
@@ -786,7 +790,7 @@ export default function SyllableSplitter({
               disabled={!sourceReady || Math.max(0, s.end - s.start) <= 0.01}
               hint={!sourceReady ? 'Loading preview audio…' : (playingIdx === i ? 'Stop' : 'Play syllable')}
             >
-              {playingIdx === i ? <Square /> : <Play />}
+              {playingIdx === i ? <IcStopFill /> : <IcPlay />}
             </IconButton>
             <TextField
               className={styles.text}
@@ -808,7 +812,7 @@ export default function SyllableSplitter({
       </div>
 
       <div className={styles.footer}>
-        <Button glyph={<Trash2 />} onClick={handleClearAll} disabled={markers.length === 0 && texts.every(t => !t)}>
+        <Button glyph={<IcTrash />} onClick={handleClearAll} disabled={markers.length === 0 && texts.every(t => !t)}>
           Clear all
         </Button>
         <Button variant="primary" onClick={handleSave} disabled={!dirty}>Save syllables</Button>

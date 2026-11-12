@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import ClipPictureSection from './ClipPictureSection.jsx'
-import { RotateCcw, Copy, ClipboardPaste, Check } from 'lucide-react'
 import { IconButton, NumberBox, SegmentedControl, Select, Toggle, THIN_SPACE } from '../../ui-kit'
 import ClipFxWindow, { FxRow, FxSpacer, FxGrid, FxField, FxGraph, FxStatus } from './ClipFxWindow.jsx'
 import useClipVibratoEditorStore from '../../stores/clipVibratoEditorStore.js'
@@ -15,6 +14,12 @@ import {
   makeVibratoSampler,
   normalizeCustomShape,
 } from './clipVibrato.js'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcArrowCounterClockwise = iconComponent('arrow-counter-clockwise')
+const IcCheckFill = iconComponent('check', 'fill')
+const IcClipboard = iconComponent('clipboard')
+const IcCopy = iconComponent('copy')
 
 // ── Floating per-clip Vibrato graph editor ───────────────────────────────────
 //
@@ -174,13 +179,13 @@ export default function ClipVibratoEditorPanel() {
         />
         <FxSpacer />
         <IconButton size="sm" label="Copy shape" onClick={handleCopy} disabled={enginePoints.length < VIBRATO_MIN_POINTS} hint="Copy this shape">
-          <Copy size={14} aria-hidden="true" />
+          <IcCopy size={14} aria-hidden="true" />
         </IconButton>
         <IconButton size="sm" label="Paste shape" onClick={handlePaste} disabled={!shapeClipboard} hint="Paste the copied shape">
-          <ClipboardPaste size={14} aria-hidden="true" />
+          <IcClipboard size={14} aria-hidden="true" />
         </IconButton>
         <IconButton size="sm" label="Reset shape" onClick={handleReset} hint="Reset the custom shape">
-          <RotateCcw size={14} aria-hidden="true" />
+          <IcArrowCounterClockwise size={14} aria-hidden="true" />
         </IconButton>
       </FxRow>
 
@@ -270,7 +275,7 @@ export default function ClipVibratoEditorPanel() {
             size="sm"
             on={vibrato?.phaseResetOnClipStart !== false}
             onChange={(next) => commitVibrato({ phaseResetOnClipStart: next })}
-            glyph={<Check size={12} aria-hidden="true" />}
+            glyph={<IcCheckFill size={14} aria-hidden="true" />}
             hint="Restart the cycle at the start of each clip"
           >Reset phase on clip start</Toggle>
         </FxField>

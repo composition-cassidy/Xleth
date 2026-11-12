@@ -20,13 +20,18 @@ export default function AutomatableKnob({
 }) {
   const automation = useKnobAutomation(paramId, target, { min, max, skew })
   const automated = automation.automated
+  // A knob that travels along an engine-matching `scale` shows the clip's
+  // normalised value at that scale's own position, whatever the curve is.
+  const automatedValue = automated && rest.scale?.fromNorm
+    ? rest.scale.fromNorm(automation.automatedNorm)
+    : automation.automatedValue
   return (
     <>
       <Knob
         {...rest}
         min={min}
         max={max}
-        value={automated ? automation.automatedValue : value}
+        value={automated ? automatedValue : value}
         disabled={disabled || automated}
         onChange={automated ? undefined : onChange}
         onCommit={automated

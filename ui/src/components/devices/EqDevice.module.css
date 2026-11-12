@@ -120,16 +120,9 @@
   }
 
   /* The current type is marked by a glyph as well as ink, never colour alone. */
-  .menuItem[aria-checked="true"]::before {
-    content: "\2713";
-    width: var(--space-3);
-    margin-left: calc(-1 * var(--space-1));
-    margin-right: var(--space-1);
-  }
-
-  .menuItem[aria-checked="false"]::before {
-    content: "";
-    width: var(--space-3);
+  .menuCheck {
+    display: inline-flex;
+    width: var(--icon-sm);
     margin-left: calc(-1 * var(--space-1));
     margin-right: var(--space-1);
   }

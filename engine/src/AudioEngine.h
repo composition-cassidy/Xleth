@@ -15,6 +15,7 @@
 #include "Transport.h"
 #include "audio/MixEngine.h"
 #include "audio/SourcePlayer.h"
+#include "audio/Metronome.h"
 
 class AudioEngine : public juce::AudioIODeviceCallback
 {
@@ -44,6 +45,7 @@ public:
     AudioScheduler& getAudioScheduler() { return audioScheduler_; }
     MixEngine&      getMixEngine()       { return mixEngine_; }
     SourcePlayer&   getSourcePlayer()    { return sourcePlayer_; }
+    xleth::Metronome& getMetronome()     { return metronome_; }
 
     struct LivePresentationLatencyDiagnostics
     {
@@ -253,6 +255,7 @@ private:
     AudioScheduler           audioScheduler_;
     MixEngine                mixEngine_;
     SourcePlayer             sourcePlayer_;
+    xleth::Metronome         metronome_;
 
     juce::TimeSliceThread                                    writerThread_ { "WavWriter" };
     std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> wavWriter_;

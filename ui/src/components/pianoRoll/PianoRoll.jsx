@@ -20,6 +20,8 @@ import { usePanelRegistry } from '../../windowing/registry/PanelRegistry.ts'
 import useQuickNotationStore from '../../stores/quickNotationStore.js'
 import { useToast } from '../Toast.jsx'
 import { DEFAULT_SCALE, nextScalePitch } from './scales.js'
+import * as Edits from './pianoRollEdits.js'
+import { useXlethRootContext } from '../../windowing/contexts/XlethRootContext.jsx'
 
 // Map parsed FSC notes (engine 960-PPQ shape) onto Xleth's PatternNote JS shape.
 // Only the five fields the Piano Roll understands are carried across — marker
@@ -98,18 +100,52 @@ const MIN_PX_PER_SEMITONE = 6
 const MAX_PX_PER_SEMITONE = 40
 const MIN_CONTENT_BEATS = 16 // minimum scrollable horizontal range
 
-const PIANO_ROLL_KEY_COMBOS = [
-  's', 'S', 'p', 'P', 'c', 'C', 'd', 'D',
-  'Ctrl+z', 'Ctrl+Z', 'Meta+z', 'Meta+Z',
-  'Ctrl+y', 'Ctrl+Y', 'Meta+y', 'Meta+Y',
-  'Ctrl+Shift+z', 'Ctrl+Shift+Z', 'Meta+Shift+z', 'Meta+Shift+Z',
-  'Ctrl+c', 'Ctrl+C', 'Meta+c', 'Meta+C',
-  'Ctrl+v', 'Ctrl+V', 'Meta+v', 'Meta+V',
-  'Ctrl+a', 'Ctrl+A', 'Meta+a', 'Meta+A',
-  'Delete', 'Backspace',
-  'ArrowUp', 'ArrowDown', 'Shift+ArrowUp', 'Shift+ArrowDown',
-  '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-]
+// FL Studio piano roll keys, by command. Combos are KeyboardManager spellings
+// (modifiers Meta, Ctrl, Shift, Alt, then the key); a letter also matches by
+// physical key, so 'Shift+i' answers Shift+I and Caps Lock alike. Panel scope:
+// these only fire while the piano roll has focus, and a handled key stops
+// there, so global bindings that share a combo (Ctrl+M, the mixer's M) never
+// see it. Not bound, by decision: colour/group/mute keys (notes carry no such
+// data), Ctrl+I (no controller lanes; stays Import Source), resize-from-left,
+// MIDI export and the MIDI clipboard.
+export const PIANO_ROLL_KEYMAP = {
+  toolSelect: ['s', 'S'],
+  toolPencil: ['p', 'P'],
+  toolPaint: ['b', 'B'],
+  toolSplit: ['c', 'C'],
+  toolDelete: ['d', 'D'],
+  undo: ['Ctrl+z', 'Meta+z'],
+  redo: ['Ctrl+y', 'Meta+y', 'Ctrl+Shift+z', 'Meta+Shift+z'],
+  copy: ['Ctrl+c', 'Meta+c'],
+  cut: ['Ctrl+x', 'Meta+x'],
+  paste: ['Ctrl+v', 'Meta+v'],
+  selectAll: ['Ctrl+a', 'Meta+a'],
+  deselect: ['Ctrl+d', 'Meta+d'],
+  invertSelection: ['Shift+i'],
+  randomSelection: ['Shift+r'],
+  offGridSelection: ['Shift+o'],
+  timeAround: ['Ctrl+Enter'],
+  timeBefore: ['Ctrl+ArrowLeft'],
+  timeAfter: ['Ctrl+ArrowRight'],
+  duplicate: ['Ctrl+b', 'Meta+b'],
+  delete: ['Delete', 'Backspace'],
+  insertSpace: ['Ctrl+Insert'],
+  sliceInsertSpace: ['Ctrl+Alt+Insert'],
+  deleteSpace: ['Ctrl+Delete'],
+  moveLeft: ['Shift+ArrowLeft'],
+  moveRight: ['Shift+ArrowRight'],
+  rotateLeft: ['Ctrl+Shift+ArrowLeft'],
+  rotateRight: ['Ctrl+Shift+ArrowRight'],
+  nudgeLeft: ['Alt+ArrowLeft'],
+  nudgeRight: ['Alt+ArrowRight'],
+  stepUp: ['ArrowUp', 'Shift+ArrowUp'],
+  stepDown: ['ArrowDown', 'Shift+ArrowDown'],
+  octaveUp: ['Ctrl+ArrowUp'],
+  octaveDown: ['Ctrl+ArrowDown'],
+  discardLengths: ['Shift+d'],
+  importMidi: ['Ctrl+m'],
+  velocity: ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'],
+}
 
 // Editor-local clipboard fallback: note copy/paste must not depend on transient
 // Chromium clipboard permission or window-focus state.
@@ -129,6 +165,7 @@ export default function PianoRoll({
 }) {
   const { isVisible } = usePanelVisibility()
   const { showToast } = useToast()
+  const rootContext = useXlethRootContext()
   const setQuickNotationContext = useQuickNotationStore((s) => s.setContext)
   const [pattern, setPattern] = useState(null)
   const [regions, setRegions] = useState([])
@@ -136,6 +173,9 @@ export default function PianoRoll({
   const [slideMode, setSlideMode] = useState(false)
   const [stickyNoteLength, setStickyNoteLength] = useState(240) // 1/16 default
   const [stickyVelocity, setStickyVelocity] = useState(1.0)
+  // Slide bezier control point of the last-touched note (the toggle itself is
+  // slideMode). Only ever read when a pencil click draws a new note.
+  const [stickySlideCurve, setStickySlideCurve] = useState({ cx: 0.5, cy: 0.5 })
   // Snap to Scale is an editor-local view setting: it constrains what the user
   // can draw, but nothing about it is stored on the pattern.
   const [scale, setScale] = useState(DEFAULT_SCALE)
@@ -151,6 +191,13 @@ export default function PianoRoll({
   const snapRef = useRef(snap)
   snapRef.current = snap
   const [selectedNoteIds, setSelectedNoteIds] = useState(new Set())
+  // FL time selection: a tick range drawn on the ruler and the grid. Set from
+  // the ruler (Ctrl+drag / double-click drag), Ctrl+Enter and Ctrl+Left/Right;
+  // it selects the notes that start inside it and drives Ctrl+B / Ins / Del.
+  const [timeSel, setTimeSel] = useState(null)
+  const timeSelRef = useRef(timeSel)
+  timeSelRef.current = timeSel
+  useEffect(() => { setTimeSel(null) }, [patternId])
   // pixelsPerBeat/scrollX/scrollY below are the SETTLED view state — synced
   // from the animator on a trailing ~100ms debounce, same pattern as
   // TimelineView. They exist for consumers that only need the resting value
@@ -263,6 +310,66 @@ export default function PianoRoll({
     }
   }, [fetchPattern])
 
+  // ── Pattern audition ─────────────────────────────────────────────────────
+  // Plays only this pattern (not the arrangement) through its track's effects.
+  // The engine owns the clock; the UI just starts/stops it, flips loop live,
+  // and polls so the button falls back to "Play" when a one-shot ends or normal
+  // playback takes over.
+  const [auditioning, setAuditioning] = useState(false)
+  const [auditionLoop, setAuditionLoop] = useState(true)
+  const auditionLoopRef = useRef(auditionLoop)
+  auditionLoopRef.current = auditionLoop
+  const auditionAvailable = hasPattern && pattern?.id === patternId
+    && pattern.regionId != null && pattern.regionId >= 0
+    && Array.isArray(pattern.notes) && pattern.notes.some((n) => !n.isSlide)
+
+  const stopAudition = useCallback(() => {
+    setAuditioning(false)
+    try { window.xleth?.timeline?.stopPatternAudition?.() } catch { /* ignore */ }
+  }, [])
+
+  const toggleAudition = useCallback(async () => {
+    if (auditioning) { stopAudition(); return }
+    if (!auditionAvailable) return
+    try {
+      const ok = await window.xleth?.timeline?.startPatternAudition?.(patternId, auditionLoopRef.current)
+      if (ok) setAuditioning(true)
+      else showToast('This pattern has no sample to play', 'info')
+    } catch (e) {
+      console.warn('[PianoRoll] startPatternAudition failed:', e?.message)
+    }
+  }, [auditioning, auditionAvailable, patternId, showToast, stopAudition])
+
+  const handleAuditionLoopChange = useCallback((next) => {
+    setAuditionLoop(next)
+    auditionLoopRef.current = next
+    try { window.xleth?.timeline?.setPatternAuditionLoop?.(next) } catch { /* ignore */ }
+  }, [])
+
+  // Follow the engine while auditioning. The first ~400 ms are a grace period:
+  // the audio thread takes the start on its next block, so an immediate poll
+  // can still read "inactive".
+  useEffect(() => {
+    if (!auditioning) return undefined
+    const startedAt = performance.now()
+    const id = setInterval(async () => {
+      try {
+        const s = await window.xleth?.timeline?.getPatternAuditionState?.()
+        if (s && !s.active && performance.now() - startedAt > 400) setAuditioning(false)
+      } catch { /* engine busy: keep the current state */ }
+    }, 150)
+    return () => clearInterval(id)
+  }, [auditioning])
+
+  // The audition belongs to the pattern on screen: stop when the pattern
+  // changes, the panel hides, or the roll unmounts.
+  useEffect(() => {
+    if (!isVisible) stopAudition()
+  }, [isVisible, stopAudition])
+  useEffect(() => () => {
+    try { window.xleth?.timeline?.stopPatternAudition?.() } catch { /* ignore */ }
+  }, [patternId])
+
   const fetchRegions = useCallback(async () => {
     try {
       const regs = await window.xleth?.timeline?.getRegions()
@@ -356,17 +463,63 @@ export default function PianoRoll({
     } catch (e) { console.warn('[PianoRoll] removeNote failed:', e.message) }
   }, [patternId, notifyChanged])
 
-  const deleteSelectedNotes = useCallback(async () => {
-    const ids = Array.from(selectedNoteIdsRef.current)
-    if (ids.length === 0) return false
-    const xl = window.xleth
-    for (const id of ids) {
-      try { await xl.timeline.removeNote(patternId, id) } catch { /* ignore */ }
+  // ── One commit for every compound edit ─────────────────────────────────────
+  // Takes the pattern's COMPLETE note list after an edit (pianoRollEdits.js
+  // shapes) and lands it as ONE undo entry via timeline.editPatternNotes. An
+  // older native module without that call gets the same result through the
+  // per-note RPCs (several undo entries, but nothing lost). Notes flagged
+  // `_select` become the selection; otherwise the selection keeps whatever
+  // still exists. `before` overrides the baseline when the list on screen is
+  // already an optimistic preview (the Alt+wheel burst).
+  const notesRef = useRef([])
+  const commitNotes = useCallback(async (nextNotes, { before = null, select = null } = {}) => {
+    const base = before || notesRef.current
+    if (Edits.sameNotes(base, nextNotes)) return null
+    const xl = window.xleth?.timeline
+    if (!xl) return null
+    const marked = []
+    nextNotes.forEach((n, i) => { if (n._select) marked.push(i) })
+    let ids = null
+    try {
+      if (xl.editPatternNotes) {
+        const result = await xl.editPatternNotes(patternId, nextNotes.map(Edits.toEngineNote))
+        if (Array.isArray(result)) ids = result.map((n) => n.id)
+      } else {
+        const { removes, moves, resizes, velocities, adds } = Edits.diffNotes(base, nextNotes)
+        for (const id of removes) await xl.removeNote(patternId, id)
+        if (moves.length > 1 && xl.moveNotesBatch) await xl.moveNotesBatch(patternId, moves)
+        else for (const m of moves) await xl.moveNote(patternId, m.noteId, m.positionTicks, m.pitch)
+        if (resizes.length > 1 && xl.resizeNotesBatch) await xl.resizeNotesBatch(patternId, resizes)
+        else for (const r of resizes) await xl.resizeNote(patternId, r.noteId, r.durationTicks)
+        for (const v of velocities) await xl.setNoteVelocity(patternId, v.noteId, v.velocity)
+        ids = nextNotes.map((n) => n.id)
+        if (adds.length > 1 && xl.addNotesBatch) {
+          const got = await xl.addNotesBatch(patternId, adds.map((a) => Edits.toEngineNote(a.note)))
+          adds.forEach((a, k) => { ids[a.index] = got?.[k] })
+        } else {
+          for (const a of adds) ids[a.index] = await xl.addNote(patternId, Edits.toEngineNote(a.note))
+        }
+      }
+    } catch (e) {
+      console.warn('[PianoRoll] note edit failed:', e?.message || e)
     }
-    setSelectedNoteIds(new Set())
+    if (select) setSelectedNoteIds(select)
+    else if (marked.length && ids) {
+      setSelectedNoteIds(new Set(marked.map((i) => ids[i]).filter((id) => Number.isInteger(id) && id >= 0)))
+    } else if (ids) {
+      const alive = new Set(ids)
+      setSelectedNoteIds((prev) => new Set([...prev].filter((id) => alive.has(id))))
+    }
     notifyChanged()
-    return true
+    return ids
   }, [patternId, notifyChanged])
+
+  const deleteSelectedNotes = useCallback(async () => {
+    const ids = selectedNoteIdsRef.current
+    if (!ids || ids.size === 0) return false
+    await commitNotes(Edits.deleteNotes(notesRef.current, ids), { select: new Set() })
+    return true
+  }, [commitNotes])
 
   useEffect(() => (
     registerEditorCommand('pianoRoll', 'deleteSelected', deleteSelectedNotes)
@@ -400,26 +553,89 @@ export default function PianoRoll({
     } catch (e) { console.warn('[PianoRoll] resizeNote failed:', e.message) }
   }, [patternId, notifyChanged])
 
+  // "Last touched note wins": the pencil draws new notes with every property of
+  // the note the user most recently clicked, dragged, resized or velocity-edited
+  // — length, velocity and the slide flag + curve. `overrides` carries a value
+  // that is changing in the same gesture (the new velocity, the new length).
+  const adoptNoteProps = useCallback((note, overrides) => {
+    if (!note) return
+    const n = overrides ? { ...note, ...overrides } : note
+    if (Number.isFinite(n.durationTicks) && n.durationTicks > 0) setStickyNoteLength(n.durationTicks)
+    if (Number.isFinite(n.velocity)) setStickyVelocity(n.velocity)
+    setSlideMode(!!n.isSlide)
+    setStickySlideCurve({
+      cx: Number.isFinite(n.slideCurveCx) ? n.slideCurveCx : 0.5,
+      cy: Number.isFinite(n.slideCurveCy) ? n.slideCurveCy : 0.5,
+    })
+  }, [])
+
   const handleSetVelocity = useCallback(async (noteId, velocity) => {
     try {
       await window.xleth?.timeline?.setNoteVelocity(patternId, noteId, velocity)
-      setStickyVelocity(velocity)
+      const note = notesRef.current.find((n) => n.id === noteId)
+      if (note) adoptNoteProps(note, { velocity })
+      else setStickyVelocity(velocity)
       notifyChanged()
     } catch (e) { console.warn('[PianoRoll] setNoteVelocity failed:', e.message) }
-  }, [patternId, notifyChanged])
+  }, [patternId, notifyChanged, adoptNoteProps])
 
-  // Multi-note velocity drag: one write per note, one refetch for the batch.
+  // Multi-note velocity drag: one commit (one undo entry) for the batch.
   // stickyVelocity follows the note the user actually grabbed, which the
   // VelocityLane puts first in the entry list.
   const handleSetVelocities = useCallback(async (entries) => {
     if (!entries?.length) return
-    for (const { noteId, velocity } of entries) {
-      try { await window.xleth?.timeline?.setNoteVelocity(patternId, noteId, velocity) }
-      catch (e) { console.warn('[PianoRoll] setNoteVelocity failed:', e.message) }
+    const byId = new Map(entries.map((e) => [e.noteId, e.velocity]))
+    await commitNotes(notesRef.current.map((n) => (byId.has(n.id)
+      ? { ...n, velocity: Math.max(0, Math.min(1, byId.get(n.id))) }
+      : n)))
+    const note = notesRef.current.find((n) => n.id === entries[0].noteId)
+    if (note) adoptNoteProps(note, { velocity: entries[0].velocity })
+    else setStickyVelocity(entries[0].velocity)
+  }, [commitNotes, adoptNoteProps])
+
+  // Alt+right-drag scrub: the pointer is the playhead, for this pattern only.
+  // The canvas reports the tick under the pointer (null on release); every
+  // note sounding at that tick is held, everything else released.
+  const scrubHeldRef = useRef(new Set())
+  const handleScrub = useCallback((tick) => {
+    const regionId = pattern?.regionId
+    if (regionId == null || regionId < 0) return
+    const tl = window.xleth?.timeline
+    const held = scrubHeldRef.current
+    const sounding = new Map()
+    if (tick != null) {
+      for (const n of notesRef.current) {
+        if (n.positionTicks <= tick && tick < n.positionTicks + n.durationTicks) sounding.set(n.pitch, n.velocity ?? 1)
+      }
     }
-    setStickyVelocity(entries[0].velocity)
-    notifyChanged()
-  }, [patternId, notifyChanged])
+    for (const p of Array.from(held)) {
+      if (sounding.has(p)) continue
+      held.delete(p)
+      try { tl?.previewNoteOff?.(regionId, p) } catch { /* ignore */ }
+    }
+    for (const [p, v] of sounding) {
+      if (held.has(p)) continue
+      held.add(p)
+      try { tl?.previewNote?.(regionId, p, Math.max(0.05, v)) } catch { /* ignore */ }
+    }
+  }, [pattern?.regionId])
+
+  // Ghost note double right-click / mouse X1: edit that pattern instead.
+  const handleSwitchToGhost = useCallback((ghostPatternId) => {
+    if (Number.isInteger(ghostPatternId) && ghostPatternId !== patternId) onSwitchPattern?.(ghostPatternId)
+  }, [onSwitchPattern, patternId])
+
+  // Time selection from the ruler: the range, and the notes starting in it.
+  const selectTimeRange = useCallback((range) => {
+    setTimeSel(range)
+    if (range) setSelectedNoteIds(Edits.notesStartingIn(notesRef.current, range))
+  }, [])
+
+  // Ctrl+click / drag on the preview keyboard: every note of those pitches.
+  const handleSelectPitchRange = useCallback((lo, hi, additive) => {
+    const hits = Edits.notesOfPitchRange(notesRef.current, lo, hi)
+    setSelectedNoteIds((prev) => (additive ? new Set([...prev, ...hits]) : hits))
+  }, [])
 
   // Release stuck preview notes when the piano roll unmounts, the edited
   // pattern changes, or the center tab switches away (mouseup listeners on the
@@ -490,159 +706,183 @@ export default function PianoRoll({
     window.addEventListener('pointercancel', onPointerCancel)
   }, [pattern?.regionId])
 
-  // ── Keyboard shortcuts ────────────────────────────────────────────────────
-  const pianoRollKeyHandlerRef = useRef(null)
-  pianoRollKeyHandlerRef.current = async (e) => {
-
-      // Tool shortcuts
-      if (!e.ctrlKey && !e.metaKey && !e.altKey) {
-        if (e.key === 's' || e.key === 'S') { e.preventDefault(); e.stopPropagation(); setActiveTool('select'); return }
-        if (e.key === 'p' || e.key === 'P') { e.preventDefault(); e.stopPropagation(); setActiveTool('pencil'); return }
-        if (e.key === 'c' || e.key === 'C') { e.preventDefault(); e.stopPropagation(); setActiveTool('split');  return }
-        if (e.key === 'd' || e.key === 'D') { e.preventDefault(); e.stopPropagation(); setActiveTool('delete'); return }
-      }
-
-      // Undo / Redo
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
-        e.preventDefault()
-        e.stopPropagation()
-        await window.xleth?.undo?.undo()
-        notifyChanged()
-        return
-      }
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || e.key === 'Y' || ((e.key === 'z' || e.key === 'Z') && e.shiftKey))) {
-        e.preventDefault()
-        e.stopPropagation()
-        await window.xleth?.undo?.redo()
-        notifyChanged()
-        return
-      }
-
-      // Copy selected notes (Ctrl+C)
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C') && !e.shiftKey && !e.altKey) {
-        const selIds = selectedNoteIdsRef.current
-        if (selIds.size === 0) return
-        e.preventDefault()
-        e.stopPropagation()
-        const byId = Object.fromEntries((pattern?.notes || []).map((n) => [n.id, n]))
-        const selected = []
-        for (const id of selIds) {
-          const n = byId[id]
-          if (n) selected.push(n)
-        }
-        if (selected.length === 0) return
-        const minPosition = Math.min(...selected.map((n) => n.positionTicks))
-        const payload = {
-          type: 'xleth-notes',
-          notes: selected.map((n) => ({
+  // ── Keyboard shortcuts (FL Studio layout, see PIANO_ROLL_KEYMAP) ──────────
+  // Rebuilt every render so each command reads current state; the bindings
+  // registered below look commands up through this ref. A command returns
+  // false when it has nothing to act on, which leaves the key unclaimed.
+  const keyCommandsRef = useRef(null)
+  {
+    const snapTicks = Edits.snapTicksOf(snap)
+    const cur = () => notesRef.current
+    const sel = () => selectedNoteIdsRef.current
+    const onSelection = (edit) => {
+      const ids = sel()
+      if (!ids.size) return false
+      return commitNotes(edit(cur(), ids))
+    }
+    const stepPitch = (p, dir) => (scale.enabled
+      ? nextScalePitch(p, dir, scale.root, scale.mode, PITCH_MIN, PITCH_MAX)
+      : p + dir)
+    const pixelTicks = () => Math.max(1, Math.round(PPQ / Math.max(1, pixelsPerBeatRef.current)))
+    const rangeForSpace = () => timeSelRef.current || Edits.spanOf(cur(), sel(), snapTicks)
+    const shiftTime = (dir) => {
+      const base = timeSelRef.current || Edits.spanOf(cur(), sel(), snapTicks)
+      if (!base) return false
+      selectTimeRange(Edits.shiftRange(base, dir))
+      return true
+    }
+    const copySelection = () => {
+      const byId = new Map(cur().map((n) => [n.id, n]))
+      const picked = [...sel()].map((id) => byId.get(id)).filter(Boolean)
+      if (!picked.length) return false
+      const minPosition = Math.min(...picked.map((n) => n.positionTicks))
+      const payload = {
+        type: 'xleth-notes',
+        notes: picked.map((n) => {
+          const out = {
             positionTicks: n.positionTicks - minPosition,
             durationTicks: n.durationTicks,
             pitch: n.pitch,
             velocity: n.velocity,
-          })),
-        }
-        pianoRollClipboard = payload
-        try {
-          await navigator.clipboard?.writeText?.(JSON.stringify(payload))
-        } catch (err) { console.warn('[PianoRoll] copy failed:', err.message) }
-        return
-      }
-
-      // Paste notes (Ctrl+V)
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V') && !e.shiftKey && !e.altKey) {
-        e.preventDefault()
-        e.stopPropagation()
-        try {
-          let payload = pianoRollClipboard
-          if (!payload) {
-            const text = await navigator.clipboard?.readText?.()
-            payload = text ? JSON.parse(text) : null
           }
-          if (!payload || payload.type !== 'xleth-notes' || !Array.isArray(payload.notes)) return
-          // Paste anchor: left edge of viewport snapped to the active grid.
-          const pasteBeat = snapBeatToGrid(Math.max(0, scrollXRef.current / pixelsPerBeatRef.current), {}, snapRef.current)
-          const pasteTicks = beatsToTicks(pasteBeat)
-          const newIds = new Set()
-          for (const n of payload.notes) {
-            const newId = await window.xleth?.timeline?.addNote(patternId, {
-              positionTicks: pasteTicks + (n.positionTicks | 0),
-              durationTicks: n.durationTicks,
-              pitch: n.pitch,
-              velocity: n.velocity,
-            })
-            if (typeof newId === 'number' && newId >= 0) newIds.add(newId)
-          }
-          if (newIds.size > 0) setSelectedNoteIds(newIds)
-          notifyChanged()
-        } catch (err) { console.warn('[PianoRoll] paste failed:', err.message) }
-        return
+          if (n.isSlide) Object.assign(out, { isSlide: true, slideCurveCx: n.slideCurveCx, slideCurveCy: n.slideCurveCy })
+          return out
+        }),
       }
-
-      // Select all
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
-        e.preventDefault()
-        e.stopPropagation()
-        const ids = new Set((pattern?.notes || []).map((n) => n.id))
-        setSelectedNoteIds(ids)
-        return
-      }
-
-      // Delete selected notes
-      if (e.key === 'Delete' || e.key === 'Backspace') {
-        const ids = Array.from(selectedNoteIdsRef.current)
-        if (ids.length === 0) return
-        e.preventDefault()
-        e.stopPropagation()
-        await deleteSelectedNotes()
-        return
-      }
-
-      // Transpose selected ±1 or ±12
-      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-        const ids = Array.from(selectedNoteIdsRef.current)
-        if (ids.length === 0) return
-        e.preventDefault()
-        e.stopPropagation()
-        const dir = e.key === 'ArrowUp' ? 1 : -1
-        const delta = dir * (e.shiftKey ? 12 : 1)
-        const byId = Object.fromEntries((pattern?.notes || []).map((n) => [n.id, n]))
-        for (const id of ids) {
-          const n = byId[id]
-          if (!n) continue
-          // Under scale lock a semitone step becomes a scale-degree step. The
-          // ±12 octave jump already preserves pitch class, so it needs no snap.
-          const newPitch = (scale.enabled && !e.shiftKey)
-            ? nextScalePitch(n.pitch, dir, scale.root, scale.mode, PITCH_MIN, PITCH_MAX)
-            : Math.max(PITCH_MIN, Math.min(PITCH_MAX, n.pitch + delta))
-          try { await window.xleth?.timeline?.moveNote(patternId, id, n.positionTicks, newPitch) } catch { /* ignore */ }
-        }
-        notifyChanged()
-        return
-      }
-
-      // Velocity 0..9 → 0.1..1.0
-      if (/^[0-9]$/.test(e.key) && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        const ids = Array.from(selectedNoteIdsRef.current)
-        if (ids.length === 0) return
-        e.preventDefault()
-        e.stopPropagation()
-        const k = parseInt(e.key, 10)
-        const vel = k === 0 ? 1.0 : k / 10
-        for (const id of ids) {
-          try { await window.xleth?.timeline?.setNoteVelocity(patternId, id, vel) } catch { /* ignore */ }
-        }
-        notifyChanged()
-      }
+      pianoRollClipboard = payload
+      try {
+        navigator.clipboard?.writeText?.(JSON.stringify(payload))
+          ?.catch?.((err) => console.warn('[PianoRoll] copy failed:', err?.message))
+      } catch (err) { console.warn('[PianoRoll] copy failed:', err?.message) }
+      return true
     }
+    const paste = async () => {
+      let payload = pianoRollClipboard
+      if (!payload) {
+        try {
+          const text = await navigator.clipboard?.readText?.()
+          payload = text ? JSON.parse(text) : null
+        } catch (err) { console.warn('[PianoRoll] paste failed:', err?.message) }
+      }
+      if (!payload || payload.type !== 'xleth-notes' || !Array.isArray(payload.notes)) return
+      // Paste anchor: the time selection's start, else the viewport's left
+      // edge snapped to the active grid.
+      const anchor = timeSelRef.current?.start
+        ?? beatsToTicks(snapBeatToGrid(Math.max(0, scrollXRef.current / pixelsPerBeatRef.current), {}, snapRef.current))
+      const added = payload.notes.map((n) => ({ ...n, positionTicks: anchor + (n.positionTicks | 0), _select: true }))
+      await commitNotes([...cur(), ...added])
+    }
+    const setTool = (tool) => () => setActiveTool(tool)
+    const undoRedo = (which) => async () => {
+      await window.xleth?.undo?.[which]?.()
+      notifyChanged()
+    }
+
+    keyCommandsRef.current = {
+      toolSelect: setTool('select'),
+      toolPencil: setTool('pencil'),
+      toolPaint: setTool('paint'),
+      toolSplit: setTool('split'),
+      toolDelete: setTool('delete'),
+      undo: undoRedo('undo'),
+      redo: undoRedo('redo'),
+      copy: () => (sel().size ? copySelection() : false),
+      cut: () => {
+        if (!sel().size || !copySelection()) return false
+        return commitNotes(Edits.deleteNotes(cur(), sel()), { select: new Set() })
+      },
+      paste,
+      selectAll: () => setSelectedNoteIds(new Set(cur().map((n) => n.id))),
+      deselect: () => { setSelectedNoteIds(new Set()); setTimeSel(null) },
+      invertSelection: () => setSelectedNoteIds(Edits.invertSelection(cur(), sel())),
+      randomSelection: () => setSelectedNoteIds(Edits.randomSelection(cur(), sel())),
+      offGridSelection: () => setSelectedNoteIds(Edits.offGridSelection(cur(), snapTicks)),
+      timeAround: () => {
+        const range = Edits.spanOf(cur(), sel(), snapTicks)
+        if (!range) return false
+        selectTimeRange(range)
+        return true
+      },
+      timeBefore: () => shiftTime(-1),
+      timeAfter: () => shiftTime(1),
+      duplicate: () => {
+        if (!cur().length) return false
+        const { notes: next, range } = Edits.duplicateRight(cur(), sel(), timeSelRef.current, snapTicks)
+        if (next === cur()) return false
+        if (timeSelRef.current && range) setTimeSel(range)
+        return commitNotes(next)
+      },
+      delete: () => (sel().size ? deleteSelectedNotes() : false),
+      insertSpace: () => {
+        const range = rangeForSpace()
+        return range ? commitNotes(Edits.insertSpace(cur(), range)) : false
+      },
+      sliceInsertSpace: () => {
+        const range = rangeForSpace()
+        return range ? commitNotes(Edits.insertSpace(cur(), range, { slice: true })) : false
+      },
+      deleteSpace: () => {
+        const range = rangeForSpace()
+        if (!range) return false
+        setTimeSel(null)
+        return commitNotes(Edits.deleteSpace(cur(), range), { select: new Set() })
+      },
+      moveLeft: () => onSelection((ns, ids) => Edits.moveBy(ns, ids, -snapTicks)),
+      moveRight: () => onSelection((ns, ids) => Edits.moveBy(ns, ids, snapTicks)),
+      rotateLeft: () => onSelection((ns, ids) => Edits.rotate(ns, ids, -snapTicks)),
+      rotateRight: () => onSelection((ns, ids) => Edits.rotate(ns, ids, snapTicks)),
+      nudgeLeft: () => onSelection((ns, ids) => Edits.moveBy(ns, ids, -pixelTicks())),
+      nudgeRight: () => onSelection((ns, ids) => Edits.moveBy(ns, ids, pixelTicks())),
+      // Up/Down and Shift+Up/Down: one semitone (one scale degree under scale
+      // lock). Ctrl+Up/Down: one octave.
+      stepUp: () => onSelection((ns, ids) => Edits.transpose(ns, ids, { dir: 1, stepPitch })),
+      stepDown: () => onSelection((ns, ids) => Edits.transpose(ns, ids, { dir: -1, stepPitch })),
+      octaveUp: () => onSelection((ns, ids) => Edits.transpose(ns, ids, { semitones: 12 })),
+      octaveDown: () => onSelection((ns, ids) => Edits.transpose(ns, ids, { semitones: -12 })),
+      discardLengths: () => {
+        if (!cur().length) return false
+        return commitNotes(Edits.discardLengths(cur(), Edits.targetIds(cur(), sel()), snapTicks))
+      },
+      importMidi: () => {
+        if (!rootContext?.onOpenMidiImport) return false
+        rootContext.onOpenMidiImport()
+        return true
+      },
+      // 1..9 → 0.1..0.9, 0 → 1.0, on the selection.
+      velocity: (e) => {
+        const digit = /^[0-9]$/.test(e.key) ? e.key : String(e.code || '').replace(/^(Digit|Numpad)/, '')
+        const k = parseInt(digit, 10)
+        if (!Number.isFinite(k)) return false
+        return onSelection((ns, ids) => Edits.setVelocity(ns, ids, k === 0 ? 1.0 : k / 10))
+      },
+    }
+  }
   useEffect(() => {
-    const dispatch = (e) => {
-      const pending = pianoRollKeyHandlerRef.current?.(e)
-      pending?.catch?.((err) => console.warn('[PianoRoll] shortcut failed:', err?.message || err))
-      return e.defaultPrevented ? 'handled' : undefined
+    const unsubscribers = []
+    for (const [command, combos] of Object.entries(PIANO_ROLL_KEYMAP)) {
+      for (const combo of combos) {
+        unsubscribers.push(registerKeyboardBinding({
+          scope: 'panel:pianoRoll',
+          combo,
+          handler: (e) => {
+            const run = keyCommandsRef.current?.[command]
+            if (!run) return undefined
+            let result
+            try { result = run(e) } catch (err) {
+              console.warn('[PianoRoll] shortcut failed:', err?.message || err)
+              return undefined
+            }
+            if (result === false) return undefined
+            // Claim the key outright: window-level listeners (the transport's
+            // M = mixer, the File menu's Ctrl+M/I…) must not also act on it.
+            e.preventDefault()
+            e.stopPropagation()
+            result?.catch?.((err) => console.warn('[PianoRoll] shortcut failed:', err?.message || err))
+            return 'handled'
+          },
+        }))
+      }
     }
-    const unsubscribers = PIANO_ROLL_KEY_COMBOS.map((combo) =>
-      registerKeyboardBinding({ scope: 'panel:pianoRoll', combo, handler: dispatch }),
-    )
     return () => { unsubscribers.forEach((unsubscribe) => unsubscribe()) }
   }, [])
 
@@ -663,12 +903,55 @@ export default function PianoRoll({
 
   const samplerSettingsDisabled = pattern?.regionId == null || pattern.regionId < 0
 
+  // Alt+wheel note edits arrive as a burst of notches. Each notch updates the
+  // pattern on screen at once (optimistic); the burst commits as ONE undo
+  // entry once the wheel has been still for a moment.
+  const wheelBurstRef = useRef(null)
+  const wheelNoteEditRef = useRef(null)
+  wheelNoteEditRef.current = (hitNote, e) => {
+    const burst = wheelBurstRef.current || { before: notesRef.current, notes: notesRef.current, timer: null }
+    const selection = selectedNoteIdsRef.current
+    const ids = selection.has(hitNote.id) ? new Set(selection) : new Set([hitNote.id])
+    const delta = e.deltaY !== 0 ? e.deltaY : e.deltaX
+    const dir = delta < 0 ? 1 : -1
+    let next
+    if (e.shiftKey) {
+      const px = Math.max(1, Math.round(PPQ / Math.max(1, pixelsPerBeatRef.current)))
+      next = Edits.moveBy(burst.notes, ids, dir * px)
+    } else {
+      const step = (e.ctrlKey || e.metaKey ? 1 : 4) / 127
+      next = burst.notes.map((n) => (ids.has(n.id)
+        ? { ...n, velocity: Math.max(1 / 127, Math.min(1, (n.velocity ?? 1) + dir * step)) }
+        : n))
+    }
+    burst.notes = next
+    clearTimeout(burst.timer)
+    burst.timer = setTimeout(() => {
+      const done = wheelBurstRef.current
+      wheelBurstRef.current = null
+      if (done) commitNotes(done.notes, { before: done.before })
+    }, 350)
+    wheelBurstRef.current = burst
+    setPattern((p) => (p ? { ...p, notes: next } : p))
+  }
+
   // Wheel: vertical scroll; ctrl+wheel = zoom horizontal; alt+wheel = zoom
-  // vertical; shift+wheel = horizontal scroll.
+  // vertical (or edit the note under the pointer); shift+wheel = horizontal
+  // scroll.
   // Every branch sets a TARGET on the view animator and lets its spring ease
   // toward it — no instant setState jump (see useViewAnimator.js).
   const handleWheel = useCallback((e) => {
     const animator = viewAnimatorRef.current
+    // FL: Alt+wheel ON A NOTE edits it (velocity; Ctrl+Alt fine; Shift+Alt
+    // nudges it in time). Over empty grid Alt+wheel still zooms pitch.
+    if (e.altKey) {
+      const hit = pianoRollCanvasRef.current?.noteAt?.(e.clientX, e.clientY)
+      if (hit) {
+        e.preventDefault()
+        wheelNoteEditRef.current?.(hit, e)
+        return
+      }
+    }
     if (e.altKey) {
       e.preventDefault()
       const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15
@@ -699,6 +982,7 @@ export default function PianoRoll({
   }, [handleWheel, hasPattern])
 
   const notes = pattern?.notes || []
+  notesRef.current = notes
   const { noteColor, ghosts } = usePatternContext(patternId, pattern, { ghostsEnabled: showGhosts })
   const currentRegion = regions.find((r) => r.id === pattern?.regionId) || null
   const regionSlots = Array.isArray(currentRegion?.slots) && currentRegion.slots.length ? currentRegion.slots : []
@@ -815,6 +1099,11 @@ export default function PianoRoll({
         sampleViewAvailable={!!refSlot}
         showGhosts={showGhosts}
         onShowGhostsChange={setShowGhosts}
+        auditioning={auditioning}
+        auditionLoop={auditionLoop}
+        auditionAvailable={auditionAvailable}
+        onToggleAudition={toggleAudition}
+        onAuditionLoopChange={handleAuditionLoopChange}
         snap={snap}
         onSnapChange={setSnap}
         regionSlots={regionSlots}
@@ -847,6 +1136,9 @@ export default function PianoRoll({
             width={canvasWidth}
             height={23}
             patternLengthTicks={patternLengthTicks}
+            timeSel={timeSel}
+            snap={snap}
+            onTimeSelect={selectTimeRange}
           />
         </div>
         <div className={`${styles.cell} ${styles.rulerCorner}`} />
@@ -859,6 +1151,7 @@ export default function PianoRoll({
             height={canvasHeight}
             onPreviewNote={handlePreviewNote}
             highlightedPitches={highlightedPitches}
+            onSelectPitchRange={handleSelectPitchRange}
           />
         </div>
         <div ref={gridCellRef} className={styles.cell}>
@@ -873,6 +1166,8 @@ export default function PianoRoll({
             setStickyNoteLength={setStickyNoteLength}
             stickyVelocity={stickyVelocity}
             setStickyVelocity={setStickyVelocity}
+            stickySlideCurve={stickySlideCurve}
+            onTouchNote={adoptNoteProps}
             selectedNoteIds={selectedNoteIds}
             setSelectedNoteIds={setSelectedNoteIds}
             pixelsPerBeatRef={pixelsPerBeatRef}
@@ -896,6 +1191,11 @@ export default function PianoRoll({
             ghosts={ghosts}
             snap={snap}
             onPan={handlePan}
+            timeSel={timeSel}
+            onClearTimeSel={() => setTimeSel(null)}
+            onCommitNotes={commitNotes}
+            onScrub={handleScrub}
+            onSwitchToGhost={handleSwitchToGhost}
           />
         </div>
         <div className={styles.cell}>

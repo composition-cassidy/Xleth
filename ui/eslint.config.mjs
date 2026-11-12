@@ -17,6 +17,14 @@ export default [
       },
     },
     rules: {
+      // One icon family: Phosphor via ui-kit/icons (docs/ICON_PROPOSAL.md). TS files are covered by
+      // ui-kit/__tests__/icons.test.tsx, which ESLint does not lint.
+      'no-restricted-imports': ['error', {
+        paths: [
+          { name: 'lucide-react', message: 'Use <Icon name="…" /> from ui-kit/icons (Phosphor).' },
+          { name: '@phosphor-icons/react', message: 'Use <Icon name="…" /> from ui-kit/icons; add the name to scripts/gen-icons.mjs.' },
+        ],
+      }],
       'no-restricted-syntax': [
         'error',
         {

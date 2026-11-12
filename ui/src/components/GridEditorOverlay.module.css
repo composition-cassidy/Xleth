@@ -12,7 +12,24 @@
     background: color-mix(in srgb, var(--cell-color, var(--ui-boundary)) 12%, transparent);
   }
 
+  /* The name chip is not parked in the middle of the cell: it follows the
+   * pointer while the pointer is inside this cell (GridEditorOverlay sets
+   * --label-x / --label-y and data-hover) and is hidden otherwise. The cell is
+   * still named by its identity-coloured border, the track rail, and its
+   * aria-label. visibility (not display) so the chip can be measured to clamp. */
+  .slot[data-hover] .label {
+    visibility: visible;
+  }
+
   .label {
+    position: absolute;
+    left: var(--label-x, 0);
+    top: var(--label-y, 0);
+    max-width: calc(100% - 4px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    visibility: hidden;
     padding: 0 var(--space-1);
     border-radius: var(--ui-radius-1);
     background: var(--cell-color, var(--ui-g2));

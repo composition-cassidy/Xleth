@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { Type, Download, ArrowLeftRight, RotateCcw, Trash2, List, LayoutGrid, Volume2, X } from 'lucide-react'
 import { timelineEvents } from '../timelineEvents.js'
 import { DEFAULT_LABELS, loadCustomLabels, labelColor } from '../constants/labels.js'
 import SampleGroup from './SampleGroup.jsx'
@@ -13,6 +12,17 @@ import { DrawToolIcon, EmptyState, SamplerIcon, SandboxIcon, SegmentedControl, S
 import { moveRowFocus } from './browser/browserFormat.js'
 import { getMediaPort, startPreview } from './samplePreview.js'
 import styles from './browser/Browser.module.css'
+import { iconComponent } from '../ui-kit/icons'
+
+const IcArrowCounterClockwise = iconComponent('arrow-counter-clockwise')
+const IcExport = iconComponent('export')
+const IcList = iconComponent('list')
+const IcPencilSimpleLine = iconComponent('pencil-simple-line')
+const IcSpeakerSimpleHigh = iconComponent('speaker-simple-high')
+const IcSquaresFour = iconComponent('squares-four')
+const IcSwap = iconComponent('swap')
+const IcTrash = iconComponent('trash')
+const IcX = iconComponent('x')
 
 /**
  * Sample Selector tab — organises all marked regions by label.
@@ -299,7 +309,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
       // Rename
       {
         label: 'Rename',
-        icon: Type,
+        icon: IcPencilSimpleLine,
         onClick: () => startRename(region),
       },
       // Sampler Settings (Pitch regions only — they're the ones played via the sampler engine)
@@ -343,7 +353,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
       // Export Audio
       {
         label: 'Export Audio',
-        icon: Download,
+        icon: IcExport,
         onClick: async () => {
           try {
             await window.xleth?.audio?.exportRegion(region.id)
@@ -355,7 +365,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
       // Swap Audio
       {
         label: 'Swap Audio',
-        icon: ArrowLeftRight,
+        icon: IcSwap,
         onClick: async () => {
           try {
             let exportsDir = ''
@@ -394,7 +404,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
       // Revert Audio (only shown when region has swapped audio)
       ...(region.hasSwappedAudio ? [{
         label: 'Revert Audio',
-        icon: RotateCcw,
+        icon: IcArrowCounterClockwise,
         onClick: async () => {
           try {
             const result = await window.xleth?.audio?.revertRegionAudio(region.id)
@@ -418,7 +428,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
         // Export Video
         {
           label: 'Export Video',
-          icon: Download,
+          icon: IcExport,
           onClick: async () => {
             try {
               const result = await window.xleth?.video?.exportRegion(region.id)
@@ -431,7 +441,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
         // Swap Video
         {
           label: 'Swap Video',
-          icon: ArrowLeftRight,
+          icon: IcSwap,
           onClick: async () => {
             try {
               const picked = await openFilePicker({
@@ -476,7 +486,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
         // Revert Video (only shown when region has swapped video)
         ...(region.hasSwappedVideo ? [{
           label: 'Revert Video',
-          icon: RotateCcw,
+          icon: IcArrowCounterClockwise,
           onClick: async () => {
             try {
               const result = await window.xleth?.video?.revertRegionVideo(region.id)
@@ -499,7 +509,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
       // Delete
       {
         label: 'Delete',
-        icon: Trash2,
+        icon: IcTrash,
         danger: true,
         onClick: () => handleDelete(region),
       },
@@ -531,7 +541,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
           size="sm"
           on={autoPreview}
           onChange={setAutoPreview}
-          glyph={<Volume2 size={12} />}
+          glyph={<IcSpeakerSimpleHigh size={14} />}
           hint="Auto-preview: selecting a sample plays it"
         >
           Auto-preview
@@ -542,8 +552,8 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
           value={viewMode}
           onChange={setViewMode}
           options={[
-            { value: 'list', label: <List size={13} aria-hidden="true" />, ariaLabel: 'List view', hint: 'List view' },
-            { value: 'thumbnails', label: <LayoutGrid size={13} aria-hidden="true" />, ariaLabel: 'Thumbnail view', hint: 'Thumbnail view' },
+            { value: 'list', label: <IcList size={14} aria-hidden="true" />, ariaLabel: 'List view', hint: 'List view' },
+            { value: 'thumbnails', label: <IcSquaresFour size={14} aria-hidden="true" />, ariaLabel: 'Thumbnail view', hint: 'Thumbnail view' },
           ]}
         />
       </div>
@@ -558,7 +568,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
             onClick={() => setRenameError(null)}
             aria-label="Dismiss"
           >
-            <X size={12} aria-hidden="true" />
+            <IcX size={14} aria-hidden="true" />
           </button>
         </div>
       )}

@@ -325,4 +325,61 @@ describe('PianoRollCanvas pointer gesture lifecycle', () => {
     })
     expect(onRemoveNote).toHaveBeenCalledWith(1)
   })
+
+  describe('last-touched note becomes the pencil template', () => {
+    it('reports the note under the cursor on a pencil click, and does not draw one', () => {
+      const note = { ...noteAt({ id: 1, positionBeats: 2, durationBeats: 2 }), isSlide: true, slideCurveCx: 0.2, slideCurveCy: 0.8 }
+      const rect = noteScreenRect(note)
+      const onTouchNote = vi.fn()
+      const { el, onAddNote } = renderCanvas({ notes: [note], activeTool: 'pencil', onTouchNote })
+
+      act(() => { el.dispatchEvent(pointer('pointerdown', rect.x + rect.w / 2, rect.y + rect.h / 2)) })
+      act(() => { el.dispatchEvent(pointer('pointerup', rect.x + rect.w / 2, rect.y + rect.h / 2)) })
+
+      expect(onTouchNote).toHaveBeenCalledTimes(1)
+      expect(onTouchNote.mock.calls[0][0]).toMatchObject({ id: 1, isSlide: true, slideCurveCx: 0.2, slideCurveCy: 0.8 })
+      expect(onAddNote).not.toHaveBeenCalled()
+    })
+
+    it('reports the note on a select-tool click too', () => {
+      const note = noteAt({ id: 7, positionBeats: 2, durationBeats: 2 })
+      const rect = noteScreenRect(note)
+      const onTouchNote = vi.fn()
+      const { el } = renderCanvas({ notes: [note], activeTool: 'select', onTouchNote })
+
+      act(() => { el.dispatchEvent(pointer('pointerdown', rect.x + rect.w / 2, rect.y + rect.h / 2)) })
+      act(() => { el.dispatchEvent(pointer('pointerup', rect.x + rect.w / 2, rect.y + rect.h / 2)) })
+
+      expect(onTouchNote).toHaveBeenCalledWith(expect.objectContaining({ id: 7 }))
+    })
+
+    it('does not report a touch when the pencil clicks empty space', () => {
+      const onTouchNote = vi.fn()
+      const { el, onAddNote } = renderCanvas({ notes: [], activeTool: 'pencil', onTouchNote })
+      act(() => { el.dispatchEvent(pointer('pointerdown', 100, 100)) })
+      expect(onTouchNote).not.toHaveBeenCalled()
+      expect(onAddNote).toHaveBeenCalledTimes(1)
+    })
+
+    it('draws a new slide note with the touched note\'s curve, not a hard-coded one', () => {
+      const { el, onAddNote } = renderCanvas({
+        notes: [], activeTool: 'pencil', slideMode: true,
+        stickyNoteLength: 480, stickyVelocity: 0.4, stickySlideCurve: { cx: 0.2, cy: 0.8 },
+      })
+      act(() => { el.dispatchEvent(pointer('pointerdown', 100, 100)) })
+      expect(onAddNote).toHaveBeenCalledWith(expect.objectContaining({
+        durationTicks: 480, velocity: 0.4, isSlide: true, slideCurveCx: 0.2, slideCurveCy: 0.8,
+      }))
+    })
+
+    it('draws a plain note (no slide fields) when slide mode is off', () => {
+      const { el, onAddNote } = renderCanvas({
+        notes: [], activeTool: 'pencil', slideMode: false, stickySlideCurve: { cx: 0.2, cy: 0.8 },
+      })
+      act(() => { el.dispatchEvent(pointer('pointerdown', 100, 100)) })
+      const arg = onAddNote.mock.calls[0][0]
+      expect(arg.isSlide).toBeUndefined()
+      expect(arg.slideCurveCx).toBeUndefined()
+    })
+  })
 })

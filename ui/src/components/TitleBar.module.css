@@ -17,7 +17,9 @@
   .left {
     justify-self: start;
     min-width: 0;
-    overflow: hidden;
+    /* Not hidden: File / Edit / View / Settings open their dropdowns inside this
+     * box, and overflow: hidden clipped each one to the 30px menu row. */
+    overflow: visible;
   }
 
   .center {
@@ -101,6 +103,80 @@
       min-width: var(--hit-min);
       min-height: var(--hit-min);
     }
+  }
+
+  /* File / Edit / View dropdown surface: the kit Menu's grammar (24px rows, 12px text, hard
+   * offset shadow because it floats), anchored under its trigger by the global
+   * `.titlebar-dropdown` wrapper. Label left, shortcut right. */
+  .panel {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    min-width: 216px;
+    padding: var(--space-1);
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-2);
+    background: var(--ui-g2);
+    box-shadow: var(--ui-shadow-float);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    -webkit-app-region: no-drag;
+  }
+
+  .row {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+    width: 100%;
+    min-height: var(--row-h);
+    padding: 0 var(--space-2);
+    border: 1px solid transparent;
+    border-radius: var(--ui-radius-1);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    white-space: nowrap;
+    cursor: pointer;
+    -webkit-app-region: no-drag;
+  }
+
+  .row:is(:hover, :focus-visible) {
+    background: var(--ui-g3);
+  }
+
+  .row:focus-visible {
+    border-color: var(--ui-select);
+    outline: none;
+  }
+
+  .keys {
+    flex: none;
+    margin: 0;
+    color: var(--ui-ink-2);
+    font: inherit;
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .sep {
+    height: 1px;
+    margin: var(--space-1) 0;
+    background: var(--ui-g4);
+  }
+
+  .group {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .groupLabel {
+    padding: var(--space-1) var(--space-2);
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
   }
 
   /* Close warns on hover: the clip/error colour, with dark ink on it (6:1). */

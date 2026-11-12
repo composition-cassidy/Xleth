@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useRef } from 'react'
-import { X } from 'lucide-react'
 import {
   IconButton, Knob, NumberBox, SegmentedControl, Select, Toggle, formatValue, skewScale,
 } from '../../ui-kit'
@@ -13,6 +12,9 @@ import {
 import { fractionPercent, phaseDegrees, plainFormat } from './deviceFormat.js'
 import { useLiveFrame } from './filterLive.js'
 import styles from './FilterDevice.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcX = iconComponent('x')
 
 // The Xleth Filter's modulators: an addable list of lanes (any mix of LFO,
 // Envelope and Dynamics follower, up to six per slot, each aimed at one of the
@@ -24,7 +26,7 @@ import styles from './FilterDevice.module.css'
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
 
 const DEST_OPTIONS = MOD_DESTS.map((d) => ({ value: d.value, label: d.label }))
-const SHAPE_OPTIONS = LFO_SHAPES.map((s) => ({ value: s.value, label: s.label.replace('↑', 'up').replace('↓', 'down') }))
+const SHAPE_OPTIONS = LFO_SHAPES.map((s) => ({ value: s.value, label: s.label }))
 const DIV_OPTIONS = LFO_SYNC_DIVISIONS.map((d) => ({ value: d.value, label: d.label }))
 const RATE_MODES = [
   { value: 1, label: 'Sync', hint: 'Rate is a note value from the project tempo' },
@@ -137,7 +139,7 @@ export function ModulatorList({ slotIndex, mods, selectedLane, onSelect, onAdd, 
               <span className={styles.laneDepth}>{formatValue(depth, 'dB', { unitless: true, decimals: 2, signed: true })}</span>
             </button>
             <IconButton size="sm" label={`Remove modulator M${lane + 1}`} onClick={() => onRemove(slotIndex, lane)}>
-              <X aria-hidden="true" />
+              <IcX aria-hidden="true" />
             </IconButton>
           </div>
         )

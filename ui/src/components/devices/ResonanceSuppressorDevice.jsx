@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Plus, Minus } from 'lucide-react'
 import {
   DeviceSection, DisplayWell, IconButton, SegmentedControl, Select, Toggle, formatValue, logScale,
 } from '../../ui-kit'
@@ -10,6 +9,7 @@ import {
 } from '../../plugin-ui/runtime/visualizers/resonanceCurveMapping.js'
 import { useEffectMeterPolling, useMeterBus } from '../../plugin-ui/runtime/useEffectMeterPolling.js'
 import AutomatableKnob from './AutomatableKnob.jsx'
+import AutomationTarget from './AutomationTarget.jsx'
 import ResonanceCurveOverlay, {
   applyParamUpdates, buildBandEditorModel, createAddBandAction, createBandFreqAction, createBandGainAction,
   createBandQAction, createBandTypeAction, createRemoveBandAction, freqToEditorValue, isBandWidthEditable,
@@ -17,6 +17,10 @@ import ResonanceCurveOverlay, {
 import useDeviceParams from './useDeviceParams.js'
 import useDeviceUiStore from './deviceUiStore.js'
 import styles from './ResonanceSuppressorDevice.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcMinus = iconComponent('minus')
+const IcPlus = iconComponent('plus')
 
 // Resonance Suppressor as a device.
 //
@@ -246,15 +250,33 @@ export default function ResonanceSuppressorDevice({ target, registerApplied, dev
     />
   )
   const seg = (id, label, options, extra = {}) => (
-    <SegmentedControl
-      size="sm"
-      label={label}
-      value={Math.round(v(id))}
-      options={options}
-      data-param={id}
-      onChange={(x) => commit(id, x)}
-      {...extra}
-    />
+    <AutomationTarget paramId={id} target={target}>
+      <SegmentedControl
+        size="sm"
+        label={label}
+        value={Math.round(v(id))}
+        options={options}
+        data-param={id}
+        onChange={(x) => commit(id, x)}
+        {...extra}
+      />
+    </AutomationTarget>
+  )
+
+  // Three-plus choices or long labels do not fit a section's width as a switch,
+  // so those are dropdowns (a Select never grows past its trigger).
+  const sel = (id, label, options, width = 112) => (
+    <AutomationTarget paramId={id} target={target}>
+      <Select
+        size="sm"
+        width={width}
+        ariaLabel={label}
+        value={Math.round(v(id))}
+        options={options}
+        data-param={id}
+        onChange={(x) => commit(id, x)}
+      />
+    </AutomationTarget>
   )
 
   // Focus band editor: the overlay's action creators, the legacy strip's calls.
@@ -285,6 +307,7 @@ export default function ResonanceSuppressorDevice({ target, registerApplied, dev
         views={VIEWS}
         view={view}
         onViewChange={(next) => setView(deviceKey, next)}
+        viewsPlacement="header"
       >
         <div ref={wellRef} className={styles.display}>
           <DynamicsVisualizerCanvas
@@ -340,7 +363,7 @@ export default function ResonanceSuppressorDevice({ target, registerApplied, dev
               setSelected(action.idx)
             }}
           >
-            <Plus size={14} aria-hidden="true" />
+            <IcPlus size={14} aria-hidden="true" />
           </IconButton>
           <IconButton
             size="sm"
@@ -351,7 +374,7 @@ export default function ResonanceSuppressorDevice({ target, registerApplied, dev
               setSelected(null)
             }}
           >
-            <Minus size={14} aria-hidden="true" />
+            <IcMinus size={14} aria-hidden="true" />
           </IconButton>
         </div>
         <Select
@@ -386,7 +409,7 @@ export default function ResonanceSuppressorDevice({ target, registerApplied, dev
       </DeviceSection>
 
       <DeviceSection title="Stereo" width={128}>
-        {seg('stereo_mode', 'Stereo mode', STEREO_OPTIONS)}
+        {sel('stereo_mode', 'Stereo mode', STEREO_OPTIONS)}
         {knob('stereo_link', 'Link', '%', { hint: 'How much the two channels share one detector' })}
       </DeviceSection>
 
@@ -395,22 +418,24 @@ export default function ResonanceSuppressorDevice({ target, registerApplied, dev
           {knob('mix', 'Mix', '%')}
           {knob('trim', 'Trim', 'dB', { bipolar: true, formatOptions: { signed: true } })}
         </div>
-        <Toggle
-          size="sm"
-          on={Math.round(v('delta')) === 1}
-          hint="Listen to only what is being removed"
-          data-param="delta"
-          onChange={(on) => commit('delta', on ? 1 : 0)}
-        >
-          Delta
-        </Toggle>
+        <AutomationTarget paramId="delta" target={target}>
+          <Toggle
+            size="sm"
+            on={Math.round(v('delta')) === 1}
+            hint="Listen to only what is being removed"
+            data-param="delta"
+            onChange={(on) => commit('delta', on ? 1 : 0)}
+          >
+            Delta
+          </Toggle>
+        </AutomationTarget>
       </DeviceSection>
 
       <DeviceSection title="Processing" width={176}>
         <div className={styles.column}>
-          {seg('processing_mode', 'Latency mode', LATENCY_OPTIONS)}
+          {sel('processing_mode', 'Latency mode', LATENCY_OPTIONS, 140)}
           {hq ? seg('hq_engine', 'Engine', ENGINE_OPTIONS, { hint: ENGINE_HINT }) : null}
-          {seg('quality', 'Quality', QUALITY_OPTIONS)}
+          {sel('quality', 'Quality', QUALITY_OPTIONS, 140)}
           <span ref={reductionRef} className={styles.readout} data-hint={meter.hint}>Reduction {formatValue(0, 'dB')}</span>
           {latency ? <span className={styles.readout} data-hint="Latency this instance adds, as reported by the engine">{latencyText(latency)}</span> : null}
           {atRisk ? (

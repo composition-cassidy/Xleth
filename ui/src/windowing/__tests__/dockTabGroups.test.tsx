@@ -235,10 +235,18 @@ describe('panel collapse', () => {
   });
 
   it('a fixed-size panel cannot be maximized', () => {
-    const registry = usePanelRegistry.getState();
-    registry.openPanel('sampler');
-    registry.maximizePanel('sampler');
-    expect(usePanelRegistry.getState().panels.sampler.mode).not.toBe('maximized');
+    // No shipped panel is fixed-size any more (the Sampler was the last one), so
+    // the rule is exercised by flagging a panel for the length of this test.
+    const entry = PANEL_CATALOG.quickNotation as { resizable?: boolean };
+    entry.resizable = false;
+    try {
+      const registry = usePanelRegistry.getState();
+      registry.openPanel('quickNotation');
+      registry.maximizePanel('quickNotation');
+      expect(usePanelRegistry.getState().panels.quickNotation.mode).not.toBe('maximized');
+    } finally {
+      delete entry.resizable;
+    }
   });
 });
 

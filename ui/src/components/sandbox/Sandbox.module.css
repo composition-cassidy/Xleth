@@ -1,7 +1,9 @@
-/* Sample Sandbox chrome (round 2, step 20): menu bar, tool column, transport and status bar, then the stack,
- * layers and separation panels, on kit controls and tokens. The waveform and spectrogram stay canvas (their own
- * wrapper rules live in SandboxCanvas.module.css). Type: 13, 12, 11 only; sentence case; mono only for
- * timecodes, sample counts and key caps. */
+/* Sample Sandbox chrome, on kit controls and tokens. The waveform and spectrogram stay canvas (their own
+ * wrapper rules live in SandboxCanvas.module.css). Type: 13, 12, 11 only (16 for the transport clock);
+ * sentence case; mono only for timecodes, sample counts and key caps.
+ *
+ * Bands, top to bottom (SandboxPanelContent.jsx): action bar, tool bar, body (display + sidebar), transport,
+ * status line. Only the display takes its height from the display. */
 @layer kit {
   .root {
     flex: 1 1 auto;
@@ -12,6 +14,7 @@
     font-size: var(--type-12);
     color: var(--ui-ink);
     background: var(--ui-g1);
+    container: sandbox / inline-size;
   }
 
   .edbody {
@@ -20,16 +23,22 @@
     display: flex;
   }
 
-  /* ── Menu bar ───────────────────────────────────────────────────────── */
-  .menubar {
+  .spacer { flex: 1 1 auto; }
+
+  /* ── Action bar: commands ───────────────────────────────────────────── */
+  .actionbar {
     flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    gap: var(--space-1);
-    height: var(--panel-header-h);
-    padding: 0 var(--space-2);
+    flex-wrap: wrap;
+    row-gap: 2px;
+    padding: 2px var(--space-2);
     background: var(--ui-g2);
     border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .actionGroup {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
   }
 
   .menuCat {
@@ -53,72 +62,37 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* ── Tool column ────────────────────────────────────────────────────── */
-  .toolcol {
-    flex: 0 0 148px;
+  /* ── Tool bar: modes of the display under it ────────────────────────── */
+  .toolbar {
+    flex: 0 0 auto;
     display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-    padding: var(--space-2);
-    overflow-y: auto;
-    background: var(--ui-g1);
-    border-right: 1px solid var(--ui-g4);
-  }
-
-  .toolParams {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-    margin-top: var(--space-2);
-    padding-top: var(--space-2);
-    border-top: 1px solid var(--ui-g4);
-  }
-
-  .paramsTitle {
-    font-size: var(--type-11);
-    font-weight: var(--weight-semibold);
-    color: var(--ui-ink-2);
-  }
-
-  .keys {
-    display: grid;
-    grid-template-columns: auto 1fr;
+    flex-wrap: wrap;
     align-items: center;
     gap: 2px var(--space-2);
-    margin-top: auto;
-    padding-top: var(--space-2);
-    border-top: 1px solid var(--ui-g4);
+    min-height: var(--ctl-h-md);
+    padding: 2px var(--space-2);
+    background: var(--ui-g1);
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .toolGroup { gap: 2px; }
+
+  /* The armed tool's own settings, beside the tools. */
+  .toolOptions {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px var(--space-1);
+    padding-left: var(--space-2);
+    border-left: 1px solid var(--ui-g4);
+  }
+
+  .optionLabel {
     font-size: var(--type-11);
     color: var(--ui-ink-2);
   }
 
-  .keyRow { display: contents; }
-
-  .keysTitle {
-    grid-column: 1 / -1;
-    font-weight: var(--weight-semibold);
-  }
-
-  .kbd {
-    box-sizing: border-box;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 20px;
-    height: 18px;
-    padding: 0 5px;
-    border: 1px solid var(--ui-boundary);
-    border-bottom-width: 2px;
-    border-radius: var(--ui-radius-1);
-    background: var(--ui-g3);
-    color: var(--ui-ink);
-    font-family: var(--ui-font);
-    font-size: var(--type-11);
-    font-weight: var(--weight-medium);
-    line-height: 1;
-  }
-
-  /* ── Transport ──────────────────────────────────────────────────────── */
+  /* ── Transport: listen, where, send ─────────────────────────────────── */
   .transport {
     flex: 0 0 auto;
     display: flex;
@@ -130,27 +104,52 @@
     border-top: 1px solid var(--ui-g4);
   }
 
-  .range {
-    font-family: var(--ui-font-mono);
-    font-size: var(--type-11);
-    color: var(--ui-ink-2);
+  .transportGroup {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px var(--space-1);
+  }
+
+  /* The position readout: a recessed well, like every other display in the app. The value keeps a fixed
+     width so the digits hold still while the playhead runs. */
+  .clock {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    height: var(--ctl-h-md);
+    margin-left: var(--space-1);
+    padding: 0 var(--space-2);
+    background: var(--ui-g0);
+    border: 1px solid var(--ui-g4);
+    border-radius: var(--ui-radius-1);
+    line-height: calc(var(--ctl-h-md) - 2px);
     white-space: nowrap;
   }
 
-  .range[data-selection] { color: var(--ui-ink); }
-
-  .divider {
-    align-self: stretch;
-    width: 1px;
-    margin: 2px 0;
-    background: var(--ui-g4);
+  .clockLabel {
+    min-width: 42px;
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
   }
 
-  .spacer { flex: 1 1 auto; }
+  .clockValue {
+    min-width: 8ch;
+    font-family: var(--ui-font-mono);
+    font-size: var(--type-16);
+    font-weight: var(--weight-medium);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    color: var(--ui-ink);
+  }
+
+  .clock[data-playing] .clockLabel { color: var(--ui-ink); }
 
   .swapSelect { min-width: 220px; }
 
   .note {
+    flex: 1 1 100%;
     font-size: var(--type-11);
     line-height: 1.4;
     color: var(--ui-ink-2);
@@ -182,41 +181,95 @@
     white-space: nowrap;
   }
 
-  /* ── Status bar ─────────────────────────────────────────────────────── */
+  /* ── Status line ────────────────────────────────────────────────────── */
   .status {
     flex: 0 0 auto;
     display: flex;
-    flex-wrap: wrap;
     align-items: center;
-    justify-content: space-between;
-    gap: var(--space-1) var(--space-3);
+    gap: var(--space-3);
     min-height: var(--row-h);
-    padding: 2px var(--space-2);
-    background: var(--ui-g2);
+    padding: 0 var(--space-1) 0 var(--space-2);
+    background: var(--ui-g1);
     border-top: 1px solid var(--ui-g4);
     font-size: var(--type-11);
     color: var(--ui-ink-2);
     font-variant-numeric: tabular-nums;
   }
 
+  .hint {
+    flex: 1 1 0;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .readouts {
+    flex: 0 0 auto;
     display: flex;
-    flex-wrap: wrap;
     align-items: center;
-    gap: 0 var(--space-3);
+    gap: var(--space-3);
   }
 
   .readout { white-space: nowrap; }
 
-  .mono { font-family: var(--ui-font-mono); }
-
-  .hint {
-    flex: 1 1 240px;
-    text-align: center;
-    min-width: 0;
+  .mono {
+    font-family: var(--ui-font-mono);
+    color: var(--ui-ink);
   }
 
-  /* ── Render chip (per layer and composite) ──────────────────────────── */
+  /* The Keys list: groups in two columns, a key cap and what it does per row. Wider than the kit menu's
+     360px cap (doubled class: it has to outrank the kit rule whatever order the two sheets load in). */
+  .keysMenu.keysMenu { max-width: min(520px, calc(100vw - 8px)); }
+
+  .keys {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    white-space: nowrap;
+    gap: var(--space-2) var(--space-4);
+    padding: var(--space-2) var(--space-3);
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+  }
+
+  .keyGroup {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    align-content: start;
+    gap: 2px var(--space-2);
+  }
+
+  .keyRow { display: contents; }
+
+  .keysTitle {
+    grid-column: 1 / -1;
+    font-weight: var(--weight-semibold);
+    color: var(--ui-ink);
+  }
+
+  .kbd {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    justify-self: start;
+    min-width: 20px;
+    height: 18px;
+    padding: 0 5px;
+    border: 1px solid var(--ui-boundary);
+    border-bottom-width: 2px;
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g3);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+    font-weight: var(--weight-medium);
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  /* ── Render chip (per layer and the mix) ────────────────────────────── */
   .chip {
     display: inline-flex;
     align-items: center;
@@ -227,6 +280,7 @@
   }
 
   .chipDot {
+    flex: none;
     width: 8px;
     height: 8px;
     border: 1px solid var(--ui-boundary);
@@ -240,52 +294,106 @@
   .chip[data-state="error"] { color: var(--theme-semantic-danger-text, var(--ui-rec-text)); }
   .chip[data-state="error"] .chipDot { background: var(--ui-clip); border-color: var(--ui-clip); }
 
+  /* Turns only while the motion tier lets ambient loops run (ui-kit/motion.css). */
   .spin {
-    animation: none;
-  }
-
-  @media (prefers-reduced-motion: no-preference) {
-    .spin { animation: sandboxSpin 0.9s linear infinite; }
+    animation: sandboxSpin var(--mo-loop) linear infinite;
+    animation-play-state: var(--mo-ambient, paused);
   }
 
   @keyframes sandboxSpin {
     to { transform: rotate(360deg); }
   }
 
-  /* ── Op stack ───────────────────────────────────────────────────────── */
-  .stack {
-    flex: 0 0 300px;
+  /* ── Sidebar: layers, then the active layer's edit stack ────────────── */
+  .sidebar {
+    flex: 0 0 332px;
     display: flex;
     flex-direction: column;
+    min-width: 0;
     min-height: 0;
     background: var(--ui-g1);
     border-left: 1px solid var(--ui-g4);
   }
 
-  .stackHeader {
+  .layers {
     flex: 0 0 auto;
     display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    height: var(--panel-header-h);
-    padding: 0 var(--space-2) 0 var(--space-3);
-    background: var(--ui-g2);
-    border-bottom: 1px solid var(--ui-g4);
+    flex-direction: column;
+    min-height: 0;
+    max-height: 46%;
   }
 
-  .stackTitle {
-    margin: 0;
+  .layerList {
     flex: 1 1 auto;
-    font-size: var(--type-13);
-    font-weight: var(--weight-semibold);
+    min-height: 0;
+    overflow-y: auto;
   }
 
-  .stackUndo { display: inline-flex; gap: 2px; }
+  .layer { border-bottom: 1px solid var(--ui-g4); }
 
-  .opCount {
+  .layer[data-active] { background: color-mix(in srgb, var(--ui-value) 24%, var(--ui-g3)); }
+
+  .layerRow {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    min-height: 28px;
+    padding: 0 var(--space-1);
+    cursor: pointer;
+  }
+
+  .layer:not([data-active]) .layerRow:hover { background: var(--ui-g2); }
+
+  .layer[data-muted] .layerName,
+  .layer[data-muted] .layerMeta { opacity: var(--ui-mute-opacity); }
+
+  .layerName {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: var(--weight-medium);
+  }
+
+  .layerMeta {
+    flex: 0 0 auto;
     font-size: var(--type-11);
     color: var(--ui-ink-2);
     font-variant-numeric: tabular-nums;
+  }
+
+  .layer[data-active] .layerMeta { color: var(--ui-ink); }
+
+  .layerButtons {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  /* The active layer's mix values, labelled, on a second line of its own row. */
+  .layerMix {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1);
+    padding: 0 var(--space-2) var(--space-2);
+  }
+
+  .layerHint {
+    padding: var(--space-1) var(--space-2);
+    font-size: var(--type-11);
+    line-height: 1.4;
+    color: var(--ui-ink-2);
+  }
+
+  .stack {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    border-top: 1px solid var(--ui-g4);
   }
 
   .opList {
@@ -295,8 +403,9 @@
   }
 
   .empty {
-    padding: var(--space-3);
-    font-size: var(--type-12);
+    padding: var(--space-2);
+    font-size: var(--type-11);
+    line-height: 1.4;
     color: var(--ui-ink-2);
   }
 
@@ -316,11 +425,11 @@
     align-items: center;
     gap: var(--space-1);
     min-height: 36px;
-    padding: 0 var(--space-2);
+    padding: 0 var(--space-1) 0 var(--space-2);
     cursor: pointer;
   }
 
-  .opRow:hover { background: var(--ui-g2); }
+  .op:not([data-selected]) .opRow:hover { background: var(--ui-g2); }
 
   .grip { flex: 0 0 auto; color: var(--ui-ink-3); cursor: grab; }
 
@@ -353,6 +462,9 @@
     font-variant-numeric: tabular-nums;
   }
 
+  .op[data-selected] .opParams,
+  .op[data-selected] .opIndex { color: var(--ui-ink); }
+
   .refusalBadge {
     display: inline-flex;
     color: var(--theme-semantic-danger-text, var(--ui-rec-text));
@@ -372,7 +484,7 @@
     flex-wrap: wrap;
     align-items: flex-end;
     gap: var(--space-2);
-    padding: var(--space-1) var(--space-3) var(--space-2) var(--space-5);
+    padding: var(--space-1) var(--space-2) var(--space-2) var(--space-5);
   }
 
   .field {
@@ -386,12 +498,16 @@
     color: var(--ui-ink-2);
   }
 
-  .readout {
+  .params .readout {
     width: 100%;
     font-size: var(--type-11);
     line-height: 1.4;
     color: var(--ui-ink-2);
+    white-space: normal;
   }
+
+  .op[data-selected] .fieldLabel,
+  .op[data-selected] .params .readout { color: var(--ui-ink); }
 
   .keyboardRow {
     display: flex;
@@ -461,73 +577,11 @@
     z-index: 2;
   }
 
-  /* ── Layer rail and editor pane ─────────────────────────────────────── */
-  .workspace {
-    flex: 1 1 auto;
-    min-width: 0;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .rail {
-    flex: 0 0 auto;
-    max-height: 34%;
-    overflow-y: auto;
-    border-bottom: 1px solid var(--ui-g4);
-    background: var(--ui-g1);
-  }
-
-  .layerRow {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    min-height: 36px;
-    padding: 2px var(--space-2);
-    border-bottom: 1px solid var(--ui-g4);
-    cursor: pointer;
-  }
-
-  .layerRow:hover { background: var(--ui-g2); }
-  .layerRow[data-active] { background: color-mix(in srgb, var(--ui-value) 24%, var(--ui-g3)); }
-  .layerRow[data-muted] .layerName,
-  .layerRow[data-muted] .layerMeta { opacity: var(--ui-mute-opacity); }
-
-  .layerName {
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-weight: var(--weight-medium);
-  }
-
-  .layerMeta {
-    flex: 0 0 auto;
-    font-size: var(--type-11);
-    color: var(--ui-ink-2);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .layerMix {
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-1);
-  }
-
-  .railHint {
-    display: flex;
-    align-items: center;
-    gap: var(--space-1);
-    padding: var(--space-1) var(--space-3);
-    font-size: var(--type-11);
-    color: var(--ui-ink-2);
-  }
-
+  /* ── Editor pane ────────────────────────────────────────────────────── */
   .editorPane {
     position: relative;
     flex: 1 1 auto;
+    min-width: 0;
     min-height: 0;
     display: flex;
     flex-direction: column;
@@ -540,18 +594,23 @@
     padding: var(--space-4);
     display: flex;
     flex-direction: column;
-    align-items: center;
-    justify-content: center;
+    align-items: flex-start;
+    justify-content: flex-start;
     gap: var(--space-1);
     border: 1px dashed var(--ui-boundary);
     color: var(--ui-ink-2);
     font-size: var(--type-12);
-    text-align: center;
   }
 
   .dropZone[data-over] { border-color: var(--ui-select); color: var(--ui-ink); }
 
-  .dropHint { font-size: var(--type-11); color: var(--ui-ink-2); }
+  .dropTitle {
+    font-size: var(--type-13);
+    font-weight: var(--weight-semibold);
+    color: var(--ui-ink);
+  }
+
+  .dropHint { font-size: var(--type-12); line-height: 1.4; color: var(--ui-ink-2); }
 
   /* Drop feedback while layers already exist: the empty-state drop zone is not mounted then. */
   .dropOverlay {
@@ -644,6 +703,13 @@
     color: var(--ui-ink-2);
   }
 
+  .divider {
+    align-self: stretch;
+    width: 1px;
+    margin: 2px 0;
+    background: var(--ui-g4);
+  }
+
   .selbar {
     position: absolute;
     left: 0;
@@ -662,5 +728,41 @@
   .selbarCount {
     font-size: var(--type-11);
     color: var(--ui-ink-2);
+  }
+
+  /* ── Narrow panel (docked in a column, or a small floating window) ──── */
+  /* Under 760px the sidebar cannot sit beside the display without starving it, so it goes underneath, with
+     the layers and the edit stack side by side. The status line drops its readouts before its hint. */
+  @container sandbox (max-width: 760px) {
+    .edbody { flex-direction: column; }
+
+    .sidebar {
+      flex: 0 0 42%;
+      flex-direction: row;
+      border-left: 0;
+      border-top: 1px solid var(--ui-g4);
+    }
+
+    .layers {
+      flex: 1 1 0;
+      min-width: 0;
+      max-height: none;
+    }
+
+    .stack {
+      flex: 1 1 0;
+      min-width: 0;
+      border-top: 0;
+      border-left: 1px solid var(--ui-g4);
+    }
+
+    .readouts .readout { display: none; }
+  }
+
+  @container sandbox (max-width: 480px) {
+    .sidebar { flex-direction: column; flex-basis: 50%; }
+    .layers { flex: 0 0 auto; max-height: 46%; }
+    .stack { border-left: 0; border-top: 1px solid var(--ui-g4); }
+    .clockLabel { display: none; }
   }
 }

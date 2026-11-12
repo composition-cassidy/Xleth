@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react'
-import { DeviceSection, DisplayWell, Knob, SegmentedControl, formatValue } from '../../ui-kit'
+import { DeviceSection, DisplayWell, SegmentedControl, formatValue } from '../../ui-kit'
+import AutomatableKnob from './AutomatableKnob.jsx'
+import AutomationTarget from './AutomationTarget.jsx'
 import SmartBalanceCanvas from './SmartBalanceCanvas.jsx'
 import { bandVar } from './bandPalette.js'
 import { BANDS, TARGET_MAX, TARGET_MIN, bandIds } from './smartBalanceGeometry.js'
@@ -56,8 +58,10 @@ export default function SmartBalanceDevice({ target, registerApplied, deviceKey 
   const ids = bandIds(band)
 
   const knob = (id, label, min, max, extra = {}) => (
-    <Knob
+    <AutomatableKnob
       key={id}
+      paramId={id}
+      target={target}
       label={label}
       value={params[id]}
       min={min}
@@ -103,13 +107,15 @@ export default function SmartBalanceDevice({ target, registerApplied, deviceKey 
 
       <DeviceSection title="Measure" width={156}>
         <div className={styles.column}>
-          <SegmentedControl
-            size="md"
-            label="Mode"
-            value={mode}
-            options={MODES}
-            onChange={(v) => commit('mode', v)}
-          />
+          <AutomationTarget paramId="mode" target={target}>
+            <SegmentedControl
+              size="md"
+              label="Mode"
+              value={mode}
+              options={MODES}
+              onChange={(v) => commit('mode', v)}
+            />
+          </AutomationTarget>
           {knob('response', 'Response', 10, 500, {
             unit: 'ms', formatOptions: { decimals: 0 }, hint: 'How fast the band levels are measured and followed',
           })}

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronLeft, ChevronRight, Plus } from 'lucide-react'
 import { timelineEvents } from '../../timelineEvents.js'
 import { ticksToBeats } from '../../constants/timeline.js'
 import { Button, IconButton, THIN_SPACE } from '../../ui-kit'
@@ -7,10 +6,12 @@ import { tokenValue } from '../../theming/tokenValue.ts'
 import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
 import useTrackIdentityColors from '../inspector/useTrackIdentityColors.js'
 import usePianoRollStore from '../../stores/usePianoRollStore.js'
-import PatternPreviewTooltip from './patternPreview/PatternPreviewTooltip.jsx'
 import styles from './PatternListPanel.module.css'
+import { iconComponent } from '../../ui-kit/icons'
 
-const HOVER_PREVIEW_DELAY_MS = 220
+const IcCaretLeft = iconComponent('caret-left')
+const IcCaretRight = iconComponent('caret-right')
+const IcPlus = iconComponent('plus')
 
 // ── PatternListPanel ────────────────────────────────────────────────────────
 // Left strip inside the timeline listing every pattern in the project as one
@@ -129,53 +130,6 @@ export default function PatternListPanel({
   const [nameInput, setNameInput] = useState('')
   const inputRef = useRef(null)
 
-  // ── Hover-preview tooltip ─────────────────────────────────────────────────
-  // `hoverId` above drives the instant `.is-hover` row highlight; the preview
-  // card itself only appears after a short hover-intent delay so skimming
-  // down the list doesn't flicker a tooltip per row.
-  const [previewTarget, setPreviewTarget] = useState(null) // { patternId, anchorRect }
-  const rowElsRef = useRef(new Map()) // patternId -> row DOM node
-  const previewTimerRef = useRef(null)
-
-  const clearPreviewTimer = useCallback(() => {
-    if (previewTimerRef.current) {
-      clearTimeout(previewTimerRef.current)
-      previewTimerRef.current = null
-    }
-  }, [])
-
-  const handleRowMouseEnter = useCallback((patternId) => {
-    setHoverId(patternId)
-    clearPreviewTimer()
-    previewTimerRef.current = setTimeout(() => {
-      previewTimerRef.current = null
-      const rowEl = rowElsRef.current.get(patternId)
-      if (!rowEl) return
-      setPreviewTarget({ patternId, anchorRect: rowEl.getBoundingClientRect() })
-    }, HOVER_PREVIEW_DELAY_MS)
-  }, [clearPreviewTimer])
-
-  const handleRowMouseLeave = useCallback(() => {
-    setHoverId(null)
-    clearPreviewTimer()
-    setPreviewTarget(null)
-  }, [clearPreviewTimer])
-
-  // Dismiss on scroll/resize — a fixed-position card would otherwise detach
-  // from its anchor row (mirrors TrackColorPopover.jsx's same guard).
-  useEffect(() => {
-    if (!previewTarget) return
-    const dismiss = () => setPreviewTarget(null)
-    window.addEventListener('resize', dismiss)
-    window.addEventListener('wheel', dismiss, { passive: true })
-    return () => {
-      window.removeEventListener('resize', dismiss)
-      window.removeEventListener('wheel', dismiss)
-    }
-  }, [previewTarget])
-
-  useEffect(() => clearPreviewTimer, [clearPreviewTimer])
-
   const startEdit = useCallback((pattern) => {
     setEditingId(pattern.id)
     setNameInput(pattern.name || `Pattern ${pattern.id}`)
@@ -247,7 +201,7 @@ export default function PatternListPanel({
     return (
       <div className={`pattern-list-panel pattern-list-panel-collapsed ${styles.collapsed}`}>
         <IconButton size="sm" label="Expand pattern list" onClick={onToggleCollapsed} hint="Expand the pattern list">
-          <ChevronRight size={14} />
+          <IcCaretRight size={14} />
         </IconButton>
       </div>
     )
@@ -259,7 +213,7 @@ export default function PatternListPanel({
         <span className={`pattern-list-title ${styles.title}`}>Patterns</span>
         <span className={styles.total} role="img" aria-label={`${sortedPatterns.length} patterns`}>{sortedPatterns.length}</span>
         <IconButton size="sm" label="Collapse pattern list" onClick={onToggleCollapsed} hint="Collapse the pattern list">
-          <ChevronLeft size={14} />
+          <IcCaretLeft size={14} />
         </IconButton>
       </div>
 
@@ -276,10 +230,6 @@ export default function PatternListPanel({
             return (
               <div
                 key={p.id}
-                ref={(el) => {
-                  if (el) rowElsRef.current.set(p.id, el)
-                  else rowElsRef.current.delete(p.id)
-                }}
                 role="option"
                 aria-selected={selected}
                 tabIndex={0}
@@ -294,8 +244,8 @@ export default function PatternListPanel({
                   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleClick(p.id) }
                   else if (e.key === 'F2') { e.preventDefault(); startEdit(p) }
                 }}
-                onMouseEnter={() => handleRowMouseEnter(p.id)}
-                onMouseLeave={handleRowMouseLeave}
+                onMouseEnter={() => setHoverId(p.id)}
+                onMouseLeave={() => setHoverId(null)}
                 data-hint={`${label}: ${patternStepsLabel(p.lengthTicks)}, ${noteCount} ${noteCount === 1 ? 'note' : 'notes'}${color ? '' : ', not placed'}`}
                 data-hint-mods="Click: open in the Piano Roll · Drag onto a pattern track · Double-click or F2: rename"
               >
@@ -332,19 +282,10 @@ export default function PatternListPanel({
 
       {onNewPattern && (
         <div className={styles.footer}>
-          <Button size="sm" className={styles.newBtn} glyph={<Plus size={12} />} onClick={onNewPattern} hint="Create a new pattern">
+          <Button size="sm" className={styles.newBtn} glyph={<IcPlus size={14} />} onClick={onNewPattern} hint="Create a new pattern">
             New pattern
           </Button>
         </div>
-      )}
-
-      {previewTarget && patterns[previewTarget.patternId] && (
-        <PatternPreviewTooltip
-          pattern={patterns[previewTarget.patternId]}
-          anchorRect={previewTarget.anchorRect}
-          onRequestClose={() => setPreviewTarget(null)}
-        />
-      )}
-    </div>
+      )}    </div>
   )
 }

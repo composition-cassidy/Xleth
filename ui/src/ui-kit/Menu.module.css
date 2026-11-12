@@ -1,6 +1,6 @@
 /* Menu: context menus and popover lists. A FLOATING surface, so it carries the hard offset
- * shadow (DESIGN.md section 1). Rows are 24px (the hit-area floor), text is 12px, no entry
- * animation, no blur. */
+ * shadow (DESIGN.md section 1). Rows are 24px (the hit-area floor), text is 12px, no blur.
+ * It enters with the `pop` / `context` recipe (ui-kit/motion.css) from the point it was asked for. */
 @layer kit {
   .menu {
     position: fixed;

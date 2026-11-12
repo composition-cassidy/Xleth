@@ -50,7 +50,7 @@ const slider = (label) => q(`[role="slider"][aria-label="${label}"]`)
 const aria = (label) => slider(label)?.getAttribute('aria-valuetext')
 const sent = (id) => audio.setEffectParameter.mock.calls.filter((c) => c[2] === id)
 const titles = () => Array.from(container.querySelectorAll('[role="heading"][aria-level="3"]')).map((h) => h.textContent)
-const modelGroup = () => q('[role="radiogroup"][aria-label="Amp model"]')
+const modelSelect = () => q('button[aria-haspopup="listbox"][aria-label="Amp model"]')
 
 beforeEach(() => {
   HTMLCanvasElement.prototype.getContext = () => null
@@ -98,7 +98,9 @@ describe('Amp Stack device in the chain', () => {
       expect(Number(s.getAttribute('aria-valuemin')), `"${id}".min`).toBe(min)
       expect(Number(s.getAttribute('aria-valuemax')), `"${id}".max`).toBe(max)
     }
-    expect(modelGroup().querySelectorAll('[role="radio"]').length).toBe(6)
+    act(() => modelSelect().click())
+    expect(document.querySelectorAll('[role="option"]').length).toBe(6)
+    act(() => modelSelect().click())
     expect(q('[aria-label="Cabinet"]')).not.toBeNull()
   })
 
@@ -123,7 +125,7 @@ describe('Amp Stack device in the chain', () => {
     expect(aria('Mix')).toBe('Mix, 62 %')
     expect(aria('Output')).toBe('Output, −7.5 dB')
     // Model 4 = Rectifier, Cab 3 = Greenback 4x12.
-    expect(modelGroup().querySelector('[aria-checked="true"]').textContent).toBe('Rectifier')
+    expect(modelSelect().textContent).toBe('Rectifier')
     expect(q('[aria-label="Cabinet"]').textContent).toContain('Greenback 4x12')
   })
 
@@ -170,7 +172,8 @@ describe('Amp Stack device in the chain', () => {
   it('switching the model is one click and one write; so is the cab', async () => {
     await mountChain()
     audio.setEffectParameter.mockClear()
-    act(() => Array.from(modelGroup().querySelectorAll('[role="radio"]')).find((b) => b.textContent === 'Tweed').click())
+    act(() => modelSelect().click())
+    act(() => Array.from(document.querySelectorAll('[role="option"]')).find((o) => o.textContent.trim() === 'Tweed').click())
     expect(audio.setEffectParameter).toHaveBeenCalledTimes(1)
     expect(audio.setEffectParameter).toHaveBeenCalledWith(3, 7, 'model', 1)
 
@@ -183,10 +186,10 @@ describe('Amp Stack device in the chain', () => {
     expect(audio.setEffectParameter).toHaveBeenCalledWith(3, 7, 'cab', 2)
   })
 
-  it('every continuous knob is automatable; Model and Cab are not knobs', async () => {
+  it('every knob, and the Model and Cab dropdowns, is automatable', async () => {
     await mountChain()
     const automatable = Array.from(container.querySelectorAll('[data-automation-param]')).map((e) => e.getAttribute('data-automation-param'))
-    expect(automatable.sort()).toEqual(SPEC_PARAMS.map(([id]) => id).sort())
+    expect(automatable.sort()).toEqual([...SPEC_PARAMS.map(([id]) => id), 'model', 'cab'].sort())
     expect(slider('Model')).toBeNull()
     expect(slider('Cab')).toBeNull()
   })
@@ -207,11 +210,11 @@ describe('Amp Stack device in the chain', () => {
   it('pop-out opens the floating window and the docked slot becomes a strip', async () => {
     act(() => root.render(<><DeviceChain /><AmpPanel /></>))
     await flush()
-    act(() => q('button[aria-label="Open Amp stack in a window"]').click())
+    act(() => q('button[aria-label="Open Amp Stack in a window"]').click())
     await flush()
     expect(useAmpStore.getState().target).toEqual({ trackId: 3, nodeId: 7, storeKey: '3' })
     expect(q('[data-testid="amp-window"] section').getAttribute('data-presentation')).toBe('floating')
-    act(() => q('button[aria-label="Close Amp stack"]').click())
+    act(() => q('button[aria-label="Close Amp Stack"]').click())
     expect(useAmpStore.getState().target).toBeNull()
   })
 })

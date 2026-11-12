@@ -1,5 +1,5 @@
 /* The Mixer tab (ui/DESIGN.md section 10). A fixed gutter at the left prints what every
- * strip shares (the dB numerals, the words Pan and Width); track strips scroll
+ * strip shares (the dB numerals, the FX button, the width switch); track strips scroll
  * horizontally in the middle; the master strip and the loudness dock are fixed at the
  * right. There is no inspector column: a track's detail lives in the Inspector and the
  * Devices tab. Gutter, strips and master are equal-height columns on one row grid

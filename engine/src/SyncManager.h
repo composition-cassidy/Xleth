@@ -5,6 +5,7 @@
 #include "model/TimelineTypes.h"
 
 #include <functional>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -109,18 +110,35 @@ public:
     explicit SyncManager(Transport& transport,
                          std::function<int64_t()> presentationPositionProvider = {});
 
-    // Add video events to the timeline
+    using EventList      = std::vector<VideoEvent>;
+    using SlideEventList = std::vector<SlideAnimationEvent>;
+
+    // ── Event list: immutable snapshots ─────────────────────────────────────
+    // The list is PUBLISHED, never edited in place: setEvents() swaps in a
+    // freshly built pair of lists, and readers take a shared_ptr to whichever
+    // pair is current. A reader that holds a snapshot keeps a consistent list
+    // for as long as it likes — the video tick holds one across its whole
+    // decode / composite / readback, long after it has dropped the model lock
+    // — and a rebuild landing in the meantime simply publishes a new one.
+    //
+    // The pointer swap itself is not atomic. Callers that publish or take a
+    // snapshot hold the model lock (syncEventsMutex in the bridge) for that
+    // instant only; nothing needs it while USING a snapshot.
+    void setEvents(EventList events, SlideEventList slideEvents);
+    std::shared_ptr<const EventList>      eventsSnapshot()      const { return events_; }
+    std::shared_ptr<const SlideEventList> slideEventsSnapshot() const { return slideEvents_; }
+
+    // Convenience views of the current snapshot. Valid until the next
+    // setEvents / addEvent / clearEvents — i.e. only while the caller holds the
+    // model lock. Take a snapshot instead when the lock will be released.
+    const EventList&      getEvents()      const { return *events_; }
+    const SlideEventList& getSlideEvents() const { return *slideEvents_; }
+
+    // Append one event / drop everything. Each publishes a new snapshot, so a
+    // reader still holding the previous one is unaffected.
     void addEvent(const VideoEvent& event);
+    void addSlideEvent(const SlideAnimationEvent& e);
     void clearEvents();
-
-    // Read-only access to current events (caller must hold external lock if
-    // the event list is being mutated concurrently).
-    const std::vector<VideoEvent>& getEvents() const { return events_; }
-
-    // Slide animation events — parallel list to video events, populated by
-    // pattern-track rebuild for notes flagged isSlide. Cleared by clearEvents().
-    void addSlideEvent(const SlideAnimationEvent& e) { slideEvents_.push_back(e); }
-    const std::vector<SlideAnimationEvent>& getSlideEvents() const { return slideEvents_; }
 
     // Beat position of the audio currently being heard, or -1.0 when the
     // transport is stopped.
@@ -154,8 +172,9 @@ private:
     Transport&               transport_;
     std::function<int64_t()> presentationPositionProvider_;
 
-    std::vector<VideoEvent>          events_;
-    std::vector<SlideAnimationEvent> slideEvents_;
+    // Never null: an empty project has empty lists, not missing ones.
+    std::shared_ptr<const EventList>      events_      = std::make_shared<const EventList>();
+    std::shared_ptr<const SlideEventList> slideEvents_ = std::make_shared<const SlideEventList>();
 
 public:
     // Preview chorus hold state — written by video thread, reset on clearEvents().

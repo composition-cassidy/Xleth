@@ -80,3 +80,66 @@ describe('velocity lane drag', () => {
     expect(onSetVelocity.mock.calls[0][1]).toBeCloseTo(0.6, 6)
   })
 })
+
+describe('velocity lane FL gestures', () => {
+  let container
+  let root
+  afterEach(() => {
+    act(() => root.unmount())
+    container.remove()
+  })
+  const mount = (notes, selected = new Set()) => {
+    const handlers = { onSetVelocity: vi.fn(), onSetVelocities: vi.fn() }
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+    act(() => {
+      root.render(
+        <VelocityLane
+          ref={createRef()}
+          notes={notes}
+          selectedNoteIds={selected}
+          pixelsPerBeatRef={{ current: 80 }}
+          scrollXRef={{ current: 0 }}
+          width={400}
+          height={80}
+          {...handlers}
+        />,
+      )
+    })
+    const lane = container.firstChild
+    lane.getBoundingClientRect = () => ({ left: 0, top: 0, right: 400, bottom: 80, width: 400, height: 80, x: 0, y: 0 })
+    return { lane, ...handlers }
+  }
+
+  it('Shift+drag sets every stem it crosses to the same value, in one commit', () => {
+    const notes = [
+      { id: 1, positionTicks: 0, velocity: 0.2 },
+      { id: 2, positionTicks: 960, velocity: 0.9 },
+      { id: 3, positionTicks: 1920, velocity: 0.5 },
+      { id: 4, positionTicks: 3840, velocity: 0.1 },
+    ]
+    const h = mount(notes)
+    const y = valueToY(0.7, 80)
+    act(() => { h.lane.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, shiftKey: true, clientX: 0, clientY: y })) })
+    act(() => { window.dispatchEvent(new MouseEvent('mousemove', { clientX: 170, clientY: y })) })
+    act(() => { window.dispatchEvent(new MouseEvent('mouseup', {})) })
+    expect(h.onSetVelocities).toHaveBeenCalledTimes(1)
+    const sent = h.onSetVelocities.mock.calls[0][0]
+    expect(sent.map((e) => e.noteId)).toEqual([1, 2, 3])
+    for (const e of sent) expect(e.velocity).toBeCloseTo(0.7, 6)
+  })
+
+  it('Alt+click resets a stem (the whole selection when it belongs to it)', () => {
+    const notes = [
+      { id: 1, positionTicks: 0, velocity: 0.3 },
+      { id: 2, positionTicks: 960, velocity: 0.4 },
+    ]
+    const h = mount(notes, new Set([1, 2]))
+    act(() => { h.lane.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, altKey: true, clientX: 0, clientY: valueToY(0.3, 80) })) })
+    expect(h.onSetVelocities).toHaveBeenCalledWith([
+      { noteId: 1, velocity: 1 },
+      { noteId: 2, velocity: 1 },
+    ])
+  })
+})

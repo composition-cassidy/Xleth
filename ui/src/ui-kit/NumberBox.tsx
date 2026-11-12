@@ -14,6 +14,8 @@ export interface NumberBoxProps extends ValueControlProps, DataAttrs {
   width?: number;
   /** Hide the visible label (it stays the accessible name). */
   hideLabel?: boolean;
+  /** Short visible text in place of `label` ("Cols"); `label` stays the accessible name. */
+  caption?: string;
   /** Field height: 'sm' 24px (default), 'md' 28px (matches IconButtons in a toolbar). */
   size?: 'sm' | 'md';
   /**
@@ -32,7 +34,7 @@ export interface NumberBoxProps extends ValueControlProps, DataAttrs {
  */
 export default function NumberBox(props: NumberBoxProps) {
   const {
-    label, value, defaultValue, disabled = false, bipolar = false, centre, width = 72, hideLabel = false, size = 'sm',
+    label, value, defaultValue, disabled = false, bipolar = false, centre, width = 72, hideLabel = false, caption, size = 'sm',
     pxPerRange = DEFAULT_NUMBERBOX_PX, hint, hintMods, className, onChange, onCommit, onCancel,
     min, max, scale, unit, formatOptions, format, parse, codec, step, stepNorm, quantize, mod = null, fill = true,
     ...rest
@@ -116,7 +118,7 @@ export default function NumberBox(props: NumberBoxProps) {
       })}
       {...handlers}
     >
-      {hideLabel ? null : <span className={styles.label}>{label}</span>}
+      {hideLabel ? null : <span className={styles.label}>{caption ?? label}</span>}
       {drag.editing ? (
         <input className={styles.input} aria-label={`${label} value`} {...drag.editorProps} />
       ) : (

@@ -1,25 +1,35 @@
-import {
-  Play, Square, Repeat, Crosshair, ZoomIn, ZoomOut, Maximize2, Scan, Check, Plus,
-} from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import useSandboxStore, { hasMeaningfulSelection } from '../../stores/sandboxStore.js'
-import { Button, IconButton, Select } from '../../ui-kit'
+import { Button, IconButton, NumberBox, Select, ToolbarSeparator } from '../../ui-kit'
 import { DEFAULT_LABELS, loadCustomLabels } from '../../constants/labels.js'
-import { formatTime } from './sandboxFormat.js'
+import { formatClock, formatTime, parseTime } from './sandboxFormat.js'
+import { getSandboxPreviewPosition } from './sandboxPreviewPlayer.js'
 import styles from './Sandbox.module.css'
+import { iconComponent } from '../../ui-kit/icons'
 
-// Bottom transport. Organised around what a transport is actually for: PLAY,
-// what it will play, and how the view follows it. Zoom controls live here too
-// — they are navigation, not editing, and the tool column is for tools that
-// own the pointer.
+const IcCheckFill = iconComponent('check', 'fill')
+const IcCrosshair = iconComponent('crosshair')
+const IcPlay = iconComponent('play')
+const IcPlus = iconComponent('plus')
+const IcRepeat = iconComponent('repeat')
+const IcStopFill = iconComponent('stop', 'fill')
+
+// ── Transport ───────────────────────────────────────────────────────────────
 //
-// Swap in and Bake sit on the RIGHT, behind a divider: they act on the active
-// layer and commit something outside this panel (a project sample, a baked
-// asset), which makes them the two heaviest buttons in the room.
+// Under the display, left to right in the order a pass through the panel goes:
+// LISTEN (play, loop, follow, and the position), WHERE (the selection as three
+// numbers you can drag or type), and SEND (swap the result into the project,
+// or bake it). Zoom moved up beside the view switch — it changes the display,
+// not the playback.
+//
+// The selection used to be read-only text in two places (here and in the
+// status bar). It is three NumberBoxes now, so an edit can be placed by typing
+// "0.250" as well as by dragging on the waveform.
 //
 // bakedAssets/addBakedAssetAsSource are carried forward unchanged; bakeComposite
 // itself still has no UI trigger anywhere in this codebase, so no new button
 // was added for it here.
+
 function SwapTargetPicker({ layerId, swapInLayer }) {
   const [regions, setRegions] = useState(null) // null = still loading
 
@@ -73,6 +83,42 @@ function SwapTargetPicker({ layerId, swapInLayer }) {
   )
 }
 
+// The position, as a clock. Stopped, it is the cursor (where Play starts and
+// Paste lands). Playing, it follows the playhead — read from the AudioContext
+// clock in a rAF loop and written straight to the node, never through the
+// store: a store write per frame would re-render the whole panel (the waveform
+// playhead loop makes the same choice for the same reason).
+function PositionClock({ cursorSample, sampleRate, playing, offsetSamples }) {
+  const valueRef = useRef(null)
+  const stopped = sampleRate ? formatClock(cursorSample / sampleRate) : formatClock(null)
+
+  useEffect(() => {
+    const node = valueRef.current
+    if (!playing || !sampleRate || !node) return undefined
+    let raf = 0
+    const tick = () => {
+      raf = requestAnimationFrame(tick)
+      const pos = getSandboxPreviewPosition()
+      if (pos != null) node.textContent = formatClock(Math.max(0, pos - offsetSamples) / sampleRate)
+    }
+    raf = requestAnimationFrame(tick)
+    // Hand the node back to React's own text when the loop ends.
+    return () => { cancelAnimationFrame(raf); node.textContent = stopped }
+  }, [playing, sampleRate, offsetSamples, stopped])
+
+  return (
+    <div
+      className={styles.clock}
+      data-playing={playing || undefined}
+      data-hint={playing ? 'Playhead position' : 'Cursor position'}
+      data-hint-mods="Minutes, seconds and milliseconds. Home and End move the cursor to the ends of the layer"
+    >
+      <span className={styles.clockLabel}>{playing ? 'Playing' : 'Cursor'}</span>
+      <span className={styles.clockValue} ref={valueRef}>{stopped}</span>
+    </div>
+  )
+}
+
 export default function SandboxTransport() {
   const layers = useSandboxStore((s) => s.layers)
   const activeLayerId = useSandboxStore((s) => s.activeLayerId)
@@ -87,9 +133,7 @@ export default function SandboxTransport() {
   const followPlayhead = useSandboxStore((s) => s.followPlayhead)
   const toggleFollowPlayhead = useSandboxStore((s) => s.toggleFollowPlayhead)
   const selection = useSandboxStore((s) => s.selection)
-  const zoomBy = useSandboxStore((s) => s.zoomBy)
-  const zoomToFit = useSandboxStore((s) => s.zoomToFit)
-  const zoomToSelection = useSandboxStore((s) => s.zoomToSelection)
+  const setSelection = useSandboxStore((s) => s.setSelection)
 
   const layer = layers.find((l) => l.id === activeLayerId) ?? null
 
@@ -121,87 +165,126 @@ export default function SandboxTransport() {
   const isPlaying = playback.state === 'playing'
   const isQueued = playback.state === 'rendering'
 
-  // The transport says WHAT Space will play, because the rule is not
-  // guessable: a real selection plays as a bounded range, otherwise playback
-  // runs from the cursor to the end.
+  // What Space will play is not guessable, so the Play hint says it: a real
+  // selection plays as a bounded range, otherwise playback runs from the
+  // cursor to the end.
   const sampleRate = layer?.renderedBuffer?.sampleRate
+  const numSamples = layer?.renderedBuffer?.numSamples ?? 0
+  const ready = canBake && !!sampleRate && numSamples > 0
   const rangeIsSelection = hasMeaningfulSelection(selection, sampleRate)
-  const playFrom = (selection?.startSample ?? 0)
-  const playTo = rangeIsSelection ? selection.endSample : (layer?.renderedBuffer?.numSamples ?? 0)
-  const rangeText = sampleRate
-    ? `${formatTime(playFrom / sampleRate)} → ${formatTime(playTo / sampleRate)}`
-    : '—'
-  const playTitle = isPlaying
+  const playHint = isPlaying
     ? 'Stop (Space)'
     : rangeIsSelection
-      ? 'Play the selection (Space) — renders the composite first if needed'
-      : 'Play from the cursor (Space) — renders the composite first if needed'
+      ? 'Play the selection in the mix (Space). Shift+Space plays the active layer alone'
+      : 'Play the mix from the cursor (Space). Shift+Space plays the active layer alone'
+
+  // ── The selection, as numbers ───────────────────────────────────────────
+  // Seconds in the active layer's own timeline. A bare cursor is a zero-width
+  // selection (start == end), so the three boxes always have something to
+  // show, and dragging End away from Start is how a cursor becomes a range.
+  const total = ready ? numSamples / sampleRate : 0
+  const startSample = Math.max(0, Math.min(numSamples, selection?.startSample ?? 0))
+  const endSample = Math.max(startSample, Math.min(numSamples, selection?.endSample ?? startSample))
+  const toSample = (sec) => Math.max(0, Math.min(numSamples, Math.round(sec * sampleRate)))
+  const setStart = (sec) => {
+    const s = Math.min(toSample(sec), endSample)
+    setSelection({ startSample: s, endSample })
+  }
+  const setEnd = (sec) => {
+    const e = Math.max(toSample(sec), startSample)
+    setSelection({ startSample, endSample: e })
+  }
+  const setLength = (sec) => {
+    setSelection({ startSample, endSample: Math.max(startSample, toSample(startSample / sampleRate + sec)) })
+  }
+  const timeBox = {
+    width: 116, min: 0, max: Math.max(total, 0.001), step: 0.001, disabled: !ready,
+    format: (v) => `${formatTime(v)} s`, parse: parseTime, defaultValue: 0,
+  }
+
+  // The playhead clock needs the layer's offset for a mix play, exactly as the
+  // waveform playhead does: a mix position is in the mix's timeline.
+  const clockPlaying = isPlaying && (playback.kind === 'composite' || playback.layerId === layer?.id)
+  const clockOffset = playback.kind === 'composite' ? (layer?.offsetSamples ?? 0) : 0
 
   return (
-    <div className={styles.transport} role="toolbar" aria-label="Sandbox transport">
-      <IconButton
-        label={isPlaying ? 'Stop' : 'Play'}
-        pressed={isPlaying}
-        disabled={!hasLayers || isQueued}
-        onClick={() => toggleCompositePreview()}
-        hint={isPlaying ? 'Stop' : 'Play'}
-        hintMods={playTitle}
-      >
-        {isPlaying ? <Square /> : <Play />}
-      </IconButton>
-      <IconButton label="Loop" pressed={loopPlayback} onClick={() => toggleLoopPlayback()} hint="Loop" hintMods="Loop the played range (L)">
-        <Repeat />
-      </IconButton>
-      <IconButton
-        label="Follow playhead"
-        pressed={followPlayhead}
-        onClick={() => toggleFollowPlayhead()}
-        hint="Follow playhead"
-        hintMods="Scroll the view to follow the playhead"
-      >
-        <Crosshair />
-      </IconButton>
+    <div className={styles.transport} role="toolbar" aria-label="Transport">
+      <div className={styles.transportGroup}>
+        <IconButton
+          label={isPlaying ? 'Stop' : 'Play'}
+          pressed={isPlaying}
+          disabled={!hasLayers || isQueued}
+          onClick={() => toggleCompositePreview()}
+          hint={isPlaying ? 'Stop' : 'Play'}
+          hintMods={playHint}
+        >
+          {isPlaying ? <IcStopFill /> : <IcPlay />}
+        </IconButton>
+        <IconButton label="Loop" pressed={loopPlayback} onClick={() => toggleLoopPlayback()} hint="Loop" hintMods="Repeat the played range (L)">
+          <IcRepeat />
+        </IconButton>
+        <IconButton
+          label="Follow playhead"
+          pressed={followPlayhead}
+          onClick={() => toggleFollowPlayhead()}
+          hint="Follow playhead"
+          hintMods="Scroll a zoomed-in view to keep the playhead on screen"
+        >
+          <IcCrosshair />
+        </IconButton>
+        <PositionClock
+          cursorSample={startSample}
+          sampleRate={ready ? sampleRate : null}
+          playing={clockPlaying}
+          offsetSamples={clockOffset}
+        />
+      </div>
 
-      <span
-        className={styles.range}
-        data-selection={rangeIsSelection || undefined}
-        title={rangeIsSelection ? 'Space plays the selection' : 'Space plays from the cursor to the end'}
-      >
-        {rangeIsSelection ? 'Selection' : 'Cursor'} {rangeText}
-      </span>
+      <ToolbarSeparator />
 
-      <div className={styles.divider} />
-
-      <IconButton label="Zoom out" onClick={() => zoomBy(1.6)} hint="Zoom out" hintMods="Minus key"><ZoomOut /></IconButton>
-      <IconButton label="Zoom in" onClick={() => zoomBy(1 / 1.6)} hint="Zoom in" hintMods="Plus key"><ZoomIn /></IconButton>
-      <IconButton label="Zoom to selection" onClick={() => zoomToSelection()} hint="Zoom to selection" hintMods="Ctrl+E"><Scan /></IconButton>
-      <IconButton label="Fit whole layer" onClick={() => zoomToFit()} hint="Fit whole layer" hintMods="Ctrl+F"><Maximize2 /></IconButton>
+      <div className={styles.transportGroup} role="group" aria-label="Selection">
+        <NumberBox
+          {...timeBox} label="Selection start" caption="Start" value={startSample / (sampleRate || 1)}
+          hint="Selection start" onChange={setStart}
+        />
+        <NumberBox
+          {...timeBox} label="Selection end" caption="End" value={endSample / (sampleRate || 1)}
+          hint="Selection end" onChange={setEnd}
+        />
+        <NumberBox
+          {...timeBox} label="Selection length" caption="Length" value={(endSample - startSample) / (sampleRate || 1)}
+          hint="Selection length" onChange={setLength}
+        />
+      </div>
 
       <div className={styles.spacer} />
 
-      {needsSwapTarget ? (
-        <SwapTargetPicker layerId={layer.id} swapInLayer={swapInLayer} />
-      ) : (
+      <div className={styles.transportGroup}>
+        {needsSwapTarget ? (
+          <SwapTargetPicker layerId={layer.id} swapInLayer={swapInLayer} />
+        ) : (
+          <Button
+            variant={layer?.swapInState === 'error' ? 'danger' : 'primary'}
+            glyph={swapped ? <IcCheckFill /> : undefined}
+            disabled={!canSwap}
+            onClick={() => layer && swapInLayer(layer.id)}
+            hint={swapLabel}
+            hintMods={swapTitle}
+          >
+            {swapLabel}
+          </Button>
+        )}
         <Button
-          variant={layer?.swapInState === 'error' ? 'danger' : 'default'}
-          glyph={swapped ? <Check /> : undefined}
-          disabled={!canSwap}
-          onClick={() => layer && swapInLayer(layer.id)}
-          hint={swapLabel}
-          hintMods={swapTitle}
+          glyph={baked ? <IcCheckFill /> : undefined}
+          disabled={!canBake}
+          onClick={() => layer && bakeLayer(layer.id)}
+          hint="Bake layer"
+          hintMods="Commit the current render as this layer's clean baseline"
         >
-          {swapLabel}
+          {bakeLabel}
         </Button>
-      )}
-      <Button
-        glyph={baked ? <Check /> : undefined}
-        disabled={!canBake}
-        onClick={() => layer && bakeLayer(layer.id)}
-        hint="Bake layer"
-        hintMods="Commit the current render as this layer's clean baseline"
-      >
-        {bakeLabel}
-      </Button>
+      </div>
+
       {layer?.swapInState === 'swapped' && layer.lastSwap && (
         <span className={styles.note}>
           Swapped into "{layer.swapTargetName ?? 'target'}" — {layer.lastSwap.samplers} sampler
@@ -225,7 +308,7 @@ export default function SandboxTransport() {
                 hintMods="Add this baked asset back into the workspace as a new source"
                 onClick={() => addBakedAssetAsSource(a.sampleId, a.name)}
               >
-                <Plus />
+                <IcPlus />
               </IconButton>
             </div>
           ))}

@@ -1,4 +1,3 @@
-import { ArrowDown, ArrowUp, Plus, X } from 'lucide-react'
 import {
   DeviceSection, IconButton, Knob, NumberBox, Select, Toggle, formatValue,
 } from '../../ui-kit'
@@ -13,11 +12,18 @@ import {
 } from './mangleModes.js'
 import { TARGET_SLOT_MANGLE_AMOUNT, TARGET_SLOT_MANGLE_MIX } from './modulation/modTargets.js'
 import styles from './Sampler.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcArrowDown = iconComponent('arrow-down')
+const IcArrowUp = iconComponent('arrow-up')
+const IcPlus = iconComponent('plus')
+const IcX = iconComponent('x')
 
 // ── Playback view ───────────────────────────────────────────────────────────
-// How notes become voices, in signal order: Voice → Glide → Arpeggiator →
-// Per-note effects (Mangle, the selected slot's chain), then one info row with
-// the stretch details and where the audition is heard.
+// How notes become voices, in signal order: a row of Voice → Glide →
+// Arpeggiator, then Per-note effects (Mangle, the selected slot's chain) on a row
+// of its own, and one info row with the stretch details and where the audition
+// is heard. Docked, the two rows sit side by side.
 
 const ARP_DIRECTIONS = [
   { value: 0, label: 'Up' },
@@ -88,16 +94,16 @@ function MangleRow({ inst, index, count, slotIndex, actions }) {
       <IconButton size="sm" label={`Move mangle ${n} earlier`} disabled={index === 0}
         onClick={() => actions.moveMangleInstance(index, -1)} data-mangle="up"
         hint="Move earlier in the chain (its modulation routes move with it)">
-        <ArrowUp aria-hidden="true" />
+        <IcArrowUp aria-hidden="true" />
       </IconButton>
       <IconButton size="sm" label={`Move mangle ${n} later`} disabled={index === count - 1}
         onClick={() => actions.moveMangleInstance(index, 1)} data-mangle="down"
         hint="Move later in the chain (its modulation routes move with it)">
-        <ArrowDown aria-hidden="true" />
+        <IcArrowDown aria-hidden="true" />
       </IconButton>
       <IconButton size="sm" label={`Remove mangle ${n}`} onClick={() => actions.removeMangleInstance(index)}
         data-mangle="remove" hint="Remove this instance and its modulation routes">
-        <X aria-hidden="true" />
+        <IcX aria-hidden="true" />
       </IconButton>
     </div>
   )
@@ -115,8 +121,9 @@ export default function SamplerPlaybackView({
 
   return (
     <div className={styles.playback} data-view="playback">
-      <div className={styles.strips}>
-        <DeviceSection title="Voice" data-section="voice">
+      <div className={styles.sections}>
+       <div className={styles.sectionRow}>
+        <DeviceSection title="Voice" data-section="voice" className={styles.section}>
           <div className={styles.stack}>
             <FieldSelect
               label="Voicing" width={72} value={s.monoEnabled ? 'mono' : 'poly'}
@@ -143,7 +150,7 @@ export default function SamplerPlaybackView({
           </div>
         </DeviceSection>
 
-        <DeviceSection title="Glide" data-section="glide">
+        <DeviceSection title="Glide" data-section="glide" className={styles.section}>
           <div className={styles.stack}>
             <div className={styles.knobRow}>
               <Knob
@@ -176,6 +183,7 @@ export default function SamplerPlaybackView({
 
         <DeviceSection
           title="Arpeggiator"
+          className={styles.section}
           data-section="arp"
           actions={(
             <>
@@ -241,8 +249,12 @@ export default function SamplerPlaybackView({
           </div>
         </DeviceSection>
 
+       </div>
+
+       <div className={styles.sectionRow}>
         <DeviceSection
           title="Per-note effects"
+          className={styles.section}
           data-section="mangle"
           data-active={mangleOn || undefined}
           actions={(
@@ -253,7 +265,7 @@ export default function SamplerPlaybackView({
                 onClick={actions.addMangleInstance} data-mangle="add"
                 hint={chain.length >= MANGLE_MAX ? `The chain holds ${MANGLE_MAX} instances` : 'Add an instance to the end of the chain'}
               >
-                <Plus aria-hidden="true" />
+                <IcPlus aria-hidden="true" />
               </IconButton>
             </>
           )}
@@ -265,11 +277,12 @@ export default function SamplerPlaybackView({
             <span className={styles.caption} data-mangle="hint">{mangleChainHint(s.mangleChain)}</span>
           </div>
         </DeviceSection>
+       </div>
       </div>
 
       <div className={styles.infoRow}>
-        <span className={styles.caption} data-hint="Prep (Main view, right column) bakes this slot offline; the file on disk is untouched">
-          {`Stretch: ${algo} · ${formatValue((s.prepStretch ?? 1) * 100, '%')} · ${formatOffset(s.prepShiftCents ?? 0, 'ct')} · ${formatTime((sourceDuration || 0) * 1000)} → ${formatTime(baked)} · ${prepBusy ? 'baking…' : (prepBypassed ? 'unity, no bake' : 'baked')}`}
+        <span className={styles.caption} data-hint="Time stretch (Sample view) bakes this slot offline; the file on disk is untouched">
+          {`Stretch: ${algo} · ${formatValue((s.prepStretch ?? 1) * 100, '%')} · ${formatOffset(s.prepShiftCents ?? 0, 'ct')} · ${formatTime((sourceDuration || 0) * 1000)} → ${formatTime(baked)} · ${prepBusy ? 'baking…' : (prepBypassed ? 'off' : 'baked')}`}
         </span>
         <span className={styles.spacer} />
         <PreviewRoutingControl regionId={regionId} />

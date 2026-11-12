@@ -1,7 +1,11 @@
 import React, { useCallback, useEffect, useState } from 'react'
-import { Check, FolderOpen, RefreshCw } from 'lucide-react'
 import { Button, IconButton, Toggle } from '../../ui-kit'
 import { SettingsHint, SettingsRow, SettingsSection, settingsStyles } from './settingsKit.jsx'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcArrowsClockwise = iconComponent('arrows-clockwise')
+const IcCheckFill = iconComponent('check', 'fill')
+const IcFolderOpen = iconComponent('folder-open')
 
 // ─── Settings → Application → Logs ───────────────────────────────────────────
 //
@@ -97,7 +101,7 @@ export default function LogsSection() {
             {status?.dropped > 0 ? ` (${status.dropped.toLocaleString()} dropped)` : ''}
           </span>
           <IconButton label="Refresh captured line count" onClick={refresh}>
-            <RefreshCw aria-hidden="true" />
+            <IcArrowsClockwise aria-hidden="true" />
           </IconButton>
         </SettingsRow>
 
@@ -118,7 +122,7 @@ export default function LogsSection() {
             <span>{result.kind === 'success' ? 'Written to: ' : ''}<span className={settingsStyles.mono}>{result.text}</span></span>
             {result.path && (
               <IconButton size="sm" variant="ghost" label="Show in folder" onClick={() => bridge.reveal?.(result.path)}>
-                <FolderOpen aria-hidden="true" />
+                <IcFolderOpen aria-hidden="true" />
               </IconButton>
             )}
           </SettingsHint>
@@ -136,7 +140,7 @@ export default function LogsSection() {
             aria-label="Write a log file when XLETH closes"
             on={autoExport}
             onChange={handleAutoExport}
-            glyph={<Check size={12} />}
+            glyph={<IcCheckFill size={14} />}
           >
             {autoExport ? 'On' : 'Off'}
           </Toggle>

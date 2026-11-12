@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { DeviceSection, DisplayWell, Knob, Meter, Select, formatValue } from '../../ui-kit'
+import { DeviceSection, DisplayWell, Meter, Select, formatValue } from '../../ui-kit'
+import AutomatableKnob from './AutomatableKnob.jsx'
+import AutomationTarget from './AutomationTarget.jsx'
 import { getManifest } from '../../plugin-ui/manifests/index.js'
 import { PluginUIContext } from '../../plugin-ui/runtime/PluginUIContext.js'
 import useStockEffectParams from '../../plugin-ui/runtime/useStockEffectParams.js'
@@ -51,6 +53,10 @@ function useHeight() {
 // Signal order: display (hero) -> Gain -> Ceiling -> Character -> GR -> Output.
 // Hero control: Ceiling. The engine has no true-peak parameter, so there is no
 // true-peak toggle.
+// The engine's NormalisableRange skew per parameter (only the automation maths
+// needs it; a knob's own travel comes from its range or scale).
+const SKEW = Object.freeze({ release: 0.3 })
+
 export default function LimiterDevice({ target, registerApplied, deviceKey }) {
   const manifest = useMemo(() => getManifest(PLUGIN_ID), [])
   const { params, setParam, syncParamsFromPreset } = useStockEffectParams(PLUGIN_ID, manifest, target)
@@ -116,8 +122,11 @@ export default function LimiterDevice({ target, registerApplied, deviceKey }) {
 
   const p = (id) => params[id] ?? manifest.params[id].defaultValue
   const knob = (id, label, unit, extra = {}) => (
-    <Knob
+    <AutomatableKnob
       key={id}
+      paramId={id}
+      target={target}
+      skew={SKEW[id] ?? 1}
       label={label}
       value={p(id)}
       min={manifest.params[id].min}
@@ -160,13 +169,15 @@ export default function LimiterDevice({ target, registerApplied, deviceKey }) {
 
       <DeviceSection title="Character" width={124}>
         <div className={styles.column}>
-          <Select
-            size="sm"
-            ariaLabel="Limiter style"
-            value={Math.round(p('style'))}
-            options={STYLE_OPTIONS}
-            onChange={(v) => setParam('style', v)}
-          />
+          <AutomationTarget paramId="style" target={target}>
+            <Select
+              size="sm"
+              ariaLabel="Limiter style"
+              value={Math.round(p('style'))}
+              options={STYLE_OPTIONS}
+              onChange={(v) => setParam('style', v)}
+            />
+          </AutomationTarget>
         </div>
         {knob('release', 'Release', 'ms', { size: 44, width: 68 })}
       </DeviceSection>

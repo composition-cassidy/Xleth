@@ -1,11 +1,17 @@
 import { useState, useMemo, useEffect } from 'react'
-import { X, FolderPlus, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react'
 import useVstStore from '../../stores/vstStore.js'
 import useEffectChainStore from '../../stores/effectChainStore.js'
 import ScanProgressBar, { useScanProgress } from './ScanProgressBar.jsx'
 import { getPickerPath, openFilePicker } from '../filePicker/filePickerService.js'
 import { Button, IconButton, TextField } from '../../ui-kit'
 import styles from './VstBrowser.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcArrowsClockwise = iconComponent('arrows-clockwise')
+const IcCaretDown = iconComponent('caret-down')
+const IcCaretRight = iconComponent('caret-right')
+const IcFolderPlus = iconComponent('folder-plus')
+const IcX = iconComponent('x')
 
 // Search folders are engine-owned since P1 (%APPDATA%\Xleth\plugin-settings.json,
 // audio.get/setPluginSearchPaths). This key is the pre-P1 renderer copy: it is
@@ -135,15 +141,15 @@ export default function VstBrowser({ embedded = false }) {
           onChange={setSearch}
         />
         <span className={styles.count}>{countText}</span>
-        <Button onClick={handleAddPath} glyph={<FolderPlus />} hint="Add a VST3 search folder">
+        <Button onClick={handleAddPath} glyph={<IcFolderPlus />} hint="Add a VST3 search folder">
           Add path
         </Button>
-        <Button variant="primary" onClick={handleScan} disabled={scan.scanning} glyph={<RefreshCw />}>
+        <Button variant="primary" onClick={handleScan} disabled={scan.scanning} glyph={<IcArrowsClockwise />}>
           {scan.scanning ? 'Scanning…' : 'Scan plugins'}
         </Button>
         {!embedded && (
           <IconButton label="Close plugin browser" onClick={closeBrowser}>
-            <X />
+            <IcX />
           </IconButton>
         )}
       </div>
@@ -193,7 +199,7 @@ export default function VstBrowser({ embedded = false }) {
           <Button
             variant="ghost"
             aria-expanded={failedOpen}
-            glyph={failedOpen ? <ChevronDown /> : <ChevronRight />}
+            glyph={failedOpen ? <IcCaretDown /> : <IcCaretRight />}
             onClick={() => setFailedOpen(v => !v)}
           >
             {failedPlugins.length} failed plugin{failedPlugins.length !== 1 ? 's' : ''}
@@ -218,7 +224,7 @@ export default function VstBrowser({ embedded = false }) {
               <li key={i} className={styles.pathRow}>
                 <span className={styles.pathText} title={p}>{p}</span>
                 <IconButton size="sm" variant="ghost" label={`Remove ${p}`} onClick={() => handleRemovePath(i)}>
-                  <X />
+                  <IcX />
                 </IconButton>
               </li>
             ))}

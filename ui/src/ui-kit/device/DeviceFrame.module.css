@@ -114,6 +114,7 @@
     min-height: 0;
     overflow: hidden;
     border-top: 1px solid var(--ui-g4);
+    transition: opacity var(--mo-state) var(--mo-ease-out);
   }
 
   .device[data-bypassed="true"] .body {

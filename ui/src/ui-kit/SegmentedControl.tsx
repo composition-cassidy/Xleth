@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { hintAttrs, type HintProps } from './hint';
+import { IconActive } from './icons';
 import { rovingKeyHandler } from './roving';
 import styles from './SegmentedControl.module.css';
 import type { DataAttrs } from './valueProps';
@@ -70,8 +71,10 @@ export default function SegmentedControl<T extends string | number>(props: Segme
             {...hintAttrs({ hint: o.hint, hintMods: o.hintMods })}
             onClick={() => { if (!checked) onChange?.(o.value); }}
           >
-            {o.glyph ? <span className={styles.glyph} aria-hidden="true">{o.glyph}</span> : null}
-            {o.label}
+            <IconActive.Provider value={checked}>
+              {o.glyph ? <span className={styles.glyph} aria-hidden="true">{o.glyph}</span> : null}
+              {o.label}
+            </IconActive.Provider>
           </button>
         );
       })}

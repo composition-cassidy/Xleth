@@ -1,9 +1,12 @@
 import type { CSSProperties, ReactNode } from 'react';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { IconButton } from '../Button';
 import { SectionHeader } from '../Headers';
 import type { DataAttrs } from '../valueProps';
 import styles from './DeviceSection.module.css';
+import { iconComponent } from '../icons';
+
+const IcCaretLeft = iconComponent('caret-left');
+const IcCaretRight = iconComponent('caret-right');
 
 export interface DeviceSectionProps extends DataAttrs {
   /** Section name, sentence case ("Detection", "Time", "Output"). */
@@ -34,7 +37,7 @@ export default function DeviceSection({
       aria-expanded={!folded}
       onClick={() => onFoldChange(!folded)}
     >
-      {folded ? <ChevronRight aria-hidden="true" /> : <ChevronLeft aria-hidden="true" />}
+      {folded ? <IcCaretRight aria-hidden="true" /> : <IcCaretLeft aria-hidden="true" />}
     </IconButton>
   ) : null;
 

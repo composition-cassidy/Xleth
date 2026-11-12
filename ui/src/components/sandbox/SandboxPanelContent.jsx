@@ -6,8 +6,10 @@ import { useShortcutCommand } from '../../windowing/managers/useKeyboardBinding.
 import { useSandboxEditShortcuts } from './useSandboxEditShortcuts.js'
 import { useSandboxViewShortcuts } from './useSandboxViewShortcuts.js'
 import { stopSandboxPreview } from './sandboxPreviewPlayer.js'
+import { useSandboxSourceDrop } from './useSandboxSourceDrop.js'
 import SandboxMenuBar from './SandboxMenuBar.jsx'
-import SandboxToolColumn from './SandboxToolColumn.jsx'
+import SandboxToolBar from './SandboxToolBar.jsx'
+import SandboxLayerList from './SandboxLayerList.jsx'
 import SandboxLayerWorkspace from './SandboxLayerWorkspace.jsx'
 import SandboxStackPanel from './SandboxStackPanel.jsx'
 import SandboxSeparationStrip from './SandboxSeparationStrip.jsx'
@@ -19,7 +21,10 @@ export default function SandboxPanelContent() {
   const openTarget = useSandboxPanelStore((s) => s.openTarget)
   const clearOpenTarget = useSandboxPanelStore((s) => s.clearOpenTarget)
   const addSourceFromRegion = useSandboxStore((s) => s.addSourceFromRegion)
+  const sidebarOpen = useSandboxPanelStore((s) => s.sidebarOpen)
   const consumedRef = useRef(null)
+  // The editor and the layer list are one drop target for new layers.
+  const drop = useSandboxSourceDrop()
 
   // Controls whether SandboxSeparationStrip mounts at all — see that
   // component's own header comment. Lifted here (rather than the strip's own
@@ -119,13 +124,30 @@ export default function SandboxPanelContent() {
     })
   }, [])
 
+  // ── Layout ──────────────────────────────────────────────────────────────
+  // Top to bottom, each band has one job:
+  //   action bar   what you DO to the audio (history, clipboard, edits, Effects)
+  //   tool bar     the MODES of the display under it (tool, its settings, zoom, view)
+  //   body         the display, and beside it the sidebar: layers, then the
+  //                active layer's edit stack
+  //   transport    listen, the selection as numbers, and sending the result out
+  //   status       what the pointer does, and the few facts with no control of their own
+  // Commands never share a band with modes, and nothing but the display takes
+  // its height from the display.
+  const openAdvancedSeparation = () => setSeparationAdvancedOpen(true)
+
   return (
     <div className={styles.root}>
-      <SandboxMenuBar onOpenAdvancedSeparation={() => setSeparationAdvancedOpen(true)} />
-      <div className={styles.edbody}>
-        <SandboxToolColumn />
-        <SandboxLayerWorkspace />
-        <SandboxStackPanel />
+      <SandboxMenuBar onOpenAdvancedSeparation={openAdvancedSeparation} />
+      <SandboxToolBar />
+      <div className={styles.edbody} {...drop.handlers}>
+        <SandboxLayerWorkspace dragOver={drop.dragOver} />
+        {sidebarOpen && (
+          <aside className={styles.sidebar} aria-label="Layers and edit stack">
+            <SandboxLayerList />
+            <SandboxStackPanel onOpenAdvancedSeparation={openAdvancedSeparation} />
+          </aside>
+        )}
       </div>
       {showSeparationStrip && (
         <SandboxSeparationStrip

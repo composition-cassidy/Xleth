@@ -33,6 +33,12 @@
     color: var(--ui-value);
   }
 
+  /* The play / pause glyph's wrapper (it carries the `glyph` motion recipe): a box, so the
+   * recipe's scale applies. */
+  .playGlyph {
+    display: inline-flex;
+  }
+
   /* Recessed readout wells: timecode and BAR.BEAT in the timecode face. */
   .readout {
     display: inline-flex;

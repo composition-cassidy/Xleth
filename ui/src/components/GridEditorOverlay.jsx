@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { X } from 'lucide-react'
 import { pickLabelInk } from '../ui-kit/colorMath'
 import { tokenValue } from '../theming/tokenValue.ts'
 import useGridEditStore from '../stores/useGridEditStore.js'
@@ -8,6 +7,9 @@ import styles from './GridEditorOverlay.module.css'
 import { timelineEvents } from '../timelineEvents.js'
 import ContextMenu from './ContextMenu.jsx'
 import { activeDragTrackId, setActiveDragTrackId } from './gridEditorDragState.js'
+import { iconComponent } from '../ui-kit/icons'
+
+const IcX = iconComponent('x')
 
 const DEFAULT_LAYOUT = {
   columns: 3, rows: 3, slots: [],
@@ -26,6 +28,11 @@ const VALID_SUBDIVISION_FACTORS = [1, 2, 4, 8]
 // A pointer move below this px threshold counts as a click on a slot
 // (which brings it to front). Anything above starts a drag-move.
 const CLICK_VS_DRAG_THRESHOLD_PX = 4
+
+// Where a cell's name chip sits relative to the pointer, so it never hides the
+// spot being pointed at.
+const LABEL_OFFSET_X = 12
+const LABEL_OFFSET_Y = 14
 
 // Snap a fine-grid value to the nearest sub-step. When snap is on, step is
 // (SUB_UNITS / factor) of the dragged track. When off, step is 1 fine-unit.
@@ -425,6 +432,26 @@ export default function GridEditorOverlay() {
     }
   }, [resizeState, layout, totalFineX, totalFineY])
 
+  // ── Name chip follows the pointer inside its own cell ────────────────────
+  // Set straight on the slot element (CSS custom properties + data-hover), not
+  // through React state: a pointermove must not re-render the overlay. The chip
+  // sits just below-right of the pointer and is clamped to stay inside the cell.
+  const followLabel = useCallback((e) => {
+    const slotEl = e.currentTarget
+    const label = slotEl.querySelector(':scope > .grid-editor-cell-label')
+    if (!label) return
+    const r = slotEl.getBoundingClientRect()
+    const x = Math.max(2, Math.min(e.clientX - r.left + LABEL_OFFSET_X, r.width - label.offsetWidth - 2))
+    const y = Math.max(2, Math.min(e.clientY - r.top + LABEL_OFFSET_Y, r.height - label.offsetHeight - 2))
+    slotEl.style.setProperty('--label-x', `${x}px`)
+    slotEl.style.setProperty('--label-y', `${y}px`)
+    slotEl.setAttribute('data-hover', '')
+  }, [])
+
+  const hideLabel = useCallback((e) => {
+    e.currentTarget.removeAttribute('data-hover')
+  }, [])
+
   // Build context-menu items for an assigned slot (right-click).
   const buildContextItems = (slot) => {
     if (!slot) return []
@@ -442,7 +469,8 @@ export default function GridEditorOverlay() {
       },
       { type: 'separator' },
       ...VALID_SUBDIVISION_FACTORS.map(f => ({
-        label: `${f === currentFactor ? '✓ ' : '   '}Subdivision: ${f}×`,
+        label: `Subdivision: ${f}×`,
+        checked: f === currentFactor,
         onClick: () => handleSetSubdivision(slot.trackId, f),
       })),
     ]
@@ -516,9 +544,13 @@ export default function GridEditorOverlay() {
             }}
             onContextMenu={(e) => handleSlotContextMenu(e, slot)}
             onPointerDown={(e) => handleSlotPointerDown(e, slot)}
-            onPointerMove={handleSlotPointerMove}
+            onPointerEnter={followLabel}
+            onPointerMove={(e) => { followLabel(e); handleSlotPointerMove(e) }}
+            onPointerLeave={hideLabel}
             onPointerUp={handleSlotPointerUp}
             onPointerCancel={handleSlotPointerCancel}
+            role="group"
+            aria-label={track?.name ?? `Track ${slot.trackId}`}
           >
             {factor > 1 && (
               <div
@@ -541,7 +573,7 @@ export default function GridEditorOverlay() {
               onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => { e.stopPropagation(); handleRemove(slot.trackId) }}
             >
-              <X size={12} />
+              <IcX size={14} />
             </button>
             {/* Resize handles. Snap step = (SUB_UNITS / track.subdivisionFactor). */}
             <div

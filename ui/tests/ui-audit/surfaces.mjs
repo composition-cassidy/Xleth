@@ -90,7 +90,7 @@ export const SURFACES = [
   { id: 'timeline-macro-lanes', name: 'Macro / automation lanes', kind: 'panel', open: 'FX Graph macro context menu > Show automation lane', files: [T + 'MacroAutomationLanes.jsx', T + 'automationLaneGeometry.js'] },
   { id: 'timeline-cue-lane', name: 'Snapshot cue lane', kind: 'panel', open: 'Pinned under the ruler', files: [T + 'SnapshotCueLane.jsx', T + 'SnapshotTransitionBezierEditor.jsx'] },
   { id: 'timeline-loop-bar', name: 'Loop region bar', kind: 'panel', open: 'Under ruler; toolbar loop toggle', files: [T + 'LoopRegionBar.jsx'] },
-  { id: 'timeline-pattern-list', name: 'Pattern list panel', kind: 'panel', open: 'Timeline toolbar > Patterns', files: [T + 'PatternListPanel.jsx', T + 'patternPreview/'] },
+  { id: 'timeline-pattern-list', name: 'Pattern list panel', kind: 'panel', open: 'Timeline toolbar > Patterns', files: [T + 'PatternListPanel.jsx'] },
   { id: 'timeline-track-ctx', name: 'Track context menu', kind: 'context-menu', open: 'Right-click a track header', files: [T + 'TrackContextMenu.jsx', T + 'TrackFlipSection.jsx', 'components/ContextMenu.jsx', 'ui-kit/Menu.tsx'] },
   { id: 'timeline-clip-ctx', name: 'Clip / canvas context menu', kind: 'context-menu', open: 'Right-click a clip', files: ['components/ContextMenu.jsx', T + 'TimelineCanvas.jsx'] },
   { id: 'timeline-color-popover', name: 'Track colour popover', kind: 'popover', open: 'Click the track identity stripe', files: [T + 'TrackColorPopover.jsx'] },

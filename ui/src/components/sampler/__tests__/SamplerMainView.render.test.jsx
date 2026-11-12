@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  *
- * The rebuilt Sampler shell and Main view, mounted for real against a stubbed
+ * The Sampler shell and its Sample view, mounted for real against a stubbed
  * bridge. Each control is driven with the kit's keyboard grammar (arrows nudge,
  * Enter types) and the assertion reads the captured IPC payload, so the test
  * proves the exact call the old control made still goes out.
@@ -20,14 +20,14 @@ beforeEach(() => {
 afterEach(async () => { await h.unmount(); vi.unstubAllGlobals() })
 
 describe('Sampler header', () => {
-  it('has slot tabs, the patch control and sentence-case view tabs in one row', async () => {
+  it('has slot tabs, the patch control and sentence-case view tabs', async () => {
     await h.mount([makeSlot(), makeSlot({ name: 'Second' })])
     const slots = h.container.querySelector('[role="tablist"][aria-label="Sample slots"]')
     expect(slots).toBeTruthy()
     expect([...slots.querySelectorAll('[role="tab"]')].map((t) => t.getAttribute('aria-label')))
       .toEqual(['Slot 1: Layer 1', 'Slot 2: Second'])
     const views = h.container.querySelector('[role="tablist"][aria-label="Sampler views"]')
-    expect([...views.querySelectorAll('[role="tab"]')].map((t) => t.textContent.trim())).toEqual(['Main', 'Playback', 'Modulation'])
+    expect([...views.querySelectorAll('[role="tab"]')].map((t) => t.textContent.trim())).toEqual(['Sample', 'Envelope', 'Playback', 'Modulation'])
     expect(h.container.querySelector('[aria-label="Sampler patch"]')).toBeTruthy()
   })
 
@@ -38,7 +38,21 @@ describe('Sampler header', () => {
     expect(tab.getAttribute('data-silent')).toBe('true')
   })
 
-  it('selecting a slot rebinds the Main view to that layer', async () => {
+  it('the slot bar (level, pitch, mute, solo, menu) stays in every view', async () => {
+    await h.mount()
+    for (const view of ['Sample', 'Envelope', 'Playback', 'Modulation']) {
+      await h.view(view)
+      const bar = h.container.querySelector('[role="group"][aria-label^="Slot 1 level and pitch"]')
+      expect(bar, view).toBeTruthy()
+      expect([...bar.querySelectorAll('[role="slider"]')].map((b) => b.getAttribute('aria-label')), view)
+        .toEqual(['Volume', 'Pan', 'Root', 'Octave', 'Semi', 'Fine', 'Coarse'])
+      // Mute and solo are one output pearl (click = on/off, right-click = solo).
+      expect(bar.querySelector('[aria-label="Slot 1 output"]'), view).toBeTruthy()
+      expect(bar.querySelector('[aria-label="Slot 1 actions"]'), view).toBeTruthy()
+    }
+  })
+
+  it('selecting a slot rebinds the slot bar and the Sample view to that layer', async () => {
     await h.mount([makeSlot({ semitone: 0 }), makeSlot({ name: 'Two', semitone: -5 })])
     expect(h.slider('Semi').getAttribute('aria-valuenow')).toBe('0')
     const tab = h.container.querySelector('[role="tab"][aria-label^="Slot 2"]')
@@ -48,11 +62,23 @@ describe('Sampler header', () => {
   })
 })
 
-describe('Main view layout', () => {
-  it('lays out the strips in signal order: Mode, Trim, Loop, Amp envelope', async () => {
+describe('Sample view layout', () => {
+  it('puts what is drawn on the waveform first: Trim and Loop, then Mode, Time stretch, Process', async () => {
     await h.mount()
-    const order = [...h.container.querySelectorAll('[data-section]')].map((e) => e.getAttribute('data-section'))
-    expect(order.slice(0, 4)).toEqual(['mode', 'trim', 'loop', 'amp'])
+    const order = [...h.container.querySelectorAll('[data-view="main"] [data-section]')].map((e) => e.getAttribute('data-section'))
+    expect(order).toEqual(['trim', 'loop', 'mode', 'prep', 'process'])
+    const titles = [...h.container.querySelectorAll('[data-view="main"] [data-section] [role="heading"]')]
+      .map((e) => e.firstChild.textContent.trim())
+    expect(titles).toEqual(['Trim', 'Loop', 'Mode', 'Time stretch', 'Process'])
+  })
+
+  it('names the loaded file over the waveform and offers Replace there', async () => {
+    await h.mount()
+    const head = h.container.querySelector('[data-view="main"] [role="toolbar"][aria-label="Waveform view"]').parentElement
+    expect(head.textContent).toContain('x.wav')
+    await h.click(h.container.querySelector('[data-field="replaceAudio"]'))
+    // The stubbed picker returns no file, so nothing is swapped: the click only has to reach it.
+    expect(h.calls.some((c) => c.name === 'swapRegionAudio')).toBe(false)
   })
 
   it('labels crossfadeEnabled by what it does (One-shot / Sustained), never as a crossfade toggle', async () => {
@@ -84,7 +110,61 @@ describe('Main view layout', () => {
   })
 })
 
-describe('Main view wiring (one commit per gesture, same payload as before)', () => {
+describe('Envelope view', () => {
+  it('is the amp envelope (Env 1) on the kit editor, and a stage edit commits the modulation config', async () => {
+    await h.mount([makeSlot()], {}, {
+      envPresent: [true, false, false, false, false, false],
+      envs: [{ tempoSync: false, attack: { ms: 10 }, decay: { ms: 100 }, release: { ms: 50 }, sustainPct: 80 }],
+    })
+    await h.view('Envelope')
+    const view = h.container.querySelector('[data-view="envelope"]')
+    expect(view.querySelector('[data-section="amp"] [role="heading"]').textContent).toContain('Amp envelope')
+    expect(view.querySelector('[data-editor="env"]')).toBeTruthy()
+    expect(h.slider('Sustain').getAttribute('aria-valuetext')).toMatch(/^Sustain, 80\s%$/)
+    await h.key(h.slider('Sustain'), 'ArrowDown')
+    expect(h.modSets.at(-1).envs[0].sustainPct).toBe(79)
+  })
+
+  it('the display is to scale and is the editor: dragging the decay point sets that stage, one commit on release', async () => {
+    await h.mount([makeSlot()], {}, {
+      envPresent: [true, false, false, false, false, false],
+      envs: [{ tempoSync: false, attack: { ms: 10 }, decay: { ms: 100 }, release: { ms: 50 }, sustainPct: 80 }],
+    })
+    await h.view('Envelope')
+    const canvas = h.container.querySelector('[data-env-canvas]')
+    expect(canvas.getAttribute('aria-label')).toBe('Amp envelope shape, drawn to scale')
+    // Span defaults to a fixed 1 s, shared by every envelope and LFO display.
+    expect(h.container.querySelector('[data-mod-field="span"]').textContent).toContain('1 s')
+
+    // jsdom has no layout: the canvas is its 460x140 fallback, so the plot is 420px wide from x = 30,
+    // 44px of it the sustain break: 376 px per second. The decay point sits at 110 ms, 80 %.
+    const pps = 376
+    const x = 30 + 0.11 * pps
+    const y = 22 + 112 * (1 - 0.8)
+    const ev = (type, cx, cy) => {
+      const e = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: cx, clientY: cy })
+      Object.defineProperty(e, 'pointerId', { value: 1 })
+      return e
+    }
+    const before = h.modSets.length
+    await act(async () => { canvas.dispatchEvent(ev('pointerdown', x, y)) })
+    expect(canvas.getAttribute('data-active')).toBe('decay')
+    await act(async () => { canvas.dispatchEvent(ev('pointermove', x + 0.1 * pps, y)) })
+    // Previewed, not yet sent.
+    expect(h.modSets.length).toBe(before)
+    expect(h.slider('Decay').getAttribute('aria-valuenow')).toBe('200')
+    await act(async () => { canvas.dispatchEvent(ev('pointerup', x + 0.1 * pps, y)) })
+    await h.settle()
+    expect(h.modSets.length).toBe(before + 1)
+    expect(h.modSets.at(-1).envs[0].decay.ms).toBe(200)
+    expect(h.modSets.at(-1).envs[0].sustainPct).toBe(80)
+    // The neighbours did not move: a stage is edited alone.
+    expect(h.modSets.at(-1).envs[0].attack.ms).toBe(10)
+    expect(h.modSets.at(-1).envs[0].release.ms).toBe(50)
+  })
+})
+
+describe('Sample view wiring (one commit per gesture, same payload as before)', () => {
   it('pitch boxes commit the whole slot list (the engine undo unit)', async () => {
     await h.mount()
     await h.key(h.slider('Semi'), 'ArrowUp')

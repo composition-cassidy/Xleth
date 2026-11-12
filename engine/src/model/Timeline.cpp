@@ -1021,6 +1021,28 @@ bool Timeline::replacePatternNotes(int patternId, std::vector<PatternNote>& note
     return true;
 }
 
+bool Timeline::setPatternNotesKeepIds(int patternId, std::vector<PatternNote>& notes) {
+    auto it = m_patterns.find(patternId);
+    if (it == m_patterns.end()) {
+        std::cout << "[Timeline] ERROR setPatternNotesKeepIds: patternId="
+                  << patternId << " not found\n";
+        return false;
+    }
+    Pattern& pattern = it->second;
+    // Kept ids first, so a fresh id can never collide with one still in use.
+    for (const auto& n : notes) {
+        if (n.id > 0 && n.id >= pattern.nextNoteId) pattern.nextNoteId = n.id + 1;
+    }
+    for (auto& n : notes) {
+        if (n.id <= 0) n.id = pattern.nextNoteId++;
+    }
+    pattern.notes = notes;
+    std::cout << "[Timeline] setPatternNotesKeepIds pattern=" << patternId
+              << " notes=" << notes.size() << "\n";
+    recalcPatternLength(patternId);
+    return true;
+}
+
 bool Timeline::restorePatternNotes(int patternId,
                                    const std::vector<PatternNote>& notes,
                                    int nextNoteId,

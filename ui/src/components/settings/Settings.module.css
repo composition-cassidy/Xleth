@@ -271,12 +271,10 @@
   outline-offset: 1px;
 }
 
+/* Turns only while the motion tier lets ambient loops run (ui-kit/motion.css). */
 .spin {
-  animation: none;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .spin { animation: spin 0.9s linear infinite; }
+  animation: spin var(--mo-loop) linear infinite;
+  animation-play-state: var(--mo-ambient, paused);
 }
 
 @keyframes spin {

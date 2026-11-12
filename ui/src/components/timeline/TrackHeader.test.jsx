@@ -41,16 +41,34 @@ describe('track header', () => {
   beforeEach(() => { container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container) })
   afterEach(() => { act(() => root.unmount()); container.remove() })
 
-  it('has M, S and V as pressed-state toggles at rest, per track', () => {
+  it('has the output pearl and V as pressed-state controls at rest, per track', () => {
     render()
     const pitch = header('pitch')
-    const mute = pitch.querySelector('button[aria-label="Mute pitch"]')
-    const solo = pitch.querySelector('button[aria-label="Solo pitch"]')
+    const pearl = pitch.querySelector('button[aria-label="pitch output"]')
     const visual = pitch.querySelector('button[aria-label="Visual only pitch"]')
-    expect(mute.getAttribute('aria-pressed')).toBe('true')
-    expect(solo.getAttribute('aria-pressed')).toBe('true')
+    // pitch is muted (and carries a legacy solo flag): its pearl is dark, so lit always means heard.
+    expect(pearl.getAttribute('aria-pressed')).toBe('false')
+    expect(pearl.getAttribute('data-lit')).toBe('false')
+    // While a legacy solo flag is set, only soloed, unmuted tracks are heard.
+    expect(header('KICK').querySelector('button[aria-label="KICK output"]').getAttribute('aria-pressed')).toBe('false')
     expect(visual.getAttribute('aria-pressed')).toBe('false')
-    expect(header('bass').querySelector('button[aria-label="Visual only bass"]').getAttribute('aria-pressed')).toBe('true')
+    expect(visual.querySelector('svg[data-icon="eye"]')).toBeTruthy()
+    const bassVisual = header('bass').querySelector('button[aria-label="Visual only bass"]')
+    expect(bassVisual.getAttribute('aria-pressed')).toBe('true')
+    // On = Fill weight, not colour alone.
+    expect(bassVisual.querySelector('svg[data-icon="eye"]').getAttribute('data-weight')).toBe('fill')
+  })
+
+  it('click on a pearl toggles that track; right-click solos it without opening the row menu', () => {
+    const onPearl = vi.fn(); const onRequestContextMenu = vi.fn()
+    render({ onPearl, onRequestContextMenu })
+    const pearl = header('KICK').querySelector('button[aria-label="KICK output"]')
+    act(() => {
+      pearl.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      pearl.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+    })
+    expect(onPearl.mock.calls).toEqual([[1, 'toggle'], [1, 'solo']])
+    expect(onRequestContextMenu).not.toHaveBeenCalled()
   })
 
   it('marks a muted track on the row, and leaves the name unstyled by it', () => {
@@ -99,17 +117,17 @@ describe('track header', () => {
     expect(css).toMatch(/\.row:hover > \.menu,\s*\.row:focus-within > \.menu \{[^}]*opacity: 1;/)
 
     const { HEADER_WIDTH } = await import('../../constants/timeline.js')
-    // Column - 1px border - 8px left padding (stripe) - 24 chip - 2 gap - 2 gap - three 24px
-    // toggles sharing two borders (70) - 2px right padding.
-    const nameCell = HEADER_WIDTH - 1 - 8 - 24 - 2 - 2 - 70 - 2
+    // Column - 1px border - 8px left padding (stripe) - 24 chip - 2 gap - 2 gap - the 24px pearl
+    // and the 24px V toggle (48) - 2px right padding.
+    const nameCell = HEADER_WIDTH - 1 - 8 - 24 - 2 - 2 - 48 - 2
     expect(nameCell).toBeGreaterThanOrEqual(120)
 
     render()
     const row = header('KICK')
     const menu = row.querySelector('button[aria-label="Track menu"]')
     expect(menu.getAttribute('data-hint-mods')).toMatch(/Right-click/)
-    // M / S / V stay in the row at rest.
-    expect(row.querySelectorAll('[role="group"] button[aria-pressed]')).toHaveLength(3)
+    // The pearl and V stay in the row at rest.
+    expect(row.querySelectorAll('[role="group"] button[aria-pressed]')).toHaveLength(2)
   })
 })
 

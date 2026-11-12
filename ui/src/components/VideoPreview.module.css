@@ -30,6 +30,32 @@
     overflow: hidden;
   }
 
+  /* Edit Grid mode (ui/DESIGN.md 8.2): the track rail, the picture and the grid
+   * settings rail share one row. The picture takes the full height at the
+   * project's aspect (up to what is left after the two rails' minimum width), so
+   * a short, wide panel spends its width on controls, not on black gutters.
+   * `.stage` is a size container so the rails and the picture can read its
+   * width and height. */
+
+  .stage[data-grid-editing] {
+    --pv-rail-min: 176px;
+    flex-direction: row;
+    justify-content: center;
+    container: pv-stage / size;
+  }
+
+  .area[data-grid-editing] {
+    flex: 0 1 auto;
+    height: 100%;
+    min-width: 160px;
+    max-width: calc(100cqw - 2 * var(--pv-rail-min));
+    aspect-ratio: var(--xleth-canvas-aspect, 16 / 9);
+  }
+
+  /* A Preview narrower than 560px cannot hold the rails beside the picture:
+   * VideoPreview opens them in a flyout beside the panel (GridEditFlyout) and
+   * the picture keeps the whole stage, so there is no narrow stacking here. */
+
   /* Out of flow: the canvas can never size its box from its bitmap. */
   .canvas {
     position: absolute;

@@ -1386,12 +1386,16 @@ int main()
         assert(req->companionFx.vibratoSwirlEnabled);
         assert(req->companionFx.scratchWaveEnabled);
 
-        // sourceFrameIndex reflects scratch over the stretched clip timeline:
-        //   scratchBase = integral of constant rate 2 over 1s = 2.0s
-        //   srcFrame    = 60
-        std::fprintf(stderr, "[TEST:FrameCollector] stretched active: srcFrame=%lld (expected ~60)\n",
+        // sourceFrameIndex follows the AUDIO readhead, which for a stretched
+        // clip moves inside the cache buffer (post-stretch):
+        //   cache position  = integral of constant rate 2 over 1s = 2.0s
+        //   source position = 2.0s / stretchRatio 1.5 = 1.333s
+        //   srcFrame        = 40
+        // (This used to expect 60: cache time was taken for source time, i.e.
+        // the picture ignored the stretch and ran 1.5x ahead of the sound.)
+        std::fprintf(stderr, "[TEST:FrameCollector] stretched active: srcFrame=%lld (expected ~40)\n",
                      (long long)req->sourceFrameIndex);
-        assert(req->sourceFrameIndex >= 59 && req->sourceFrameIndex <= 61);
+        assert(req->sourceFrameIndex >= 39 && req->sourceFrameIndex <= 41);
 
         ev.clipReversed = true;
         auto reversedRequests = collector.collectRequests(30, timeline, 48000, fps,
@@ -1406,7 +1410,15 @@ int main()
         assert(reversedReq != nullptr);
         assert(!reversedReq->companionFx.vibratoSwirlEnabled);
         assert(!reversedReq->companionFx.scratchWaveEnabled);
-        assert(reversedReq->sourceFrameIndex == 30);
+        // Reversed (modulation bypassed) and still stretched 1.5. The clip is
+        // 4 beats at 140 BPM = 1.7143s, so the audio reverses the source
+        // segment [0, 1.7143 / 1.5 = 1.1429s) and plays it back at 1/1.5 speed.
+        // One second in, 0.6667s of it is consumed, counted from the END:
+        //   1.1429 - 0.6667 = 0.4762s  ->  frame 14
+        // (This used to expect 30: forward, at 1x.)
+        std::fprintf(stderr, "[TEST:FrameCollector] reversed+stretched: srcFrame=%lld (expected 14)\n",
+                     (long long)reversedReq->sourceFrameIndex);
+        assert(reversedReq->sourceFrameIndex == 14);
 
         ev.clipReversed = false;
         ev.clipFormantPreserve = true;
@@ -1422,7 +1434,9 @@ int main()
         assert(formantReq != nullptr);
         assert(!formantReq->companionFx.vibratoSwirlEnabled);
         assert(!formantReq->companionFx.scratchWaveEnabled);
-        assert(formantReq->sourceFrameIndex == 30);
+        // Formant-preserve composes with modulation (F.1), so this is the same
+        // stretched, scratch-rate-2 readhead as the first case: frame ~40.
+        assert(formantReq->sourceFrameIndex >= 39 && formantReq->sourceFrameIndex <= 41);
 
         std::fprintf(stderr, "[TEST:FrameCollector] Test 4e: PASSED\n");
     }

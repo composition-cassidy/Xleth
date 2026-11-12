@@ -257,6 +257,37 @@ describe('StatePersistence', () => {
     },
   );
 
+  it('a v4 layout moves the Sampler from the dock to its own window, once', async () => {
+    const adapter = makeAdapter();
+    const panels = createInitialPanelStates() as unknown as Record<string, Record<string, unknown>>;
+    // What every v4 layout holds: a bottom-dock tab at the old fixed float size.
+    panels.sampler = {
+      ...panels.sampler,
+      mode: 'docked',
+      hidden: false,
+      floating: { x: 340, y: 100, width: 820, height: 870 },
+    };
+    panels.mixer = { ...panels.mixer, hidden: true, mode: 'docked' };
+    await adapter.write(JSON.stringify({ version: 4, panels, dockRegionSizes: createInitialDockRegionSizes() }));
+    SP.setPersistenceAdapter(adapter);
+
+    await expect(SP.loadPersistedState()).resolves.toBe(true);
+    const { sampler, mixer } = usePanelRegistry.getState().panels;
+    expect(sampler.mode).toBe('floating');
+    expect(sampler.hidden).toBe(false);
+    expect(sampler.floating).toEqual(PANEL_CATALOG.sampler.defaultFloating);
+    // Every other panel is merged as saved.
+    expect(mixer.mode).toBe('docked');
+
+    // Written back at the current version, so a Sampler the user then docks stays docked.
+    const written = JSON.parse((await adapter.read())!);
+    expect(written.version).toBe(SP.LAYOUT_SCHEMA_VERSION);
+    written.panels.sampler = { ...written.panels.sampler, mode: 'docked' };
+    await adapter.write(JSON.stringify(written));
+    await expect(SP.loadPersistedState()).resolves.toBe(true);
+    expect(usePanelRegistry.getState().panels.sampler.mode).toBe('docked');
+  });
+
   it('init wires writes through adapter on state change', async () => {
     const adapter = makeAdapter();
     SP.setPersistenceAdapter(adapter);

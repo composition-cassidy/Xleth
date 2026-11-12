@@ -150,6 +150,44 @@ describe('Knob', () => {
     expect(onCommit).toHaveBeenLastCalledWith(3);
   });
 
+  it('hideValue prints no readout but keeps the value text, and double-click still types one over the dial', () => {
+    const onCommit = vi.fn();
+    render(<Knob label="Pan" hideLabel hideValue value={0.3} min={-1} max={1} bipolar defaultValue={0} format={(v) => `R ${Math.round(v * 100)}`} onCommit={onCommit} />);
+    const k = slider('Pan');
+    expect(k.textContent).toBe('');
+    expect(k.getAttribute('data-no-value')).toBe('true');
+    expect(k.getAttribute('aria-valuetext')).toBe('Pan, R 30');
+    dblclick(k);
+    const input = container.querySelector('input') as HTMLInputElement;
+    expect(input.value).toBe('R 30');
+  });
+
+  it('minimal is a disc and one pointer: no track, value arc or centre tick, straight up at the middle', () => {
+    render(
+      <>
+        <Knob label="Pan" minimal size={20} value={0} min={-1} max={1} bipolar format={(v) => String(v)} />
+        <Knob label="Pan off" minimal size={20} value={-1} min={-1} max={1} bipolar format={(v) => String(v)} />
+      </>,
+    );
+    const k = slider('Pan');
+    expect(k.getAttribute('data-minimal')).toBe('true');
+    expect(k.querySelectorAll('path').length).toBe(0);
+    expect(k.querySelectorAll('circle').length).toBe(1);
+    const spokes = k.querySelectorAll('line');
+    expect(spokes.length).toBe(1);
+    const x1 = Number(spokes[0].getAttribute('x1'));
+    const x2 = Number(spokes[0].getAttribute('x2'));
+    const y1 = Number(spokes[0].getAttribute('y1'));
+    const y2 = Number(spokes[0].getAttribute('y2'));
+    expect(x1).toBeCloseTo(10, 6); // the middle of the range points straight up
+    expect(x2).toBeCloseTo(10, 6);
+    expect(y2).toBeLessThan(y1);
+    // The minimum is the bottom-left end of the usual 270 degree sweep.
+    const low = slider('Pan off').querySelector('line')!;
+    expect(Number(low.getAttribute('x2'))).toBeLessThan(10);
+    expect(Number(low.getAttribute('y2'))).toBeGreaterThan(10);
+  });
+
   it('long labels truncate instead of widening the cell', () => {
     render(<Knob label="An extraordinarily long parameter label" value={1} min={0} max={2} format={() => '1'} width={56} />);
     const k = slider('An extraordinarily long parameter label');

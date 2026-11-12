@@ -10,6 +10,9 @@ import { niceTimeStep, formatTick } from './sandboxFormat.js'
 import { getSandboxPreviewPosition } from './sandboxPreviewPlayer.js'
 import { nearestCrossingIndex, radiusForView } from '../sampler/zeroCrossing.js'
 import { opSampleRange, resolveOpRange } from './sandboxOpRange.js'
+import {
+  ENV_GRID_DB, ENV_HANDLE_R, envDbToY, envYToDb, envelopeTargetAt, hitEnvelopeHandle,
+} from './sandboxEnvelopeHit.js'
 import SandboxOverviewStrip from './SandboxOverviewStrip.jsx'
 import SandboxSelectionContextMenu from './SandboxSelectionContextMenu.jsx'
 import useSandboxStore, {
@@ -57,31 +60,10 @@ const PITCH_AXIS_PAD_CENTS = 150
 // pointer-events:none and the curve is still drawn, dimmed: an envelope you
 // cannot see is an envelope you cannot debug when playback sounds wrong.
 //
-// ── The dB axis ──────────────────────────────────────────────────────────────
-// Linear in dB from ENV_TOP_DB down to ENV_BOTTOM_DB, so equal vertical
-// distances are equal dB — the whole point of "Y axis is dB, not linear".
-// Unity sits near the TOP rather than at the middle, because this axis is used
-// for ducking far more than for boosting, and because a unity line through the
-// vertical centre would land exactly on the waveform's own zero-crossing line.
-// The engine clamps wider than this (±96/24 dB); a curve loaded from a project
-// that exceeds the drawable range is displayed clamped to the edge, and moving
-// that handle rewrites it to what is on screen.
-const ENV_TOP_DB = 12
-const ENV_BOTTOM_DB = -60
-const ENV_HANDLE_R = 4       // drawn radius
-const ENV_HIT_R = 8          // grab radius — a pointer target, larger than the dot
-const ENV_LINE_HIT_PX = 7    // how close to the curve a click counts as "on the line"
-const ENV_GRID_DB = [0, -12, -24, -36, -48]
-
-function dbToY(db, h) {
-  const t = (ENV_TOP_DB - db) / (ENV_TOP_DB - ENV_BOTTOM_DB)
-  return Math.max(0, Math.min(1, t)) * h
-}
-
-function yToDb(y, h) {
-  const t = Math.max(0, Math.min(1, y / Math.max(1, h)))
-  return ENV_TOP_DB - t * (ENV_TOP_DB - ENV_BOTTOM_DB)
-}
+// The dB axis and the hit-testing live in sandboxEnvelopeHit.js (pure, and
+// tested there); this file only draws with them and wires the pointer.
+const dbToY = envDbToY
+const yToDb = envYToDb
 
 // Absolute peak per pixel column, across every channel — the input to the
 // headroom check. `colPeaks` is the same {lanes:[{min,max}]} the waveform draw
@@ -182,6 +164,21 @@ function computeColumnPeaks(channelData, numCols, startSample, endSample) {
     out.max[col] = mx === -Infinity ? 0 : mx
   }
   return out
+}
+
+// ── Waveform level scale ────────────────────────────────────────────────────
+// Which dBFS marks a lane of a given height can carry without the labels
+// touching: 0 dB always, then -6, -12 and -18 as the lane grows. `amp` is the
+// linear amplitude of the mark (0 dBFS = 1).
+const LEVEL_MARKS = [
+  { db: 0, amp: 1, label: '0 dB', minLane: 44 },
+  { db: -6, amp: 0.5012, label: '\u22126', minLane: 110 },
+  { db: -12, amp: 0.2512, label: '\u221212', minLane: 220 },
+  { db: -18, amp: 0.1259, label: '\u221218', minLane: 420 },
+]
+
+function levelMarksFor(laneH) {
+  return LEVEL_MARKS.filter((m) => laneH >= m.minLane)
 }
 
 function hexToRgb(hex) {
@@ -302,6 +299,7 @@ export default function SandboxWaveformCanvas() {
   const activeLayerId = useSandboxStore((s) => s.activeLayerId)
   const selection = useSandboxStore((s) => s.selection)
   const setSelection = useSandboxStore((s) => s.setSelection)
+  const selectAll = useSandboxStore((s) => s.selectAll)
   const envelopeEditMode = useSandboxStore((s) => s.envelopeEditMode)
   const setGainEnvelope = useSandboxStore((s) => s.setGainEnvelope)
   const viewMode = useSandboxStore((s) => s.viewMode)
@@ -354,6 +352,10 @@ export default function SandboxWaveformCanvas() {
   // the store, and nothing has been committed. Cleared on mouseup, at which
   // point exactly one UndoManager command goes out.
   const envDragRef = useRef(null)
+  // Index of the handle the pointer is resting on (not holding), or -1. A ref,
+  // not state: it only changes what drawEnvelope paints, and hover must not
+  // re-render the whole canvas component per mousemove.
+  const envHoverRef = useRef(-1)
   // Live paint-stroke drag: an array of dabs accumulated so far this stroke,
   // or null between strokes — the same "entire local-preview mechanism, one
   // commit on release" contract envDragRef uses (see commitSpectralPaintDabs).
@@ -508,7 +510,7 @@ export default function SandboxWaveformCanvas() {
         // rather than baked into the cached bitmap, which stays pure pixel
         // data keyed only on the spectrogram object.
         ctx.save()
-        ctx.font = uiCanvasFont('9px')
+        ctx.font = uiCanvasFont('10px')
         ctx.textBaseline = 'alphabetic'
         for (const hz of SPC_GRID_HZ) {
           if (hz < cache.minHz || hz > cache.maxHz) continue
@@ -549,6 +551,23 @@ export default function SandboxWaveformCanvas() {
       ctx.lineTo(w, Math.round(mid) + 0.5)
       ctx.stroke()
 
+      // Level grid: full scale, then each mark the lane has room for, both
+      // polarities. Drawn UNDER the waveform (it is a scale, not content); the
+      // labels go on top afterwards — see drawLevelLabels below.
+      ctx.save()
+      ctx.globalAlpha = 0.55
+      ctx.setLineDash([2, 4])
+      ctx.beginPath()
+      for (const mark of (envelopeEditMode ? [] : levelMarksFor(laneH))) {
+        for (const sign of [-1, 1]) {
+          const y = Math.round(mid + sign * mark.amp * amp) + 0.5
+          ctx.moveTo(0, y)
+          ctx.lineTo(w, y)
+        }
+      }
+      ctx.stroke()
+      ctx.restore()
+
       // Envelope fill
       ctx.beginPath()
       for (let x = 0; x < cols.max.length; x++) {
@@ -573,8 +592,38 @@ export default function SandboxWaveformCanvas() {
         ctx.lineTo(w, Math.round(top) + 0.5)
         ctx.stroke()
       }
+
+      // ── The level scale's labels, and which channel this lane is ─────────
+      // In dBFS down the right edge, the way a meter reads, on a small plate
+      // of the background colour so a loud passage running under a label does
+      // not swallow it. Positive half only: the scale is symmetric, and one
+      // column of numbers per lane is enough to read both.
+      ctx.save()
+      ctx.font = uiCanvasFont('10px')
+      ctx.textBaseline = 'middle'
+      const plate = tokenValue('--theme-bg-primary') || '#101010'
+      const label = (text, x, y, align) => {
+        const tw = Math.ceil(ctx.measureText(text).width)
+        const left = align === 'right' ? x - tw : x
+        ctx.globalAlpha = 0.78
+        ctx.fillStyle = plate
+        ctx.fillRect(left - 3, y - 6, tw + 6, 12)
+        ctx.globalAlpha = 1
+        ctx.fillStyle = palette.rulerText
+        ctx.textAlign = 'left'
+        ctx.fillText(text, left, y + 0.5)
+      }
+      // Not while the Envelope tool is armed: its own GAIN axis is on screen
+      // then, and two dB ladders over one waveform read as one scale that
+      // disagrees with itself.
+      for (const mark of (envelopeEditMode ? [] : levelMarksFor(laneH))) {
+        // 0 dB sits 2% inside the lane's edge, so its label is held clear of it.
+        label(mark.label, w - 5, Math.max(top + 8, mid - mark.amp * amp), 'right')
+      }
+      if (numChannels === 2 && laneH >= 44) label(ch === 0 ? 'L' : 'R', 5, top + 10, 'left')
+      ctx.restore()
     }
-  }, [layer, viewMode, vw])
+  }, [layer, viewMode, vw, envelopeEditMode])
 
   const drawOverlay = useCallback(() => {
     const canvas = overlayCanvasRef.current
@@ -707,7 +756,7 @@ export default function SandboxWaveformCanvas() {
     ctx.save()
     ctx.setLineDash([2, 3])
     ctx.lineWidth = 1
-    ctx.font = uiCanvasFont('9px')
+    ctx.font = uiCanvasFont('10px')
     ctx.textBaseline = 'middle'
     for (const db of ENV_GRID_DB) {
       if (db !== 0 && !active) continue
@@ -802,11 +851,16 @@ export default function SandboxWaveformCanvas() {
     // Handles — only while armed. Read-only, they would just be clutter over
     // the waveform.
     if (active) {
-      for (const pt of display) {
+      // The handle under the pointer (or in the hand) is drawn larger: it is
+      // the one a press will grab, and saying so before the press is what
+      // separates "move this point" from "add another one".
+      const hot = drag ? drag.index : envHoverRef.current
+      for (let i = 0; i < display.length; i++) {
+        const pt = display[i]
         const x = s2x(pt.samplePos, w)
         const y = dbToY(pt.db, h)
         ctx.beginPath()
-        ctx.arc(x, y, ENV_HANDLE_R, 0, Math.PI * 2)
+        ctx.arc(x, y, i === hot ? ENV_HANDLE_R + 2 : ENV_HANDLE_R, 0, Math.PI * 2)
         ctx.fillStyle = accent
         ctx.fill()
         // Ring in the page background so a handle stays readable when it lands
@@ -1011,7 +1065,7 @@ export default function SandboxWaveformCanvas() {
     if (!isManual) {
       if (!pitchTrack) {
         ctx.fillStyle = placeholder
-        ctx.font = uiCanvasFont('9px')
+        ctx.font = uiCanvasFont('10px')
         ctx.textAlign = 'left'
         ctx.textBaseline = 'top'
         ctx.fillText('Analyzing pitch…', 4, 4)
@@ -1046,7 +1100,7 @@ export default function SandboxWaveformCanvas() {
       ctx.lineWidth = 1
       ctx.strokeStyle = placeholder
       ctx.fillStyle = placeholder
-      ctx.font = uiCanvasFont('9px')
+      ctx.font = uiCanvasFont('10px')
       ctx.textBaseline = 'top'
       for (const seg of pitchTrack.notes) {
         const x = xForTime(seg.startSample / pitchTrack.sampleRate)
@@ -1113,7 +1167,7 @@ export default function SandboxWaveformCanvas() {
         }
       } else if (!drag) {
         ctx.fillStyle = placeholder
-        ctx.font = uiCanvasFont('9px')
+        ctx.font = uiCanvasFont('10px')
         ctx.textAlign = 'center'
         ctx.textBaseline = 'middle'
         ctx.fillText('Draw a target pitch curve — hold ALT to free-draw', w / 2, h / 2)
@@ -1150,7 +1204,7 @@ export default function SandboxWaveformCanvas() {
     const startSec = vw.startSample / sampleRate
     const endSec = vw.endSample / sampleRate
 
-    ctx.font = uiCanvasFont('9px')
+    ctx.font = uiCanvasFont('10px')
     ctx.textBaseline = 'alphabetic'
     ctx.textAlign = 'left'
     // A minor tick every fifth of a labelled step — enough to read position
@@ -1361,15 +1415,13 @@ export default function SandboxWaveformCanvas() {
     }
   }, [])
 
-  // Index of the handle under the pointer, or -1.
-  const hitHandle = useCallback((points, pos, numSamples) => {
-    for (let i = 0; i < points.length; i++) {
-      const hx = s2x(points[i].samplePos, pos.w)
-      const hy = dbToY(points[i].db, pos.h)
-      if (Math.hypot(hx - pos.x, hy - pos.y) <= ENV_HIT_R) return i
-    }
-    return -1
-  }, [])
+  // What the pointer is over — a handle, the line, or neither — for the view on
+  // screen NOW. `s2x`/`x2s` are passed in on every call rather than captured:
+  // see sandboxEnvelopeHit.js for the bug a captured one caused.
+  const envTargetAt = useCallback(
+    (points, pos) => envelopeTargetAt(points, pos, { s2x, x2s }),
+    [s2x, x2s],
+  )
 
   const handleEnvDown = useCallback((e) => {
     if (e.button !== 0 || !envelopeEditMode) return
@@ -1379,21 +1431,25 @@ export default function SandboxWaveformCanvas() {
     if (!pos) return
 
     let points = committedPoints.map((p) => ({ ...p }))
-    let index = hitHandle(points, pos, numSamples)
-    const sample = x2s(pos.x, pos.w)
-    const curveDb = 20 * Math.log10(Math.max(1e-9, gainEnvelopeAt(points, sample)))
+    const target = envTargetAt(points, pos)
 
     // Armed mode captures the pointer, so a press that is NOT on the curve or
     // a handle has to be handed back — otherwise turning the envelope on would
     // silently disable selection, and the user would have to toggle the mode
     // off and on again to trim anything.
-    if (index < 0 && Math.abs(dbToY(curveDb, pos.h) - pos.y) > ENV_LINE_HIT_PX) {
+    if (target.kind === 'none') {
       handlePointerDown(e)
       return
     }
 
     e.preventDefault()
     e.stopPropagation()
+
+    // A press on an existing breakpoint GRABS it. Only a press on the bare
+    // line between breakpoints adds one.
+    let index = target.kind === 'handle' ? target.index : -1
+    const sample = target.sample
+    const curveDb = target.db
 
     if (index < 0) {
       // On the curve but not on a handle: insert a breakpoint here and start
@@ -1418,6 +1474,8 @@ export default function SandboxWaveformCanvas() {
 
 
     envDragRef.current = { points, index }
+    envHoverRef.current = -1
+    if (envCanvasRef.current) envCanvasRef.current.style.cursor = 'grabbing'
     drawEnvelope()
 
     const onMove = (me) => {
@@ -1449,13 +1507,39 @@ export default function SandboxWaveformCanvas() {
       // no-ops when the curve came back unchanged, so a click that did not
       // move anything costs neither an undo step nor a render.
       if (state) setGainEnvelope(layer.id, state.points)
+      if (envCanvasRef.current) envCanvasRef.current.style.cursor = ''
       drawEnvelope()
     }
 
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
-  }, [envelopeEditMode, layer, committedPoints, envLocal, hitHandle, drawEnvelope,
-      setGainEnvelope, handlePointerDown])
+  }, [envelopeEditMode, layer, committedPoints, envLocal, envTargetAt, drawEnvelope,
+      setGainEnvelope, handlePointerDown, x2s])
+
+  // The cursor says what a press here will do, before the press: grab over a
+  // breakpoint, "add" over the bare line, the selection I-beam everywhere else
+  // (where the press is handed to the selection). Without this the three
+  // zones are invisible, and the only way to learn which one the pointer is in
+  // is to click and see whether a new breakpoint appears.
+  const handleEnvHover = useCallback((e) => {
+    const canvas = envCanvasRef.current
+    if (!canvas || !envelopeEditMode || envDragRef.current) return
+    const pos = envLocal(e)
+    if (!pos || !(layer?.renderedBuffer?.numSamples > 0)) return
+    const target = envTargetAt(committedPoints, pos)
+    canvas.style.cursor = target.kind === 'handle' ? 'grab' : target.kind === 'line' ? 'copy' : 'text'
+    const hover = target.kind === 'handle' ? target.index : -1
+    if (hover !== envHoverRef.current) {
+      envHoverRef.current = hover
+      drawEnvelope()
+    }
+  }, [envelopeEditMode, layer, committedPoints, envLocal, envTargetAt, drawEnvelope])
+
+  const handleEnvLeave = useCallback(() => {
+    if (envHoverRef.current === -1 || envDragRef.current) return
+    envHoverRef.current = -1
+    drawEnvelope()
+  }, [drawEnvelope])
 
   // Right-click a handle to delete it. Deleting down to one point leaves a
   // constant gain, and deleting the last one leaves an empty curve — which
@@ -1468,10 +1552,11 @@ export default function SandboxWaveformCanvas() {
     const numSamples = layer?.renderedBuffer?.numSamples ?? 0
     const pos = envLocal(e)
     if (!numSamples || !pos || committedPoints.length === 0) return
-    const index = hitHandle(committedPoints, pos, numSamples)
+    const index = hitEnvelopeHandle(committedPoints, pos, s2x)
     if (index < 0) return
+    envHoverRef.current = -1
     setGainEnvelope(layer.id, committedPoints.filter((_, i) => i !== index))
-  }, [envelopeEditMode, layer, committedPoints, envLocal, hitHandle, setGainEnvelope])
+  }, [envelopeEditMode, layer, committedPoints, envLocal, s2x, setGainEnvelope])
 
   // ── Spectral paint editing ───────────────────────────────────────────────
   //
@@ -1906,7 +1991,7 @@ export default function SandboxWaveformCanvas() {
     const maxHz = Math.min(SPC_FREQ_MAX_HZ, sampleRate / 2)
     const sample = x2s(x, rect.width)
     setSpcHoverReadout({ sec: sample / sampleRate, hz: pxToFreq(y, rect.height, minHz, maxHz) })
-  }, [viewMode, layer, setSpcHoverReadout])
+  }, [viewMode, layer, setSpcHoverReadout, x2s])
 
   const handleStackLeave = useCallback(() => setSpcHoverReadout(null), [setSpcHoverReadout])
 
@@ -1930,12 +2015,16 @@ export default function SandboxWaveformCanvas() {
           className={`${styles.layer} ${styles.overlay}`}
           onMouseDown={handlePointerDown}
           onMouseMove={handleOverlayHover}
+          onDoubleClick={selectAll}
           onContextMenu={handleOverlayContextMenu}
         />
         <canvas
           ref={envCanvasRef}
           className={`${styles.layer} ${styles.inert}`} data-editing={envelopeEditMode || undefined}
+          data-sandbox-canvas="envelope"
           onMouseDown={handleEnvDown}
+          onMouseMove={handleEnvHover}
+          onMouseLeave={handleEnvLeave}
           onContextMenu={handleEnvContextMenu}
         />
         <canvas

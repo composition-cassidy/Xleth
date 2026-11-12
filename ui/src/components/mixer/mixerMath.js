@@ -60,8 +60,8 @@ export function insertLabel(chain, fxMode) {
 export const GAIN_FORMAT = Object.freeze({ signed: true })
 
 // A strip's rows other than its insert list and its fader, in px (MixerStrip.module.css:
-// head 35, M/S/V 24, knobs 36, volume 24, cable 20, output 26, seven 1px gaps).
-export const STRIP_FIXED_H = 172
+// head 21, M/S/V 24, knobs 24, volume 24, cable 20, output 26, seven 1px gaps).
+export const STRIP_FIXED_H = 146
 export const INSERT_ROW_H = 16
 export const FADER_MIN_H = 64
 /** On a dock too short for three rows above a 64px fader, the fader may go down to this. */
@@ -106,19 +106,29 @@ export function insertRowsFor(longest, stripAreaH) {
  * device. A track whose effects live in its FX Graph says so in one row. Rows past the end
  * are null: empty wells.
  */
-export function insertRows(chain, fxMode, rows, nameOf) {
+export function insertRows(chain, fxMode, rows, nameOf, fullNameOf = nameOf) {
   const out = Array.from({ length: rows }, () => null)
   if (rows <= 0) return out
   if (fxMode === 'graph') {
-    out[0] = { text: 'FX graph', index: null, off: false }
+    out[0] = { text: 'FX graph', full: 'FX graph', index: null, off: false }
     return out
   }
-  const named = (effect, index) => ({ text: nameOf(effect), index, off: !!effect?.bypassed })
+  // `text` is what the narrow row prints (the short name); `full` is its tooltip.
+  const named = (effect, index) => ({
+    text: nameOf(effect), full: fullNameOf(effect), index, off: !!effect?.bypassed,
+  })
   if (chain.length <= rows) {
     chain.forEach((effect, i) => { out[i] = named(effect, i) })
     return out
   }
   for (let i = 0; i < rows - 1; i += 1) out[i] = named(chain[i], i)
-  out[rows - 1] = { text: `+${chain.length - (rows - 1)} more`, index: rows - 1, off: false, more: true }
+  const more = `+${chain.length - (rows - 1)} more`
+  out[rows - 1] = { text: more, full: more, index: rows - 1, off: false, more: true }
   return out
+}
+
+/** What a closed strip prints in its one summary cell: "No FX", "3 FX", "FX graph". */
+export function closedLabel(chain, fxMode) {
+  if (fxMode === 'graph') return 'FX graph'
+  return chain.length === 0 ? 'No FX' : `${chain.length} FX`
 }

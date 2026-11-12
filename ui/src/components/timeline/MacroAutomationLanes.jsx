@@ -1,5 +1,4 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react'
-import { Repeat } from 'lucide-react'
 import ContextMenu from '../ContextMenu.jsx'
 import useEffectChainStore from '../../stores/effectChainStore.js'
 import { PPQ } from '../../constants/timeline.js'
@@ -21,6 +20,9 @@ import {
   buildLoopRepeatDividers,
 } from './macroLaneGeometry.js'
 import styles from './MacroAutomationLanes.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcRepeat = iconComponent('repeat')
 
 // FXG.4-h-r1 — Real macro automation child-lane layer (replaces the FXG.4-h-fix
 // amber overlay strips). Renders one interactive row per visible macro automation
@@ -453,7 +455,7 @@ export default function MacroAutomationLanes({
                   )}
                   {clip.loopEnabled && (
                     <span className={`macro-automation-clip-loop ${styles.loopGlyph}`} role="img" aria-label="Loop enabled" data-hint="Loop enabled">
-                      <Repeat size={12} aria-hidden="true" />
+                      <IcRepeat size={14} aria-hidden="true" />
                     </span>
                   )}
                 </div>

@@ -27,6 +27,7 @@
 #include "SyncManager.h"
 #include "render/ArpVideoExpander.h"
 #include "render/VideoFlipApplier.h"
+#include "render/VideoEventBuilder.h"
 #include "Transport.h"
 #include "VideoDecoder.h"
 #include "video/FrameOutput.h"
@@ -316,12 +317,16 @@ std::unique_ptr<FrameServer> g_frameServer;
 std::deque<std::unique_ptr<VideoDecoder>> decoderOwner;
 std::vector<VideoDecoder*>                decoderPtrs;
 
-// Per-region proxy decoders, keyed by regionId. unique_ptr ownership; erase ==
-// clean close. There used to be a parallel raw-pointer map (regionDecoderPtrs)
-// handed to SyncManager so videoTick() could prefer a region proxy while
-// decoding. SyncManager no longer decodes anything (Issue 10), and nothing else
-// ever read that map, so it is gone along with the compositor path.
-std::unordered_map<int, std::unique_ptr<VideoDecoder>> regionDecoderOwner;
+// There is deliberately NO per-region or per-source legacy VideoDecoder kept
+// for project media any more. Each finished region proxy used to get one,
+// opened on the VIDEO thread (a blocking avformat/avcodec open, 5-50 ms — a
+// dropped frame per proxy that landed during playback) and then never decoded
+// from: SyncManager stopped decoding at Issue 10 and nothing else read the map.
+// All it did was pin a file handle and a codec context per region for the whole
+// session. Every project video source got one too, purely as a "has video"
+// flag for the event builder. The preview decodes through RenderVideoDecoder,
+// which opens what it needs when it needs it and closes what goes idle.
+// decoderOwner / decoderPtrs above survive only for the legacy loadVideo RPC.
 
 std::unique_ptr<ProxyManager> g_proxyManager;
 
@@ -350,11 +355,28 @@ std::atomic<uint64_t> g_publishedStoppedPreviewSeq{0};
 std::atomic<uint64_t> g_discardedStoppedPreviewSeq{0};
 std::atomic<int64_t>  g_pendingStoppedPreviewSample{0};
 
-// Guards SyncManager's event list: mutated on the main thread by
-// rebuildVideoEventsFromClips(), read on the video thread by the render block.
+// The MODEL lock. Despite the name it guards two things, for one reader:
+//
+//   1. the Timeline, against the video thread. The preview looks up tracks,
+//      regions and sources on every frame; the RPC thread is the only writer.
+//      Every undoable mutation takes this lock inside UndoManager (see
+//      UndoManager::setMutationMutex), and the few mutations that bypass the
+//      undo stack — project load / new / clear, source import and removal,
+//      proxy bookkeeping — take it by hand.
+//   2. publication of SyncManager's event list (a pointer swap).
+//
+// The video thread holds it only for the part of a tick that READS the model:
+// resolving the layout, collecting cell requests, the self-heal sweeps. It is
+// released before decode, composite and readback — those work on copies and on
+// an immutable event snapshot — so an edit never waits on a slow frame.
+//
+// Recursive: handlers that already hold it call UndoManager::execute, which
+// takes it again, and several helpers lock it themselves whether or not their
+// caller did. Lock order is always syncEventsMutex -> g_previewCompositorMutex.
+//
 // The per-tick beat query is deliberately NOT under this lock — see
 // SyncManager::currentBeatPosition().
-std::mutex syncEventsMutex;
+std::recursive_mutex syncEventsMutex;
 
 // ── Frame output (double-buffered, lock-free) ─────────────────────────────
 FrameOutput frameOutput;
@@ -1405,376 +1427,98 @@ struct BridgeCallLog {
     }
 };
 
-// Ensure a VideoDecoder is open for the given source and slot it into
-// decoderPtrs[id]. Opens the proxy if ready, else the original file.
-// If the original was opened, spawns a detached watchdog that swaps in
-// the proxy decoder when the transcode finishes. Does NOT add any
-// VideoEvent — clip-driven events are rebuilt separately at play-time.
-// Safe to call from any thread — takes syncEventsMutex internally.
-static void ensureSourceDecoder(int sourceId) {
-    if (!g_timeline || !audioEngine || !syncManager) return;
-    SourceMedia* src = g_timeline->getSourceMutable(sourceId);
-    if (!src || !src->hasVideo) return;
+// Proxy files the preview decoder could not open this session. A demoted proxy
+// is still ON DISK, and every path that engages proxies trusts an existing
+// file: the whole-source self-heal re-engages one it finds on each sweep, and a
+// region enqueue short-circuits to "already on disk". Without this set a bad
+// file would be re-engaged and re-demoted twice a second, blinking its cells.
+// The file is deliberately not deleted — an open can fail for reasons that
+// pass (a scanner holding the file, handle exhaustion), and a whole-source
+// proxy is minutes of encoding. It is simply left alone until the next project
+// open, or until it is rebuilt. Guarded by syncEventsMutex.
+static std::unordered_set<std::string> g_unopenableProxyPaths;
 
-    const bool useProxy = src->proxyReady && !src->proxyPath.empty();
-    const std::string openPath = useProxy ? src->proxyPath : src->filePath;
+// Take proxies the preview decoder could not OPEN out of service.
+//
+// `paths` are files RenderVideoDecoder just failed to open (not merely failed
+// to decode a frame from — a seek past the end must not cost a region its
+// proxy). Any region proxy or whole-source preview proxy at one of those paths
+// is marked not-ready, so the collector's ladder falls through to the next
+// file — the other proxy, or the original — on the very next frame. Without
+// this a truncated or deleted proxy leaves its cells dark for the session:
+// the collector keeps picking it and the decoder keeps refusing it.
+//
+// Called at the top of the video tick with the previous tick's failures, with
+// no other lock held. Takes syncEventsMutex itself.
+static void demoteUnopenableProxies(const std::vector<std::string>& paths) {
+    if (paths.empty() || !g_timeline) return;
 
-    auto decoder = std::make_unique<VideoDecoder>();
-    if (!decoder->open(openPath)) {
-        std::cerr << "[Bridge] ERROR: could not open video decoder: "
-                  << openPath << "\n" << std::flush;
-        return;
+    std::lock_guard<std::recursive_mutex> lk(syncEventsMutex);
+    bool any = false;
+    for (const std::string& path : paths) {
+        g_unopenableProxyPaths.insert(path);
+        for (const SampleRegion* constRegion : g_timeline->getAllRegions()) {
+            if (!constRegion || constRegion->proxyPath != path) continue;
+            SampleRegion* region = g_timeline->getRegionMutable(constRegion->id);
+            if (!region) continue;
+            region->proxyPath.clear();
+            region->proxyReady     = false;
+            region->proxyStartTime = 0.0;
+            region->proxyEndTime   = 0.0;
+            any = true;
+            std::cerr << "[Proxy] region=" << region->id << " proxy would not open ("
+                      << path << ") — taken out of service for this session\n";
+        }
+        for (const SourceMedia* constSource : g_timeline->getAllSources()) {
+            if (!constSource || constSource->previewProxyPath != path) continue;
+            SourceMedia* source = g_timeline->getSourceMutable(constSource->id);
+            if (!source) continue;
+            source->previewProxyPath.clear();
+            source->previewProxyReady = false;
+            any = true;
+            std::cerr << "[SourceProxy] source=" << source->id << " preview proxy would not open ("
+                      << path << ") — taken out of service for this session\n";
+        }
     }
-
-    {
-        std::lock_guard<std::mutex> lock(syncEventsMutex);
-
-        if (static_cast<size_t>(sourceId) >= decoderPtrs.size())
-            decoderPtrs.resize(static_cast<size_t>(sourceId) + 1, nullptr);
-        if (decoderPtrs[static_cast<size_t>(sourceId)])
-            decoderPtrs[static_cast<size_t>(sourceId)]->close();
-        decoderPtrs[static_cast<size_t>(sourceId)] = decoder.get();
-        decoderOwner.push_back(std::move(decoder));
-
-        std::cout << "[Bridge] Decoder ready: sourceId=" << sourceId
-                  << " proxy=" << (useProxy ? "yes" : "no")
-                  << " path=" << openPath << "\n" << std::flush;
-    }
-
+    if (any) g_previewDirty = true;
 }
 
-struct PatternNoteRefForVideo {
-    const PatternNote* note = nullptr;
-    int sourceOrder = 0;
-};
-
-static bool patternNoteRefForVideoLess(const PatternNoteRefForVideo& a,
-                                       const PatternNoteRefForVideo& b)
-{
-    if (a.note->position.ticks != b.note->position.ticks)
-        return a.note->position.ticks < b.note->position.ticks;
-
-    const int orderA = a.note->id > 0 ? a.note->id : a.sourceOrder;
-    const int orderB = b.note->id > 0 ? b.note->id : b.sourceOrder;
-    if (orderA != orderB) return orderA < orderB;
-
-    if (a.note->pitch != b.note->pitch) return a.note->pitch < b.note->pitch;
-    return a.sourceOrder < b.sourceOrder;
-}
-
-static std::vector<PatternNoteRefForVideo> sortedPatternNoteRefsForVideo(const Pattern& pattern)
-{
-    std::vector<PatternNoteRefForVideo> refs;
-    refs.reserve(pattern.notes.size());
-    for (int i = 0; i < static_cast<int>(pattern.notes.size()); ++i)
-        refs.push_back({&pattern.notes[static_cast<std::size_t>(i)], i});
-    std::sort(refs.begin(), refs.end(), patternNoteRefForVideoLess);
-    return refs;
-}
-
-static int sourceOrderForVideo(const PatternNote& note, int fallbackOrder)
-{
-    return note.id > 0 ? note.id : fallbackOrder;
-}
-
-// Rebuild SyncManager's VideoEvent list from the current clips on the
-// timeline. Each clip with a video-backed region produces one fullscreen
-// VideoEvent mapping the clip's beat range to the correct source-time.
-// Called before transport.play() so edits are reflected on every Play.
-// Takes syncEventsMutex internally; safe to call from the main thread.
+// Rebuild SyncManager's VideoEvent list from the timeline and publish it.
+//
+// The list itself comes from xleth::videoevents::build — the same function
+// OfflineRenderer uses — so the preview and an export of the same project see
+// the same events by construction. This function used to carry its own copy of
+// the clip and pattern loops; see render/VideoEventBuilder.h for how the two
+// copies had drifted.
+//
+// It also used to drop every event whose source had no legacy VideoDecoder open
+// (decoderPtrs). Export had no such gate, and the gate made a source whose
+// original file is offline vanish from the preview even when a ready proxy
+// could have shown it. A source that genuinely cannot be opened is now handled
+// where the open happens: the preview decoder backs off instead of retrying
+// every frame (RenderVideoDecoder::setOpenFailureBackoff).
+//
+// Called from Play() and, whenever g_videoEventsDirty is set, from the top of
+// the video tick. Takes syncEventsMutex itself; safe from either thread.
 static void rebuildVideoEventsFromClips() {
     if (!g_timeline || !audioEngine || !syncManager) return;
 
-    std::lock_guard<std::mutex> lock(syncEventsMutex);
-    syncManager->clearEvents();
+    std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
 
-    const double bpm = audioEngine->getTransport().getBPM();
-    auto clips = g_timeline->getAllClips();
-    int added = 0, skipped = 0;
+    Transport& transport = audioEngine->getTransport();
+    auto built = xleth::videoevents::build(
+        *g_timeline, transport.getBPM(), transport.getSampleRate());
+    const xleth::videoevents::BuildStats stats = built.stats;
+    syncManager->setEvents(std::move(built.events), std::move(built.slideEvents));
 
-    int notesAdded = 0, blocksSkipped = 0;
-
-    // Collect every emitted VideoEvent here first so VideoFlipApplier can run
-    // a single per-track resolver pass before we hand events to SyncManager.
-    std::vector<VideoEvent> eventsBuf;
-    eventsBuf.reserve(clips.size() + 256);
-
-    // Group clips by trackId and sort each track's clips by timeline position
-    // so globalNoteIndex is assigned in a deterministic per-track order. This
-    // mirrors the pattern-note counter below and lets the grid compositor
-    // cycle video-flip modes on clip tracks.
-    std::unordered_map<int, std::vector<const Clip*>> clipsByTrack;
-    for (const Clip* clip : clips) {
-        if (!clip) { ++skipped; continue; }
-        clipsByTrack[clip->trackId].push_back(clip);
-    }
-    // Iterate track ids in ascending order for stable cross-run behaviour.
-    std::vector<int> clipTrackIds;
-    clipTrackIds.reserve(clipsByTrack.size());
-    for (const auto& kv : clipsByTrack) clipTrackIds.push_back(kv.first);
-    std::sort(clipTrackIds.begin(), clipTrackIds.end());
-
-    for (int trackId : clipTrackIds) {
-        auto& trackClips = clipsByTrack[trackId];
-        std::sort(trackClips.begin(), trackClips.end(),
-            [](const Clip* a, const Clip* b) {
-                return a->position.ticks < b->position.ticks;
-            });
-
-        int counter = 0;
-        int trackSkipped = 0;
-        for (const Clip* clip : trackClips) {
-            const TrackInfo* clipTrack = g_timeline->getTrack(clip->trackId);
-            if (!clipTrack) { ++skipped; ++trackSkipped; continue; }  // Matches offline null-track safety.
-
-            const SampleRegion* region = g_timeline->getRegion(clip->regionId);
-            if (!region) { ++skipped; ++trackSkipped; continue; }
-
-            // Mute is no longer checked at rebuild time — the grid compositor
-            // honours mute live per tick so toggling mute during playback
-            // updates the preview immediately without rebuilding events.
-
-            const SourceMedia* src = g_timeline->getSource(region->sourceId);
-            if (!src || !src->hasVideo) { ++skipped; ++trackSkipped; continue; }
-
-            // Require an open decoder slot for this source
-            if (region->sourceId < 0
-                || static_cast<size_t>(region->sourceId) >= decoderPtrs.size()
-                || !decoderPtrs[static_cast<size_t>(region->sourceId)]) {
-                ++skipped; ++trackSkipped; continue;
-            }
-
-            // Clip.position/duration/regionOffset are TickTime (960 PPQ).
-            // region->startTime/endTime are seconds in the source.
-            const double startBeat     = clip->position.toBeats();
-            const double durationBeats = clip->duration.toBeats();
-
-            // Source anchor = region start + syllable offset + clip trim, via the
-            // ONE shared helper that MixEngine's readhead and OfflineRenderer's
-            // event build also agree with (model/ClipSourceAnchor.h). This used to
-            // be open-coded here and again in OfflineRenderer, and the copies
-            // drifted: the offline one dropped the syllable term and desynced
-            // every syllable clip's video on export only.
-            const double syllableStart =
-                (clip->syllableIndex >= 0
-                 && clip->syllableIndex < static_cast<int>(region->syllables.size()))
-                    ? region->syllables[clip->syllableIndex].startTime
-                    : 0.0;
-            const double sourceTime = xleth::anchoring::clipSourceAnchorSeconds(
-                region->startTime, clip->regionOffset.ticks, bpm, syllableStart);
-
-            VideoEvent ev;
-            ev.startBeat       = startBeat;
-            ev.durationBeats   = durationBeats;
-            ev.sourceId        = region->sourceId;
-            ev.trackId         = clip->trackId;
-            ev.regionId        = clip->regionId;   // route to per-region proxy if ready
-            ev.sourceStartTime = sourceTime;
-            ev.sourceEndTime   = region->endTime;
-            ev.sourceClampStartTime = region->startTime;
-            ev.clipId          = clip->id;
-            ev.hasClipModulation = clip->modulation.enabled
-                && (clip->modulation.vibrato.enabled || clip->modulation.scratch.enabled);
-            ev.modulation = clip->modulation;
-            ev.clipReversed = clip->reversed;
-            ev.clipStretchRatio = clip->stretchRatio;
-            ev.clipFormantPreserve = clip->formantPreserve;
-            ev.clipPitchOffsetSemis = clip->pitchOffset;
-            ev.clipPitchOffsetCents = clip->pitchOffsetCents;
-            ev.clipStartTimelineSamples = static_cast<int64_t>(
-                std::llround(startBeat * 60.0 / bpm * audioEngine->getTransport().getSampleRate()));
-            ev.layerIndex      = 0;          // Phase 1: all fullscreen, last-iterated wins
-            ev.x = 0.0f; ev.y = 0.0f;
-            ev.width = 1.0f; ev.height = 1.0f;
-            ev.opacity = clipTrack->videoOpacity * clip->velocity;
-            ev.fadeInPercent = clip->fadeInPercent;
-            ev.fadeOutPercent = clip->fadeOutPercent;
-            normalizeClipFadePercents(ev.fadeInPercent, ev.fadeOutPercent);
-            ev.fadeInX1 = clip->fadeInX1;
-            ev.fadeInY1 = clip->fadeInY1;
-            ev.fadeInX2 = clip->fadeInX2;
-            ev.fadeInY2 = clip->fadeInY2;
-            ev.fadeOutX1 = clip->fadeOutX1;
-            ev.fadeOutY1 = clip->fadeOutY1;
-            ev.fadeOutX2 = clip->fadeOutX2;
-            ev.fadeOutY2 = clip->fadeOutY2;
-            const int clipEmissionOrder = counter++;
-            ev.globalNoteIndex = clipEmissionOrder;
-            ev.hasSourceTriggerOrder = true;
-            ev.sourceTriggerOrder = clip->id > 0 ? clip->id : clipEmissionOrder;
-            ev.originalEmissionOrder = clipEmissionOrder;
-            ev.pitch           = clip->pitchOffset;  // flip-v2 resolver input (spec §1)
-            eventsBuf.push_back(ev);
-            ++added;
-        }
-        const TrackInfo* tInfo = g_timeline->getTrack(trackId);
-        std::cout << "[Bridge] Clip track " << trackId
-                  << " (flipMode=" << (tInfo ? videoFlipConfigToLegacyMode(tInfo->videoFlipConfig) : "?")
-                  << "): " << counter << " video events (indices 0.."
-                  << (counter > 0 ? counter - 1 : 0) << "), "
-                  << trackSkipped << " skipped of " << trackClips.size()
-                  << " total clips\n" << std::flush;
-    }
-
-    // ── Pattern-block per-note video events ─────────────────────────────────
-    // For each PatternBlock on a pattern-type track, emit one VideoEvent per
-    // note-instance visible in the block's [offset, offset+duration) window.
-    // globalNoteIndex is a per-track counter in timeline order — so the
-    // video-flip cycle (HorizontalEven / Clockwise / CounterClockwise) is
-    // stable across block boundaries.
-    {
-        // Collect pattern tracks in deterministic (ascending trackId) order.
-        auto allTracks = g_timeline->getAllTracks();
-        std::vector<int> patternTrackIds;
-        patternTrackIds.reserve(allTracks.size());
-        for (const TrackInfo* t : allTracks) {
-            if (t && t->type == TrackInfo::Type::Pattern)
-                patternTrackIds.push_back(t->id);
-        }
-        std::sort(patternTrackIds.begin(), patternTrackIds.end());
-
-        auto allBlocks = g_timeline->getAllPatternBlocks();
-
-        for (int trackId : patternTrackIds) {
-            // Blocks on this track, sorted by timeline position.
-            std::vector<const PatternBlock*> blocks;
-            blocks.reserve(allBlocks.size());
-            for (const PatternBlock* b : allBlocks) {
-                if (b && b->trackId == trackId) blocks.push_back(b);
-            }
-            std::sort(blocks.begin(), blocks.end(),
-                [](const PatternBlock* a, const PatternBlock* b) {
-                    return a->position.ticks < b->position.ticks;
-                });
-
-            int counter = 0;
-            for (const PatternBlock* block : blocks) {
-                const Pattern* pattern = g_timeline->getPattern(block->patternId);
-                if (!pattern) { ++blocksSkipped; continue; }
-
-                const int64_t patternLenTicks = pattern->length.ticks;
-                const int64_t blockDurationTicks = block->duration.ticks;
-                if (patternLenTicks <= 0 || blockDurationTicks <= 0) {
-                    ++blocksSkipped; continue;
-                }
-
-                const SampleRegion* region = g_timeline->getRegion(pattern->regionId);
-                if (!region) { ++blocksSkipped; continue; }
-
-                const SourceMedia* src = g_timeline->getSource(region->sourceId);
-                const bool hasVideo = src && src->hasVideo
-                    && region->sourceId >= 0
-                    && static_cast<size_t>(region->sourceId) < decoderPtrs.size()
-                    && decoderPtrs[static_cast<size_t>(region->sourceId)];
-                if (!hasVideo) { ++blocksSkipped; continue; }
-
-                // Sort notes by position, then source note id/order for
-                // deterministic same-tick chord resolution.
-                const auto noteRefs = sortedPatternNoteRefsForVideo(*pattern);
-                std::vector<const PatternNote*> notes;
-                notes.reserve(noteRefs.size());
-                for (const auto& ref : noteRefs) notes.push_back(ref.note);
-
-                const int64_t blockPosTicks    = block->position.ticks;
-                const int64_t blockOffsetTicks = block->offset.ticks;
-                const int64_t windowStart      = blockOffsetTicks;
-                const int64_t windowEnd        = blockOffsetTicks + blockDurationTicks;
-
-                const int64_t firstLoopIdx = windowStart / patternLenTicks;
-                int64_t lastLoopIdx        = (windowEnd - 1) / patternLenTicks;
-
-                // When loop is disabled, only iteration 0 emits notes. Any
-                // block span past pattern.length renders as empty space.
-                // Must match MixEngine.cpp clamp so audio/video stay in sync.
-                if (!block->loopEnabled)
-                    lastLoopIdx = std::min<int64_t>(lastLoopIdx, 0);
-
-                if (region->arpEnabled) {
-                    // Arp-subdivided: simulate arpeggiator in beat-space and
-                    // emit one VideoEvent per arp step instead of per note.
-                    auto arpEvts = ArpVideoExpander::expandArpVideoEvents(
-                        notes, blockPosTicks, blockDurationTicks,
-                        patternLenTicks, block->loopEnabled,
-                        firstLoopIdx, lastLoopIdx,
-                        windowStart, windowEnd,
-                        region->arpTempoSync, region->arpDivision,
-                        region->arpFreeTimeMs, region->arpGate,
-                        region->arpRange, region->arpDirection,
-                        bpm,
-                        region->sourceId, block->trackId,
-                        pattern->regionId,
-                        region->startTime, region->endTime,
-                        counter);
-                    eventsBuf.insert(eventsBuf.end(), arpEvts.begin(), arpEvts.end());
-                    notesAdded += static_cast<int>(arpEvts.size());
-                } else {
-                    for (int64_t L = firstLoopIdx; L <= lastLoopIdx; ++L) {
-                        for (const auto& noteRef : noteRefs) {
-                            const PatternNote* note = noteRef.note;
-                            const int64_t tapePos = L * patternLenTicks + note->position.ticks;
-                            if (tapePos < windowStart) continue;
-                            if (tapePos >= windowEnd) continue;
-
-                            const int64_t timelineTicks = blockPosTicks + (tapePos - windowStart);
-                            const double  timelineBeats = RenderClock::ppqToBeats(timelineTicks);
-                            const double  durationBeats = RenderClock::ppqToBeats(note->duration.ticks);
-
-                            // Slide notes don't spawn a video cell — they fire a
-                            // per-track visual effect (ZPR/Bounce/TVSim) on the
-                            // existing cell at their startBeat. Emit a parallel
-                            // SlideAnimationEvent and skip the VideoEvent.
-                            if (note->isSlide) {
-                                SlideAnimationEvent se;
-                                se.startBeat     = timelineBeats;
-                                se.durationBeats = durationBeats;
-                                se.trackId       = block->trackId;
-                                se.slideVelocity = note->velocity;
-                                se.slideCurveCx  = note->slideCurveCx;
-                                se.slideCurveCy  = note->slideCurveCy;
-                                syncManager->addSlideEvent(se);
-                                continue;
-                            }
-
-                            VideoEvent ev;
-                            ev.startBeat       = timelineBeats;
-                            ev.durationBeats   = durationBeats;
-                            ev.sourceId        = region->sourceId;
-                            ev.trackId         = block->trackId;
-                            ev.regionId        = pattern->regionId;  // route to region proxy
-                            ev.sourceStartTime = region->startTime;
-                            ev.sourceEndTime   = region->endTime;
-                            ev.sourceClampStartTime = region->startTime;
-                            ev.layerIndex      = 0;
-                            ev.x = 0.0f; ev.y = 0.0f;
-                            ev.width = 1.0f; ev.height = 1.0f;
-                            ev.opacity         = note->velocity;
-                            const int noteEmissionOrder = counter++;
-                            ev.globalNoteIndex = noteEmissionOrder;
-                            ev.hasSourceTriggerOrder = true;
-                            ev.sourceTriggerOrder = sourceOrderForVideo(*note, noteRef.sourceOrder);
-                            ev.originalEmissionOrder = noteEmissionOrder;
-                            ev.pitch           = note->pitch;  // flip-v2 resolver input
-                            eventsBuf.push_back(ev);
-                            ++notesAdded;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Phase 3: single-pass per-track flip resolution. Runs ONCE for the whole
-    // event list — chord detection, mono-only resolver call, and write-back of
-    // monoOrdinal / stateIndex / orientation. After this, eventsBuf is the
-    // final immutable input for SyncManager's video tick.
-    videoFlipApplier::applyAll(eventsBuf, *g_timeline);
-
-    for (const VideoEvent& ev : eventsBuf)
-        syncManager->addEvent(ev);
-
-    std::cout << "[Bridge] Rebuilt video events: "
-              << added << " clip(s), " << notesAdded << " note(s) added; "
-              << skipped << "/" << blocksSkipped << " skipped\n" << std::flush;
+    // One line, and only on request: this now runs after every edit, not just
+    // on Play, and the worker's stdout is a pipe.
+    XLETH_RENDER_LOG(std::fprintf(stderr,
+        "[Bridge] Rebuilt video events: %d clip(s), %d note(s), %d slide(s); "
+        "%d clip(s) / %d block(s) skipped\n",
+        stats.clipEvents, stats.noteEvents, stats.slideEvents,
+        stats.clipsSkipped, stats.blocksSkipped));
+    (void)stats;
 }
 
 // ─── Region proxy triggers ───────────────────────────────────────────────────
@@ -1859,9 +1603,9 @@ static void invalidateRegionProxy(int regionId) {
 
     std::string oldPath;
     {
-        std::lock_guard<std::mutex> lk(syncEventsMutex);
-        regionDecoderOwner.erase(regionId);   // unique_ptr dtor → close()
+        std::lock_guard<std::recursive_mutex> lk(syncEventsMutex);
         oldPath = r->proxyPath;
+        g_unopenableProxyPaths.erase(oldPath);
         r->proxyPath.clear();
         r->proxyReady     = false;
         r->proxyStartTime = 0.0;
@@ -1926,6 +1670,11 @@ static void maybeEnqueueRegionProxy(int regionId, int trackId,
                                     bool forceRetranscode = false,
                                     bool allowMigration   = false) {
     if (!g_proxyManager || !g_timeline || !g_projectManager) return;
+
+    // Reads the region and may clear its proxy path — a std::string the video
+    // thread reads when it picks a cell's file. RPC handlers call this with no
+    // lock held; the video thread calls it already holding the (recursive) lock.
+    std::lock_guard<std::recursive_mutex> modelLock(syncEventsMutex);
 
     SampleRegion* r = g_timeline->getRegionMutable(regionId);
     if (!r) return;
@@ -2090,44 +1839,39 @@ static void enqueueAllRegionProxies(bool allowMigration = false) {
     }
 }
 
-// Open a VideoDecoder for a finished proxy and install it into the
-// regionDecoderOwner/Ptrs maps; update SampleRegion metadata.
-// Split into three phases so we never hold syncEventsMutex while calling
-// avformat_open_input (5-50 ms blocking I/O).
+// Install finished region proxies: record the file on its SampleRegion so the
+// collector starts picking it.
+//
+// This used to open a legacy VideoDecoder on each finished file first — on this,
+// the video thread — and park it in a map nothing read. What that open actually
+// contributed was a check that the file is usable, and that check now happens
+// where it matters: if the preview decoder cannot open a proxy, the tick
+// reports the path and demoteUnopenableProxies() takes the proxy out of
+// service, so the cell falls back to the next file in the ladder instead of
+// staying dark. Here only existence is checked, exactly as the whole-source
+// preview proxy has always been installed (drainSourcePreviewResults).
 static void drainProxyResults() {
     if (!g_proxyManager) return;
 
-    // Phase 1: swap the finished-results vector out under ProxyManager's
-    // internal mutex (independent of syncEventsMutex — no contention).
+    // Swap the finished-results vector out under ProxyManager's internal mutex
+    // (independent of syncEventsMutex — no contention).
     std::vector<ProxyManager::Result> results = g_proxyManager->drainResults();
     if (results.empty()) return;
 
-    // Phase 2: open decoders WITHOUT syncEventsMutex held.
     struct Ready {
-        int                           regionId;
-        bool                          ok;
-        std::string                   outputPath;
-        double                        startTime;
-        double                        endTime;
-        bool                          migration;
-        std::unique_ptr<VideoDecoder> dec;   // nullptr if open failed
+        int         regionId;
+        bool        ok;
+        std::string outputPath;
+        double      startTime;
+        double      endTime;
+        bool        migration;
     };
     std::vector<Ready> ready;
     ready.reserve(results.size());
 
     for (auto& r : results) {
-        Ready out{ r.regionId, r.ok, r.outputPath, r.startTime, r.endTime,
-                   r.migration, nullptr };
-        if (r.ok && !r.outputPath.empty() && std::filesystem::exists(r.outputPath)) {
-            auto dec = std::make_unique<VideoDecoder>();
-            if (dec->open(r.outputPath)) {
-                out.dec = std::move(dec);
-            } else {
-                std::cerr << "[Proxy] region=" << r.regionId
-                          << " — decoder open failed on " << r.outputPath << "\n";
-                out.ok = false;
-            }
-        } else if (r.ok) {
+        Ready out{ r.regionId, r.ok, r.outputPath, r.startTime, r.endTime, r.migration };
+        if (r.ok && (r.outputPath.empty() || !std::filesystem::exists(r.outputPath))) {
             std::cerr << "[Proxy] region=" << r.regionId
                       << " — reported OK but file missing: " << r.outputPath << "\n";
             out.ok = false;
@@ -2135,13 +1879,13 @@ static void drainProxyResults() {
         ready.push_back(std::move(out));
     }
 
-    // Phase 3: install under syncEventsMutex — pure pointer/map mutations.
+    // Install under syncEventsMutex — pure in-memory metadata mutation.
     // Legacy intra files superseded by an installed H.264 migration are deleted
     // AFTER the lock is released (retireSupersededProxy takes the compositor
     // mutex and does file I/O).
     std::vector<std::string> superseded;
     {
-    std::lock_guard<std::mutex> lk(syncEventsMutex);
+    std::lock_guard<std::recursive_mutex> lk(syncEventsMutex);
     for (auto& r : ready) {
         SampleRegion* region = g_timeline ? g_timeline->getRegionMutable(r.regionId) : nullptr;
         if (!region) continue;
@@ -2154,8 +1898,9 @@ static void drainProxyResults() {
             continue;
         }
 
-        // Close any previous region decoder first (invalidation / re-transcode).
-        regionDecoderOwner.erase(r.regionId);   // unique_ptr dtor closes it
+        // A file the decoder already refused this session stays out of
+        // service — see g_unopenableProxyPaths.
+        if (r.ok && g_unopenableProxyPaths.count(r.outputPath) > 0) continue;
 
         if (!r.ok) {
             region->proxyPath.clear();
@@ -2185,13 +1930,12 @@ static void drainProxyResults() {
         }
         noteGenSuccess(region->sourceId);       // reset the failure streak
 
-        regionDecoderOwner[r.regionId] = std::move(r.dec);
         std::cout << "[Proxy] region=" << r.regionId
                   << (r.migration ? " migrated to H.264 -> " : " ready -> ")
                   << r.outputPath << "\n";
 
-        // Now engaged on the H.264 file: its legacy intra predecessor (whose
-        // decoder the erase above just closed) is superseded.
+        // Now engaged on the H.264 file: its legacy intra predecessor is
+        // superseded.
         if (g_projectManager) {
             const std::string dir = g_projectManager->getProxiesDir();
             if (r.outputPath == ProxyTranscoder::getRegionProxyPath(dir, r.regionId, ProxyCodec::H264))
@@ -2400,7 +2144,7 @@ static void maybeEnqueueSourcePoster(int sourceId) {
 static void buildPosterPrepass() {
     if (!g_proxyManager || !g_timeline || !g_projectManager) return;
 
-    std::lock_guard<std::mutex> lk(syncEventsMutex);
+    std::lock_guard<std::recursive_mutex> lk(syncEventsMutex);
     const std::string proxiesDir = g_projectManager->getProxiesDir();
 
     // ── Enumerate every distinct source and every distinct (source,bucket) cell
@@ -2551,7 +2295,7 @@ static void drainSourcePosterResults() {
         g_proxyManager->drainPosterResults();
     if (results.empty()) return;
 
-    std::lock_guard<std::mutex> lk(syncEventsMutex);
+    std::lock_guard<std::recursive_mutex> lk(syncEventsMutex);
     bool anyInstalled = false;
     for (auto& r : results) {
         SourceMedia* src = g_timeline ? g_timeline->getSourceMutable(r.sourceId) : nullptr;
@@ -2667,6 +2411,10 @@ static void maybeEnqueueSourcePreviewProxy(int sourceId) {
     if (const auto found = ProxyTranscoder::findSourcePreviewProxy(src->filePath, proxiesDir, h);
             found.found) {
         const std::string& proxy = found.path;
+        // On disk, but the decoder could not open it this session: leave it
+        // demoted, and do not queue a rebuild either (ProxyManager would see
+        // the same file and call it done).
+        if (g_unopenableProxyPaths.count(proxy) > 0) return;
         if (!src->previewProxyReady || src->previewProxyPath != proxy
             || src->previewProxyHeight != h) {
             src->previewProxyReady  = true;
@@ -2718,13 +2466,15 @@ static void drainSourcePreviewResults() {
 
     std::vector<std::string> superseded;   // retired after the lock (see drainProxyResults)
     {
-    std::lock_guard<std::mutex> lk(syncEventsMutex);
+    std::lock_guard<std::recursive_mutex> lk(syncEventsMutex);
     bool anyInstalled = false;
     for (auto& r : results) {
         SourceMedia* src = g_timeline ? g_timeline->getSourceMutable(r.sourceId) : nullptr;
         if (!src) continue;
 
         const bool ok = r.ok && !r.outputPath.empty() && posterFileExists(r.outputPath);
+        // A file the decoder already refused this session stays out of service.
+        if (ok && g_unopenableProxyPaths.count(r.outputPath) > 0) continue;
         if (ok) {
             src->previewProxyPath   = r.outputPath;
             src->previewProxyReady  = true;
@@ -3404,6 +3154,7 @@ static JsonApi::Object syllableToJs(JsonApi::Env env, const SampleRegion::Syllab
     o.Set("endTime",   JsonApi::Number::New(env, s.endTime));
     o.Set("number",    JsonApi::Number::New(env, s.number));
     o.Set("text",      JsonApi::String::New(env, s.text));
+    o.Set("quickOffsetPercent", JsonApi::Number::New(env, s.quickOffsetPercent));
     return o;
 }
 
@@ -3417,6 +3168,10 @@ static SampleRegion::Syllable jsToSyllable(const JsonApi::Object& o) {
         s.number    = o.Get("number").As<JsonApi::Number>().Int32Value();
     if (o.Has("text")      && o.Get("text").IsString())
         s.text      = o.Get("text").As<JsonApi::String>().Utf8Value();
+    if (o.Has("quickOffsetPercent") && o.Get("quickOffsetPercent").IsNumber()) {
+        const double pct = o.Get("quickOffsetPercent").As<JsonApi::Number>().DoubleValue();
+        s.quickOffsetPercent = pct < 0.0 ? 0.0 : (pct > 100.0 ? 100.0 : pct);
+    }
     return s;
 }
 
@@ -4282,6 +4037,12 @@ static void videoThreadBody()
             std::chrono::duration_cast<std::chrono::microseconds>(tp - epoch).count());
     };
 
+    // Paths the preview decoder failed to OPEN during the last tick's decode
+    // loop. Handed to demoteUnopenableProxies() at the top of the next tick —
+    // not acted on in place, because that needs the model lock and the decode
+    // loop runs with only the compositor lock held (lock order).
+    std::vector<std::string> unopenablePaths;
+
     // Latch: one event-rebuild attempt per "wanted a stopped render but the event
     // list was empty" episode. Bounds the self-heal below — a project that
     // genuinely has no video clips has legitimately empty events, and retrying
@@ -4333,6 +4094,11 @@ static void videoThreadBody()
         // Retry deleting superseded legacy proxies whose handles were still open
         // (throttled internally; no-op unless something is parked).
         sweepRetiredProxies();
+        // Proxies the decoder could not open last tick stop being picked.
+        if (!unopenablePaths.empty()) {
+            demoteUnopenableProxies(unopenablePaths);
+            unopenablePaths.clear();
+        }
 
         // Rebuild SyncManager's VideoEvent list if something dropped it (project
         // load, new project, clear timeline). MUST be before the lock below —
@@ -4380,9 +4146,19 @@ static void videoThreadBody()
         }
 
         if (audioEngine && syncManager && frameOutput.isInitialized()) {
-            std::lock_guard<std::mutex> eLock(syncEventsMutex);
+            // Held for the part of the tick that READS the model (timeline +
+            // event-list pointer) and released before decode / composite /
+            // readback — see the unlock after the self-heal sweeps. Every
+            // timeline mutation takes this same lock now, so holding it across
+            // a whole frame (as this used to) would make each edit wait for the
+            // slowest thing the preview does.
+            std::unique_lock<std::recursive_mutex> eLock(syncEventsMutex);
             g_previewDiag.gateBlockReachedTicks.fetch_add(1, std::memory_order_relaxed);
-            const auto& events = syncManager->getEvents();
+            // Immutable snapshots: still valid after the lock is dropped, even
+            // if a rebuild publishes a new list meanwhile.
+            const auto eventsSnapshot = syncManager->eventsSnapshot();
+            const auto slideSnapshot  = syncManager->slideEventsSnapshot();
+            const auto& events = *eventsSnapshot;
 
             Transport& t = audioEngine->getTransport();
             bool isPlaying = t.isPlaying();
@@ -4553,7 +4329,7 @@ static void videoThreadBody()
                                 g_previewAnimMgr->resetAll();
                             }
                         }
-                        const auto& slideEvts = syncManager->getSlideEvents();
+                        const auto& slideEvts = *slideSnapshot;
                         for (const auto& se : slideEvts) {
                             if (se.startBeat > s_previewPrevBeat
                                 && se.startBeat <= currentBeat) {
@@ -4696,6 +4472,21 @@ static void videoThreadBody()
                         }
                     }
 
+                    // ── Model lock released ───────────────────────────────────
+                    // Everything from here to the end of the tick works on
+                    // things this thread owns: `requests` (self-contained — an
+                    // interned path, a COPY of the effect chain, plain values),
+                    // the by-value `layout`, the event snapshot, and compositor
+                    // state under g_previewCompositorMutex. Nothing below may
+                    // touch g_timeline or SyncManager.
+                    //
+                    // A snapshot transition is the exception: it collects from
+                    // the timeline twice more, interleaved with its own decodes
+                    // and composites, so for those frames the lock stays held
+                    // to the end of the tick as it always was.
+                    if (!previewTransition.active)
+                        eLock.unlock();
+
                     // [PreviewTickTiming] stage 2 (deduplicate + resolveFrames / cache resolve)
                     const auto tResolveStart = TickClock::now();
                     s_selfHealTimer.record(
@@ -4820,6 +4611,15 @@ static void videoThreadBody()
                                 ++decodeSucc;
                             } else {
                                 ++decodeFail;
+                                // A file that would not OPEN (as opposed to a
+                                // frame that would not decode) is reported so
+                                // a proxy at that path stops being picked —
+                                // see demoteUnopenableProxies.
+                                const std::string& failedPath = key.sourcePath.str();
+                                if (g_previewRenderDecoder->openFailedRecently(failedPath)
+                                    && std::find(unopenablePaths.begin(), unopenablePaths.end(),
+                                                 failedPath) == unopenablePaths.end())
+                                    unopenablePaths.push_back(failedPath);
                             }
                         }
                         g_previewDiag.deferredDecodes.fetch_add(
@@ -4923,7 +4723,7 @@ static void videoThreadBody()
 
                             didTransition = xleth::renderSnapshotTransition(
                                 previewTransition, *g_timeline,
-                                syncManager->getEvents(),
+                                events,
                                 *g_previewCompositor, *g_previewCollector,
                                 *g_previewRenderCache, txCtx, decodeMisses);
                         }
@@ -5273,11 +5073,10 @@ static void videoThreadBody()
                                 s_windowStart = windowNow;
 
                                 if (g_previewResolutionAutoMode.load(std::memory_order_relaxed)) {
-                                    int previewFpsNow = 30;
-                                    if (g_timeline) {
-                                        int f = g_timeline->getGridLayout().previewFps;
-                                        if (f >= 1 && f <= 120) previewFpsNow = f;
-                                    }
+                                    // The tick's own (already validated) rate.
+                                    // Read while the model lock was held; the
+                                    // timeline is off limits down here.
+                                    const int previewFpsNow = previewFps;
                                     const int32_t framePeriodUs = 1000000 / previewFpsNow;
 
                                     const bool severe = p50Us > framePeriodUs;
@@ -5504,9 +5303,14 @@ static void videoThreadBody()
         // loop running at previewFps even when tick work takes significant time
         // (achievable fps = previewFps instead of 1000/(framePeriodMs+workMs)).
         int previewFps = 30;
-        if (g_timeline) {
-            int f = g_timeline->getGridLayout().previewFps;
-            if (f >= 1 && f <= 120) previewFps = f;
+        {
+            // A timeline read like any other on this thread: under the model
+            // lock, so a project load swapping the timeline cannot land mid-read.
+            std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
+            if (g_timeline) {
+                int f = g_timeline->getGridLayout().previewFps;
+                if (f >= 1 && f <= 120) previewFps = f;
+            }
         }
         const auto framePeriod = std::chrono::microseconds(1000000 / previewFps);
         const auto pacingNow = std::chrono::steady_clock::now();
@@ -5715,7 +5519,19 @@ JsonApi::Value Initialize(const JsonApi::CallbackInfo& info)
             // the coverage complete by construction, the same argument the two
             // refreshes above rest on.
             if (ae) ae->getMixEngine().refreshAutomationPlan();
+            // The preview's VideoEvent list is derived from clips, pattern
+            // blocks and notes, so any timeline edit can change it. It used to
+            // be rebuilt only by transport play(): a clip or note added while
+            // paused or looping stayed invisible until the next Stop/Play even
+            // though the audio picked it up at once. Flag it here and the video
+            // thread rebuilds at the top of its next tick — at most once per
+            // tick however many commands land, so a burst of edits costs one
+            // rebuild, and none of them waits for it.
+            g_videoEventsDirty.store(true, std::memory_order_release);
         });
+        // Timeline mutations are serialised against the video thread's reads at
+        // the one place they all pass through. See syncEventsMutex.
+        g_undoManager->setMutationMutex(&syncEventsMutex);
     }
 
     // Sync transport BPM from timeline default
@@ -5751,6 +5567,9 @@ JsonApi::Value Initialize(const JsonApi::CallbackInfo& info)
         g_previewCompositor    = std::make_unique<GridCompositor>();
         g_previewRenderCache   = std::make_unique<RenderFrameCache>();
         g_previewRenderDecoder = std::make_unique<RenderVideoDecoder>();
+        // The preview re-requests every visible file each tick; a source that
+        // will not open must not be re-opened sixty times a second.
+        g_previewRenderDecoder->setOpenFailureBackoff(2.0);
         g_previewAnimMgr       = std::make_unique<AnimationManager>();
         g_previewCollector     = std::make_unique<FrameCollector>();
 
@@ -5848,15 +5667,12 @@ PurgeReport g_lastPurge;
 static void releaseProjectMediaHandles()
 {
     {
-        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
         if (syncManager) syncManager->clearEvents();
         for (auto& d : decoderOwner)
             if (d) d->close();
         decoderOwner.clear();
         decoderPtrs.clear();
-        for (auto& kv : regionDecoderOwner)
-            if (kv.second) kv.second->close();
-        regionDecoderOwner.clear();
         if (frameCache) frameCache->clear();
     }
     if (g_frameServer) g_frameServer->closeAll();
@@ -5983,12 +5799,11 @@ void Shutdown(const JsonApi::CallbackInfo& info)
     decoderPtrs.clear();
     std::fprintf(stderr, "[BridgeShutdown] decoders released\n");
 
-    // Region decoders are owned by unique_ptr — destructor closes each cleanly.
-    regionDecoderOwner.clear();
     g_posterEnqueued.clear();
     g_proxyEnqueuedRegions.clear();
     g_thumbnailEnqueued.clear();
     g_sourcePreviewEnqueued.clear();
+    g_unopenableProxyPaths.clear();
     g_genFailCount.clear();
     g_genDisabled.clear();
     std::fprintf(stderr, "[BridgeShutdown] region decoders released\n");
@@ -6215,14 +6030,23 @@ JsonApi::Value GetVideoDuration(const JsonApi::CallbackInfo& info)
     }
 
     int sourceId = info[0].As<JsonApi::Number>().Int32Value();
-    if (sourceId < 0 || sourceId >= static_cast<int>(decoderPtrs.size()))
+    if (sourceId < 0)
         return JsonApi::Number::New(env, 0.0);
 
-    VideoDecoder* dec = decoderPtrs[static_cast<size_t>(sourceId)];
-    if (!dec || !dec->isOpen())
-        return JsonApi::Number::New(env, 0.0);
+    // A source opened through the legacy loadVideo RPC has its own decoder.
+    if (sourceId < static_cast<int>(decoderPtrs.size())) {
+        VideoDecoder* dec = decoderPtrs[static_cast<size_t>(sourceId)];
+        if (dec && dec->isOpen())
+            return JsonApi::Number::New(env, dec->getDuration());
+    }
 
-    return JsonApi::Number::New(env, dec->getDuration());
+    // Project sources no longer keep a decoder open just to be asked this; the
+    // duration was probed at import and lives on the SourceMedia.
+    if (g_timeline) {
+        if (const SourceMedia* src = g_timeline->getSource(sourceId))
+            return JsonApi::Number::New(env, src->duration);
+    }
+    return JsonApi::Number::New(env, 0.0);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -6342,6 +6166,8 @@ void SetBPM(const JsonApi::CallbackInfo& info)
     audioEngine->getTransport().setBPM(bpm);
     // Keep timeline in sync if available
     if (g_timeline) g_timeline->setBPM(bpm);
+    // Clip source anchors and vibrato phase are tempo-dependent.
+    g_videoEventsDirty.store(true, std::memory_order_release);
 }
 
 JsonApi::Value GetTransportState(const JsonApi::CallbackInfo& info)
@@ -7023,7 +6849,7 @@ void AddVideoEvent(const JsonApi::CallbackInfo& info)
     ev.opacity = o.Get("opacity").As<JsonApi::Number>().FloatValue();
 
     {
-        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
         syncManager->addEvent(ev);
     }
 }
@@ -7040,7 +6866,7 @@ void ClearTimeline(const JsonApi::CallbackInfo& info)
     audioEngine->getAudioScheduler().clearEvents();
 
     {
-        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
         if (syncManager) syncManager->clearEvents();
 
         for (auto& d : decoderOwner)
@@ -7303,8 +7129,11 @@ JsonApi::Value Project_NewBlank(const JsonApi::CallbackInfo& info)
 
     // 4. Clear the Timeline in place — preserves object identity so
     //    MixEngine / SyncManager / UI references remain valid.
-    g_timeline->clear();
-    g_timeline->setGlobalStretchMethod(newProjectGlobalStretchMethod);
+    {
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
+        g_timeline->clear();
+        g_timeline->setGlobalStretchMethod(newProjectGlobalStretchMethod);
+    }
 
     // 5. Clear undo/redo history. markSavepoint at the end so the empty
     //    project starts out "clean".
@@ -7328,20 +7157,18 @@ JsonApi::Value Project_NewBlank(const JsonApi::CallbackInfo& info)
     // 6. Drop decoders, video events, frame caches. Must happen under
     //    syncEventsMutex so the video thread never sees a dangling pointer.
     {
-        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
         if (syncManager) syncManager->clearEvents();
         for (auto& d : decoderOwner)
             if (d) d->close();
         decoderOwner.clear();
         decoderPtrs.clear();
-        for (auto& kv : regionDecoderOwner)
-            if (kv.second) kv.second->close();
-        regionDecoderOwner.clear();
         // New project → re-attempt poster + proxy self-heal for its sources.
         g_posterEnqueued.clear();
         g_proxyEnqueuedRegions.clear();
         g_thumbnailEnqueued.clear();
         g_sourcePreviewEnqueued.clear();
+        g_unopenableProxyPaths.clear();
         g_genFailCount.clear();
         g_genDisabled.clear();
         if (frameCache) frameCache->clear();
@@ -7471,7 +7298,12 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
     if (!xleth::project::isSameFolder(closingDir, dir))
         purgeClosingProject(closingDir, "open another project");
 
-    *g_timeline = std::move(*loaded);
+    {
+        // The whole timeline is replaced: every map the video thread reads is
+        // torn down and rebuilt by this one assignment.
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
+        *g_timeline = std::move(*loaded);
+    }
     if (g_undoManager) g_undoManager->clear();
 
     // Re-wire MixEngine and sync transport BPM
@@ -7689,26 +7521,23 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
         }
     }
 
-    // Drop any stale decoders/events from before the load, then re-wire every
-    // video source in the loaded project. Most will already have a ready proxy
-    // (saved after transcode finished); ensureSourceDecoder picks the proxy
-    // path automatically and skips the watchdog in that case.
+    // Drop any stale decoders/events from before the load. Nothing is opened
+    // for the loaded project's sources here: the preview decoder opens each
+    // file the first time a cell asks for it.
     {
-        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
         if (syncManager) syncManager->clearEvents();
         for (auto& d : decoderOwner)
             if (d) d->close();
         decoderOwner.clear();
         decoderPtrs.clear();
-        // Region decoders and the per-session generation guards are keyed by ids
-        // that the loaded project reuses — same reset as project_newBlank.
-        for (auto& kv : regionDecoderOwner)
-            if (kv.second) kv.second->close();
-        regionDecoderOwner.clear();
+        // The per-session generation guards are keyed by ids that the loaded
+        // project reuses — same reset as project_newBlank.
         g_posterEnqueued.clear();
         g_proxyEnqueuedRegions.clear();
         g_thumbnailEnqueued.clear();
         g_sourcePreviewEnqueued.clear();
+        g_unopenableProxyPaths.clear();
         g_genFailCount.clear();
         g_genDisabled.clear();
         if (frameCache) frameCache->clear();
@@ -7728,10 +7557,6 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
     }
 
     auto sources = g_timeline->getAllSources();
-    for (const SourceMedia* s : sources) {
-        if (s && s->hasVideo)
-            ensureSourceDecoder(s->id);
-    }
 
     // Partial outputs of generations interrupted last time (app killed, crash)
     // are never referenced — every artifact is written as <name>.tmp and only
@@ -7803,7 +7628,7 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
             // the lazy self-heal (dedups, validates an existing sidecar first).
             // Offline media cannot be re-extracted from — leave it.
             if (ProxyTranscoder::fileExistsUtf8(s->filePath)) {
-                std::lock_guard<std::mutex> lk(syncEventsMutex);   // its documented precondition
+                std::lock_guard<std::recursive_mutex> lk(syncEventsMutex);   // its documented precondition
                 maybeEnqueueSourcePoster(s->id);
             }
 
@@ -7838,7 +7663,7 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
             // the proxy is live. Do this under syncEventsMutex so the video
             // thread reads a coherent state.
             if (s->previewProxyReady && !onDisk) {
-                std::lock_guard<std::mutex> lk(syncEventsMutex);
+                std::lock_guard<std::recursive_mutex> lk(syncEventsMutex);
                 SourceMedia* sm = g_timeline->getSourceMutable(s->id);
                 if (sm) {
                     sm->previewProxyReady = false;
@@ -7898,7 +7723,12 @@ JsonApi::Value Project_ImportSource(const JsonApi::CallbackInfo& info)
     std::string filePath = info[0].As<JsonApi::String>().Utf8Value();
     BridgeCallLog log("project.importSource");
 
-    int id = g_projectManager->importSource(*g_timeline, filePath);
+    int id = -1;
+    {
+        // Inserts into the source map the video thread reads every frame.
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
+        id = g_projectManager->importSource(*g_timeline, filePath);
+    }
     if (id < 0) {
         JsonApi::Error::New(env, "Import failed: unsupported or unreadable media file.")
             .ThrowAsJavaScriptException();
@@ -7908,7 +7738,6 @@ JsonApi::Value Project_ImportSource(const JsonApi::CallbackInfo& info)
     if (id >= 0) {
         const SourceMedia* src = g_timeline->getSource(id);
         if (src && src->hasVideo) {
-            ensureSourceDecoder(id);
             if (g_frameServer)
                 g_frameServer->openSourceFromTimeline(id, *g_timeline);
         }
@@ -7944,7 +7773,7 @@ JsonApi::Value Project_RemoveSource(const JsonApi::CallbackInfo& info)
         g_frameServer->closeSource(sourceId);
 
     {
-        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
         if (sourceId >= 0 && static_cast<size_t>(sourceId) < decoderPtrs.size()
             && decoderPtrs[static_cast<size_t>(sourceId)]) {
             decoderPtrs[static_cast<size_t>(sourceId)]->close();
@@ -7952,7 +7781,14 @@ JsonApi::Value Project_RemoveSource(const JsonApi::CallbackInfo& info)
         }
     }
 
-    bool ok = g_timeline->removeSource(sourceId);
+    bool ok = false;
+    {
+        // Erases from the source map the video thread reads every frame.
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
+        ok = g_timeline->removeSource(sourceId);
+    }
+    // Events that pointed at the source are stale now.
+    g_videoEventsDirty.store(true, std::memory_order_release);
     log.done(ok ? "ok" : "not found");
     return JsonApi::Boolean::New(env, ok);
 }
@@ -8007,7 +7843,6 @@ JsonApi::Value Project_RelinkSource(const JsonApi::CallbackInfo& info)
     if (ok) {
         const SourceMedia* src = g_timeline->getSource(sourceId);
         if (src && src->hasVideo) {
-            ensureSourceDecoder(sourceId);
             if (g_frameServer)
                 g_frameServer->openSourceFromTimeline(sourceId, *g_timeline);
         }
@@ -8427,6 +8262,10 @@ void Timeline_SetBPM(const JsonApi::CallbackInfo& info)
     g_undoManager->execute(std::make_unique<SetBPMCommand>(bpm, *g_timeline), *g_timeline);
     // Sync live transport to match the timeline's committed BPM
     audioEngine->getTransport().setBPM(g_timeline->getBPM());
+    // The command's own hook flagged a rebuild BEFORE the transport caught up,
+    // and the rebuild reads the transport's tempo; flag it again so a rebuild
+    // that ran in between is redone at the right one.
+    g_videoEventsDirty.store(true, std::memory_order_release);
     // Loop bounds are tick-based; re-derive sample bounds at the new tempo.
     syncTransportLoopFromTimeline();
     // Invalidate all stretched clips on BPM change. Required because the render
@@ -8488,7 +8327,7 @@ static JsonApi::Value createGridSnapshotBridge(const JsonApi::CallbackInfo& info
         JsonApi::TypeError::New(env, signature).ThrowAsJavaScriptException();
         return env.Undefined();
     }
-    std::lock_guard<std::mutex> lock(syncEventsMutex);
+    std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
     return JsonApi::String::New(env, g_timeline->createGridSnapshot(
         cloneActive, info[0].As<JsonApi::String>().Utf8Value()));
 }
@@ -8514,7 +8353,7 @@ JsonApi::Value Timeline_DeleteSnapshot(const JsonApi::CallbackInfo& info) {
             .ThrowAsJavaScriptException();
         return env.Undefined();
     }
-    std::lock_guard<std::mutex> lock(syncEventsMutex);
+    std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
     return JsonApi::Boolean::New(env, g_timeline->deleteGridSnapshot(
         info[0].As<JsonApi::String>().Utf8Value()));
 }
@@ -8531,7 +8370,7 @@ JsonApi::Value Timeline_RenameSnapshot(const JsonApi::CallbackInfo& info) {
             .ThrowAsJavaScriptException();
         return env.Undefined();
     }
-    std::lock_guard<std::mutex> lock(syncEventsMutex);
+    std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
     return JsonApi::Boolean::New(env, g_timeline->renameGridSnapshot(
         info[0].As<JsonApi::String>().Utf8Value(),
         info[1].As<JsonApi::String>().Utf8Value()));
@@ -8548,7 +8387,7 @@ JsonApi::Value Timeline_SetActiveSnapshot(const JsonApi::CallbackInfo& info) {
             .ThrowAsJavaScriptException();
         return env.Undefined();
     }
-    std::lock_guard<std::mutex> lock(syncEventsMutex);
+    std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
     return JsonApi::Boolean::New(env, g_timeline->setActiveGridSnapshot(
         info[0].As<JsonApi::String>().Utf8Value()));
 }
@@ -8559,7 +8398,7 @@ JsonApi::Value Timeline_ListSnapshots(const JsonApi::CallbackInfo& info) {
         JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
         return env.Undefined();
     }
-    std::lock_guard<std::mutex> lock(syncEventsMutex);
+    std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
     const auto& snapshots = g_timeline->getGridSnapshots();
     JsonApi::Array result = JsonApi::Array::New(env, snapshots.size());
     for (size_t i = 0; i < snapshots.size(); ++i) {
@@ -8652,7 +8491,7 @@ JsonApi::Value Timeline_AddCue(const JsonApi::CallbackInfo& info) {
     }
     TickTime tick; tick.ticks = static_cast<int64_t>(info[0].As<JsonApi::Number>().DoubleValue());
     const std::string snapshotId = info[1].As<JsonApi::String>().Utf8Value();
-    std::lock_guard<std::mutex> lock(syncEventsMutex);
+    std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
     g_timeline->addGridCue(tick, snapshotId);
     return gridCuesToJs(env, g_timeline->getGridCues());
 }
@@ -8673,7 +8512,7 @@ JsonApi::Value Timeline_MoveCue(const JsonApi::CallbackInfo& info) {
     }
     TickTime oldTick; oldTick.ticks = static_cast<int64_t>(info[0].As<JsonApi::Number>().DoubleValue());
     TickTime newTick; newTick.ticks = static_cast<int64_t>(info[1].As<JsonApi::Number>().DoubleValue());
-    std::lock_guard<std::mutex> lock(syncEventsMutex);
+    std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
     return JsonApi::Boolean::New(env, g_timeline->moveGridCue(oldTick, newTick));
 }
 
@@ -8692,7 +8531,7 @@ JsonApi::Value Timeline_RemoveCue(const JsonApi::CallbackInfo& info) {
         return env.Undefined();
     }
     TickTime tick; tick.ticks = static_cast<int64_t>(info[0].As<JsonApi::Number>().DoubleValue());
-    std::lock_guard<std::mutex> lock(syncEventsMutex);
+    std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
     return JsonApi::Boolean::New(env, g_timeline->removeGridCue(tick));
 }
 
@@ -8703,7 +8542,7 @@ JsonApi::Value Timeline_ListCues(const JsonApi::CallbackInfo& info) {
         JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
         return env.Undefined();
     }
-    std::lock_guard<std::mutex> lock(syncEventsMutex);
+    std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
     return gridCuesToJs(env, g_timeline->getGridCues());
 }
 
@@ -8806,7 +8645,7 @@ JsonApi::Value Timeline_SetCueTransition(const JsonApi::CallbackInfo& info) {
         readCurve("pinToEnd", tr.pinToEndEasing);
     }
 
-    std::lock_guard<std::mutex> lock(syncEventsMutex);
+    std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
     g_timeline->setCueTransition(tick, tr);
     return gridCuesToJs(env, g_timeline->getGridCues());
 }
@@ -8818,7 +8657,7 @@ JsonApi::Value Timeline_GetDefaultSnapshot(const JsonApi::CallbackInfo& info) {
         JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
         return env.Undefined();
     }
-    std::lock_guard<std::mutex> lock(syncEventsMutex);
+    std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
     return JsonApi::String::New(env, g_timeline->getDefaultSnapshotId());
 }
 
@@ -8848,7 +8687,7 @@ void Timeline_SetGridLayout(const JsonApi::CallbackInfo& info)
     BridgeCallLog log("timeline.setGridLayout");
     GridLayout layout = jsToGridLayout(info[0].As<JsonApi::Object>());
     {
-        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
         g_undoManager->execute(
             std::make_unique<SetGridLayoutCommand>(std::move(layout), *g_timeline),
             *g_timeline);
@@ -8878,7 +8717,7 @@ void Timeline_AssignTrackToGrid(const JsonApi::CallbackInfo& info)
     int spanY   = info[4].As<JsonApi::Number>().Int32Value();
     BridgeCallLog log("timeline.assignTrackToGrid");
     {
-        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
         g_undoManager->execute(
             std::make_unique<AssignTrackToGridCommand>(trackId, gridX, gridY, spanX, spanY, *g_timeline),
             *g_timeline);
@@ -8927,7 +8766,7 @@ void Timeline_AssignTrackToGridWithZOrder(const JsonApi::CallbackInfo& info)
     int zOrder  = info[5].As<JsonApi::Number>().Int32Value();
     BridgeCallLog log("timeline.assignTrackToGridWithZOrder");
     {
-        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
         g_undoManager->execute(
             std::make_unique<AssignTrackToGridCommand>(trackId, gridX, gridY,
                                                        spanX, spanY, zOrder,
@@ -8965,7 +8804,7 @@ void Timeline_RemoveTrackFromGrid(const JsonApi::CallbackInfo& info)
     int trackId = info[0].As<JsonApi::Number>().Int32Value();
     BridgeCallLog log("timeline.removeTrackFromGrid");
     {
-        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
         g_undoManager->execute(
             std::make_unique<RemoveTrackFromGridCommand>(trackId, *g_timeline),
             *g_timeline);
@@ -9006,7 +8845,7 @@ void Timeline_SetFullscreenLayers(const JsonApi::CallbackInfo& info)
 
     BridgeCallLog log("timeline.setFullscreenLayers");
     {
-        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
         g_undoManager->execute(
             std::make_unique<SetFullscreenLayersCommand>(layers, *g_timeline),
             *g_timeline);
@@ -9053,7 +8892,7 @@ void Timeline_SetPlacementZOrder(const JsonApi::CallbackInfo& info)
     int zOrder  = info[1].As<JsonApi::Number>().Int32Value();
     BridgeCallLog log("timeline.setPlacementZOrder");
     {
-        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
         g_undoManager->execute(
             std::make_unique<SetPlacementZOrderCommand>(trackId, zOrder, *g_timeline),
             *g_timeline);
@@ -9077,7 +8916,7 @@ void Timeline_SetPreviewFps(const JsonApi::CallbackInfo& info)
     int fps = info[0].As<JsonApi::Number>().Int32Value();
     BridgeCallLog log("timeline.setPreviewFps");
     {
-        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
         g_undoManager->execute(
             std::make_unique<SetPreviewFpsCommand>(fps, *g_timeline),
             *g_timeline);
@@ -9850,7 +9689,7 @@ void Timeline_RemoveTrack(const JsonApi::CallbackInfo& info)
     {
         // Cascades into grid slots / chorus / crash — hold syncEventsMutex
         // so the video thread sees a consistent GridLayout.
-        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
         g_undoManager->execute(std::make_unique<RemoveTrackCommand>(id, *g_timeline), *g_timeline);
     }
     // Close any open plugin editor windows for this track before tearing it down.
@@ -14975,6 +14814,57 @@ JsonApi::Value Timeline_AddNotesBatch(const JsonApi::CallbackInfo& info)
     return out;
 }
 
+// timeline_editPatternNotes(patternId, notes[])
+// notes = the pattern's COMPLETE note list after the edit. Entries with an
+// `id` > 0 keep it; entries without one are new notes. One undo entry.
+// Returns the resulting note list (with every id filled in).
+JsonApi::Value Timeline_EditPatternNotes(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsArray()) {
+        JsonApi::TypeError::New(env, "timeline_editPatternNotes(patternId: number, notes: array)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    int patternId = info[0].As<JsonApi::Number>().Int32Value();
+    if (!g_timeline->getPattern(patternId)) return env.Null();
+    JsonApi::Array arr = info[1].As<JsonApi::Array>();
+
+    std::vector<PatternNote> notes;
+    notes.reserve(arr.Length());
+    for (uint32_t i = 0; i < arr.Length(); ++i) {
+        JsonApi::Value v = arr.Get(i);
+        if (!v.IsObject()) continue;
+        JsonApi::Object o = v.As<JsonApi::Object>();
+        if (!o.Has("positionTicks") || !o.Has("durationTicks") || !o.Has("pitch"))
+            continue;
+        PatternNote n = jsToPatternNote(o);
+        n.id = (o.Has("id") && o.Get("id").IsNumber())
+            ? o.Get("id").As<JsonApi::Number>().Int32Value() : 0;
+        if (n.position.ticks < 0) n.position.ticks = 0;
+        if (n.duration.ticks < 1) n.duration.ticks = 1;
+        if (n.pitch < 0) n.pitch = 0;
+        if (n.pitch > 127) n.pitch = 127;
+        notes.push_back(n);
+    }
+
+    BridgeCallLog log("timeline.editPatternNotes");
+    auto cmd = std::make_unique<EditPatternNotesCommand>(patternId, std::move(notes), *g_timeline);
+    EditPatternNotesCommand* cmdPtr = cmd.get();
+    g_undoManager->execute(std::move(cmd), *g_timeline);
+
+    const std::vector<PatternNote>& after = cmdPtr->getAfter();
+    JsonApi::Array out = JsonApi::Array::New(env, after.size());
+    for (size_t i = 0; i < after.size(); ++i)
+        out.Set(static_cast<uint32_t>(i), patternNoteToJs(env, after[i]));
+    log.done(std::to_string(after.size()) + " note(s)");
+    return out;
+}
+
 // fsc_parse(filePath)
 // Pure read-only FL Studio Score (.fsc) parse. Wraps FscScoreParser::parseFile.
 // Does NOT touch Timeline / Pattern / undo / project state. Returns neutral
@@ -15331,6 +15221,76 @@ void Timeline_PreviewAllNotesOff(const JsonApi::CallbackInfo& info)
     Sampler* s = mix.getPreviewSamplerPtr(regionId);
     if (s == nullptr) return;
     s->allNotesOff();
+}
+
+// timeline_startPatternAudition(patternId, loop) → boolean
+// Plays one pattern on its own (no arrangement), through its track's effects.
+// Pauses the transport first: the track chains belong to playback while it
+// rolls. Returns false when the pattern has no sample / no length. Not undoable.
+JsonApi::Value Timeline_StartPatternAudition(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || audioEngine == nullptr) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        JsonApi::TypeError::New(env, "timeline_startPatternAudition(patternId, loop?)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int patternId = info[0].As<JsonApi::Number>().Int32Value();
+    const bool loop = info.Length() > 1 && info[1].IsBoolean()
+                      && info[1].As<JsonApi::Boolean>().Value();
+
+    if (audioEngine->getTransport().isPlaying()) {
+        audioEngine->getTransport().pause();
+        audioEngine->getMixEngine().silenceAllSamplers();
+        g_previewPauseForPosterLoad.store(false);
+    }
+    const bool started = audioEngine->getMixEngine().startPatternAudition(patternId, loop);
+    return JsonApi::Boolean::New(env, started);
+}
+
+// timeline_stopPatternAudition() — ends a pattern audition; its voices release.
+void Timeline_StopPatternAudition(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || audioEngine == nullptr) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return;
+    }
+    audioEngine->getMixEngine().stopPatternAudition();
+}
+
+// timeline_setPatternAuditionLoop(loop) — live: off lets the current pass finish.
+void Timeline_SetPatternAuditionLoop(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || audioEngine == nullptr) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return;
+    }
+    const bool loop = info.Length() > 0 && info[0].IsBoolean()
+                      && info[0].As<JsonApi::Boolean>().Value();
+    audioEngine->getMixEngine().setPatternAuditionLoop(loop);
+}
+
+// timeline_getPatternAuditionState() → { active, patternId, loop, positionTicks }
+JsonApi::Value Timeline_GetPatternAuditionState(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || audioEngine == nullptr) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const auto s = audioEngine->getMixEngine().getPatternAuditionState();
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("active", JsonApi::Boolean::New(env, s.active));
+    out.Set("patternId", JsonApi::Number::New(env, s.patternId));
+    out.Set("loop", JsonApi::Boolean::New(env, s.loop));
+    out.Set("positionTicks", JsonApi::Number::New(env, static_cast<double>(s.positionTicks)));
+    return out;
 }
 
 // timeline_convertToPatternTrack(trackId)
@@ -16148,7 +16108,7 @@ void Timeline_SetPreviewProxyHeight(const JsonApi::CallbackInfo& info)
     // an existing on-disk proxy at the new size (or rebuilds one). The old-height
     // proxy files stay on disk and are reused if the user switches back.
     {
-        std::lock_guard<std::mutex> lk(syncEventsMutex);
+        std::lock_guard<std::recursive_mutex> lk(syncEventsMutex);
         g_sourcePreviewEnqueued.clear();
         if (g_timeline) {
             for (const SourceMedia* csrc : g_timeline->getAllSources()) {
@@ -16215,7 +16175,7 @@ JsonApi::Value Timeline_AddVisualEffect(const JsonApi::CallbackInfo& info)
     auto* cmd = new AddVisualEffectCommand(trackId,
         static_cast<VisualEffect::Type>(effectType));
     {
-        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
         g_undoManager->execute(std::unique_ptr<Command>(cmd), *g_timeline);
     }
     g_previewDirty = true;
@@ -16242,7 +16202,7 @@ void Timeline_RemoveVisualEffect(const JsonApi::CallbackInfo& info)
     BridgeCallLog log("timeline.removeVisualEffect");
     {
         // Bug 1 fix: see Timeline_AddVisualEffect above.
-        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
         g_undoManager->execute(
             std::make_unique<RemoveVisualEffectCommand>(trackId, effectIndex, *g_timeline),
             *g_timeline);
@@ -16270,7 +16230,7 @@ void Timeline_ReorderVisualEffect(const JsonApi::CallbackInfo& info)
     BridgeCallLog log("timeline.reorderVisualEffect");
     {
         // Bug 1 fix: see Timeline_AddVisualEffect above.
-        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
         g_undoManager->execute(
             std::make_unique<ReorderVisualEffectCommand>(trackId, fromIndex, toIndex),
             *g_timeline);
@@ -16308,7 +16268,7 @@ void Timeline_SetTrackVisualEffectChainOrder(const JsonApi::CallbackInfo& info)
     BridgeCallLog log("timeline.setTrackVisualEffectChainOrder");
     {
         // Bug 1 fix: see Timeline_AddVisualEffect above.
-        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
         g_undoManager->execute(
             std::make_unique<SetTrackVfxChainOrderCommand>(trackId, newOrder, *g_timeline),
             *g_timeline);
@@ -16339,7 +16299,7 @@ void Timeline_SetVisualEffectParam(const JsonApi::CallbackInfo& info)
     BridgeCallLog log("timeline.setVisualEffectParam");
     {
         // Bug 1 fix: see Timeline_AddVisualEffect above.
-        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
         g_undoManager->execute(
             std::make_unique<SetVisualEffectParamCommand>(trackId, effectIndex,
                                                          paramIndex, value, *g_timeline),
@@ -16369,7 +16329,7 @@ void Timeline_SetVisualEffectBypassed(const JsonApi::CallbackInfo& info)
     BridgeCallLog log("timeline.setVisualEffectBypassed");
     {
         // Bug 1 fix: see Timeline_AddVisualEffect above.
-        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
         g_undoManager->execute(
             std::make_unique<SetVisualEffectBypassedCommand>(trackId, effectIndex,
                                                             bypassed, *g_timeline),
@@ -16407,7 +16367,7 @@ void Timeline_SetVisualEffectChainPreviewMuted(const JsonApi::CallbackInfo& info
         // see Timeline_AddVisualEffect above and the FrameCollector.h note on
         // CellFrameRequest::visualChain — collectRequests reads chain state
         // (and now this flag) under this same lock in the preview tick loop.
-        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
         g_timeline->setVisualEffectChainPreviewMuted(trackId, muted);
     }
     g_previewDirty = true;
@@ -16719,7 +16679,7 @@ JsonApi::Value Undo_Undo(const JsonApi::CallbackInfo& info)
     {
         // Undo may touch GridLayout (grid-slot/chorus/crash/preview-fps commands) —
         // hold syncEventsMutex so the video thread sees consistent state.
-        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
         ok = g_undoManager->undo(*g_timeline);
     }
     // Sync transport BPM in case a SetBPMCommand was undone
@@ -16745,7 +16705,7 @@ JsonApi::Value Undo_Redo(const JsonApi::CallbackInfo& info)
     restoreAndClearClipControlEdit();
     bool ok;
     {
-        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
         ok = g_undoManager->redo(*g_timeline);
     }
     if (ok && audioEngine)
@@ -18498,6 +18458,58 @@ JsonApi::Value Audio_GetMasterVolume(const JsonApi::CallbackInfo& info)
     JsonApi::Env env = info.Env();
     if (!isInitialised()) return JsonApi::Number::New(env, 1.0);
     return JsonApi::Number::New(env, audioEngine->getMixEngine().getMasterVolume());
+}
+
+// Metronome state as a plain object — shared by the get/set handlers.
+static JsonApi::Value metronomeStateObject(JsonApi::Env env)
+{
+    const auto& m = audioEngine->getMetronome();
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("enabled", JsonApi::Boolean::New(env, m.isEnabled()));
+    out.Set("volume",  JsonApi::Number::New(env, m.getVolume()));
+    out.Set("sound",   JsonApi::Number::New(env, m.getSound()));
+    return out;
+}
+
+// audio_setMetronome({ enabled?, volume?, sound? }) → { enabled, volume, sound }
+// Click track played after the mix (never exported). Every field is optional;
+// absent fields keep their current value. volume 0..1; sound 0=bump 1=hat 2=rim.
+// The first beat of each bar is accented +3 semitones (resampled in the engine).
+JsonApi::Value Audio_SetMetronome(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsObject()) {
+        JsonApi::TypeError::New(env, "audio_setMetronome({ enabled?, volume?, sound? })")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    JsonApi::Object o = info[0].As<JsonApi::Object>();
+    auto& m = audioEngine->getMetronome();
+    if (o.Has("enabled") && o.Get("enabled").IsBoolean())
+        m.setEnabled(o.Get("enabled").As<JsonApi::Boolean>().Value());
+    if (o.Has("volume") && o.Get("volume").IsNumber())
+        m.setVolume(o.Get("volume").As<JsonApi::Number>().FloatValue());
+    if (o.Has("sound") && o.Get("sound").IsNumber())
+        m.setSound(static_cast<int>(o.Get("sound").As<JsonApi::Number>().Int32Value()));
+    return metronomeStateObject(env);
+}
+
+// audio_getMetronome() → { enabled, volume, sound }
+JsonApi::Value Audio_GetMetronome(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised()) {
+        JsonApi::Object out = JsonApi::Object::New(env);
+        out.Set("enabled", JsonApi::Boolean::New(env, false));
+        out.Set("volume",  JsonApi::Number::New(env, 0.8));
+        out.Set("sound",   JsonApi::Number::New(env, 0));
+        return out;
+    }
+    return metronomeStateObject(env);
 }
 
 // ── Effect chain management ─────────────────────────────────────────────────
@@ -23496,6 +23508,24 @@ JsonApi::Value Diag_GetVisualPreviewDiagnostic(const JsonApi::CallbackInfo& info
           static_cast<double>(g_previewDiag.heldCellFrames.load())));
     c.Set("idleDecodes",     JsonApi::Number::New(env,
           static_cast<double>(g_previewDiag.idleDecodes.load())));
+    // Which extraction path decoded frames took. decoderHwTransferFrames must
+    // stay 0 while hw decode is active: a non-zero value means a frame took
+    // the GPU→CPU→GPU detour (av_hwframe_transfer_data + sws_scale) that the
+    // GPU-resident NV12 path exists to remove. Read under the compositor
+    // mutex, the lock the video thread's decode loop holds.
+    {
+        RenderVideoDecoder::ExtractStats xs;
+        bool gpuPath = false;
+        if (g_previewRenderDecoder) {
+            std::lock_guard<std::mutex> compLock(g_previewCompositorMutex);
+            xs      = g_previewRenderDecoder->extractStats();
+            gpuPath = g_previewRenderDecoder->hwGpuPathAvailable();
+        }
+        c.Set("decoderHwGpuFrames",      JsonApi::Number::New(env, static_cast<double>(xs.hwGpuFrames)));
+        c.Set("decoderHwTransferFrames", JsonApi::Number::New(env, static_cast<double>(xs.hwTransferFrames)));
+        c.Set("decoderSwFrames",         JsonApi::Number::New(env, static_cast<double>(xs.swFrames)));
+        c.Set("decoderHwGpuPath",        JsonApi::Boolean::New(env, gpuPath));
+    }
     o.Set("counters", c);
 
     // ── Last-tick snapshot ───────────────────────────────────────────────────
@@ -24231,7 +24261,7 @@ void Midi_ExecuteImport(const JsonApi::CallbackInfo& info)
     ImportMidiCommand* cmdPtr = cmd.get();
 
     {
-        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
         g_undoManager->execute(std::move(cmd), *g_timeline);
     }
     syncMixerTrackSlots(false);
@@ -24370,6 +24400,7 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     if (method == "timeline_setPreviewFps") { Timeline_SetPreviewFps(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "timeline_moveNotesBatch") { Timeline_MoveNotesBatch(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "timeline_addNotesBatch") return Timeline_AddNotesBatch(info).raw();
+    if (method == "timeline_editPatternNotes") return Timeline_EditPatternNotes(info).raw();
     if (method == "timeline_quantizeClipsBatch") return Timeline_QuantizeClipsBatch(info).raw();
     if (method == "timeline_resizeNotesBatch") { Timeline_ResizeNotesBatch(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "timeline_previewNote") { Timeline_PreviewNote(info); return JsonApi::Env{}.Undefined().raw(); }

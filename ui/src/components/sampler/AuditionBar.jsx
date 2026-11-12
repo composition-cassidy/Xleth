@@ -1,7 +1,9 @@
-import { Play } from 'lucide-react'
 import { Button, NumberBox, hintAttrs } from '../../ui-kit'
 import { lowNoteFor, noteName, MIN_OCTAVE_SHIFT, MAX_OCTAVE_SHIFT } from './auditionKeymap.js'
 import styles from './Sampler.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcPlay = iconComponent('play')
 
 // ── Audition bar ────────────────────────────────────────────────────────────
 // The panel's computer-keyboard piano, made visible: which keys play, the note
@@ -67,7 +69,7 @@ export default function AuditionBar({
       <span className={styles.spacer} />
       <Button
         size="sm"
-        glyph={<Play aria-hidden="true" />}
+        glyph={<IcPlay aria-hidden="true" />}
         onClick={onPreviewRoot}
         disabled={disabled}
         hint="Play the root note once"

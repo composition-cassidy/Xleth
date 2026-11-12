@@ -1,5 +1,4 @@
-import React from 'react';
-import { PictureInPicture2 } from 'lucide-react';
+import React, { useState } from 'react';
 import { PanelFrame } from '../components/PanelFrame';
 import { usePanelVisibility } from '../contexts/PanelVisibilityContext';
 import { getRegisteredWorkAreaRect } from '../managers/DragManager';
@@ -7,6 +6,9 @@ import { usePanelRegistry } from '../registry/PanelRegistry';
 import { usePanelValue } from '../registry/usePanelValue';
 import VideoPreview from '../../components/VideoPreview.jsx';
 import styles from './PreviewPanel.module.css';
+import { iconComponent } from '../../ui-kit/icons';
+
+const IcPictureInPicture = iconComponent('picture-in-picture');
 
 /**
  * Pop the docked Preview into its own window (for a second monitor). Its
@@ -22,7 +24,7 @@ export function popOutPreview(): void {
   registry.undockPanel('preview', x, y);
 }
 
-function PreviewPanelBody() {
+function PreviewPanelBody({ headerSlot }: { headerSlot: HTMLElement | null }) {
   const { useOnVisibilityChange } = usePanelVisibility();
 
   useOnVisibilityChange((isVisible) => {
@@ -43,17 +45,30 @@ function PreviewPanelBody() {
       data-hint="Pop the Preview out into its own window, for example on a second monitor"
       onClick={popOutPreview}
     >
-      <PictureInPicture2 aria-hidden="true" strokeWidth={2} />
+      <IcPictureInPicture aria-hidden="true" />
     </button>
   ) : null;
 
-  return <VideoPreview headerActions={popOut} />;
+  return <VideoPreview headerActions={popOut} headerSlot={headerSlot} />;
 }
 
+/**
+ * Docked, the Preview has no titlebar and its controls are its own header row.
+ * Floating or maximized it has a window titlebar, so the controls move into it
+ * (one row instead of two): this slot is a size container the header portals
+ * into, and its empty space is still titlebar, so it still drags the window.
+ */
 export default function PreviewPanel() {
+  const mode = usePanelValue('preview', (p) => p.mode);
+  const [slot, setSlot] = useState<HTMLDivElement | null>(null);
+  const titled = mode !== 'docked';
   return (
-    <PanelFrame id="preview">
-      <PreviewPanelBody />
+    <PanelFrame
+      id="preview"
+      titlebarContentFill={titled}
+      titlebarContent={titled ? <div ref={setSlot} className={styles.titlebarSlot} data-testid="preview-titlebar-slot" /> : undefined}
+    >
+      <PreviewPanelBody headerSlot={titled ? slot : null} />
     </PanelFrame>
   );
 }

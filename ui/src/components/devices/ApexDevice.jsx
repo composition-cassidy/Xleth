@@ -1,16 +1,21 @@
 import React, { useCallback, useEffect, useRef } from 'react'
 import { createStore } from 'zustand/vanilla'
 import { useStore } from 'zustand'
-import { Redo2, RotateCcw, Undo2 } from 'lucide-react'
 import {
-  DeviceSection, DisplayWell, IconButton, SegmentedControl, Toggle, formatValue, skewScale,
+  DeviceSection, DisplayWell, IconButton, SegmentedControl, Select, Toggle, formatValue, skewScale,
 } from '../../ui-kit'
 import { apexStoreInitializer, BAND_PREFIX, SPLIT_BANDS } from '../../stores/apexStore.js'
 import ApexCurveEditor from '../mixer/ApexCurveEditor.jsx'
 import ApexAnalysis from '../mixer/ApexAnalysis.jsx'
 import { BAND_KNOBS, GLOBAL_KNOBS, paramDefault } from '../mixer/apexGeometry.js'
 import AutomatableKnob from './AutomatableKnob.jsx'
+import AutomationTarget from './AutomationTarget.jsx'
 import styles from './ApexDevice.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcArrowCounterClockwise = iconComponent('arrow-counter-clockwise')
+const IcArrowUUpLeft = iconComponent('arrow-u-up-left')
+const IcArrowUUpRight = iconComponent('arrow-u-up-right')
 
 // APEX (multiband maximizer) as a device.
 //
@@ -190,27 +195,33 @@ function ApexControls({ store, target }) {
             <div className={`${styles.band} ${styles.cell}`} data-band={0}>
               {globalKnob('split_lo', { label: 'Low split', unit: 'Hz', width: 76, hint: 'Low / mid crossover' })}
             </div>
-            <SegmentedControl
-              size="sm"
-              label="Low split slope"
-              value={p('slope_lo') > 0.5 ? 1 : 0}
-              options={SLOPE_OPTIONS}
-              data-param="slope_lo"
-              onChange={(v) => commitParam('slope_lo', v)}
-            />
+            <AutomationTarget paramId="slope_lo" target={target}>
+              <Select
+                size="sm"
+                width={76}
+                ariaLabel="Low split slope"
+                value={p('slope_lo') > 0.5 ? 1 : 0}
+                options={SLOPE_OPTIONS}
+                data-param="slope_lo"
+                onChange={(v) => commitParam('slope_lo', v)}
+              />
+            </AutomationTarget>
           </div>
           <div className={styles.split1}>
             <div className={`${styles.band} ${styles.cell}`} data-band={2}>
               {globalKnob('split_hi', { label: 'High split', unit: 'Hz', width: 76, hint: 'Mid / high crossover' })}
             </div>
-            <SegmentedControl
-              size="sm"
-              label="High split slope"
-              value={p('slope_hi') > 0.5 ? 1 : 0}
-              options={SLOPE_OPTIONS}
-              data-param="slope_hi"
-              onChange={(v) => commitParam('slope_hi', v)}
-            />
+            <AutomationTarget paramId="slope_hi" target={target}>
+              <Select
+                size="sm"
+                width={76}
+                ariaLabel="High split slope"
+                value={p('slope_hi') > 0.5 ? 1 : 0}
+                options={SLOPE_OPTIONS}
+                data-param="slope_hi"
+                onChange={(v) => commitParam('slope_hi', v)}
+              />
+            </AutomationTarget>
           </div>
         </div>
       </DeviceSection>
@@ -225,42 +236,48 @@ function ApexControls({ store, target }) {
             data-param="band"
             onChange={setSelectedBand}
           />
-          <SegmentedControl
-            size="sm"
-            label={`${BAND_OPTIONS[band].label} state`}
-            value={bandState(band)}
-            options={STATE_OPTIONS}
-            data-param={`${prefix}state`}
-            onChange={(v) => commitParam(`${prefix}state`, v)}
-          />
-          <SegmentedControl
-            size="sm"
-            label={`${BAND_OPTIONS[band].label} detection`}
-            value={p(`${prefix}det`) > 0.5 ? 1 : 0}
-            options={DETECT_OPTIONS}
-            data-param={`${prefix}det`}
-            onChange={(v) => commitParam(`${prefix}det`, v)}
-          />
-          <div className={styles.tools}>
-            <Toggle
+          <AutomationTarget paramId={`${prefix}state`} target={target}>
+            <SegmentedControl
               size="sm"
-              on={soloOn}
-              disabled={isMaster}
-              hint={isMaster ? 'Master has no solo' : 'Solo this band (one band at a time)'}
-              data-param={isMaster ? undefined : `${prefix}solo`}
-              onChange={(on) => setSolo(band, on)}
-            >
-              Solo
-            </Toggle>
+              label={`${BAND_OPTIONS[band].label} state`}
+              value={bandState(band)}
+              options={STATE_OPTIONS}
+              data-param={`${prefix}state`}
+              onChange={(v) => commitParam(`${prefix}state`, v)}
+            />
+          </AutomationTarget>
+          <AutomationTarget paramId={`${prefix}det`} target={target}>
+            <SegmentedControl
+              size="sm"
+              label={`${BAND_OPTIONS[band].label} detection`}
+              value={p(`${prefix}det`) > 0.5 ? 1 : 0}
+              options={DETECT_OPTIONS}
+              data-param={`${prefix}det`}
+              onChange={(v) => commitParam(`${prefix}det`, v)}
+            />
+          </AutomationTarget>
+          <div className={styles.tools}>
+            <AutomationTarget paramId={isMaster ? undefined : `${prefix}solo`} target={target}>
+              <Toggle
+                size="sm"
+                on={soloOn}
+                disabled={isMaster}
+                hint={isMaster ? 'Master has no solo' : 'Solo this band (one band at a time)'}
+                data-param={isMaster ? undefined : `${prefix}solo`}
+                onChange={(on) => setSolo(band, on)}
+              >
+                Solo
+              </Toggle>
+            </AutomationTarget>
             <span className={styles.spacer} />
             <IconButton size="sm" label="Undo curve edit" hint="Undo the last curve edit (Ctrl+Z)" disabled={!canUndo} onClick={undoCurve}>
-              <Undo2 size={14} aria-hidden="true" />
+              <IcArrowUUpLeft size={14} aria-hidden="true" />
             </IconButton>
             <IconButton size="sm" label="Redo curve edit" hint="Redo the curve edit (Ctrl+Shift+Z)" disabled={!canRedo} onClick={redoCurve}>
-              <Redo2 size={14} aria-hidden="true" />
+              <IcArrowUUpRight size={14} aria-hidden="true" />
             </IconButton>
             <IconButton size="sm" label={`Reset ${BAND_OPTIONS[band].label.toLowerCase()} curve`} hint="Reset this band's curve to unity" onClick={() => resetCurve(band)}>
-              <RotateCcw size={14} aria-hidden="true" />
+              <IcArrowCounterClockwise size={14} aria-hidden="true" />
             </IconButton>
           </div>
         </div>

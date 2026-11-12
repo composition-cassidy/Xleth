@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ChevronDown, RotateCcw } from 'lucide-react'
 import { Button, Select } from '../../ui-kit'
 import styles from './SnapshotCueLane.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcArrowCounterClockwise = iconComponent('arrow-counter-clockwise')
+const IcCaretDown = iconComponent('caret-down')
 
 export const LINEAR_TRANSITION_CURVE = Object.freeze({ x1: 0, y1: 0, x2: 1, y2: 1 })
 
@@ -218,7 +221,7 @@ export default function SnapshotTransitionBezierEditor({ easing, onChange }) {
         <svg className="vmt-easing-mini" viewBox={`0 0 ${WIDTH} ${HEIGHT}`} aria-hidden="true">
           <path d={curvePath(draft)} />
         </svg>
-        <ChevronDown size={13} aria-hidden="true" />
+        <IcCaretDown size={14} aria-hidden="true" />
       </button>
 
       {expanded && (
@@ -276,7 +279,7 @@ export default function SnapshotTransitionBezierEditor({ easing, onChange }) {
           <Button
             size="sm"
             className="vmt-easing-reset"
-            glyph={<RotateCcw size={12} />}
+            glyph={<IcArrowCounterClockwise size={14} />}
             onClick={() => commit(normalizeTransitionEasing())}
             hint="Reset both halves to a straight blend"
           >

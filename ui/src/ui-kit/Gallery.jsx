@@ -13,19 +13,28 @@
 // labelled as such, and is never part of a real view.
 
 import { useEffect, useMemo, useState } from 'react'
-import { Mic, Play, Scissors, Settings, Square, X } from 'lucide-react'
 import {
   Button, Dialog, DialogList, DialogListItem, DialogText, EmptyState, Fader, FaderMeter, IconButton, Knob, Menu, MenuItem,
   MenuSeparator, Meter, NumberBox, PanelHeader, SectionHeader,
   SegmentedControl, Select, Tabs, Toggle, Toolbar, ToolbarSeparator, syncCodec, Icon, GLYPH_NAMES,
+  Checkbox, MotionDiv, Progress,
 } from './index'
 import styles from './Gallery.module.css'
+import { MOTION_TIER_OPTIONS, effectiveMotionTier, useMotionStore } from '../stores/motionStore.js'
 import EffectDevice from '../components/devices/EffectDevice.jsx'
 import useDeviceUiStore from '../components/devices/deviceUiStore.js'
 import useCompressorStore from '../stores/compressorStore.js'
 import MixerGalleryFixture from '../components/mixer/MixerGalleryFixture.jsx'
 import BrowserGalleryFixture from '../components/browser/BrowserGalleryFixture.jsx'
 import PickerGalleryFixture from '../components/SamplePicker/PickerGalleryFixture.jsx'
+import { iconComponent } from './icons'
+
+const IcGear = iconComponent('gear')
+const IcMicrophone = iconComponent('microphone')
+const IcPlay = iconComponent('play')
+const IcScissors = iconComponent('scissors')
+const IcStop = iconComponent('stop')
+const IcX = iconComponent('x')
 
 const params = new URLSearchParams(typeof window === 'undefined' ? '' : window.location.search)
 const FROZEN = params.get('shots') === '1'
@@ -162,6 +171,65 @@ function OverlayDemos() {
   )
 }
 
+/** Motion tiers (ui/DESIGN.md section 27): pick a tier, then open, toggle and add things. */
+function MotionDemos() {
+  const tier = useMotionStore((s) => s.tier)
+  const followSystem = useMotionStore((s) => s.followSystem)
+  const systemReduced = useMotionStore((s) => s.systemReduced)
+  const setTier = useMotionStore((s) => s.setTier)
+  const inForce = effectiveMotionTier({ tier, followSystem, systemReduced })
+  const [ctx, setCtx] = useState(null)
+  const [checked, setChecked] = useState(true)
+  const [page, setPage] = useState('one')
+  const [chips, setChips] = useState([1, 2])
+  return (
+    <>
+      <Spec caption={`tier (in force: ${inForce})`}>
+        <SegmentedControl
+          label="Interface motion"
+          data-testid="gallery-motion-tier"
+          value={tier}
+          onChange={setTier}
+          options={MOTION_TIER_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+        />
+      </Spec>
+      <Spec caption="context menu (right-click): edit loop">
+        <div
+          className={styles.motionPad}
+          data-testid="gallery-motion-context"
+          onContextMenu={(e) => { e.preventDefault(); setCtx({ x: e.clientX, y: e.clientY }) }}
+        >
+          Right-click here
+        </div>
+      </Spec>
+      <Spec caption="checkbox: state"><Checkbox checked={checked} onChange={setChecked}>Snap to grid</Checkbox></Spec>
+      <Spec caption="page swap">
+        <div className={styles.motionStack}>
+          <SegmentedControl label="Page" size="sm" value={page} onChange={setPage} options={[{ value: 'one', label: 'One' }, { value: 'two', label: 'Two' }]} />
+          <MotionDiv key={page} recipe="page" className={styles.motionPad}>Page {page}</MotionDiv>
+        </div>
+      </Spec>
+      <Spec caption="insert: one item added to a list on screen">
+        <div className={styles.inline}>
+          {chips.map((n) => <MotionDiv key={n} recipe="insert" className={styles.motionChip}>{n}</MotionDiv>)}
+          <Button size="sm" data-testid="gallery-motion-add" onClick={() => setChips((list) => [...list, (list[list.length - 1] ?? 0) + 1])}>Add</Button>
+          <Button size="sm" variant="ghost" onClick={() => setChips([1, 2])}>Reset</Button>
+        </div>
+      </Spec>
+      <Spec caption="indeterminate: ambient loop"><Progress value={null} label="Scanning plugins" text="Scanning" /></Spec>
+      {ctx && (
+        <Menu x={ctx.x} y={ctx.y} kind="context" onClose={() => setCtx(null)} label="Clip menu">
+          <MenuItem>Cut</MenuItem>
+          <MenuItem>Copy</MenuItem>
+          <MenuItem>Duplicate</MenuItem>
+          <MenuSeparator />
+          <MenuItem danger>Delete</MenuItem>
+        </Menu>
+      )}
+    </>
+  )
+}
+
 export default function Gallery() {
   const [knob, setKnob] = useState(-20)
   const [pan, setPan] = useState(0.35)
@@ -265,12 +333,12 @@ export default function Gallery() {
           <Button variant="ghost">Ghost</Button>
         </div></Spec>
         <Spec caption="icon buttons: rest / hover / on / focus / disabled"><div className={styles.inline}>
-          <IconButton label="Play"><Play /></IconButton>
-          <IconButton label="Stop" data-state="hover"><Square /></IconButton>
-          <IconButton label="Record" pressed><Mic /></IconButton>
-          <IconButton label="Region shown (quiet on)" pressed tone="quiet"><Settings /></IconButton>
-          <IconButton label="Settings" data-state="focus"><Settings /></IconButton>
-          <IconButton label="Close" disabled><X /></IconButton>
+          <IconButton label="Play"><IcPlay /></IconButton>
+          <IconButton label="Stop" data-state="hover"><IcStop /></IconButton>
+          <IconButton label="Record" pressed><IcMicrophone /></IconButton>
+          <IconButton label="Region shown (quiet on)" pressed tone="quiet"><IcGear /></IconButton>
+          <IconButton label="Settings" data-state="focus"><IcGear /></IconButton>
+          <IconButton label="Close" disabled><IcX /></IconButton>
         </div></Spec>
         <Spec caption="long label"><Button>{LONG}</Button></Spec>
         <Spec caption="dialog variants: primary (the one default action) / danger / default, size 32"><div className={styles.inline}>
@@ -284,6 +352,10 @@ export default function Gallery() {
         <OverlayDemos />
       </Section>
 
+      <Section title="Motion tiers: flat, smooth, lively (the playhead, meters and drags never animate)">
+        <MotionDemos />
+      </Section>
+
       <Section title="SegmentedControl, Select, Tabs, Toolbar">
         <Spec caption="segmented"><SegmentedControl label="Spacebar mode" value={seg} onChange={setSeg} options={[{ value: 'a', label: 'Play / stop' }, { value: 'b', label: 'Play / pause' }, { value: 'c', label: 'Hold', disabled: true }]} /></Spec>
         <Spec caption="segmented, disabled"><SegmentedControl label="Mode" value="a" disabled options={[{ value: 'a', label: 'One' }, { value: 'b', label: 'Two' }]} /></Spec>
@@ -294,16 +366,16 @@ export default function Gallery() {
         <Spec caption="select long value (truncates)"><Select ariaLabel="Decode" value="long" options={selectOptions} /></Spec>
         <Spec caption="tabs" wide><Tabs label="Detail dock" value={tab} onChange={setTab} tabs={[{ id: 'devices', label: 'Devices' }, { id: 'mixer', label: 'Mixer' }, { id: 'roll', label: 'Piano roll' }, { id: 'sampler', label: 'Sampler', disabled: true }]} /></Spec>
         <Spec caption="toolbar"><Toolbar label="Piano roll tools">
-          <IconButton label="Draw" pressed><Play /></IconButton>
-          <IconButton label="Slice"><Scissors /></IconButton>
+          <IconButton label="Draw" pressed><IcPlay /></IconButton>
+          <IconButton label="Slice"><IcScissors /></IconButton>
           <ToolbarSeparator />
-          <IconButton label="Settings"><Settings /></IconButton>
+          <IconButton label="Settings"><IcGear /></IconButton>
         </Toolbar></Spec>
       </Section>
 
       <Section title="PanelHeader, SectionHeader, EmptyState">
-        <Spec caption="panel header (28px)" wide><PanelHeader title="Mixer" meta="12 tracks"><IconButton label="Close panel" size="sm"><X /></IconButton></PanelHeader></Spec>
-        <Spec caption="panel header, long title" wide><div className={styles.narrow}><PanelHeader title="A panel title that is far too long to fit this width" meta="meta"><IconButton label="Close" size="sm"><X /></IconButton></PanelHeader></div></Spec>
+        <Spec caption="panel header (28px)" wide><PanelHeader title="Mixer" meta="12 tracks"><IconButton label="Close panel" size="sm"><IcX /></IconButton></PanelHeader></Spec>
+        <Spec caption="panel header, long title" wide><div className={styles.narrow}><PanelHeader title="A panel title that is far too long to fit this width" meta="meta"><IconButton label="Close" size="sm"><IcX /></IconButton></PanelHeader></div></Spec>
         <Spec caption="section header in a device" wide><div className={styles.narrow}><SectionHeader actions={<Toggle size="sm" on={false}>Sync</Toggle>}>Feedback</SectionHeader></div></Spec>
         <Spec caption="empty state, inside its region" wide><div className={styles.region}><EmptyState message="No tracks. Add a clip track or a pattern track." actionLabel="Add track" onAction={() => {}} /></div></Spec>
         <Spec caption="empty state, no action"><div className={styles.region}><EmptyState message="No presets saved." /></div></Spec>
@@ -345,8 +417,9 @@ export default function Gallery() {
       </Section>
 
       <Section title="Mixer: 16 strips, mixed states (MOCK data, gallery only)">
-        <Spec caption="compact width (72 px, the default): selected 5, muted 3, soloed 6, visual-only 8, clipped meter 4, bus 2,3 to 5 and 8 to 10, sidechain 1 to 6, inserts by name (1 with one bypassed, 7 with +3 more, 9 on an FX graph). The dB numerals and the words Pan and Width are printed once, in the gutter. No arm state: the engine has no record-arm." wide><MixerGalleryFixture /></Spec>
+        <Spec caption="compact width (72 px, the default): selected 5, muted 3, soloed 6, visual-only 8, clipped meter 4, bus 2,3 to 5 and 8 to 10, sidechain 1 to 6, inserts by name (1 with one bypassed, 7 with +3 more, 9 on an FX graph). The dB numerals are printed once, in the gutter; each name is written up the side of its meter; pan and width are plain dials with no words and no numbers. No arm state: the engine has no record-arm." wide><MixerGalleryFixture /></Spec>
         <Spec caption="normal width: the same tracks in 84 px strips" wide><MixerGalleryFixture stripMode="normal" /></Spec>
+        <Spec caption="inserts closed (the default in the app): one summary cell per strip, and the gutter FX button opens every list" wide><MixerGalleryFixture insertsOpen={false} /></Spec>
       </Section>
 
       {PHASE_4B_DEVICES.map((d) => (

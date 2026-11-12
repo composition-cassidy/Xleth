@@ -104,8 +104,8 @@ export const MOD_DESTS = [
 export const LFO_SHAPES = [
   { value: 0, label: 'Sine' },
   { value: 1, label: 'Triangle' },
-  { value: 2, label: 'Saw ↑' },
-  { value: 3, label: 'Saw ↓' },
+  { value: 2, label: 'Saw up' },
+  { value: 3, label: 'Saw down' },
   { value: 4, label: 'Square' },
   { value: 5, label: 'S&H' },
 ]

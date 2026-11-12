@@ -1,10 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Copy, Eraser, Link2, Magnet, Pencil, Plus, Trash2 } from 'lucide-react'
-import { Button, IconButton, NumberBox, Select, Toggle, THIN_SPACE } from '../../ui-kit'
+import { createPortal } from 'react-dom'
+import { Button, IconButton, NumberBox, SectionHeader, Select, Toggle, THIN_SPACE } from '../../ui-kit'
 import { timelineEvents } from '../../timelineEvents.js'
 import useGridEditStore from '../../stores/useGridEditStore.js'
 import VideoCanvasSettingsPopover from '../timeline/VideoCanvasSettingsPopover.jsx'
 import styles from './GridEditToolbar.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcBroom = iconComponent('broom')
+const IcCopy = iconComponent('copy')
+const IcLink = iconComponent('link')
+const IcMagnet = iconComponent('magnet')
+const IcPencilSimpleLine = iconComponent('pencil-simple-line')
+const IcPlus = iconComponent('plus')
+const IcTrash = iconComponent('trash')
 
 const SUB_UNITS_PER_COLUMN = 8
 const SUB_UNITS_PER_ROW    = 8
@@ -44,10 +53,11 @@ const parseInt10 = (text) => {
 }
 
 /**
- * The Preview's Edit Grid row: the grid settings that do not fit on the
- * picture. Grid size, link, gap, snap, project canvas, the editing snapshot,
- * and Clear layout. Same IPC calls and the same timeline-grid-changed event
- * contract as the old Video tab overview; relocated, not re-implemented.
+ * The Edit Grid settings rail, right of the picture: grid size, link, gap,
+ * snap, the editing snapshot, the project canvas and Clear layout. Sections in
+ * the order you reach for them. Same IPC calls and the same
+ * timeline-grid-changed event contract as the old Video tab overview and the
+ * row this replaced; relocated, not re-implemented.
  */
 export default function GridEditToolbar() {
   const snapEnabled    = useGridEditStore((s) => s.snapEnabled)
@@ -56,7 +66,10 @@ export default function GridEditToolbar() {
   const [layout, setLayout] = useState(DEFAULT_LAYOUT)
   const [snapshots, setSnapshots] = useState([])
   const [linked, setLinked] = useState(false)
-  const [showCanvasPopover, setShowCanvasPopover] = useState(false)
+  // { right, bottom } of the canvas button while its popover is open. The
+  // popover is portalled to <body> and fixed under the button, because the rail
+  // scrolls and clips: an absolutely positioned popover would be cut off.
+  const [popoverAnchor, setPopoverAnchor] = useState(null)
   const [renaming, setRenaming] = useState(null)
   const [renameValue, setRenameValue] = useState('')
   const [pending, setPending] = useState(false)
@@ -189,121 +202,140 @@ export default function GridEditToolbar() {
   const previewFps = Number(layout.previewFps ?? 30)
 
   return (
-    <div className={styles.row} role="group" aria-label="Edit grid settings" data-testid="grid-edit-toolbar">
-      <div className={styles.cluster}>
-        <span className={styles.label}>Grid</span>
-        <NumberBox
-          label="Grid columns" hideLabel width={40}
-          value={layout.columns} min={1} max={8} step={1} defaultValue={3}
-          format={intFormat} parse={parseInt10}
-          onCommit={commitColumns}
-          hint="Grid columns"
-        />
-        <span className={styles.times} aria-hidden="true">×</span>
-        <NumberBox
-          label="Grid rows" hideLabel width={40}
-          value={layout.rows} min={1} max={8} step={1} defaultValue={3}
-          format={intFormat} parse={parseInt10}
-          onCommit={commitRows}
-          hint="Grid rows"
-        />
-        <IconButton size="sm" label={linked ? 'Unlink columns and rows' : 'Link columns and rows'} pressed={linked} onClick={() => setLinked((l) => !l)}>
-          <Link2 aria-hidden="true" />
-        </IconButton>
-      </div>
+    <aside className={styles.rail} role="group" aria-label="Edit grid settings" data-testid="grid-edit-toolbar">
+      <section className={styles.section} aria-label="Grid">
+        <SectionHeader>Grid</SectionHeader>
+        <div className={styles.body}>
+          <div className={styles.pair}>
+            <NumberBox
+              label="Grid columns" caption="Cols" className={styles.nb}
+              value={layout.columns} min={1} max={8} step={1} defaultValue={3}
+              format={intFormat} parse={parseInt10}
+              onCommit={commitColumns}
+              hint="Grid columns"
+            />
+            <IconButton size="sm" label={linked ? 'Unlink columns and rows' : 'Link columns and rows'} pressed={linked} onClick={() => setLinked((l) => !l)}>
+              <IcLink aria-hidden="true" />
+            </IconButton>
+            <NumberBox
+              label="Grid rows" caption="Rows" className={styles.nb}
+              value={layout.rows} min={1} max={8} step={1} defaultValue={3}
+              format={intFormat} parse={parseInt10}
+              onCommit={commitRows}
+              hint="Grid rows"
+            />
+          </div>
+          <div className={styles.pair}>
+            <NumberBox
+              label="Grid gap" caption="Gap" className={styles.nb}
+              value={Math.round((layout.gapScale ?? 0) * 100)} min={0} max={GAP_MAX * 100} step={1} defaultValue={0} unit="%"
+              onCommit={commitGap}
+              hint="Space between grid cells"
+            />
+            <Toggle
+              size="sm" on={snapEnabled} onChange={setSnapEnabled}
+              glyph={<IcMagnet aria-hidden="true" />}
+              hint={snapEnabled ? 'Snap on: placements align to each track’s subdivision' : 'Snap off: free 1-unit positioning'}
+            >
+              Snap
+            </Toggle>
+          </div>
+        </div>
+      </section>
 
-      <div className={styles.cluster}>
-        <span className={styles.label}>Gap</span>
-        <NumberBox
-          label="Grid gap" hideLabel width={56}
-          value={Math.round((layout.gapScale ?? 0) * 100)} min={0} max={GAP_MAX * 100} step={1} defaultValue={0} unit="%"
-          onCommit={commitGap}
-          hint="Space between grid cells"
-        />
-      </div>
+      <section className={styles.section} role="group" aria-label="Editing snapshot">
+        <SectionHeader>Snapshot</SectionHeader>
+        <div className={styles.body}>
+          {renaming ? (
+            <input
+              ref={renameInputRef}
+              className={styles.rename}
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+              onBlur={commitRename}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { e.preventDefault(); commitRename() }
+                if (e.key === 'Escape') { e.preventDefault(); cancelRename() }
+              }}
+              aria-label="Snapshot name"
+            />
+          ) : (
+            <Select
+              size="sm"
+              className={styles.snapSelect}
+              ariaLabel="Editing snapshot"
+              value={activeSnapshot?.id ?? ''}
+              options={snapshots.map((s) => ({ value: s.id, label: s.name }))}
+              onChange={handleSetActiveSnapshot}
+              disabled={pending || snapshots.length === 0}
+              placeholder="No snapshots"
+            />
+          )}
+          <div className={styles.icons}>
+            <IconButton size="sm" label="New snapshot" onClick={handleCreateSnapshot} disabled={pending}>
+              <IcPlus aria-hidden="true" />
+            </IconButton>
+            <IconButton size="sm" label="Duplicate snapshot" onClick={handleDuplicateSnapshot} disabled={!activeSnapshot || pending}>
+              <IcCopy aria-hidden="true" />
+            </IconButton>
+            <IconButton size="sm" label="Rename snapshot" onClick={startRename} disabled={!activeSnapshot || pending}>
+              <IcPencilSimpleLine aria-hidden="true" />
+            </IconButton>
+            <IconButton
+              size="sm"
+              label={snapshots.length <= 1 ? 'Delete snapshot (at least one is required)' : 'Delete snapshot'}
+              onClick={handleDeleteSnapshot}
+              disabled={!activeSnapshot || snapshots.length <= 1 || pending}
+            >
+              <IcTrash aria-hidden="true" />
+            </IconButton>
+          </div>
+        </div>
+      </section>
 
-      <Toggle
-        size="sm" on={snapEnabled} onChange={setSnapEnabled}
-        glyph={<Magnet aria-hidden="true" />}
-        hint={snapEnabled ? 'Snap on: placements align to each track’s subdivision' : 'Snap off: free 1-unit positioning'}
-      >
-        Snap
-      </Toggle>
-
-      <span className={`tl-display-root ${styles.cluster}`}>
-        <Button
-          ref={canvasTriggerRef}
-          size="sm"
-          onClick={() => setShowCanvasPopover((v) => !v)}
-          aria-expanded={showCanvasPopover}
-          hint="Project canvas: aspect, size and frame rate"
-        >
-          <span className={styles.numbers}>{canvasW}×{canvasH} · {previewFps}{THIN_SPACE}fps</span>
-        </Button>
-        {showCanvasPopover && (
-          <VideoCanvasSettingsPopover
-            layout={layout}
-            setLayout={setLayout}
-            onClose={() => setShowCanvasPopover(false)}
-            triggerRef={canvasTriggerRef}
-          />
-        )}
-      </span>
-
-      <div className={styles.cluster} aria-label="Editing snapshot" role="group">
-        <span className={styles.label}>Snapshot</span>
-        {renaming ? (
-          <input
-            ref={renameInputRef}
-            className={styles.rename}
-            value={renameValue}
-            onChange={(e) => setRenameValue(e.target.value)}
-            onBlur={commitRename}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') { e.preventDefault(); commitRename() }
-              if (e.key === 'Escape') { e.preventDefault(); cancelRename() }
-            }}
-            aria-label="Snapshot name"
-          />
-        ) : (
-          <Select
+      <section className={styles.section} aria-label="Output">
+        <SectionHeader>Output</SectionHeader>
+        <div className={styles.body}>
+          <Button
+            ref={canvasTriggerRef}
             size="sm"
-            ariaLabel="Editing snapshot"
-            value={activeSnapshot?.id ?? ''}
-            options={snapshots.map((s) => ({ value: s.id, label: s.name }))}
-            onChange={handleSetActiveSnapshot}
-            disabled={pending || snapshots.length === 0}
-            placeholder="No snapshots"
-          />
-        )}
-        <IconButton size="sm" label="New snapshot" onClick={handleCreateSnapshot} disabled={pending}>
-          <Plus aria-hidden="true" />
-        </IconButton>
-        <IconButton size="sm" label="Duplicate snapshot" onClick={handleDuplicateSnapshot} disabled={!activeSnapshot || pending}>
-          <Copy aria-hidden="true" />
-        </IconButton>
-        <IconButton size="sm" label="Rename snapshot" onClick={startRename} disabled={!activeSnapshot || pending}>
-          <Pencil aria-hidden="true" />
-        </IconButton>
-        <IconButton
-          size="sm"
-          label={snapshots.length <= 1 ? 'Delete snapshot (at least one is required)' : 'Delete snapshot'}
-          onClick={handleDeleteSnapshot}
-          disabled={!activeSnapshot || snapshots.length <= 1 || pending}
-        >
-          <Trash2 aria-hidden="true" />
-        </IconButton>
+            className={styles.wide}
+            onClick={(e) => {
+              const r = e.currentTarget.getBoundingClientRect()
+              setPopoverAnchor((a) => (a ? null : { right: r.right, bottom: r.bottom }))
+            }}
+            aria-expanded={popoverAnchor != null}
+            hint="Project canvas: aspect, size and frame rate"
+          >
+            <span className={styles.numbers}>{canvasW}×{canvasH} · {previewFps}{THIN_SPACE}fps</span>
+          </Button>
+          {popoverAnchor && createPortal(
+            <div
+              className="tl-display-root"
+              style={{ position: 'fixed', left: popoverAnchor.right, top: popoverAnchor.bottom, width: 0, height: 0, zIndex: 210 }}
+            >
+              <VideoCanvasSettingsPopover
+                layout={layout}
+                setLayout={setLayout}
+                onClose={() => setPopoverAnchor(null)}
+                triggerRef={canvasTriggerRef}
+              />
+            </div>,
+            document.body,
+          )}
+          {fsLayers.length > 0 && (
+            <span className={styles.readout} data-hint="Fullscreen layers: behind and in front of the grid">
+              Fullscreen <span className={styles.numbers}>{fsBehind}</span> behind · <span className={styles.numbers}>{fsFront}</span> front
+            </span>
+          )}
+        </div>
+      </section>
+
+      <div className={styles.foot}>
+        <Button size="sm" className={styles.wide} glyph={<IcBroom aria-hidden="true" />} onClick={handleClearLayout} hint="Remove every grid slot and fullscreen layer">
+          Clear layout
+        </Button>
       </div>
-
-      {fsLayers.length > 0 && (
-        <span className={styles.readout} data-hint="Fullscreen layers: behind and in front of the grid">
-          Fullscreen <span className={styles.numbers}>{fsBehind}</span> behind · <span className={styles.numbers}>{fsFront}</span> front
-        </span>
-      )}
-
-      <Button size="sm" glyph={<Eraser aria-hidden="true" />} onClick={handleClearLayout} hint="Remove every grid slot and fullscreen layer">
-        Clear layout
-      </Button>
-    </div>
+    </aside>
   )
 }

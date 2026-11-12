@@ -1,6 +1,9 @@
 import React from 'react'
-import { AlertTriangle, Check } from 'lucide-react'
 import styles from './Settings.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcCheck = iconComponent('check')
+const IcWarning = iconComponent('warning')
 
 /** One titled group of rows. `wide` gives its body padding for a free-form child (a table, a diagnostics panel). */
 export function SettingsSection({ title, children, className = '', wide = false }) {
@@ -33,8 +36,8 @@ export function SettingsRow({ label, htmlFor, description, children }) {
 export function SettingsHint({ tone = 'default', children }) {
   return (
     <div className={styles.hint} data-tone={tone}>
-      {tone === 'warning' ? <AlertTriangle size={12} aria-hidden="true" className={styles.hintGlyph} /> : null}
-      {tone === 'success' ? <Check size={12} aria-hidden="true" className={styles.hintGlyph} /> : null}
+      {tone === 'warning' ? <IcWarning size={14} aria-hidden="true" className={styles.hintGlyph} /> : null}
+      {tone === 'success' ? <IcCheck size={14} aria-hidden="true" className={styles.hintGlyph} /> : null}
       <span>{children}</span>
     </div>
   )

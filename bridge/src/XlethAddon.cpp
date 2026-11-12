@@ -399,6 +399,11 @@ Napi::Value Timeline_AddNotesBatch(const Napi::CallbackInfo& info)
     return dispatchToService(info, "timeline_addNotesBatch");
 }
 
+Napi::Value Timeline_EditPatternNotes(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_editPatternNotes");
+}
+
 Napi::Value Timeline_QuantizeClipsBatch(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "timeline_quantizeClipsBatch");
@@ -763,6 +768,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     // Only the batch ops and previewNote (preload default) stay hand-written.
     exports.Set("timeline_moveNotesBatch",         Napi::Function::New(env, Timeline_MoveNotesBatch));
     exports.Set("timeline_addNotesBatch",          Napi::Function::New(env, Timeline_AddNotesBatch));
+    exports.Set("timeline_editPatternNotes",       Napi::Function::New(env, Timeline_EditPatternNotes));
     exports.Set("timeline_quantizeClipsBatch",     Napi::Function::New(env, Timeline_QuantizeClipsBatch));
     exports.Set("timeline_resizeNotesBatch",        Napi::Function::New(env, Timeline_ResizeNotesBatch));
     exports.Set("timeline_previewNote",            Napi::Function::New(env, Timeline_PreviewNote));

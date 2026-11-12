@@ -1058,6 +1058,28 @@ private:
     std::vector<Snapshot> snapshots_;
 };
 
+// ─── EditPatternNotesCommand ──────────────────────────────────────────────────
+// Replaces a pattern's whole note list in ONE undo entry. The piano roll builds
+// compound edits (cut, delete/insert space, slice, legato resize, paint, bulk
+// velocity) as "the list after", so every such gesture undoes in one step.
+// Ids are kept for notes that carry one; new notes (id <= 0) get fresh ids on
+// the first execute, which redo then reuses.
+
+class EditPatternNotesCommand : public Command {
+public:
+    EditPatternNotesCommand(int patternId, std::vector<PatternNote> after,
+                            const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+    const std::vector<PatternNote>& getAfter() const { return after_; }
+private:
+    int                      patternId_;
+    std::vector<PatternNote> before_;
+    std::vector<PatternNote> after_;
+    bool                     valid_ = false;
+};
+
 // ─── ResizeNoteCommand ────────────────────────────────────────────────────────
 
 class ResizeNoteCommand : public Command {

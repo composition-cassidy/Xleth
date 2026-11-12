@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from 'react'
-import { ChevronDown, PanelBottom } from 'lucide-react'
 import { Button, IconButton, Menu, MenuCustom, MenuItem, MenuSeparator } from '../ui-kit'
 import { usePanelRegistry } from '../windowing/registry/PanelRegistry'
 import { detailDockKey } from '../windowing/components/DetailDock'
@@ -10,6 +9,10 @@ import { PANEL_CATALOG } from '../windowing/registry/panelCatalog'
 import { useRegistryValue } from '../windowing/registry/usePanelValue'
 import { useQuickLaunchersStore } from '../stores/quickLaunchersStore.js'
 import styles from './TitleBarRegions.module.css'
+import { iconComponent } from '../ui-kit/icons'
+
+const IcCaretDown = iconComponent('caret-down')
+const IcSquareHalfBottom = iconComponent('square-half-bottom')
 
 /** Region toggles, in the order they sit in the bar. Every one is a region of the shell. */
 export const REGION_TOGGLES = ['sampleSelector', 'preview', 'inspector']
@@ -63,7 +66,7 @@ function DetailDockToggle() {
       hintMods={`${formatCombo(resolveCombo('view.dockFocus'))} gives it the whole centre column`}
       onClick={toggleDetailDock}
     >
-      <PanelBottom aria-hidden="true" />
+      <IcSquareHalfBottom aria-hidden="true" />
     </IconButton>
   )
 }
@@ -122,7 +125,7 @@ export default function TitleBarRegions({ className = '' }) {
       <Button
         size="sm"
         variant="ghost"
-        glyph={<ChevronDown />}
+        glyph={<IcCaretDown />}
         aria-haspopup="menu"
         aria-expanded={menu !== null}
         hint="Tools: Sample Sandbox, Quick Notation, Split Syllables and your own launchers"

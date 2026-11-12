@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { DeviceSection, DisplayWell, SegmentedControl } from '../../ui-kit'
 import DynamicsVisualizerCanvas from '../../plugin-ui/runtime/visualizers/DynamicsVisualizerCanvas.jsx'
 import AutomatableKnob from './AutomatableKnob.jsx'
+import AutomationTarget from './AutomationTarget.jsx'
 import useDeviceParams from './useDeviceParams.js'
 import useDeviceUiStore from './deviceUiStore.js'
 import styles from './deviceBody.module.css'
@@ -116,14 +117,16 @@ export default function TransientProcDevice({ target, registerApplied, deviceKey
       </DisplayWell>
 
       <DeviceSection title="Detection" width={148}>
-        <SegmentedControl
-          size="sm"
-          label="Detection mode"
-          value={midi ? 1 : 0}
-          options={MODE_OPTIONS}
-          data-param="midi_detect"
-          onChange={(m) => commit('midi_detect', m)}
-        />
+        <AutomationTarget paramId="midi_detect" target={target}>
+          <SegmentedControl
+            size="sm"
+            label="Detection mode"
+            value={midi ? 1 : 0}
+            options={MODE_OPTIONS}
+            data-param="midi_detect"
+            onChange={(m) => commit('midi_detect', m)}
+          />
+        </AutomationTarget>
         <div className={styles.pair}>
           {knob('threshold', 'Threshold', 'dB', { ...envOnly, hint: midi ? 'Envelope mode only' : 'Level a transient must cross to be shaped' })}
           {knob('attack_speed', 'Speed', 'ms', { hint: 'Detector timing; the attack window in MIDI mode' })}

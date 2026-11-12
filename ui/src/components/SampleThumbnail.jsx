@@ -1,7 +1,11 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
-import { Play, Music, ArrowLeftRight } from 'lucide-react'
+import { memo, useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react'
 import { labelColor, labelHexColor, buildAudioUrl, formatDuration, midiToNoteName } from '../constants/labels.js'
-import { tokenValue } from '../theming/tokenValue.ts'
+import { peekStill, requestStill, stillKeyFor } from './sampleStills.js'
+import { iconComponent } from '../ui-kit/icons'
+
+const IcArrowsLeftRightFill = iconComponent('arrows-left-right', 'fill')
+const IcPlayFill = iconComponent('play', 'fill')
+const IcWaveform = iconComponent('waveform')
 
 const HOVER_PREVIEW_DELAY_MS = 200
 const STILL_FRAME_OFFSET_S = 0.04
@@ -17,59 +21,62 @@ function clearActivePreview(stopFn) {
   if (stopActivePreview === stopFn) stopActivePreview = null
 }
 
-// ── Module-scope LRU cache of captured still frames ─────────────────────────
-// Keyed by `${region.id}:${region.startTime}` so trimming a region's start
-// (which changes what the still should show) naturally invalidates the entry
-// instead of painting a stale frame. Capped so browsing large projects can't
-// grow this unbounded — oldest entry is evicted once the cap is exceeded.
-const STILL_FRAME_CACHE_LIMIT = 200
-const stillFrameCache = new Map() // key -> dataURL, Map iteration order = LRU order (oldest first)
-
-function getCachedStillFrame(key) {
-  if (!key || !stillFrameCache.has(key)) return null
-  const value = stillFrameCache.get(key)
-  stillFrameCache.delete(key)
-  stillFrameCache.set(key, value) // touch: move to most-recently-used position
-  return value
-}
-
-function setCachedStillFrame(key, dataUrl) {
-  if (!key) return
-  stillFrameCache.delete(key)
-  stillFrameCache.set(key, dataUrl)
-  if (stillFrameCache.size > STILL_FRAME_CACHE_LIMIT) {
-    const oldestKey = stillFrameCache.keys().next().value
-    stillFrameCache.delete(oldestKey)
-  }
-}
-
 // ── Module-scope shared mediaPort lookup ─────────────────────────────────────
 // The port is a single constant for the app's lifetime, so every thumbnail
-// instance shares one IPC round trip instead of firing its own.
+// instance shares one IPC round trip instead of firing its own — and once it
+// has resolved, later tiles read it synchronously and skip a render.
 let mediaPortPromise = null
+let mediaPortValue = null
 function getMediaPort() {
   if (mediaPortPromise === null) {
     mediaPortPromise = Promise.resolve(window.xleth?.getMediaPort?.())
+      .then(port => { mediaPortValue = port ?? null; return mediaPortValue })
   }
   return mediaPortPromise
 }
 
+// ── Module-scope waveform peak cache (audio-only tiles) ──────────────────────
+const PEAKS_CACHE_LIMIT = 300
+const peaksCache = new Map() // key -> peaks array (or null when the file has none)
+
+function rememberPeaks(key, peaks) {
+  peaksCache.delete(key)
+  peaksCache.set(key, peaks)
+  if (peaksCache.size > PEAKS_CACHE_LIMIT) peaksCache.delete(peaksCache.keys().next().value)
+}
+
+// Free the decoder now rather than whenever the detached element is collected.
+function releaseVideo(v) {
+  if (!v) return
+  try {
+    v.pause()
+    v.removeAttribute('src')
+    v.load()
+  } catch { /* ignore */ }
+}
+
 /**
- * Props mirror SampleRow except the visual layout is a tile.
+ * One tile of the Samples grid.
+ *
+ * The picture is a small still fetched once through sampleStills.js (memory →
+ * disk → engine). A real <video> exists only while the pointer is over the
+ * tile, for the hover preview — never to produce the still.
+ *
+ * Props:
  *   region, isActive, onSelect, onContextMenu
- *   sourceName, sourceFilePath, sourceHasVideo, rootNote
- *   onDoubleClick — () => void  (opens Sample Picker)
+ *   sourceFilePath, sourceHasVideo, sourceDuration, rootNote
+ *   onOpen — (region) => void  (opens Sample Picker)
  */
-export default function SampleThumbnail({
+function SampleThumbnail({
   region,
   isActive,
   onSelect,
   onContextMenu,
-  sourceName,
   sourceFilePath,
   sourceHasVideo,
+  sourceDuration,
   rootNote,
-  onDoubleClick,
+  onOpen,
 }) {
   const tileRef       = useRef(null)
   const videoRef      = useRef(null)
@@ -78,35 +85,54 @@ export default function SampleThumbnail({
   const audioStopRef  = useRef(null)
 
   const [inView,    setInView]    = useState(false)
-  const [mediaPort, setMediaPort] = useState(null)
-  const [stillReady, setStillReady] = useState(false)
+  const [mediaPort, setMediaPort] = useState(() => mediaPortValue)
+  const [hovering,  setHovering]  = useState(false)  // mounts the preview <video>
+  const [videoLive, setVideoLive] = useState(false)  // the <video> is presenting frames
+  const [waveReady, setWaveReady] = useState(false)
   const [isPreviewing, setIsPreviewing] = useState(false)
 
   const isVideo = sourceHasVideo !== false
   const dur = Math.abs(region.endTime - region.startTime)
   const accentHex = useMemo(() => labelHexColor(region.label), [region.label])
 
-  // ── Still-frame cache lookup ────────────────────────────────────────────
-  const stillCacheKey = isVideo ? `${region.id}:${region.startTime}` : null
-  const [cachedStillUrl, setCachedStillUrl] = useState(
-    () => getCachedStillFrame(stillCacheKey)
-  )
-  // On a cache hit, defer mounting the real <video> (and its metadata load +
-  // seek) until the user actually hovers. On a cache miss, load eagerly as
-  // before so the still can be captured.
-  const [videoActivated, setVideoActivated] = useState(() => cachedStillUrl == null)
-  useEffect(() => {
-    const cached = getCachedStillFrame(stillCacheKey)
-    setCachedStillUrl(cached)
-    if (cached) setStillReady(true)
-  }, [stillCacheKey])
+  // ── Still frame ─────────────────────────────────────────────────────────
+  // Keyed by media + time, so trimming a region's start (which changes what the
+  // still should show) asks for a different frame instead of reusing a stale one.
+  const stillTime = Math.max(0, region.startTime + STILL_FRAME_OFFSET_S)
+  const stillKey = isVideo
+    ? stillKeyFor({ filePath: sourceFilePath, duration: sourceDuration, timeSeconds: stillTime })
+    : null
+  const [still, setStill] = useState(() => ({ key: stillKey, url: peekStill(stillKey) }))
+  // A still fetched for a previous key is never shown under the new one.
+  const stillUrl = still.key === stillKey ? still.url : peekStill(stillKey)
 
   useEffect(() => {
-    if (!isVideo) return
+    if (!stillKey) return undefined
+    const cached = peekStill(stillKey)
+    if (cached) {
+      setStill(prev => (prev.key === stillKey && prev.url === cached ? prev : { key: stillKey, url: cached }))
+      return undefined
+    }
+    if (!inView) return undefined
+    let cancelled = false
+    const req = requestStill({
+      sourceId: region.sourceId,
+      filePath: sourceFilePath,
+      duration: sourceDuration,
+      timeSeconds: stillTime,
+    })
+    req.promise.then(url => {
+      if (!cancelled && url) setStill({ key: stillKey, url })
+    })
+    return () => { cancelled = true; req.cancel() }
+  }, [stillKey, inView, region.sourceId, sourceFilePath, sourceDuration, stillTime])
+
+  useEffect(() => {
+    if (!isVideo || mediaPort != null) return undefined
     let cancelled = false
     getMediaPort().then(port => { if (!cancelled) setMediaPort(port) })
     return () => { cancelled = true }
-  }, [isVideo])
+  }, [isVideo, mediaPort])
 
   const videoUrl = useMemo(() => {
     if (!isVideo || !sourceFilePath || !mediaPort) return null
@@ -115,44 +141,18 @@ export default function SampleThumbnail({
 
   useEffect(() => {
     const el = tileRef.current
-    if (!el) return
+    if (!el) return undefined
     const obs = new IntersectionObserver(
       (entries) => {
-        for (const entry of entries) if (entry.isIntersecting) setInView(true)
+        for (const entry of entries) {
+          if (entry.isIntersecting) { setInView(true); obs.disconnect(); break }
+        }
       },
       { rootMargin: '200px 0px' }
     )
     obs.observe(el)
     return () => obs.disconnect()
   }, [])
-
-  const seekToStill = useCallback(() => {
-    const v = videoRef.current
-    if (!v) return
-    try { v.currentTime = Math.max(0, region.startTime + STILL_FRAME_OFFSET_S) }
-    catch { /* video not seekable yet */ }
-  }, [region.startTime])
-
-  // ── Handle the initial still-frame seek: paint, then cache the frame ───────
-  // so the next mount of this same region+startTime can skip the seek entirely.
-  const handleStillSeeked = useCallback(() => {
-    setStillReady(true)
-    if (!stillCacheKey || stillFrameCache.has(stillCacheKey)) return
-    const v = videoRef.current
-    if (!v || !v.videoWidth || !v.videoHeight) return
-    try {
-      const canvas = document.createElement('canvas')
-      canvas.width = v.videoWidth
-      canvas.height = v.videoHeight
-      canvas.getContext('2d').drawImage(v, 0, 0, canvas.width, canvas.height)
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.72)
-      setCachedStillFrame(stillCacheKey, dataUrl)
-      setCachedStillUrl(dataUrl)
-    } catch (e) {
-      // Cross-origin canvas taint or other capture failure — non-fatal, just skip caching.
-      console.warn('[SampleThumbnail] Still-frame capture failed:', e?.message || e)
-    }
-  }, [stillCacheKey])
 
   // ── Stop any currently-playing preview on this tile ────────────────────────
   const stopThisPreview = useCallback(() => {
@@ -165,7 +165,6 @@ export default function SampleThumbnail({
       try { v.pause() } catch { /* ignore */ }
       v.muted = true
       v.volume = 0.5
-      seekToStill()
     }
     if (audioRef.current) {
       try { audioRef.current.pause() } catch { /* ignore */ }
@@ -177,10 +176,15 @@ export default function SampleThumbnail({
       audioStopRef.current = null
     }
     setIsPreviewing(false)
+    setVideoLive(false)
     clearActivePreview(stopThisPreview)
-  }, [seekToStill])
+  }, [])
 
   useEffect(() => () => stopThisPreview(), [stopThisPreview])
+
+  // Layout cleanup runs while the ref is still attached (a passive cleanup
+  // would find it already null), so the decoder is released on unmount.
+  useLayoutEffect(() => () => releaseVideo(videoRef.current), [])
 
   const startPreview = useCallback(() => {
     registerActivePreview(stopThisPreview)
@@ -188,9 +192,10 @@ export default function SampleThumbnail({
 
     if (isVideo) {
       const v = videoRef.current
-      if (!v) return
+      if (!v) { stopThisPreview(); return }
       v.muted = false
       v.volume = 0.5
+      // Before metadata arrives this sets the default playback start position.
       try { v.currentTime = region.startTime } catch { /* ignore */ }
       v.play().catch(err => {
         console.warn('[SampleThumbnail] Video preview failed:', err?.message || err)
@@ -212,8 +217,17 @@ export default function SampleThumbnail({
       audioStopRef.current = setTimeout(() => stopThisPreview(), durationMs)
       a.addEventListener('ended', () => stopThisPreview())
     }
-    console.log(`[SampleThumbnail] Preview: "${region.name}" ${region.startTime.toFixed(2)}–${region.endTime.toFixed(2)}s`)
-  }, [isVideo, region, sourceFilePath, stopThisPreview])
+  }, [isVideo, region.startTime, region.endTime, sourceFilePath, stopThisPreview])
+
+  // Belt and braces for the start position: if the element ignored the pre-load
+  // currentTime, seek once the duration is known.
+  const handleLoadedMetadata = useCallback(() => {
+    const v = videoRef.current
+    if (!v) return
+    if (Math.abs(v.currentTime - region.startTime) > 0.05) {
+      try { v.currentTime = region.startTime } catch { /* video not seekable yet */ }
+    }
+  }, [region.startTime])
 
   const handleTimeUpdate = useCallback(() => {
     const v = videoRef.current
@@ -223,14 +237,15 @@ export default function SampleThumbnail({
       v.muted = true
       setIsPreviewing(false)
       clearActivePreview(stopThisPreview)
-      // leave the still on the end frame so user sees the cut clearly
+      // videoLive stays set: the end frame holds until the pointer leaves, so
+      // the user sees the cut clearly.
     }
   }, [isPreviewing, region.endTime, stopThisPreview])
 
   const handleMouseEnter = useCallback(() => {
-    // Activate the real <video> immediately (ahead of the preview delay) so
-    // a cache-hit tile has time to load metadata before startPreview() needs it.
-    if (isVideo) setVideoActivated(true)
+    // Mount the <video> immediately (ahead of the preview delay) so it has
+    // time to load metadata before startPreview() needs it.
+    if (isVideo) setHovering(true)
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
     hoverTimerRef.current = setTimeout(() => {
       hoverTimerRef.current = null
@@ -240,6 +255,8 @@ export default function SampleThumbnail({
 
   const handleMouseLeave = useCallback(() => {
     stopThisPreview()
+    releaseVideo(videoRef.current)
+    setHovering(false)
   }, [stopThisPreview])
 
   // ── Drag handlers (mirror SampleRow) ───────────────────────────────────────
@@ -279,6 +296,10 @@ export default function SampleThumbnail({
     window.__xlethDragSample = null
   }, [])
 
+  const handleWaveReady = useCallback(() => setWaveReady(true), [])
+
+  const pictureReady = isVideo ? (!!stillUrl || videoLive) : waveReady
+
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div
@@ -286,7 +307,7 @@ export default function SampleThumbnail({
       className={`sample-thumbnail ${isActive ? 'active' : ''}`}
       style={isActive ? { boxShadow: `inset 0 0 0 2px ${accentHex}` } : undefined}
       onClick={() => onSelect(region.id)}
-      onDoubleClick={onDoubleClick}
+      onDoubleClick={() => onOpen?.(region)}
       onContextMenu={(e) => { e.preventDefault(); onContextMenu(e, region) }}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
@@ -296,17 +317,16 @@ export default function SampleThumbnail({
       title={region.name}
     >
       <div className="sample-thumbnail-media">
-        {/* Static placeholder until either the video frame is seeked or the waveform is drawn */}
-        {!stillReady && (
-          <div
-            className="sample-thumbnail-placeholder"
-            style={{ background: tokenValue('--theme-bg-inset') }}
-          >
-            {!isVideo && <Music size={20} strokeWidth={1.5} color={accentHex} />}
+        {/* Static placeholder until the still arrives or the waveform is drawn.
+            The inset background comes from .sample-thumbnail-media itself. */}
+        {!pictureReady && (
+          <div className="sample-thumbnail-placeholder">
+            {!isVideo && <IcWaveform size={20} style={{ color: accentHex }} />}
           </div>
         )}
 
-        {isVideo && inView && videoUrl && videoActivated && (
+        {/* Hover preview only — mounted on pointer enter, released on leave. */}
+        {isVideo && hovering && videoUrl && (
           <video
             ref={videoRef}
             className="sample-thumbnail-video"
@@ -315,21 +335,21 @@ export default function SampleThumbnail({
             playsInline
             preload="metadata"
             draggable={false}
-            onLoadedMetadata={seekToStill}
-            onSeeked={handleStillSeeked}
+            onLoadedMetadata={handleLoadedMetadata}
+            onPlaying={() => setVideoLive(true)}
             onTimeUpdate={handleTimeUpdate}
             onError={() => console.warn('[SampleThumbnail] Video error:',
               videoRef.current?.error?.code, videoRef.current?.error?.message)}
           />
         )}
 
-        {/* Cached still frame — painted on top of the <video> so a cache hit
-            shows instantly without waiting for a fresh decode/seek. Hidden
-            during hover preview so the live video is visible instead. */}
-        {isVideo && cachedStillUrl && !isPreviewing && (
+        {/* The still — painted over the <video> until the preview is actually
+            presenting frames, so starting a preview never flashes empty. */}
+        {isVideo && stillUrl && !videoLive && (
           <img
             className="sample-thumbnail-video sample-thumbnail-still-cache"
-            src={cachedStillUrl}
+            src={stillUrl}
+            decoding="async"
             draggable={false}
             alt=""
           />
@@ -341,14 +361,14 @@ export default function SampleThumbnail({
             startTime={region.startTime}
             endTime={region.endTime}
             colorHex={accentHex}
-            onReady={() => setStillReady(true)}
+            onReady={handleWaveReady}
           />
         )}
 
         {/* Hover-affordance play icon (hidden during active preview) */}
-        {!isPreviewing && stillReady && (
+        {!isPreviewing && pictureReady && (
           <span className="sample-thumbnail-overlay-play">
-            <Play size={14} fill="currentColor" />
+            <IcPlayFill size={14} />
           </span>
         )}
 
@@ -358,7 +378,7 @@ export default function SampleThumbnail({
             className="sample-thumbnail-swap-icon"
             title={`Audio swapped: ${region.swappedAudioPath?.split(/[\\/]/).pop() ?? ''} — preview plays original, swap is audible only on timeline`}
           >
-            <ArrowLeftRight size={10} />
+            <IcArrowsLeftRightFill size={14} />
           </span>
         )}
 
@@ -384,50 +404,68 @@ export default function SampleThumbnail({
   )
 }
 
+export default memo(SampleThumbnail)
+
 // ── Internal: small canvas that fetches & draws a region's waveform ──────────
+// Peaks are cached per file+range, and `onReady` must be a stable callback:
+// with an inline one this effect re-ran — a fresh RPC and a full redraw — on
+// every parent render.
+const WAVE_W = 240   // backing store; CSS scales it
+const WAVE_H = 135
+const WAVE_COLS = 120
+
+function drawPeaks(canvas, peaks, colorHex) {
+  canvas.width = WAVE_W
+  canvas.height = WAVE_H
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+  ctx.clearRect(0, 0, WAVE_W, WAVE_H)
+  if (!peaks || peaks.length === 0) return
+  const stride = 3
+  const cols   = Math.floor(peaks.length / stride)
+  const colW   = WAVE_W / cols
+  const mid    = WAVE_H / 2
+  ctx.fillStyle = colorHex
+  for (let i = 0; i < cols; i++) {
+    const minV = peaks[i * stride + 0]
+    const maxV = peaks[i * stride + 1]
+    const yTop = mid - Math.max(0, maxV) * (mid - 2)
+    const yBot = mid - Math.min(0, minV) * (mid - 2)
+    const x = Math.floor(i * colW)
+    const w = Math.max(1, Math.floor(colW))
+    ctx.fillRect(x, yTop, w, Math.max(1, yBot - yTop))
+  }
+}
+
 function WaveformThumb({ filePath, startTime, endTime, colorHex, onReady }) {
   const canvasRef = useRef(null)
-  const reqIdRef  = useRef(0)
 
   useEffect(() => {
-    if (!filePath) return
+    if (!filePath) return undefined
     const canvas = canvasRef.current
-    if (!canvas) return
-    const reqId = ++reqIdRef.current
+    if (!canvas) return undefined
 
-    const W = canvas.width  = 240   // backing store; CSS scales it
-    const H = canvas.height = 135
-    const targetCols = 120
+    const key = `${filePath}|${startTime}|${endTime}`
+    if (peaksCache.has(key)) {
+      drawPeaks(canvas, peaksCache.get(key), colorHex)
+      onReady?.()
+      return undefined
+    }
 
     let cancelled = false
     ;(async () => {
       try {
-        const raw = await window.xleth?.waveform?.getFilePeaks(filePath, startTime, endTime, targetCols, -1)
-        if (cancelled || reqId !== reqIdRef.current) return
-        const ctx = canvas.getContext('2d')
-        ctx.clearRect(0, 0, W, H)
-        if (!raw || !raw.peaks || raw.peaks.length === 0) {
-          if (typeof onReady === 'function') onReady()
-          return
-        }
-        const peaks  = raw.peaks
-        const stride = 3
-        const cols   = Math.floor(peaks.length / stride)
-        const colW   = W / cols
-        const mid    = H / 2
-        ctx.fillStyle = colorHex
-        for (let i = 0; i < cols; i++) {
-          const minV = peaks[i * stride + 0]
-          const maxV = peaks[i * stride + 1]
-          const yTop = mid - Math.max(0, maxV) * (mid - 2)
-          const yBot = mid - Math.min(0, minV) * (mid - 2)
-          const x = Math.floor(i * colW)
-          const w = Math.max(1, Math.floor(colW))
-          ctx.fillRect(x, yTop, w, Math.max(1, yBot - yTop))
-        }
-        if (typeof onReady === 'function') onReady()
+        const raw = await window.xleth?.waveform?.getFilePeaks(filePath, startTime, endTime, WAVE_COLS, -1)
+        if (cancelled) return
+        const peaks = raw?.peaks && raw.peaks.length > 0 ? raw.peaks : null
+        // `ready: false` means the mipmap is still building — don't pin an
+        // empty waveform for the rest of the session.
+        if (peaks || raw?.ready !== false) rememberPeaks(key, peaks)
+        drawPeaks(canvas, peaks, colorHex)
+        onReady?.()
       } catch (e) {
-        if (typeof onReady === 'function') onReady()
+        if (cancelled) return
+        onReady?.()
         console.warn('[SampleThumbnail] Waveform fetch failed:', e?.message || e)
       }
     })()

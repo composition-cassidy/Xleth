@@ -53,19 +53,26 @@ export const EFFECT_REGISTRY = [
     ),
   },
   {
-    id: 'fadeIn', label: 'Fade In', category: 'EDIT', maxInstances: Infinity, needsSelection: true,
+    // No selection needed: with only a cursor the fade runs from the layer's
+    // start up to it, and with the cursor on that edge it covers the whole
+    // layer (sandboxStore._fadeRange). Fade Out mirrors it toward the end.
+    id: 'fadeIn', label: 'Fade In', category: 'EDIT', maxInstances: Infinity, needsSelection: false,
     run: (store, ctx) => store.fadeSelection(ctx.layerId, true, 'equalPower'),
   },
   {
-    id: 'fadeOut', label: 'Fade Out', category: 'EDIT', maxInstances: Infinity, needsSelection: true,
+    id: 'fadeOut', label: 'Fade Out', category: 'EDIT', maxInstances: Infinity, needsSelection: false,
     run: (store, ctx) => store.fadeSelection(ctx.layerId, false, 'equalPower'),
   },
   {
-    id: 'gain', label: 'Gain', category: 'EDIT', maxInstances: Infinity, needsSelection: true,
-    run: (store, ctx) => store.gainSelection(ctx.layerId, 3.0),
+    // Gain and Normalize act on the selection, or on the whole layer without
+    // one (sandboxStore._editRange). Gain arrives at 0 dB with its row open:
+    // the amount is the user's to set, and an op that changes nothing until
+    // it is touched is the same contract Pitch Shift (0 cents) already has.
+    id: 'gain', label: 'Gain', category: 'EDIT', maxInstances: Infinity, needsSelection: false,
+    run: (store, ctx) => store.gainSelection(ctx.layerId, 0),
   },
   {
-    id: 'normalize', label: 'Normalize', category: 'EDIT', maxInstances: 1, needsSelection: true,
+    id: 'normalize', label: 'Normalize', category: 'EDIT', maxInstances: 1, needsSelection: false,
     matchesStack: (op) => op.type === 'gain' && !!op.params?.normalize,
     whyNoMulti: 'idempotent — one instance max',
     run: (store, ctx) => store.normalizeSelection(ctx.layerId, -0.1),

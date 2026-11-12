@@ -11,8 +11,35 @@
     overflow-y: hidden;
     /* A well (g0): the device frames in it are the raised chrome (g1). */
     background: var(--ui-g0);
-    scrollbar-width: thin;
-    scrollbar-color: var(--ui-g4) var(--ui-g1);
+  }
+
+  /* A fat, obviously-draggable left/right bar (FL's playlist navigator): a recessed track with a
+   * lighter rounded thumb, so it reads as "this scrolls the chain sideways" at a glance.
+   * Deliberately NOT `scrollbar-width`/`scrollbar-color`: Chromium ignores ::-webkit-scrollbar
+   * the moment either is set. 18px total; the dock has room (1 + 28 + 8 + 256 + 18). */
+  .scroller::-webkit-scrollbar {
+    height: 18px;
+  }
+
+  .scroller::-webkit-scrollbar-track {
+    background: var(--ui-g0);
+    border-top: 1px solid var(--ui-g4);
+  }
+
+  .scroller::-webkit-scrollbar-thumb {
+    min-width: 48px;
+    border: 3px solid var(--ui-g0);
+    border-radius: 999px;
+    background: var(--ui-boundary);
+  }
+
+  .scroller::-webkit-scrollbar-thumb:hover,
+  .scroller::-webkit-scrollbar-thumb:active {
+    background: var(--ui-ink-2);
+  }
+
+  .scroller::-webkit-scrollbar-corner {
+    background: var(--ui-g0);
   }
 
   .row {

@@ -1,21 +1,27 @@
 import { useCallback, useMemo, useRef, useState, useEffect } from 'react'
-import { EyeOff, Folder, Plus, Sliders, Trash2, Activity } from 'lucide-react'
-import { IconButton } from '../../ui-kit'
+import { IconButton, isHeard } from '../../ui-kit'
 import Disclosure from '../browser/Disclosure.jsx'
 import TrackHeader from './TrackHeader.jsx'
 import TrackColorPopover from './TrackColorPopover.jsx'
 import TrackContextMenu from './TrackContextMenu.jsx'
-import { RULER_HEIGHT, HEADER_WIDTH, ADD_TRACK_ROW_HEIGHT } from '../../constants/timeline.js'
+import { RULER_HEIGHT, HEADER_WIDTH, ADD_TRACK_ROW_HEIGHT, TIMELINE_HSCROLL_HEIGHT } from '../../constants/timeline.js'
 import { resolveAutoTrackColor, normalizeTrackPalette, TRACK_PALETTE_FALLBACK } from './trackColorResolver.js'
 import { folderMapForLayout } from './trackFolderLayout.js'
 import { FOLDER_ROW_HEIGHT } from './timelineRowLayout.js'
 import { tokenValue } from '../../theming/tokenValue.ts'
 import styles from './TrackHeaderList.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcEyeSlash = iconComponent('eye-slash')
+const IcFolder = iconComponent('folder')
+const IcPlus = iconComponent('plus')
+const IcTrash = iconComponent('trash')
+const IcXAutomation = iconComponent('xleth-automation')
 
 export default function TrackHeaderList({
   tracks,
   focusedTrackId, onFocusTrack, onOpenInMixer,
-  onAddTrack, onMute, onSolo, onVisualOnly, onRename, onRequestContextMenu,
+  onAddTrack, onMute, onSolo, onPearl, onVisualOnly, onRename, onRequestContextMenu,
   onSetTrackColor,
   folderLayout,
   selectedTrackIds = new Set(),
@@ -36,6 +42,7 @@ export default function TrackHeaderList({
   automationGroupRows = [],
   automationLaneRows = [],
   onToggleAutomationGroup,
+  onDeleteAutomationLane,
   // Fixed (non-scrolling) rows pinned under the ruler spacer, mirroring the
   // canvas column's pinned lanes (the Snapshots cue lane).
   pinnedHeader = null,
@@ -43,6 +50,7 @@ export default function TrackHeaderList({
   onAddClipTrack,
   onAddPatternTrack,
 }) {
+  const pearlItems = (tracks ?? []).map((t) => ({ id: t.id, muted: !!t.muted, soloed: !!t.solo }))
   const dragRef = useRef(null)
   const trackById = useMemo(() => new Map(tracks.map(track => [track.id, track])), [tracks])
   const folderById = useMemo(() => folderMapForLayout(folderLayout), [folderLayout])
@@ -85,6 +93,7 @@ export default function TrackHeaderList({
 
   const [openColorPickerId, setOpenColorPickerId] = useState(null)
   const [folderMenu, setFolderMenu] = useState(null)
+  const [laneMenu, setLaneMenu] = useState(null)
   const [colorPickerAnchorRect, setColorPickerAnchorRect] = useState(null)
   const [, setThemeRevision] = useState(0)
   useEffect(() => {
@@ -156,7 +165,7 @@ export default function TrackHeaderList({
           data-hint={groupRow.collapsed ? 'Expand automation lanes' : 'Collapse automation lanes'}
         >
           <Disclosure open={!groupRow.collapsed} />
-          <Activity size={12} className={styles.groupIcon} aria-hidden="true" />
+          <IcXAutomation size={14} className={styles.groupIcon} aria-hidden="true" />
           <span className={styles.groupLabel}>{groupRow.label || 'Automation'}</span>
           <span className={styles.count} role="img" aria-label={`${groupRow.laneCount} lanes`}>{groupRow.laneCount}</span>
         </button>
@@ -166,8 +175,20 @@ export default function TrackHeaderList({
             className={`track-header-automation-lane ${styles.autoLane}`}
             style={{ height: lane.height }}
             title={lane.label || `Lane ${lane.index + 1}`}
+            onContextMenu={onDeleteAutomationLane ? (event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              setLaneMenu({ lane, x: event.clientX, y: event.clientY })
+            } : undefined}
           >
             <span className={styles.laneLabel}>{lane.label || `Lane ${lane.index + 1}`}</span>
+            {onDeleteAutomationLane && (
+              <IconButton size="sm" label="Delete automation lane" className={styles.laneDelete}
+                hint="Delete automation lane" hintMods="Its clips go too. Ctrl+Z undoes it"
+                onClick={() => onDeleteAutomationLane(lane.laneId)}>
+                <IcTrash size={14} />
+              </IconButton>
+            )}
           </div>
         ))}
       </div>
@@ -193,6 +214,8 @@ export default function TrackHeaderList({
           isSelected={selectedTrackIds.has(track.id)}
           onMute={onMute}
           onSolo={onSolo}
+          onPearl={onPearl}
+          lit={isHeard({ id: track.id, muted: !!track.muted, soloed: !!track.solo }, pearlItems)}
           onVisualOnly={onVisualOnly}
           onRename={onRename}
           onRequestContextMenu={onRequestContextMenu}
@@ -212,12 +235,12 @@ export default function TrackHeaderList({
             style={{ height: lane.height, borderLeftColor: color }}
             title={lane.label}
           >
-            <Sliders size={12} className={styles.groupIcon} aria-hidden="true" />
+            <IcXAutomation size={14} className={styles.groupIcon} aria-hidden="true" />
             <span className={styles.laneLabel}>{lane.label}</span>
             {onHideMacroLane && (
               <IconButton size="sm" label="Hide automation lane" hint="Hide this automation lane"
                 onClick={() => onHideMacroLane(lane.parentTrackId, lane.macroNodeId)}>
-                <EyeOff size={12} />
+                <IcEyeSlash size={14} />
               </IconButton>
             )}
           </div>
@@ -277,20 +300,22 @@ export default function TrackHeaderList({
           <div className={styles.ghosts} role="group" aria-label="Add the first track">
             <button type="button" className={styles.ghost} style={{ height: trackHeight }} onClick={onAddClipTrack}
               data-hint="Add a clip track: audio and video clips">
-              <Plus size={14} aria-hidden="true" /><span>Clip track</span>
+              <IcPlus size={14} aria-hidden="true" /><span>Clip track</span>
             </button>
             <button type="button" className={styles.ghost} style={{ height: trackHeight }} onClick={onAddPatternTrack}
               data-hint="Add a pattern track: notes that trigger samples">
-              <Plus size={14} aria-hidden="true" /><span>Pattern track</span>
+              <IcPlus size={14} aria-hidden="true" /><span>Pattern track</span>
             </button>
           </div>
         ) : (
           <button type="button" className={`timeline-add-track ${styles.addTrack}`} style={{ height: ADD_TRACK_ROW_HEIGHT }} onClick={onAddTrack}
             data-hint="Add a track" aria-label="Add track">
-            <Plus size={14} aria-hidden="true" /><span>Add track</span>
+            <IcPlus size={14} aria-hidden="true" /><span>Add track</span>
           </button>
         )}
       </div>
+      {/* Mirrors the canvas column's horizontal scrollbar so both scroll viewports are the same height. */}
+      <div className={styles.footer} style={{ height: TIMELINE_HSCROLL_HEIGHT }} aria-hidden="true" />
 
       {openColorPickerId !== null && colorPickerAnchorRect !== null && (() => {
         const openTrack = tracks.find(track => track.id === openColorPickerId)
@@ -311,6 +336,18 @@ export default function TrackHeaderList({
           />
         )
       })()}
+      {laneMenu && (
+        <TrackContextMenu
+          x={laneMenu.x}
+          y={laneMenu.y}
+          items={[{
+            label: 'Delete automation lane',
+            danger: true,
+            onClick: () => onDeleteAutomationLane?.(laneMenu.lane.laneId),
+          }]}
+          onClose={() => setLaneMenu(null)}
+        />
+      )}
       {folderMenu && (
         <TrackContextMenu
           x={folderMenu.x}
@@ -356,7 +393,7 @@ function FolderHeader({ folder, editing, onFinishEdit, onRename, onToggle, onRem
         data-hint={folder.collapsed ? 'Expand folder' : 'Collapse folder'}>
         <Disclosure open={!folder.collapsed} />
       </button>
-      <Folder size={14} className={styles.folderGlyph} aria-hidden="true" />
+      <IcFolder size={14} className={styles.folderGlyph} aria-hidden="true" />
       {editing ? (
         <input ref={inputRef} className={`track-folder-name-input ${styles.folderInput}`} value={name}
           aria-label="Folder name"
@@ -374,7 +411,7 @@ function FolderHeader({ folder, editing, onFinishEdit, onRename, onToggle, onRem
       <IconButton size="sm" label="Delete folder, keep tracks" className={styles.folderDelete}
         hint="Delete folder" hintMods="Its tracks stay"
         onClick={() => onRemove?.(folder.id)}>
-        <Trash2 size={12} />
+        <IcTrash size={14} />
       </IconButton>
     </div>
   )

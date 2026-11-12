@@ -1,6 +1,7 @@
 /* Dialog: a modal floating surface (hard offset shadow, DESIGN.md section 1). Dialogs are read
  * like prose, so body text is 16px (the DAW Floor reading-text exception); controls inside keep
- * their own 12px kit sizes. Flat: no blur, no gradient, no glow, no entry animation. */
+ * their own 12px kit sizes. Flat: no blur, no gradient, no glow. The scrim fades and the panel
+ * settles with the `scrim` / `dialog` recipes (ui-kit/motion.css); it stays centred. */
 @layer kit {
   .backdrop {
     position: fixed;

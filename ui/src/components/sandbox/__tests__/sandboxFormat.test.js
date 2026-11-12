@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   formatTime, formatSamples, formatDurationShort, formatSamplesShort,
-  formatRange, niceTimeStep, formatTick,
+  formatRange, niceTimeStep, formatTick, formatClock, parseTime,
 } from '../sandboxFormat.js'
 import { opSampleRange, resolveOpRange } from '../sandboxOpRange.js'
 
@@ -82,7 +82,65 @@ describe('ruler ticks', () => {
   })
 })
 
+// The transport clock keeps one shape whatever the time, so the digits do not
+// shift sideways while the playhead runs.
+describe('formatClock', () => {
+  it('always prints minutes, seconds and milliseconds', () => {
+    expect(formatClock(0)).toBe('0:00.000')
+    expect(formatClock(0.625)).toBe('0:00.625')
+    expect(formatClock(62.5)).toBe('1:02.500')
+  })
+
+  it('prints a placeholder of the same shape with no time to show', () => {
+    expect(formatClock(null)).toBe('-:--.---')
+    expect(formatClock(Number.NaN)).toBe('-:--.---')
+  })
+})
+
+// The selection boxes accept what they print, plus the units people type.
+describe('parseTime', () => {
+  it('reads a bare number as seconds', () => {
+    expect(parseTime('0.625')).toBe(0.625)
+    expect(parseTime('2')).toBe(2)
+    expect(parseTime('.5')).toBe(0.5)
+  })
+
+  it('reads the formats the boxes themselves print', () => {
+    expect(parseTime('0.625 s')).toBe(0.625)
+    expect(parseTime('1:02.500')).toBe(62.5)
+    expect(parseTime(formatTime(75.25))).toBe(75.25)
+  })
+
+  it('reads milliseconds and a decimal comma', () => {
+    expect(parseTime('625ms')).toBe(0.625)
+    expect(parseTime('250 ms')).toBe(0.25)
+    expect(parseTime('0,5')).toBe(0.5)
+  })
+
+  it('returns null for anything that is not a time', () => {
+    expect(parseTime('')).toBeNull()
+    expect(parseTime('soon')).toBeNull()
+    expect(parseTime('1:2:3')).toBeNull()
+  })
+})
+
 describe('opSampleRange', () => {
+  // The engine fades [startSample, startSample + lengthSamples): a fade can sit
+  // anywhere. Reading it as "against the edge" highlighted a mid-layer fade at
+  // the wrong end of the waveform.
+  it('locates a fade where it actually is, not against an edge', () => {
+    expect(opSampleRange({ type: 'fade', params: { fadeIn: false, startSample: 3000, lengthSamples: 1000 } }))
+      .toEqual({ startSample: 3000, endSample: 4000 })
+    expect(opSampleRange({ type: 'fade', params: { fadeIn: true, startSample: 3000, lengthSamples: 1000 } }))
+      .toEqual({ startSample: 3000, endSample: 4000 })
+  })
+
+  it('locates a gain scoped to a range, and nothing for a whole-layer gain', () => {
+    expect(opSampleRange({ type: 'gain', params: { startSample: 100, endSample: 900, gainDb: 3 } }))
+      .toEqual({ startSample: 100, endSample: 900 })
+    expect(opSampleRange({ type: 'gain', params: { startSample: 0, endSample: -1, gainDb: 3 } })).toBeNull()
+  })
+
   it('locates range-carrying ops', () => {
     expect(opSampleRange({ type: 'cut', params: { startSample: 10, endSample: 90 } }))
       .toEqual({ startSample: 10, endSample: 90 })

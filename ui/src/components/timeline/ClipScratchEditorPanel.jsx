@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ClipPictureSection from './ClipPictureSection.jsx'
-import { RotateCcw } from 'lucide-react'
 import { Button, IconButton, NumberBox, SegmentedControl, Select } from '../../ui-kit'
 import ClipFxWindow, { FxRow, FxSpacer, FxGrid, FxField, FxGraph, FxStatus, FxStaticChip } from './ClipFxWindow.jsx'
 import useClipScratchEditorStore from '../../stores/clipScratchEditorStore.js'
@@ -36,6 +35,9 @@ import {
   scratchTimeDomain,
   scratchXLabels,
 } from './clipScratch.js'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcArrowCounterClockwise = iconComponent('arrow-counter-clockwise')
 
 // ── Floating per-clip Scratch rate-graph editor ──────────────────────────────
 //
@@ -283,7 +285,7 @@ export default function ClipScratchEditorPanel() {
         )}
         <FxSpacer />
         <IconButton size="sm" label="Reset to Normal" onClick={() => stampPreset('normal')} hint="Reset to the Normal curve">
-          <RotateCcw size={14} aria-hidden="true" />
+          <IcArrowCounterClockwise size={14} aria-hidden="true" />
         </IconButton>
       </FxRow>
 

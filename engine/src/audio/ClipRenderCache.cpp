@@ -106,6 +106,18 @@ namespace {
 // Lookahead for fx renders == the largest lag the alignment pass searches.
 static constexpr double kFxLookaheadSeconds = 0.1;
 
+// Source context WORLD gets on EACH side of a clip, in source seconds.
+// WORLD analyses in overlapping windows: Harvest's F0 tracker drops voiced runs
+// shorter than ~35 ms and smooths over neighbouring frames, and CheapTrick/D4C
+// windows reach ~3 pitch periods either side of every frame. Fed only the
+// trimmed slice, a short clip had nothing to analyse its edges against — the
+// attack sat on the buffer boundary and a short enough trim lost its pitch
+// track entirely. With context the trimmed clip renders as the matching window
+// of the untrimmed one. Where the region runs out the context is silence, so
+// an attack at the region start is analysed as "attack after silence" rather
+// than against WORLD's edge clamping (which repeats the first sample).
+static constexpr double kWorldContextSeconds = 0.25;
+
 struct SegmentRender {
     std::shared_ptr<const juce::AudioBuffer<float>> processed;
     int64_t valid = 0;
@@ -191,6 +203,101 @@ SegmentRender renderSegment(const CacheKey&                  key,
     if (!(numCh > 0 && readLen > 0 && readStart >= 0 && readStart < srcTotal))
         return out;
 
+    const bool needsPitch   = (eff.pitchSemis != 0 || eff.pitchCents != 0);
+    const bool needsStretch = (std::abs(key.stretchRatio - 1.0) > 1e-4);
+    const bool runEngine    = needsPitch || needsStretch || eff.forceEngine;
+
+    auto take = [&out](juce::AudioBuffer<float>&& processed) {
+        out.valid     = processed.getNumSamples();
+        out.processed = std::make_shared<juce::AudioBuffer<float>>(std::move(processed));
+    };
+
+    // ── WORLD: render with context around the clip, keep the clip ───────
+    if (runEngine && eff.method == static_cast<int>(StretchMethod::WORLD)) {
+        const int64_t ctx = static_cast<int64_t>(std::llround(kWorldContextSeconds * sampleRate));
+
+        // Forward source window (prepared-rate) = core [regOff, regOff+readLen)
+        // plus up to ctx of real audio either side.
+        const int64_t before = std::min(ctx, std::max<int64_t>(0, regOff));
+        int64_t after = 0;
+        {
+            const int64_t preparedTotal = matchedRate
+                ? static_cast<int64_t>(srcTotal)
+                : static_cast<int64_t>(std::floor(static_cast<double>(srcTotal - 1) / srFactor));
+            after = std::clamp<int64_t>(preparedTotal - (regOff + readLen), 0, ctx);
+        }
+        const int64_t winStart = regOff - before;
+        int64_t winLen = before + readLen + after;
+        int64_t bakeStart = winStart;
+        if (!matchedRate) {
+            bakeStart = static_cast<int64_t>(std::llround(static_cast<double>(winStart) * srFactor));
+            const int64_t producible = static_cast<int64_t>(std::floor(
+                static_cast<double>(srcTotal - bakeStart - 1) / srFactor));
+            if (winLen > producible) {          // rounding at the very tail
+                after  = std::max<int64_t>(0, after - (winLen - producible));
+                winLen = before + readLen + after;
+            }
+        }
+
+        // Playback order: a reversed clip plays its window backwards, so the
+        // audio AFTER it in the source is what leads into it.
+        const int64_t lead = key.reversed ? after  : before;
+        const int64_t extLen = ctx + readLen + ctx;
+        const int64_t winAt  = ctx - lead;      // silence fills the rest of the lead
+
+        juce::AudioBuffer<float> ext(numCh, static_cast<int>(extLen));
+        ext.clear();
+        for (int ch = 0; ch < numCh; ++ch) {
+            float* dst = ext.getWritePointer(ch) + winAt;
+            if (matchedRate) {
+                std::memcpy(dst, srcCopy.getReadPointer(ch) + bakeStart,
+                            sizeof(float) * static_cast<size_t>(winLen));
+            } else {
+                juce::LagrangeInterpolator interp;
+                interp.reset();
+                interp.process(srFactor, srcCopy.getReadPointer(ch) + bakeStart, dst,
+                               static_cast<int>(winLen),
+                               static_cast<int>(srcTotal - bakeStart), 0);
+            }
+            if (key.reversed)
+                std::reverse(dst, dst + winLen);
+        }
+
+        xleth::dsp::WORLDParams p;
+        p.sampleRate          = sampleRate;
+        p.pitchShiftSemitones = eff.pitchSemis + eff.pitchCents / 100.0;
+        p.stretchRatio        = key.stretchRatio;
+        p.formantPreserve     = eff.formantPreserve;
+
+        std::shared_ptr<const juce::AudioBuffer<float>> full;
+        if (worldCache) {
+            xleth::audio::WorldCacheKey wk;
+            wk.sourceHash   = xleth::audio::WorldStretchCache::hashPCM(ext);
+            wk.pitchMilliSt = static_cast<int32_t>(std::lround(p.pitchShiftSemitones * 1000.0));
+            wk.ratioMicro   = static_cast<int32_t>(std::lround(p.stretchRatio * 1000.0));
+            wk.sampleRateHz = static_cast<int32_t>(std::lround(sampleRate));
+            wk.numChannels  = ext.getNumChannels();
+            full = worldCache->getOrCompute(wk, ext, p);
+        } else {
+            full = std::make_shared<juce::AudioBuffer<float>>(xleth::dsp::processWORLD(ext, p));
+        }
+        if (!full) return out;
+
+        // processWORLD's time map is exact (output n = input n / ratio), so
+        // the clip starts at ctx * ratio in the output.
+        const double  ratio    = p.stretchRatio > 0.0 ? p.stretchRatio : 1.0;
+        const int64_t keepFrom = std::llround(static_cast<double>(ctx) * ratio);
+        const int64_t keepLen  = std::min<int64_t>(
+            std::llround(static_cast<double>(readLen) * ratio),
+            std::max<int64_t>(0, full->getNumSamples() - keepFrom));
+        if (keepLen <= 0) return out;
+        juce::AudioBuffer<float> kept(full->getNumChannels(), static_cast<int>(keepLen));
+        for (int ch = 0; ch < kept.getNumChannels(); ++ch)
+            kept.copyFrom(ch, 0, *full, ch, static_cast<int>(keepFrom), static_cast<int>(keepLen));
+        take(std::move(kept));
+        return out;
+    }
+
     // ── a) Build the prepared-rate source segment ───────────────────────
     // matchedRate: verbatim reverse/copy (bit-for-bit legacy path).
     // else: resample bake→prepared via Lagrange, then reverse in place.
@@ -231,16 +338,7 @@ SegmentRender renderSegment(const CacheKey&                  key,
         }
     }
 
-    // ── b) Pitch / stretch ────────────────────────────────────────────────
-    const bool needsPitch   = (eff.pitchSemis != 0 || eff.pitchCents != 0);
-    const bool needsStretch = (std::abs(key.stretchRatio - 1.0) > 1e-4);
-    const bool runEngine    = needsPitch || needsStretch || eff.forceEngine;
-
-    auto take = [&out](juce::AudioBuffer<float>&& processed) {
-        out.valid     = processed.getNumSamples();
-        out.processed = std::make_shared<juce::AudioBuffer<float>>(std::move(processed));
-    };
-
+    // ── b) Pitch / stretch (WORLD was handled above) ──────────────────────
     if (runEngine && eff.method == 1 /*PSOLA*/) {
         xleth::dsp::PSOLAParams p;
         p.sampleRate       = sampleRate;
@@ -270,29 +368,6 @@ SegmentRender renderSegment(const CacheKey&                  key,
         p.stretchRatio        = key.stretchRatio;
         p.formantPreserve     = eff.formantPreserve;
         take(xleth::dsp::processPhaseVocoder(*working, p));
-    } else if (runEngine && eff.method == static_cast<int>(StretchMethod::WORLD)) {
-        xleth::dsp::WORLDParams p;
-        p.sampleRate          = sampleRate;
-        p.pitchShiftSemitones = eff.pitchSemis + eff.pitchCents / 100.0;
-        p.stretchRatio        = key.stretchRatio;
-        p.formantPreserve     = eff.formantPreserve;
-
-        if (worldCache) {
-            xleth::audio::WorldCacheKey wk;
-            wk.sourceHash   = xleth::audio::WorldStretchCache::hashPCM(*working);
-            wk.pitchMilliSt = static_cast<int32_t>(
-                std::lround(p.pitchShiftSemitones * 1000.0));
-            wk.ratioMicro   = static_cast<int32_t>(
-                std::lround(p.stretchRatio * 1000.0));
-            wk.sampleRateHz = static_cast<int32_t>(std::lround(sampleRate));
-            wk.numChannels  = working->getNumChannels();
-            if (auto buf = worldCache->getOrCompute(wk, *working, p)) {
-                out.valid     = buf->getNumSamples();
-                out.processed = std::move(buf);
-            }
-        } else {
-            take(xleth::dsp::processWORLD(*working, p));
-        }
     } else {
         // Raw copy — Global stub or no processing needed. The caller clamps
         // to durSamp: with ratio < 1 (or a padded `working`) the segment can

@@ -5,11 +5,18 @@
 
 import {
   TRACK_HEIGHT, BEATS_PER_BAR, SUBDIVISIONS, SUB_GRID_THRESHOLD,
-  CLIP_MIN_WIDTH_PX, PPQ,
+  PPQ, CLIP_MIN_WIDTH_PX,
   GRANULARITY_BEATS,
-  beatToPixel,
+  beatToPixel, ticksToBeats, pixelToTickExact,
 } from '../../constants/timeline.js'
-import { labelHexColor } from '../../constants/labels.js'
+import { labelHexColor, pickLabelHexColor, resolveLabelHexColors } from '../../constants/labels.js'
+import {
+  BLOCK_PAD, BLOCK_HANDLE_W, TITLE_TEXT_PAD_X, TINY_BLOCK_MAX_W,
+  blockRect, blockInnerLayout, blockWantsTitleStrip, blockShowsHandles, trackTopOf,
+  snapSpanLeft, snapSpanWidth,
+} from './blockGeometry.js'
+import { getPatternNoteIndex, forEachBlockNote } from './patternNoteIndex.js'
+import { fitCanvasText, measureCanvasTextWidth } from './canvasTextFit.js'
 import { drawEnvelope, drawTrace, drawWaveformLine, drawSamplePoints, visibleColumnWindow } from '../../utils/waveformRenderer.js'
 import { currentRegime } from './waveformRegime.js'
 import { hiResCoversWindow } from './hiResCoverage.js'
@@ -19,7 +26,7 @@ import { pickLabelInk } from '../../ui-kit/colorMath'
 import { uiCanvasFont } from '../../styles/typography.js'
 import { normalizeTrackPalette, TRACK_PALETTE_FALLBACK, pickPatternAccentText } from './trackColorResolver.js'
 import { getRegionPlaybackDurationSec } from './regionDuration.js'
-import { getSyllableDisplayNumber } from '../SyllableSplitter/syllableModel.js'
+import { getSelectableSyllables, getSyllableDisplayNumber } from '../SyllableSplitter/syllableModel.js'
 import { getHoldThresholdTicks } from './holdLastFrame.js'
 import {
   CLIP_CONTROL_DEFAULTS,
@@ -28,7 +35,6 @@ import {
   getClipControlVisibility,
   normalizeClipControlSpec,
   normalizeClipFades,
-  shouldDrawFadeOverlay,
 } from './clipControlSpec.js'
 import {
   applyPointDragPreview,
@@ -37,6 +43,7 @@ import {
   buildAutomationCurveCanvasPoints,
   buildAutomationHoldLine,
 } from './automationLaneGeometry.js'
+import { drawIcon } from '../../ui-kit/icons/canvas.ts'
 
 // Default engine sample rate (used for spp computation when no per-region rate is known)
 const DEFAULT_SR = 48000
@@ -152,6 +159,9 @@ export function resolveTimelinePalette() {
     trackPalette: normalizeTrackPalette(
       Array.from({ length: 16 }, (_, i) => tokenValue(`--theme-track-palette-${i + 1}`))
     ),
+    // Region-label colours: the fallback colour of a block whose track has
+    // none. Resolved here so the draw loop never reads computed style.
+    labelColors: resolveLabelHexColors(),
   }
   return _paletteCache
 }
@@ -218,35 +228,9 @@ function _bezierGain(xNorm, x1, y1, x2, y2) {
 // `trackLayout` (see timelineRowLayout.js) is threaded in, draw paths resolve the
 // shifted top through it; without one they fall back to the contiguous geometry
 // so callers/tests that don't use lanes are unaffected.
-function _trackTop(trackIndex, trackLayout) {
-  if (trackLayout && typeof trackLayout.trackTop === 'function') {
-    return trackLayout.trackTop(trackIndex)
-  }
-  return trackIndex * TRACK_HEIGHT
-}
+const _trackTop = trackTopOf
 
 // ── Grid (background layer) ──────────────────────────────────────────────────
-
-function _clipFadePercent(clip, percentKey, ticksKey) {
-  const percent = Number(clip?.[percentKey])
-  if (Number.isFinite(percent)) return Math.min(100, Math.max(0, percent))
-  const ticks = Number(clip?.[ticksKey])
-  const duration = Number(clip?.durationTicks)
-  if (!Number.isFinite(ticks) || !Number.isFinite(duration) || ticks <= 0 || duration <= 0) return 0
-  return Math.min(100, Math.max(0, (ticks * 100) / duration))
-}
-
-function _normalizedClipFadePercents(clip) {
-  let fadeInPercent = _clipFadePercent(clip, 'fadeInPercent', 'fadeInTicks')
-  let fadeOutPercent = _clipFadePercent(clip, 'fadeOutPercent', 'fadeOutTicks')
-  const total = fadeInPercent + fadeOutPercent
-  if (total > 100) {
-    const scale = 100 / total
-    fadeInPercent *= scale
-    fadeOutPercent *= scale
-  }
-  return { fadeInPercent, fadeOutPercent }
-}
 
 export function getSnapGridIntervalBeats(snapGranularity = '1/16') {
   const interval = GRANULARITY_BEATS[snapGranularity]
@@ -756,7 +740,9 @@ function getTimelineBodyMaterial({
 
   return {
     fillStyle,
-    borderStyle: hexToRgba(baseHex, _clampAlpha(borderAlpha)),
+    // Muted content dims as a whole (DESIGN.md: mute = content at the mute
+    // opacity plus a glyph), the outline included.
+    borderStyle: hexToRgba(baseHex, _clampAlpha(borderAlpha * mm)),
     borderWidth,
   }
 }
@@ -845,9 +831,12 @@ export function drawHoldZones(
         : w
       if (x1 < 0 || x0 > w) continue          // cull off-screen
 
-      // Clamp to the viewport so an unlimited/very long zone stays a bounded fill.
-      const drawX0 = Math.max(0, x0)
-      const drawX1 = Math.min(w, x1)
+      // Clamp to the viewport so an unlimited/very long zone stays a bounded
+      // fill, and snap to whole pixels like the clip it hangs off (blockRect
+      // rounds the clip's right edge the same way), so the zone starts exactly
+      // where the clip ends.
+      const drawX0 = Math.round(Math.max(0, x0))
+      const drawX1 = Math.round(Math.min(w, x1))
       const zoneW = drawX1 - drawX0
 
       if (zoneW >= HOLD_MIN_ZONE_PX) {
@@ -869,69 +858,31 @@ export function drawHoldZones(
   }
 }
 
-// ── Clips (content layer) ───────────────────────────────────────────────────
+// ── Blocks (content layer) ──────────────────────────────────────────────────
+// Clips and pattern blocks are both "blocks": one rectangle, one inner layout
+// (blockGeometry.js) and one title / selection / handle treatment (the paint*
+// helpers further down). Only what differs between them is written twice.
 
-const CLIP_PAD = 2         // top/bottom padding within track lane
-const CLIP_TEXT_PAD = 6    // horizontal text padding inside clip
-const HANDLE_W = 4         // resize handle width (selected only)
-// ── Pass 5D internal block layout ───────────────────────────────────────────
-// Reserved title-strip + measured truncation + bottom-right metadata chips.
-// Drawing-only; never affects outer block geometry, hit-testing, or behavior.
-const TITLE_STRIP_H        = 16
-const TITLE_STRIP_TOP      = 0
-const TITLE_STRIP_MIN_H    = 28   // below this clipH the strip is suppressed
-const TITLE_TEXT_PAD_X     = 6
-const TITLE_CONTENT_GAP    = 2
-const CHIP_H               = 12
+const CLIP_PAD = BLOCK_PAD // top/bottom padding within the track lane
+const CLIP_TEXT_PAD = 6    // horizontal text padding inside drop/ghost previews
+const HANDLE_W = BLOCK_HANDLE_W
 const CHIP_GAP             = 3
 const CHIP_PAD_X           = 5
-const CHIP_RIGHT_INSET     = 6
-const CHIP_BOTTOM_INSET    = 4
 const NAME_AUTO_MIN_W      = 48
 const NAME_ALWAYS_MIN_W    = 18
 const META_AUTO_MIN_W      = 72
 const META_ALWAYS_MIN_W    = 40
-const TINY_CLIP_MAX_W      = 24
 const PATTERN_LOOP_GLYPH_RESERVE = 14
+const HEX6 = /^#[0-9a-f]{6}$/i
 
-function getTimelineBlockInnerLayout({ x, y, w, h, kind, showTitleStrip }) {
-  const useStrip = !!showTitleStrip && h >= TITLE_STRIP_MIN_H
-  const titleH   = useStrip ? TITLE_STRIP_H : 0
-  const titleY   = y + TITLE_STRIP_TOP
-  const titleX   = x
-  const titleW   = w
-  const contentY = useStrip ? (titleY + titleH + TITLE_CONTENT_GAP) : y
-  const contentH = useStrip ? Math.max(0, h - titleH - TITLE_CONTENT_GAP) : h
-  const contentX = x
-  const contentW = w
-  const metadataArea = {
-    rightX:  x + w - CHIP_RIGHT_INSET,
-    bottomY: y + h - CHIP_BOTTOM_INSET,
-    height:  CHIP_H,
-  }
-  return {
-    titleX, titleY, titleW, titleH,
-    contentX, contentY, contentW, contentH,
-    metadataArea, useStrip, kind,
-  }
-}
-
-function fitText(ctx, text, maxWidth, { allowBareEllipsis = false } = {}) {
-  if (!text || maxWidth <= 0) return ''
-  const full = String(text)
-  if (ctx.measureText(full).width <= maxWidth) return full
-  const ELL = '…'
-  const ellW = ctx.measureText(ELL).width
-  if (ellW > maxWidth) return ''
-  let lo = 0, hi = full.length, best = -1
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1
-    const w = ctx.measureText(full.slice(0, mid) + ELL).width
-    if (w <= maxWidth) { best = mid; lo = mid + 1 }
-    else { hi = mid - 1 }
-  }
-  if (best > 0) return full.slice(0, best) + ELL
-  return allowBareEllipsis ? ELL : ''
+// Small bounded memo for per-block style objects. Their inputs are a handful
+// of enums plus the block's colour, so a few dozen entries cover a project;
+// without it every block rebuilt the same rgba() strings every frame.
+const STYLE_CACHE_MAX = 512
+function cachePut(cache, key, value) {
+  if (cache.size >= STYLE_CACHE_MAX) cache.clear()
+  cache.set(key, value)
+  return value
 }
 
 function getTitleStripStyle(baseHex, mode, selected, muted, contrast) {
@@ -979,29 +930,11 @@ function blendHex(bgHex, fgHex, alpha) {
   return '#' + h(b.r + (f.r - b.r) * a) + h(b.g + (f.g - b.g) * a) + h(b.b + (f.b - b.b) * a)
 }
 
-// A small crossed-speaker glyph (8×8) for muted clips and pattern blocks.
+// Muted clips and pattern blocks: Phosphor speaker-simple-x (Fill: it only shows when muted),
+// drawn from the same path data as the DOM icon (ui-kit/icons/canvas.ts).
 const MUTE_GLYPH_W = 11
 function drawMuteGlyph(ctx, x, cy, color) {
-  ctx.save()
-  ctx.fillStyle = color
-  ctx.strokeStyle = color
-  ctx.lineWidth = 1
-  ctx.beginPath()
-  ctx.moveTo(x, cy - 1.5)
-  ctx.lineTo(x + 2, cy - 1.5)
-  ctx.lineTo(x + 4.5, cy - 4)
-  ctx.lineTo(x + 4.5, cy + 4)
-  ctx.lineTo(x + 2, cy + 1.5)
-  ctx.lineTo(x, cy + 1.5)
-  ctx.closePath()
-  ctx.fill()
-  ctx.beginPath()
-  ctx.moveTo(x + 6, cy - 2)
-  ctx.lineTo(x + 9, cy + 2)
-  ctx.moveTo(x + 9, cy - 2)
-  ctx.lineTo(x + 6, cy + 2)
-  ctx.stroke()
-  ctx.restore()
+  drawIcon(ctx, 'speaker-simple-x', x, cy - 5, 10, color, 'fill')
 }
 
 // ── Pattern block material (DESIGN.md 22) ───────────────────────────────────
@@ -1107,7 +1040,12 @@ export function drawClipFadeOverlay(
   const fades = fadeValues || normalizeClipFades(clip)
   const fadeInPercent = clampNumber(fades.fadeInPercent, 0, 100)
   const fadeOutPercent = clampNumber(fades.fadeOutPercent, 0, 100)
-  if (!shouldDrawFadeOverlay({ ...clip, fadeInPercent, fadeOutPercent }, selected, spec) || clipW <= 4) return
+  // Same rule as clipControlSpec.shouldDrawFadeOverlay, on the values already
+  // in hand (that helper wants a clip object, which meant copying the whole
+  // clip per clip per frame just to ask it).
+  if (clipW <= 4 || (fadeInPercent <= 0 && fadeOutPercent <= 0)) return
+  const overlayMode = spec.visibility.fadeOverlay
+  if (overlayMode === 'never' || (overlayMode === 'selected-when-set' && !selected)) return
 
   ctx.save()
   ctx.beginPath()
@@ -1176,6 +1114,10 @@ export function drawClipInlineControls(
   activeControl = null, hoveredControl = null, controlSpec = CLIP_CONTROL_DEFAULTS,
 ) {
   const spec = normalizeClipControlSpec(controlSpec)
+  // Too small to carry controls (computeClipControlGeometry's `eligible`):
+  // leave before building any geometry. Zoomed out this is every clip on
+  // screen, every frame.
+  if (clipW < spec.eligibility.minWidth || clipH < spec.eligibility.minHeight) return
 
   const draftValue = clipControlDraftValue(activeControl, clip.id)
   const hasDraft = draftValue != null
@@ -1366,14 +1308,15 @@ export function drawClipInlineControls(
 
 function drawMetadataChips(ctx, chips, area, palette, { handleReserveRight = 0, leftLimit }) {
   if (!chips.length) return
-  ctx.font = uiCanvasFont('500 9px')
+  const font = uiCanvasFont('500 9px')
+  ctx.font = font
   ctx.textBaseline = 'middle'
 
   const proc = chips.find(c => c.kind === 'proc')
   const gain = chips.find(c => c.kind === 'gain')
 
   const measure = (chip) => {
-    const tw = ctx.measureText(chip.text).width
+    const tw = measureCanvasTextWidth(ctx, font, chip.text)
     return { ...chip, width: Math.ceil(tw + CHIP_PAD_X * 2) }
   }
   const procM = proc ? measure(proc) : null
@@ -1409,403 +1352,510 @@ function drawMetadataChips(ctx, chips, area, palette, { handleReserveRight = 0, 
   }
 }
 
-export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, regions, selectedClipIds, waveformCache, hiResCache, clipPeakCache, bpm, mutedTrackIds, palette = null, timelineDisplaySettings = null, trackColorById = null, trackLayout = null, activeClipControl = null, clipControlOptions = null) {
-  ctx.clearRect(0, 0, w, h)
-  if (!clips || clips.length === 0) return
-  const p = palette ?? resolveTimelinePalette()
-  const ds = normalizeTimelineDisplaySettings(timelineDisplaySettings)
-  const controlSpec = normalizeClipControlSpec(clipControlOptions?.spec || CLIP_CONTROL_DEFAULTS)
-  const hoveredClipControl = clipControlOptions?.hoveredControl || null
-  const wfMode = ds.timelineShowWaveforms
-  const wfMinW = wfMode === 'always' ? 16 : 24
+// ── Content draw: per-frame state shared by every block ─────────────────────
 
-  const clipH = TRACK_HEIGHT - CLIP_PAD * 2
-  let visibleCount = 0
+/**
+ * What a content-layer draw needs to know about the viewport. The caller
+ * (TimelineCanvas.redrawContent) builds one per frame and hands the same object
+ * to drawClips and drawPatternBlocks.
+ *
+ * @typedef {object} TimelineDrawView
+ * @property {CanvasRenderingContext2D} ctx  already scaled for DPR
+ * @property {number} w                viewport width, CSS px
+ * @property {number} h                viewport height, CSS px
+ * @property {number} scrollOffset     left edge of the viewport, in beats
+ * @property {number} ppb              pixels per beat
+ * @property {Object<string, number>} trackIdToIndex
+ * @property {object} [trackLayout]    row layout (timelineRowLayout.js)
+ * @property {object} [palette]        resolveTimelinePalette() result
+ * @property {object} [displaySettings] raw Timeline display settings
+ * @property {Object<string, string>} [trackColorById]
+ * @property {Set} [mutedTrackIds]
+ */
 
-  // Global regime detection — spp is the same for all clips at a given zoom
-  const pixelsPerSecond = bpm ? ppb * (bpm / 60) : 0
-  const spp = pixelsPerSecond > 0 ? DEFAULT_SR / pixelsPerSecond : 9999
-  // Shared, hysteresis-aware tracker — see waveformRegime.js for why the
-  // previous regime must be threaded through and why it is shared with the
-  // hi-res fetch effect rather than tracked per-caller.
-  const regime = currentRegime(spp)
+function beginFrame(view) {
+  return {
+    ctx: view.ctx,
+    w: view.w,
+    h: view.h,
+    scrollOffset: view.scrollOffset,
+    ppb: view.ppb,
+    trackIdToIndex: view.trackIdToIndex || {},
+    trackLayout: view.trackLayout ?? null,
+    trackColorById: view.trackColorById ?? null,
+    mutedTrackIds: view.mutedTrackIds ?? null,
+    p: view.palette ?? resolveTimelinePalette(),
+    ds: normalizeTimelineDisplaySettings(view.displaySettings),
+    titleFont: uiCanvasFont('600 10px'),
+  }
+}
 
-  for (let i = 0; i < clips.length; i++) {
-    const clip = clips[i]
-    const beatPos = clip.positionTicks / PPQ
-    const beatDur = clip.durationTicks / PPQ
+// A block takes its track's colour. The region-label colour is only a fallback
+// for a track with no resolved colour, and is looked up in the per-theme
+// palette: it used to be a getComputedStyle read for every block on every
+// frame whose result was then almost always thrown away.
+function blockColor(frame, trackId, label) {
+  const trackColor = frame.trackColorById?.[trackId]
+  if (trackColor) return trackColor
+  const labelColors = frame.p.labelColors
+  return labelColors ? pickLabelHexColor(labelColors, label) : labelHexColor(label)
+}
 
-    const x = beatToPixel(beatPos, scrollOffset, ppb)
-    let clipW = beatDur * ppb
-    if (clipW < CLIP_MIN_WIDTH_PX) clipW = CLIP_MIN_WIDTH_PX
+// One scratch rectangle for the draw loops (see blockRect's `out`).
+const _blockRect = {}
 
-    // Cull off-screen
-    if (x + clipW < 0 || x > w) continue
-    visibleCount++
+// ── Block shell: the parts clips and pattern blocks share ──────────────────
 
-    const trackIdx = trackIdToIndex[clip.trackId]
-    if (trackIdx == null) continue
-    const y = _trackTop(trackIdx, trackLayout) + CLIP_PAD
+// One bounded 1px stroke just inside the coloured border. Keeps the block's
+// own colour while making selection read in dark and light themes alike.
+// `inset` is how many whole pixels of border sit outside the ring.
+function paintSelectionRing(ctx, r, color, inset) {
+  const size = inset * 2 + 1
+  if (r.w <= size + 1 || r.h <= size + 1) return
+  ctx.strokeStyle = color
+  ctx.lineWidth = 1
+  ctx.strokeRect(r.x + inset + 0.5, r.y + inset + 0.5, r.w - size, r.h - size)
+}
 
-    const region = regions[clip.regionId]
-    const fallbackHex = labelHexColor(region?.label)
-    const hex = trackColorById?.[clip.trackId] || fallbackHex
-    const selected = selectedClipIds.has(clip.id)
-    const isMuted = mutedTrackIds?.has(clip.trackId)
-    const mutedMul = isMuted ? MUTE_OPACITY : 1.0
+// A border of `width` whole pixels drawn entirely INSIDE the block. A stroke
+// centred on the block's edge straddles the pixel grid (a 1px line becomes two
+// half-strength rows) and spills onto whatever sits next to the block.
+function paintInsetBorder(ctx, r, color, width) {
+  if (r.w <= width || r.h <= width) return
+  ctx.strokeStyle = color
+  ctx.lineWidth = width
+  ctx.strokeRect(r.x + width / 2, r.y + width / 2, r.w - width, r.h - width)
+}
 
-    // ── Body material (Pass 5C) ──────────────────────────────────────────
-    const _mat = getTimelineBodyMaterial({
-      baseHex: hex,
-      mode: ds.timelineClipBodyMode,
-      selected,
-      muted: !!isMuted,
-      contrast: ds.timelineClipContrast,
-      gradientDirection: ds.timelineBodyGradientDirection,
-      ctx, x, y, w: clipW, h: clipH,
-    })
+function paintTitleStrip(ctx, layout, fill, separator) {
+  ctx.fillStyle = fill
+  ctx.fillRect(layout.titleX, layout.titleY, layout.titleW, layout.titleH)
+  ctx.fillStyle = separator
+  ctx.fillRect(layout.titleX, layout.titleY + layout.titleH - 1, layout.titleW, 1)
+}
 
-    // ── Fill ──────────────────────────────────────────────────────────────
-    ctx.fillStyle = _mat.fillStyle
-    ctx.fillRect(x, y, clipW, clipH)
+// Mute glyph + the block's name, truncated to what the strip has room for.
+// `reserveLeft` / `reserveRight` keep the text clear of resize handles and of
+// anything else parked in the strip (the pattern loop glyph).
+function paintBlockTitle(frame, layout, text, ink, showName, muted, reserveLeft, reserveRight) {
+  const { ctx } = frame
+  const muteReserve = muted ? MUTE_GLYPH_W : 0
+  if (muted && layout.titleW > MUTE_GLYPH_W + TITLE_TEXT_PAD_X * 2) {
+    drawMuteGlyph(ctx, layout.titleX + reserveLeft + TITLE_TEXT_PAD_X, layout.titleY + layout.titleH / 2, ink)
+  }
+  const availW = Math.max(
+    0,
+    layout.titleW - TITLE_TEXT_PAD_X * 2 - reserveRight - reserveLeft - muteReserve,
+  )
+  // 'always' shows a name in less room, down to a bare ellipsis.
+  const always = showName === 'always'
+  if (availW < (always ? NAME_ALWAYS_MIN_W : NAME_AUTO_MIN_W)) return
 
-    // ── Border ────────────────────────────────────────────────────────────
-    ctx.strokeStyle = _mat.borderStyle
-    ctx.lineWidth = _mat.borderWidth
-    ctx.strokeRect(x, y, clipW, clipH)
+  const textX = layout.titleX + reserveLeft + muteReserve + TITLE_TEXT_PAD_X
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(textX, layout.titleY, availW, layout.titleH)
+  ctx.clip()
+  ctx.fillStyle = ink
+  ctx.font = frame.titleFont
+  ctx.textBaseline = 'middle'
+  const fitted = fitCanvasText(ctx, frame.titleFont, text, availW, always)
+  if (fitted) ctx.fillText(fitted, textX, layout.titleY + layout.titleH / 2)
+  ctx.restore()
+}
 
-    // ── Selected-state inner highlight ring (Pass 4B) ─────────────────────
-    // One bounded 1px stroke just inside the colored border. Preserves the
-    // per-track semantic hex identity of the clip while making selection
-    // visibly clearer in both dark and light themes.
-    if (selected && clipW > 4 && clipH > 4) {
-      ctx.strokeStyle = p.selectionHighlight
-      ctx.lineWidth = 1
-      ctx.strokeRect(x + 1.5, y + 1.5, clipW - 3, clipH - 3)
-    }
+function paintResizeHandles(ctx, r, color, left, right) {
+  ctx.fillStyle = color
+  if (left) ctx.fillRect(r.x, r.y, HANDLE_W, r.h)
+  if (right) ctx.fillRect(r.x + r.w - HANDLE_W, r.y, HANDLE_W, r.h)
+}
 
-    // ── Pass 5D internal layout (title strip + content region) ───────────
-    const showName = ds.timelineShowClipNames
-    const showMeta = ds.timelineShowPitchShift
-    const _wantTitleStrip = showName !== 'never' && clipW > TINY_CLIP_MAX_W
-    const layout = getTimelineBlockInnerLayout({
-      x, y, w: clipW, h: clipH, kind: 'audio',
-      showTitleStrip: _wantTitleStrip,
-    })
+// ── Clips ───────────────────────────────────────────────────────────────────
 
-    // ── Waveform inside clip ─────────────────────────────────────────────
-    // Pass 5C: gated by timelineShowWaveforms.
-    //   never  → never draw (caches untouched, cache regime unchanged)
-    //   always → draw at clipW >= 16
-    //   auto   → draw at clipW >= 24
-    if (wfMode !== 'never' && clipW >= wfMinW && bpm && region) {
-      // Swap-aware: extend draw span past video range when swapped audio is longer.
-      const regionDurSec = getRegionPlaybackDurationSec(region)
+const _clipMaterialCache = new Map()
+function clipBodyMaterial(ctx, r, hex, ds, selected, muted) {
+  const mode = ds.timelineClipBodyMode
+  const contrast = ds.timelineClipContrast
+  // A gradient is positioned on the block, so it cannot be shared.
+  const shared = mode !== 'gradient'
+  const key = shared ? hex + '|' + mode + '|' + contrast + (selected ? '|s' : '|-') + (muted ? 'm' : '-') : null
+  const hit = shared ? _clipMaterialCache.get(key) : undefined
+  if (hit) return hit
+  const material = getTimelineBodyMaterial({
+    baseHex: hex, mode, selected, muted, contrast,
+    gradientDirection: ds.timelineBodyGradientDirection,
+    ctx, x: r.x, y: r.y, w: r.w, h: r.h,
+  })
+  return shared ? cachePut(_clipMaterialCache, key, material) : material
+}
 
-      // Visible pixel range (clip ∩ viewport)
-      const visL = Math.max(0, x)
-      const visR = Math.min(w, x + clipW)
+const _titleStripCache = new Map()
+function clipTitleStripStyle(hex, ds, selected, muted) {
+  const key = hex + '|' + ds.timelineClipBodyMode + '|' + ds.timelineClipContrast + (selected ? '|s' : '|-') + (muted ? 'm' : '-')
+  return _titleStripCache.get(key) ?? cachePut(
+    _titleStripCache, key,
+    getTitleStripStyle(hex, ds.timelineClipBodyMode, selected, muted, ds.timelineClipContrast),
+  )
+}
 
-      if (regionDurSec > 0 && visR > visL) {
-      const regionDurTicks = regionDurSec * (bpm / 60) * PPQ
-      const clipDurSec = (clip.durationTicks / PPQ) / (bpm / 60)
-      const regionOffsetSec = getClipRegionWaveformStartSec(clip, region, bpm)
+// Syllable clip numbering. getSyllableDisplayNumber rebuilds the region's whole
+// selectable-syllable list on every call; a syllable-chopped region has dozens
+// of clips on screen asking the same question every frame. Region data only
+// arrives as fresh objects from the engine, so the array is the revision key.
+const _syllableNumbers = new WeakMap()
+function syllableDisplayNumber(syllables, sourceIndex) {
+  if (!Array.isArray(syllables)) return getSyllableDisplayNumber(syllables, sourceIndex)
+  let numbers = _syllableNumbers.get(syllables)
+  if (!numbers) {
+    numbers = new Map(getSelectableSyllables(syllables).map((e) => [e.sourceIndex, e.number]))
+    _syllableNumbers.set(syllables, numbers)
+  }
+  return numbers.get(sourceIndex) ?? sourceIndex + 1
+}
 
-      // Map visible pixels to seconds within the region (for unprocessed clips)
-      const secPerPx = clipDurSec / clipW
-      const visStartSec = regionOffsetSec + (visL - x) * secPerPx
-      const visEndSec   = regionOffsetSec + (visR - x) * secPerPx
+// A syllable clip is labelled "<n> <text>" (or just "<n>"), not by region name.
+function clipLabelText(clip, region) {
+  if (clip.syllableIndex == null || clip.syllableIndex < 0) return region?.name || '?'
+  const displayNumber = syllableDisplayNumber(region?.syllables, clip.syllableIndex)
+  const text = region?.syllables?.[clip.syllableIndex]?.text
+  return text ? `${displayNumber} ${text}` : `${displayNumber}`
+}
 
-      // Clip-local time coordinates: 0 = start of processed buffer, clipDurSec = end.
-      // Used for processed clips (stretch/pitch/reverse).
-      const clipLocalStart = (visL - x) * secPerPx
-      const clipLocalEnd   = (visR - x) * secPerPx
+// Waveform inside a clip's content region. Picks the best data available for
+// the current zoom regime (hi-res samples / peaks, else the low-res envelope)
+// and only ever emits the columns that fall inside the viewport.
+function paintClipWaveform(frame, pass, clip, region, r, layout, selected, muted) {
+  const { ctx, w, p, ds } = frame
+  const { bpm, regime } = pass
+  // The waveform maps time to pixels exactly; it must not inherit any rounding
+  // applied to the block's painted outline.
+  const x = r.timeX
+  const clipW = r.timeW
 
-      const hasProcessing = (clip.pitchOffset ?? 0) !== 0
-                         || (clip.pitchOffsetCents ?? 0) !== 0
-                         || clip.reversed
-                         || ((clip.stretchRatio ?? 1.0) !== 1.0)
+  // Swap-aware: extend draw span past video range when swapped audio is longer.
+  const regionDurSec = getRegionPlaybackDurationSec(region)
 
-      ctx.save()
-      ctx.beginPath()
-      ctx.rect(layout.contentX, layout.contentY, layout.contentW, layout.contentH)
-      ctx.clip()
+  // Visible pixel range (clip ∩ viewport)
+  const visL = Math.max(0, x)
+  const visR = Math.min(w, x + clipW)
+  if (!(regionDurSec > 0 && visR > visL)) return
 
-      // Bright "core" over a dark "halo" — the two contrast against EACH
-      // OTHER, not against the clip's own (arbitrarily saturated) fill, so
-      // the waveform stays legible at any hue and any clip-contrast level.
-      // wfCm nudges both up together with the Contrast setting instead of
-      // holding them fixed while the clip body underneath gets more opaque.
-      const wfCm = _waveformContrastMul(ds.timelineClipContrast)
-      const lineColor = withAlpha(p.clipWaveformFg, _clampAlpha((selected ? 1.0 : 0.93) * wfCm))
-      const traceFill = withAlpha(p.clipWaveformBg, _clampAlpha((selected ? 1.0 : 0.88) * wfCm))
+  const regionDurTicks = regionDurSec * (bpm / 60) * PPQ
+  const clipDurSec = (clip.durationTicks / PPQ) / (bpm / 60)
+  const regionOffsetSec = getClipRegionWaveformStartSec(clip, region, bpm)
 
-      let drawn = false
+  // Map visible pixels to seconds within the region (for unprocessed clips)
+  const secPerPx = clipDurSec / clipW
+  const visStartSec = regionOffsetSec + (visL - x) * secPerPx
+  const visEndSec   = regionOffsetSec + (visR - x) * secPerPx
 
-      // ── Try hi-res cache for trace/waveform/sample regimes ──────────
-      if (regime !== 'envelope' && hiResCache) {
-        const hiResVisStart = hasProcessing ? clipLocalStart : visStartSec
-        const hiResVisEnd   = hasProcessing ? clipLocalEnd   : visEndSec
+  // Clip-local time coordinates: 0 = start of processed buffer, clipDurSec = end.
+  // Used for processed clips (stretch/pitch/reverse).
+  const clipLocalStart = (visL - x) * secPerPx
+  const clipLocalEnd   = (visR - x) * secPerPx
 
-        // Processed clips: keyed by "c"+clipId with clip-local time coords —
-        // one clip, one buffer, no collision possible, so a single entry.
-        //
-        // Unprocessed clips: keyed by regionId holding an ARRAY of entries,
-        // because many clips commonly reference DIFFERENT sub-ranges of the
-        // same source region (a syllable-chopped region is the textbook
-        // case — see hiResFetchPlanner.js). A single slot there meant clip
-        // B's fetch silently discarded clip A's, forever, every settle pass.
-        // findCoveringEntry picks whichever entry (if any) actually covers
-        // THIS clip's window — see hiResCoverage.js for what "covers" means.
-        const hiRes = hasProcessing
-          ? hiResCache[`c${clip.id}`]
-          : findCoveringEntry(hiResCache[clip.regionId], hiResVisStart, hiResVisEnd)
+  const hasProcessing = (clip.pitchOffset ?? 0) !== 0
+                     || (clip.pitchOffsetCents ?? 0) !== 0
+                     || clip.reversed
+                     || ((clip.stretchRatio ?? 1.0) !== 1.0)
 
-        if (!hasProcessing && regime === 'sample' && hiRes?.samples) {
-          // Regime 4: individual sample dots (unprocessed only)
-          const sr = hiRes.sampleRate || DEFAULT_SR
-          const visStartSample = Math.floor(hiResVisStart * sr)
-          const visEndSample   = Math.ceil(hiResVisEnd   * sr)
-          const dataOffset = visStartSample - hiRes.startSample
-          const dataCount  = visEndSample - visStartSample
-          if (dataOffset >= 0 && dataOffset + dataCount <= hiRes.samples.length) {
-            drawSamplePoints(ctx, hiRes.samples, visL, layout.contentY, visR - visL, layout.contentH,
-              dataOffset, dataCount, lineColor, undefined, traceFill)
-            drawn = true
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(layout.contentX, layout.contentY, layout.contentW, layout.contentH)
+  ctx.clip()
+
+  // Bright "core" over a dark "halo" — the two contrast against EACH
+  // OTHER, not against the clip's own (arbitrarily saturated) fill, so
+  // the waveform stays legible at any hue and any clip-contrast level.
+  // wfCm nudges both up together with the Contrast setting instead of
+  // holding them fixed while the clip body underneath gets more opaque.
+  //
+  // A muted track's waveform dims with the rest of the clip. It used to stay
+  // at full strength over a body dimmed to 45%, which made muted audio the
+  // most prominent thing on the lane.
+  const wfCm = _waveformContrastMul(ds.timelineClipContrast) * (muted ? MUTE_OPACITY : 1)
+  const lineColor = withAlpha(p.clipWaveformFg, _clampAlpha((selected ? 1.0 : 0.93) * wfCm))
+  const traceFill = withAlpha(p.clipWaveformBg, _clampAlpha((selected ? 1.0 : 0.88) * wfCm))
+
+  let drawn = false
+
+  // ── Try hi-res cache for trace/waveform/sample regimes ──────────────
+  if (regime !== 'envelope' && pass.hiResCache) {
+    const hiResVisStart = hasProcessing ? clipLocalStart : visStartSec
+    const hiResVisEnd   = hasProcessing ? clipLocalEnd   : visEndSec
+
+    // Processed clips: keyed by "c"+clipId with clip-local time coords —
+    // one clip, one buffer, no collision possible, so a single entry.
+    //
+    // Unprocessed clips: keyed by regionId holding an ARRAY of entries,
+    // because many clips commonly reference DIFFERENT sub-ranges of the
+    // same source region (a syllable-chopped region is the textbook
+    // case — see hiResFetchPlanner.js). A single slot there meant clip
+    // B's fetch silently discarded clip A's, forever, every settle pass.
+    // findCoveringEntry picks whichever entry (if any) actually covers
+    // THIS clip's window — see hiResCoverage.js for what "covers" means.
+    const hiRes = hasProcessing
+      ? pass.hiResCache[`c${clip.id}`]
+      : findCoveringEntry(pass.hiResCache[clip.regionId], hiResVisStart, hiResVisEnd)
+
+    if (!hasProcessing && regime === 'sample' && hiRes?.samples) {
+      // Regime 4: individual sample dots (unprocessed only)
+      const sr = hiRes.sampleRate || DEFAULT_SR
+      const visStartSample = Math.floor(hiResVisStart * sr)
+      const visEndSample   = Math.ceil(hiResVisEnd   * sr)
+      const dataOffset = visStartSample - hiRes.startSample
+      const dataCount  = visEndSample - visStartSample
+      if (dataOffset >= 0 && dataOffset + dataCount <= hiRes.samples.length) {
+        drawSamplePoints(ctx, hiRes.samples, visL, layout.contentY, visR - visL, layout.contentH,
+          dataOffset, dataCount, lineColor, undefined, traceFill)
+        drawn = true
+      }
+    } else if (hiRes?.peaks && hiRes.stride === 3) {
+      // Regime 2 (trace) or 3 (waveform): hi-res peaks.
+      //
+      // MUST require the cache to fully cover the requested visible
+      // window before using it — this was the source of the "waveform
+      // stretches while panning" bug. The old code clamped f0/f1 to
+      // [0,1] and then drew whatever fell in that clamped range across
+      // the FULL visL..visR width regardless of how much time it
+      // actually represented: pan a little past a cached window (e.g.
+      // cache covers sec 10-15, view now wants 12-17) and the last 60%
+      // of the cache's columns — representing only 3 of the 5 requested
+      // seconds — got stretched to fill all 5 seconds of pixel width.
+      // That mismatch between "columns available" and "columns
+      // requested" is exactly a rubber-band distortion, and it only
+      // resolved once the 80ms-debounced refetch replaced the cache.
+      //
+      // The sample-regime branch above never had this bug — it already
+      // requires `dataOffset >= 0 && dataOffset + dataCount <=
+      // hiRes.samples.length`, i.e. full coverage, and simply skips
+      // (falls through to the low-res fallback) otherwise. The epsilon
+      // here matches the ON-SETTLE fetch effect's own "is this cache
+      // entry still good enough to skip refetching" check (TimelineView
+      // .jsx) — the draw path must agree with the fetch path on what
+      // "covers the window" means, or a window the fetcher considers
+      // fresh can still get judged too incomplete to draw, or vice versa.
+      const totalHiCols = Math.floor(hiRes.peaks.length / 3)
+      const hiDur = hiRes.endSec - hiRes.startSec
+      if (
+        hiDur > 0 && totalHiCols > 0 &&
+        hiResCoversWindow(hiRes.startSec, hiRes.endSec, hiResVisStart, hiResVisEnd)
+      ) {
+        const f0 = Math.max(0, (hiResVisStart - hiRes.startSec) / hiDur)
+        const f1 = Math.min(1, (hiResVisEnd   - hiRes.startSec) / hiDur)
+        const startCol = Math.floor(f0 * totalHiCols)
+        const endCol   = Math.min(totalHiCols, Math.ceil(f1 * totalHiCols))
+        if (endCol > startCol) {
+          if (regime === 'trace') {
+            drawTrace(ctx, hiRes.peaks, visL, layout.contentY, visR - visL, layout.contentH,
+              startCol, endCol, traceFill, lineColor)
+          } else {
+            drawWaveformLine(ctx, hiRes.peaks, visL, layout.contentY, visR - visL, layout.contentH,
+              startCol, endCol, lineColor, 1.5, traceFill, 1.5)
           }
-        } else if (hiRes?.peaks && hiRes.stride === 3) {
-          // Regime 2 (trace) or 3 (waveform): hi-res peaks.
-          //
-          // MUST require the cache to fully cover the requested visible
-          // window before using it — this was the source of the "waveform
-          // stretches while panning" bug. The old code clamped f0/f1 to
-          // [0,1] and then drew whatever fell in that clamped range across
-          // the FULL visL..visR width regardless of how much time it
-          // actually represented: pan a little past a cached window (e.g.
-          // cache covers sec 10-15, view now wants 12-17) and the last 60%
-          // of the cache's columns — representing only 3 of the 5 requested
-          // seconds — got stretched to fill all 5 seconds of pixel width.
-          // That mismatch between "columns available" and "columns
-          // requested" is exactly a rubber-band distortion, and it only
-          // resolved once the 80ms-debounced refetch replaced the cache.
-          //
-          // The sample-regime branch above never had this bug — it already
-          // requires `dataOffset >= 0 && dataOffset + dataCount <=
-          // hiRes.samples.length`, i.e. full coverage, and simply skips
-          // (falls through to the low-res fallback) otherwise. The epsilon
-          // here matches the ON-SETTLE fetch effect's own "is this cache
-          // entry still good enough to skip refetching" check (TimelineView
-          // .jsx) — the draw path must agree with the fetch path on what
-          // "covers the window" means, or a window the fetcher considers
-          // fresh can still get judged too incomplete to draw, or vice versa.
-          const totalHiCols = Math.floor(hiRes.peaks.length / 3)
-          const hiDur = hiRes.endSec - hiRes.startSec
-          if (
-            hiDur > 0 && totalHiCols > 0 &&
-            hiResCoversWindow(hiRes.startSec, hiRes.endSec, hiResVisStart, hiResVisEnd)
-          ) {
-            const f0 = Math.max(0, (hiResVisStart - hiRes.startSec) / hiDur)
-            const f1 = Math.min(1, (hiResVisEnd   - hiRes.startSec) / hiDur)
-            const startCol = Math.floor(f0 * totalHiCols)
-            const endCol   = Math.min(totalHiCols, Math.ceil(f1 * totalHiCols))
-            if (endCol > startCol) {
-              if (regime === 'trace') {
-                drawTrace(ctx, hiRes.peaks, visL, layout.contentY, visR - visL, layout.contentH,
-                  startCol, endCol, traceFill, lineColor)
-              } else {
-                drawWaveformLine(ctx, hiRes.peaks, visL, layout.contentY, visR - visL, layout.contentH,
-                  startCol, endCol, lineColor, 1.5, traceFill, 1.5)
-              }
-              drawn = true
-            }
-          }
+          drawn = true
         }
       }
-
-      // ── Fallback: low-res envelope ───────────────────────────────────
-      if (!drawn) {
-        if (hasProcessing && clipPeakCache) {
-          // Processed clip: use clip-level peaks (full processed buffer, 0..clipDurSec).
-          const cpData = clipPeakCache[clip.id]
-          if (cpData?.peaks && cpData.stride === 3) {
-            const totalCols = Math.floor(cpData.peaks.length / 3)
-            // Map visible pixel range to fraction of the processed clip
-            const f0 = Math.max(0, clipLocalStart / clipDurSec)
-            const f1 = Math.min(1, clipLocalEnd   / clipDurSec)
-            const startCol = Math.floor(f0 * totalCols)
-            const endCol   = Math.min(totalCols, Math.ceil(f1 * totalCols))
-            // Emit only the columns the clip rect will actually keep — a clip
-            // far wider than the viewport otherwise pays for its whole span.
-            const win = visibleColumnWindow(x, clipW, startCol, endCol, visL, visR)
-            if (win) {
-              if (regime === 'trace') {
-                drawTrace(ctx, cpData.peaks, win.x, layout.contentY, win.w, layout.contentH,
-                  win.startCol, win.endCol, traceFill, lineColor)
-              } else {
-                drawEnvelope(ctx, cpData.peaks, win.x, layout.contentY, win.w, layout.contentH,
-                  win.startCol, win.endCol, traceFill, lineColor)
-              }
-            }
-          }
-        } else if (!hasProcessing && waveformCache) {
-          // Unprocessed clip: use raw region peaks with regionOffset applied.
-          const wfData = waveformCache[clip.regionId]
-          if (wfData?.peaks && wfData.stride === 3) {
-            const totalPeakCols = Math.floor(wfData.peaks.length / 3)
-            const offsetFrac = regionDurSec > 0 ? regionOffsetSec / regionDurSec : 0
-            const durFrac = clip.durationTicks / regionDurTicks
-            const startCol = Math.floor(offsetFrac * totalPeakCols)
-            const endCol = Math.min(totalPeakCols, Math.ceil((offsetFrac + durFrac) * totalPeakCols))
-
-            const win = visibleColumnWindow(x, clipW, startCol, endCol, visL, visR)
-            if (win) {
-              if (regime === 'trace') {
-                drawTrace(ctx, wfData.peaks, win.x, layout.contentY, win.w, layout.contentH,
-                  win.startCol, win.endCol, traceFill, lineColor)
-              } else {
-                drawEnvelope(ctx, wfData.peaks, win.x, layout.contentY, win.w, layout.contentH,
-                  win.startCol, win.endCol, traceFill, lineColor)
-              }
-            }
-          }
-        }
-      }
-
-      ctx.restore()
-      } // regionDurSec > 0 && visR > visL
-    }
-
-    // ── Fade overlay ──────────────────────────────────────────────────────
-    const committedFades = normalizeClipFades(clip)
-    const clipDraftValue = clipControlDraftValue(activeClipControl, clip.id)
-    const fadeInPercent = clipDraftValue != null && activeClipControl.kind === 'fadeIn'
-      ? clampNumber(clipDraftValue, 0, Math.max(0, 100 - committedFades.fadeOutPercent))
-      : committedFades.fadeInPercent
-    const fadeOutPercent = clipDraftValue != null && activeClipControl.kind === 'fadeOut'
-      ? clampNumber(clipDraftValue, 0, Math.max(0, 100 - committedFades.fadeInPercent))
-      : committedFades.fadeOutPercent
-
-    drawClipFadeOverlay(
-      ctx, clip, x, y, clipW, clipH, selected, p.clipFadeOverlay,
-      controlSpec, { fadeInPercent, fadeOutPercent },
-    )
-
-    // ── Pass 5D: title strip + name + metadata chips ─────────────────────
-    // Tiny clips (<= 24px) show body/border/handles only.
-    if (clipW > TINY_CLIP_MAX_W) {
-      const handleReserveRight = (selected && clipW > HANDLE_W * 3) ? HANDLE_W : 0
-      const handleReserveLeft  = (selected && clipW > HANDLE_W * 3) ? HANDLE_W : 0
-
-      // Title strip background + name
-      if (layout.useStrip && showName !== 'never') {
-        const ts = getTitleStripStyle(
-          hex, ds.timelineClipBodyMode, selected, !!isMuted, ds.timelineClipContrast,
-        )
-        ctx.fillStyle = ts.fill
-        ctx.fillRect(layout.titleX, layout.titleY, layout.titleW, layout.titleH)
-        ctx.fillStyle = ts.separator
-        ctx.fillRect(layout.titleX, layout.titleY + layout.titleH - 1, layout.titleW, 1)
-
-        const labelInk = clipLabelInk(p, /^#[0-9a-f]{6}$/i.test(hex) ? hex : '#808080', ts.alpha)
-        const muteReserve = isMuted ? MUTE_GLYPH_W : 0
-        if (isMuted && layout.titleW > MUTE_GLYPH_W + TITLE_TEXT_PAD_X * 2) {
-          drawMuteGlyph(ctx, layout.titleX + handleReserveLeft + TITLE_TEXT_PAD_X, layout.titleY + layout.titleH / 2, labelInk)
-        }
-        const titleAvailW = Math.max(
-          0,
-          layout.titleW - TITLE_TEXT_PAD_X * 2 - handleReserveRight - handleReserveLeft - muteReserve,
-        )
-
-        let drawNameOk = false
-        let allowBareEllipsis = false
-        if (showName === 'always') {
-          drawNameOk = titleAvailW >= NAME_ALWAYS_MIN_W
-          allowBareEllipsis = true
-        } else { // auto
-          drawNameOk = titleAvailW >= NAME_AUTO_MIN_W
-        }
-
-        if (drawNameOk) {
-          // Syllable clip → show "<n> <text>" (or just "<n>") instead of region name
-          let clipLabel = region?.name || '?'
-          if (clip.syllableIndex != null && clip.syllableIndex >= 0) {
-            const syl = region?.syllables?.[clip.syllableIndex]
-            const displayNumber = getSyllableDisplayNumber(region?.syllables, clip.syllableIndex)
-            if (syl) {
-              clipLabel = syl.text
-                ? `${displayNumber} ${syl.text}`
-                : `${displayNumber}`
-            } else {
-              clipLabel = `${displayNumber}`
-            }
-          }
-
-          ctx.save()
-          ctx.beginPath()
-          ctx.rect(
-            layout.titleX + handleReserveLeft + muteReserve + TITLE_TEXT_PAD_X,
-            layout.titleY,
-            titleAvailW,
-            layout.titleH,
-          )
-          ctx.clip()
-          ctx.fillStyle = labelInk
-          ctx.font = uiCanvasFont('600 10px')
-          ctx.textBaseline = 'middle'
-          const fitted = fitText(ctx, clipLabel, titleAvailW, { allowBareEllipsis })
-          if (fitted) {
-            ctx.fillText(
-              fitted,
-              layout.titleX + handleReserveLeft + muteReserve + TITLE_TEXT_PAD_X,
-              layout.titleY + layout.titleH / 2,
-            )
-          }
-          ctx.restore()
-        }
-      }
-
-      // Metadata chips (bottom-right)
-      if (showMeta !== 'never') {
-        const metaMinW = showMeta === 'always' ? META_ALWAYS_MIN_W : META_AUTO_MIN_W
-        if (clipW >= metaMinW) {
-          const chips = buildClipMetadataChips(clip)
-          if (chips.length) {
-            drawMetadataChips(ctx, chips, layout.metadataArea, p, {
-              handleReserveRight,
-              leftLimit: x + handleReserveLeft + 2,
-            })
-          }
-        }
-      }
-    }
-
-    // ── Resize handles (selected only) ────────────────────────────────────
-    // Drawn last so they always sit on top of strip + chips.
-    drawClipInlineControls(
-      ctx, clip, x, y, clipW, clipH, hex, selected,
-      activeClipControl, hoveredClipControl, controlSpec,
-    )
-
-    if (selected && clipW > HANDLE_W * 3) {
-      ctx.fillStyle = hexToRgba(hex, 1.0)
-      ctx.fillRect(x, y, HANDLE_W, clipH)                       // left
-      ctx.fillRect(x + clipW - HANDLE_W, y, HANDLE_W, clipH)    // right
-    }
-
-    // ── At-limit marker (group drag) ──────────────────────────────────────
-    // This clip is what stopped the whole selection from travelling further.
-    // Ringed so the user can find it and either adjust or deselect it.
-    if (activeClipControl?.blocked?.has(clip.id)) {
-      ctx.save()
-      ctx.strokeStyle = p.clipControlAtLimit || '#ff5c5c'
-      ctx.lineWidth = 2
-      ctx.setLineDash([4, 3])
-      ctx.strokeRect(x + 1, y + 1, Math.max(0, clipW - 2), Math.max(0, clipH - 2))
-      ctx.restore()
     }
   }
 
-  void visibleCount
+  // ── Fallback: low-res envelope ───────────────────────────────────────
+  if (!drawn) {
+    if (hasProcessing && pass.clipPeakCache) {
+      // Processed clip: use clip-level peaks (full processed buffer, 0..clipDurSec).
+      const cpData = pass.clipPeakCache[clip.id]
+      if (cpData?.peaks && cpData.stride === 3) {
+        const totalCols = Math.floor(cpData.peaks.length / 3)
+        // Map visible pixel range to fraction of the processed clip
+        const f0 = Math.max(0, clipLocalStart / clipDurSec)
+        const f1 = Math.min(1, clipLocalEnd   / clipDurSec)
+        const startCol = Math.floor(f0 * totalCols)
+        const endCol   = Math.min(totalCols, Math.ceil(f1 * totalCols))
+        // Emit only the columns the clip rect will actually keep — a clip
+        // far wider than the viewport otherwise pays for its whole span.
+        const win = visibleColumnWindow(x, clipW, startCol, endCol, visL, visR)
+        if (win) {
+          if (regime === 'trace') {
+            drawTrace(ctx, cpData.peaks, win.x, layout.contentY, win.w, layout.contentH,
+              win.startCol, win.endCol, traceFill, lineColor)
+          } else {
+            drawEnvelope(ctx, cpData.peaks, win.x, layout.contentY, win.w, layout.contentH,
+              win.startCol, win.endCol, traceFill, lineColor)
+          }
+        }
+      }
+    } else if (!hasProcessing && pass.waveformCache) {
+      // Unprocessed clip: use raw region peaks with regionOffset applied.
+      const wfData = pass.waveformCache[clip.regionId]
+      if (wfData?.peaks && wfData.stride === 3) {
+        const totalPeakCols = Math.floor(wfData.peaks.length / 3)
+        const offsetFrac = regionDurSec > 0 ? regionOffsetSec / regionDurSec : 0
+        const durFrac = clip.durationTicks / regionDurTicks
+        const startCol = Math.floor(offsetFrac * totalPeakCols)
+        const endCol = Math.min(totalPeakCols, Math.ceil((offsetFrac + durFrac) * totalPeakCols))
+
+        const win = visibleColumnWindow(x, clipW, startCol, endCol, visL, visR)
+        if (win) {
+          if (regime === 'trace') {
+            drawTrace(ctx, wfData.peaks, win.x, layout.contentY, win.w, layout.contentH,
+              win.startCol, win.endCol, traceFill, lineColor)
+          } else {
+            drawEnvelope(ctx, wfData.peaks, win.x, layout.contentY, win.w, layout.contentH,
+              win.startCol, win.endCol, traceFill, lineColor)
+          }
+        }
+      }
+    }
+  }
+
+  ctx.restore()
+}
+
+function paintClip(frame, pass, clip, r) {
+  const { ctx, p, ds } = frame
+  const region = pass.regions[clip.regionId]
+  const hex = blockColor(frame, clip.trackId, region?.label)
+  const selected = !!pass.selectedClipIds?.has(clip.id)
+  const muted = !!frame.mutedTrackIds?.has(clip.trackId)
+
+  // ── Body: fill, border, selection ring ────────────────────────────────
+  const material = clipBodyMaterial(ctx, r, hex, ds, selected, muted)
+  ctx.fillStyle = material.fillStyle
+  ctx.fillRect(r.x, r.y, r.w, r.h)
+  paintInsetBorder(ctx, r, material.borderStyle, material.borderWidth)
+  if (selected) paintSelectionRing(ctx, r, p.selectionHighlight, material.borderWidth)
+
+  const showName = ds.timelineShowClipNames
+  const layout = blockInnerLayout(r, blockWantsTitleStrip(r, showName))
+
+  // ── Waveform ──────────────────────────────────────────────────────────
+  // Gated by timelineShowWaveforms: never / always (>= 16px) / auto (>= 24px).
+  if (pass.waveformMode !== 'never' && r.w >= pass.waveformMinW && pass.bpm && region) {
+    paintClipWaveform(frame, pass, clip, region, r, layout, selected, muted)
+  }
+
+  // ── Fade overlay ──────────────────────────────────────────────────────
+  // A fade handle being dragged paints its draft value, not the committed one.
+  const committedFades = normalizeClipFades(clip)
+  const draftValue = clipControlDraftValue(pass.activeControl, clip.id)
+  const fadeInPercent = draftValue != null && pass.activeControl.kind === 'fadeIn'
+    ? clampNumber(draftValue, 0, Math.max(0, 100 - committedFades.fadeOutPercent))
+    : committedFades.fadeInPercent
+  const fadeOutPercent = draftValue != null && pass.activeControl.kind === 'fadeOut'
+    ? clampNumber(draftValue, 0, Math.max(0, 100 - committedFades.fadeInPercent))
+    : committedFades.fadeOutPercent
+  if (fadeInPercent > 0 || fadeOutPercent > 0) {
+    drawClipFadeOverlay(
+      ctx, clip, r.x, r.y, r.w, r.h, selected, p.clipFadeOverlay,
+      pass.controlSpec, { fadeInPercent, fadeOutPercent },
+    )
+  }
+
+  // ── Title strip, name, metadata chips ─────────────────────────────────
+  // Tiny blocks show body / border / handles only.
+  const showHandles = selected && blockShowsHandles(r)
+  if (r.w > TINY_BLOCK_MAX_W) {
+    const handleReserve = showHandles ? HANDLE_W : 0
+
+    if (layout.useStrip && showName !== 'never') {
+      const strip = clipTitleStripStyle(hex, ds, selected, muted)
+      paintTitleStrip(ctx, layout, strip.fill, strip.separator)
+      paintBlockTitle(
+        frame, layout,
+        clipLabelText(clip, region),
+        clipLabelInk(p, HEX6.test(hex) ? hex : '#808080', strip.alpha),
+        showName, muted, handleReserve, handleReserve,
+      )
+    }
+
+    const showMeta = ds.timelineShowPitchShift
+    if (showMeta !== 'never' && r.w >= (showMeta === 'always' ? META_ALWAYS_MIN_W : META_AUTO_MIN_W)) {
+      const chips = buildClipMetadataChips(clip)
+      if (chips.length) {
+        drawMetadataChips(ctx, chips, layout.metadataArea, p, {
+          handleReserveRight: handleReserve,
+          leftLimit: r.x + handleReserve + 2,
+        })
+      }
+    }
+  }
+
+  // ── Gain / fade controls, then resize handles on top of everything ────
+  drawClipInlineControls(
+    ctx, clip, r.x, r.y, r.w, r.h, hex, selected,
+    pass.activeControl, pass.hoveredControl, pass.controlSpec,
+  )
+  if (showHandles) paintResizeHandles(ctx, r, hexToRgba(hex, 1.0), true, true)
+
+  // ── At-limit marker (group drag) ──────────────────────────────────────
+  // This clip is what stopped the whole selection from travelling further.
+  // Ringed so the user can find it and either adjust or deselect it.
+  if (pass.activeControl?.blocked?.has(clip.id)) {
+    ctx.save()
+    ctx.strokeStyle = p.clipControlAtLimit || '#ff5c5c'
+    ctx.lineWidth = 2
+    ctx.setLineDash([4, 3])
+    ctx.strokeRect(r.x + 1, r.y + 1, Math.max(0, r.w - 2), Math.max(0, r.h - 2))
+    ctx.restore()
+  }
+}
+
+/**
+ * Paint every audio clip in the viewport. Clears the content layer first: this
+ * is the first content draw of a frame.
+ *
+ * @param {TimelineDrawView} view
+ * @param {object} data
+ * @param {Array}  data.clips
+ * @param {object} data.regions            regionId -> region
+ * @param {Set}    data.selectedClipIds
+ * @param {number} data.bpm
+ * @param {object} [data.waveformCache]    regionId -> low-res peaks
+ * @param {object} [data.hiResCache]       hi-res peaks / samples (see paintClipWaveform)
+ * @param {object} [data.clipPeakCache]    clipId -> peaks of the processed buffer
+ * @param {object} [data.activeClipControl]  in-flight gain/fade drag draft
+ * @param {object} [data.hoveredClipControl] { clipId, kind } under the pointer
+ * @param {object} [data.clipControlSpec]
+ */
+export function drawClips(view, data) {
+  view.ctx.clearRect(0, 0, view.w, view.h)
+  const clips = data?.clips
+  if (!clips || clips.length === 0) return
+
+  const frame = beginFrame(view)
+  const { ds, w, ppb, scrollOffset, trackIdToIndex, trackLayout } = frame
+
+  // Waveform regime is global: samples-per-pixel is the same for every clip at
+  // a given zoom. Shared, hysteresis-aware tracker — see waveformRegime.js for
+  // why the previous regime is threaded through and shared with the hi-res
+  // fetch effect rather than tracked per caller.
+  const bpm = data.bpm
+  const pixelsPerSecond = bpm ? ppb * (bpm / 60) : 0
+  const spp = pixelsPerSecond > 0 ? DEFAULT_SR / pixelsPerSecond : 9999
+
+  const pass = {
+    regions: data.regions || {},
+    selectedClipIds: data.selectedClipIds,
+    bpm,
+    regime: currentRegime(spp),
+    waveformMode: ds.timelineShowWaveforms,
+    waveformMinW: ds.timelineShowWaveforms === 'always' ? 16 : 24,
+    waveformCache: data.waveformCache,
+    hiResCache: data.hiResCache,
+    clipPeakCache: data.clipPeakCache,
+    activeControl: data.activeClipControl || null,
+    hoveredControl: data.hoveredClipControl || null,
+    controlSpec: normalizeClipControlSpec(data.clipControlSpec || CLIP_CONTROL_DEFAULTS),
+  }
+
+  for (let i = 0; i < clips.length; i++) {
+    const clip = clips[i]
+    const trackIdx = trackIdToIndex[clip.trackId]
+    if (trackIdx == null) continue
+    const r = blockRect(clip, trackIdx, scrollOffset, ppb, trackLayout, _blockRect)
+    if (r.x + r.w < 0 || r.x > w) continue // off-screen
+    paintClip(frame, pass, clip, r)
+  }
 }
 
 // ── WORLD processing spinners ────────────────────────────────────────────────
@@ -1814,9 +1864,14 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
 // `accentColor` must be pre-resolved from the CSS variable by the caller since
 // canvas cannot read CSS custom properties directly.
 
+//
+// Drawn on the OVERLAY layer, not with the clips: the spinner animates at 60fps
+// for as long as a render job runs, and repainting it must not mean rebuilding
+// every clip, waveform and pattern block on the content layer each frame.
+
 export function drawWorldSpinners(
   ctx, clips, trackIdToIndex, worldProcessingClips,
-  scrollOffset, ppb, spinAngle, accentColor, trackLayout = null
+  scrollOffset, ppb, spinAngle, accentColor, trackLayout = null, viewportW = Infinity,
 ) {
   if (!worldProcessingClips?.size || !clips?.length) return
   const SPINNER_R   = 7    // radius → 14 px diameter
@@ -1834,12 +1889,11 @@ export function drawWorldSpinners(
     const trackIdx = trackIdToIndex[clip.trackId]
     if (trackIdx == null) continue
 
-    const x     = beatToPixel(clip.positionTicks / PPQ, scrollOffset, ppb)
-    const clipW = (clip.durationTicks / PPQ) * ppb
-    if (clipW < 20 || x + clipW < 0) continue
+    const r = blockRect(clip, trackIdx, scrollOffset, ppb, trackLayout, _blockRect)
+    if (r.w < 20 || r.x + r.w < 0 || r.x > viewportW) continue
 
-    const cx = x + clipW - SPINNER_PAD - SPINNER_R
-    const cy = _trackTop(trackIdx, trackLayout) + TRACK_HEIGHT - CLIP_PAD - SPINNER_PAD - SPINNER_R
+    const cx = r.x + r.w - SPINNER_PAD - SPINNER_R
+    const cy = r.y + r.h - SPINNER_PAD - SPINNER_R
 
     ctx.beginPath()
     ctx.arc(cx, cy, SPINNER_R, spinAngle, spinAngle + ARC_SPAN)
@@ -1850,198 +1904,158 @@ export function drawWorldSpinners(
 
 // ── Pattern Blocks (content layer) ──────────────────────────────────────────
 
-export function drawPatternBlocks(ctx, w, h, scrollOffset, ppb, blocks, trackIdToIndex, patterns, regions, selectedBlockIds, mutedTrackIds, palette = null, timelineDisplaySettings = null, trackColorById = null, trackLayout = null) {
-  if (!blocks || blocks.length === 0) return
-  const p = palette ?? resolveTimelinePalette()
-  const ds = normalizeTimelineDisplaySettings(timelineDisplaySettings)
-  const ppMode = ds.timelineShowPatternPreview
-  const ppMinW = ppMode === 'always' ? 20 : 32
+const _patternGlassCache = new Map()
+function patternGlassStyle(hex, selected, muted) {
+  const key = hex + (selected ? '|s' : '|-') + (muted ? 'm' : '-')
+  return _patternGlassCache.get(key)
+    ?? cachePut(_patternGlassCache, key, getPatternGlassStyle(hex, selected, muted))
+}
 
-  const clipH = TRACK_HEIGHT - CLIP_PAD * 2
+// Mini piano roll inside a pattern block's content region: one 2px bar per
+// note, Y proportional to pitch within the pattern's own range. Only note
+// instances that can reach the viewport are visited (patternNoteIndex.js).
+const PATTERN_NOTE_H = 2
+function paintPatternNotes(frame, pattern, block, layout, hex, muted) {
+  const { ctx, w, ppb, scrollOffset } = frame
+  const index = getPatternNoteIndex(pattern)
+  const minPitch = index.minPitch
+  const pitchRange = Math.max(1, index.maxPitch - minPitch)
+  const travel = layout.contentH - 4 - PATTERN_NOTE_H // 2px margin top and bottom
+  const baseY = layout.contentY + 2 + travel
+
+  const beatPos = ticksToBeats(block.positionTicks)
+  const windowStart = block.offsetTicks || 0
+  // The viewport, expressed on the block's note tape, padded by 2px so a note
+  // widened to the 1px minimum at the very edge is still visited.
+  const tapeOfTick = windowStart - block.positionTicks
+  const viewLoTape = tapeOfTick + pixelToTickExact(-2, scrollOffset, ppb)
+  const viewHiTape = tapeOfTick + pixelToTickExact(w + 2, scrollOffset, ppb)
+
+  // Notes dim with their block on a muted track, like every other content.
+  ctx.fillStyle = hexToRgba(hex, 0.95 * (muted ? MUTE_OPACITY : 1))
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(layout.contentX, layout.contentY, layout.contentW, layout.contentH)
+  ctx.clip()
+  forEachBlockNote(pattern, block, viewLoTape, viewHiTape, (tape, durationTicks, pitch) => {
+    const nx = beatToPixel(beatPos + ticksToBeats(tape - windowStart), scrollOffset, ppb)
+    const nw = Math.max(1, ticksToBeats(durationTicks) * ppb)
+    // Higher pitch = higher on screen (smaller Y).
+    const ny = baseY - ((pitch - minPitch) / pitchRange) * travel
+    ctx.fillRect(nx, ny, nw, PATTERN_NOTE_H)
+  })
+  ctx.restore()
+}
+
+function paintPatternBlock(frame, pass, block, r) {
+  const { ctx, p, ds } = frame
+  const pattern = pass.patterns?.[block.patternId]
+  const region = pattern ? pass.regions?.[pattern.regionId] : null
+  const hex = blockColor(frame, block.trackId, region?.label)
+  const selected = !!pass.selectedBlockIds?.has(block.id)
+  const muted = !!frame.mutedTrackIds?.has(block.trackId)
+
+  // ── Tinted-glass body — fixed, not routed through the Clip body-mode
+  // setting; derives entirely from the track's own colour. ────────────────
+  const accentText = pickPatternAccentText(hex)
+  const glass = patternGlassStyle(hex, selected, muted)
+
+  // Body: the track colour at low lightness over the lane ground. No hatch.
+  ctx.fillStyle = glass.fill
+  ctx.fillRect(r.x, r.y, r.w, r.h)
+
+  // Stroke: 2px solid track colour, drawn fully inside the bounds so adjacent
+  // same-hue pattern blocks never visually merge.
+  paintInsetBorder(ctx, r, glass.stroke, PATTERN_STROKE_WIDTH)
+
+  // The ring sits on the inner half of the 2px stroke: colour, then highlight.
+  if (selected) paintSelectionRing(ctx, r, p.selectionHighlight, 1)
+
+  const showName = ds.timelineShowClipNames
+  const layout = blockInnerLayout(r, blockWantsTitleStrip(r, showName))
+
+  // Title strip: the shared one, in the track's colour, as on a clip. What sits on it (the
+  // name, the loop glyph) takes the automatic label ink for that colour; with no strip the
+  // glyph is on the dark body and keeps the light accent.
+  if (layout.useStrip) paintTitleStrip(ctx, layout, glass.stripFill, glass.stripSeparator)
+  const stripInk = layout.useStrip ? clipLabelInk(p, hex, glass.stripAlpha) : accentText
+
+  // ── Note preview ──────────────────────────────────────────────────────
+  // Gated by timelineShowPatternPreview: never / always (>= 20px) / auto (>= 32px).
+  if (pass.previewMode !== 'never'
+      && pattern && pattern.notes && pattern.notes.length > 0
+      && pattern.lengthTicks > 0 && r.w >= pass.previewMinW) {
+    paintPatternNotes(frame, pattern, block, layout, hex, muted)
+  }
+
+  // ── Resize handles ────────────────────────────────────────────────────
+  // Both edges: dragging the left edge trims the block's start (it moves the
+  // pattern offset), and the right edge its length. The left handle used to be
+  // left unpainted although the edge was live.
+  const showHandles = selected && blockShowsHandles(r)
+  const handleReserve = showHandles ? HANDLE_W : 0
+  if (showHandles) paintResizeHandles(ctx, r, hexToRgba(hex, 1.0), true, true)
+
+  // ── Loop indicator (top-right, in the title-strip area) ───────────────
+  // Shown when the block is longer than its pattern: repeat while it loops, arrow-to-bar when
+  // block looping is off and the remainder plays as silence. Not on tiny
+  // blocks (it is wider than they are and would print over their neighbour),
+  // and kept clear of the right handle.
+  const hasLoopGlyph = !!(pattern && pattern.lengthTicks > 0
+                          && block.durationTicks > pattern.lengthTicks)
+                       && r.w > TINY_BLOCK_MAX_W
+  if (hasLoopGlyph) {
+    drawIcon(
+      ctx, block.loopEnabled === false ? 'arrow-line-right' : 'repeat',
+      r.x + r.w - PATTERN_LOOP_GLYPH_RESERVE - handleReserve, r.y + 1, 10, stripInk,
+    )
+  }
+
+  // ── Pattern name ──────────────────────────────────────────────────────
+  if (r.w > TINY_BLOCK_MAX_W && layout.useStrip && showName !== 'never') {
+    paintBlockTitle(
+      frame, layout,
+      pattern?.name || '?',
+      stripInk,
+      showName, muted,
+      handleReserve,
+      handleReserve + (hasLoopGlyph ? PATTERN_LOOP_GLYPH_RESERVE : 0),
+    )
+  }
+}
+
+/**
+ * Paint every pattern block in the viewport, on top of whatever the content
+ * layer already holds (drawClips runs first and does the clear).
+ *
+ * @param {TimelineDrawView} view
+ * @param {object} data
+ * @param {Array}  data.blocks
+ * @param {object} data.patterns          patternId -> pattern
+ * @param {object} [data.regions]         regionId -> region (label colour fallback)
+ * @param {Set}    [data.selectedBlockIds]
+ */
+export function drawPatternBlocks(view, data) {
+  const blocks = data?.blocks
+  if (!blocks || blocks.length === 0) return
+
+  const frame = beginFrame(view)
+  const { ds, w, ppb, scrollOffset, trackIdToIndex, trackLayout } = frame
+  const pass = {
+    patterns: data.patterns,
+    regions: data.regions,
+    selectedBlockIds: data.selectedBlockIds,
+    previewMode: ds.timelineShowPatternPreview,
+    previewMinW: ds.timelineShowPatternPreview === 'always' ? 20 : 32,
+  }
 
   for (let i = 0; i < blocks.length; i++) {
     const block = blocks[i]
-    const beatPos = block.positionTicks / PPQ
-    const beatDur = block.durationTicks / PPQ
-
-    const x = beatToPixel(beatPos, scrollOffset, ppb)
-    let blockW = beatDur * ppb
-    if (blockW < CLIP_MIN_WIDTH_PX) blockW = CLIP_MIN_WIDTH_PX
-
-    // Cull off-screen
-    if (x + blockW < 0 || x > w) continue
-
     const trackIdx = trackIdToIndex[block.trackId]
     if (trackIdx == null) continue
-    const y = _trackTop(trackIdx, trackLayout) + CLIP_PAD
-
-    const pattern = patterns?.[block.patternId]
-    const region = pattern ? regions?.[pattern.regionId] : null
-    const fallbackHex = labelHexColor(region?.label)
-    const hex = trackColorById?.[block.trackId] || fallbackHex
-    const selected = selectedBlockIds?.has(block.id)
-    const isMuted = mutedTrackIds?.has(block.trackId)
-    const mutedMul = isMuted ? MUTE_OPACITY : 1.0
-
-    // ── Tinted-glass material (Pass 7) — fixed, not routed through the
-    // Clip body-mode setting; derives entirely from the track's own color.
-    const accentText = pickPatternAccentText(hex)
-    const _mat = getPatternGlassStyle(hex, selected, !!isMuted)
-
-    // ── Body — the track colour at low lightness over the lane ground. No hatch.
-    ctx.fillStyle = _mat.fill
-    ctx.fillRect(x, y, blockW, clipH)
-
-    // ── Stroke — 2px solid track color, drawn fully inside the bounds so
-    // adjacent same-hue pattern blocks never visually merge ───────────────
-    ctx.strokeStyle = _mat.stroke
-    ctx.lineWidth = PATTERN_STROKE_WIDTH
-    ctx.strokeRect(
-      x + PATTERN_STROKE_WIDTH / 2, y + PATTERN_STROKE_WIDTH / 2,
-      blockW - PATTERN_STROKE_WIDTH, clipH - PATTERN_STROKE_WIDTH,
-    )
-
-    // ── Selected-state inner highlight ring (Pass 4B) ─────────────────────
-    if (selected && blockW > 4 && clipH > 4) {
-      ctx.strokeStyle = p.selectionHighlight
-      ctx.lineWidth = 1
-      ctx.strokeRect(x + 1.5, y + 1.5, blockW - 3, clipH - 3)
-    }
-
-    // ── Pass 5D internal layout (title strip + content region) ───────────
-    const showName = ds.timelineShowClipNames
-    const _wantTitleStrip = showName !== 'never' && blockW > TINY_CLIP_MAX_W
-    const layout = getTimelineBlockInnerLayout({
-      x, y, w: blockW, h: clipH, kind: 'pattern',
-      showTitleStrip: _wantTitleStrip,
-    })
-
-    // ── Title strip — in the track's colour, as on a clip. What sits on it
-    // (the name, the mute and loop glyphs) takes the automatic label ink for
-    // that colour; with no strip the glyph is on the dark body and keeps the
-    // light accent ──────────────────────────────────────────────────────────
-    if (layout.useStrip) {
-      ctx.fillStyle = _mat.stripFill
-      ctx.fillRect(layout.titleX, layout.titleY, layout.titleW, layout.titleH)
-      ctx.fillStyle = _mat.stripSeparator
-      ctx.fillRect(layout.titleX, layout.titleY + layout.titleH - 1, layout.titleW, 1)
-    }
-    const stripInk = layout.useStrip ? clipLabelInk(p, hex, _mat.stripAlpha) : accentText
-
-    // ── Note markers (if pattern has notes and zoom is sufficient) ────────
-    // Pass 5C: gated by timelineShowPatternPreview.
-    //   never  → never draw mini-note preview
-    //   always → draw at blockW >= 20
-    //   auto   → draw at blockW >= 32
-    // Pass 5D: notes draw inside the content region below the title strip.
-    if (ppMode !== 'never'
-        && pattern && pattern.notes && pattern.notes.length > 0
-        && pattern.lengthTicks > 0 && blockW >= ppMinW) {
-      const patLen = pattern.lengthTicks
-      const offsetTicks = block.offsetTicks || 0
-      const windowStart = offsetTicks
-      const windowEnd = offsetTicks + block.durationTicks
-
-      // Pitch-scaled mini piano roll: Y position proportional to pitch within pattern range
-      const pitches = pattern.notes.map((n) => n.pitch)
-      const minP = Math.min(...pitches)
-      const maxP = Math.max(...pitches)
-      const range = Math.max(1, maxP - minP)
-      const innerH = layout.contentH - 4 // top/bottom margin within content region
-      const noteH = 2                    // 2px dots
-
-      ctx.fillStyle = hexToRgba(hex, 0.95)
-      const firstLoop = Math.floor(windowStart / patLen)
-      let lastLoop = Math.floor((windowEnd - 1) / patLen)
-      // When block loop is disabled, only iteration 0 draws notes — the remainder
-      // of the block shows as empty space. Matches the engine clamp so the mini
-      // preview visually matches what will actually play (MixEngine + video events).
-      const blockLoopEnabled = block.loopEnabled !== false
-      if (!blockLoopEnabled) lastLoop = Math.min(lastLoop, 0)
-      ctx.save()
-      ctx.beginPath()
-      ctx.rect(layout.contentX, layout.contentY, layout.contentW, layout.contentH)
-      ctx.clip()
-      for (let L = firstLoop; L <= lastLoop; L++) {
-        for (let n = 0; n < pattern.notes.length; n++) {
-          const note = pattern.notes[n]
-          const tape = L * patLen + note.positionTicks
-          if (tape < windowStart || tape >= windowEnd) continue
-          const noteBeat = beatPos + (tape - windowStart) / PPQ
-          const nx = beatToPixel(noteBeat, scrollOffset, ppb)
-          const nw = Math.max(1, (note.durationTicks / PPQ) * ppb)
-          // Invert Y: higher pitch = higher on screen (smaller Y)
-          const ny = layout.contentY + 2 + (innerH - noteH) - ((note.pitch - minP) / range) * (innerH - noteH)
-          ctx.fillRect(nx, ny, nw, noteH)
-        }
-      }
-      ctx.restore()
-    }
-
-    // ── Resize handles ────────────────────────────────────────────────────
-    if (selected && blockW > HANDLE_W * 3) {
-      ctx.fillStyle = hexToRgba(hex, 1.0)
-      ctx.fillRect(x + blockW - HANDLE_W, y, HANDLE_W, clipH)    // right only (left = offset)
-    }
-
-    // ── Loop indicator (drawn inside the title-strip area, top-right) ────
-    const hasLoopGlyph = !!(pattern && pattern.lengthTicks > 0
-                            && block.durationTicks > pattern.lengthTicks)
-    if (hasLoopGlyph) {
-      ctx.fillStyle = stripInk
-      ctx.font = uiCanvasFont('600 8px')
-      ctx.textBaseline = 'top'
-      // ↻ when loop active, ∣→ when disabled (extends as empty space)
-      const glyph = block.loopEnabled === false ? '∣→' : '↻'
-      ctx.fillText(glyph, x + blockW - 14, y + 2)
-    }
-
-    // ── Pass 5D pattern title text (centered in title strip) ─────────────
-    if (blockW > TINY_CLIP_MAX_W && layout.useStrip && showName !== 'never') {
-      const handleReserveRight = (selected && blockW > HANDLE_W * 3) ? HANDLE_W : 0
-      const glyphReserve = hasLoopGlyph ? PATTERN_LOOP_GLYPH_RESERVE : 0
-      const muteReserve = isMuted ? MUTE_GLYPH_W : 0
-      if (isMuted && layout.titleW > MUTE_GLYPH_W + TITLE_TEXT_PAD_X * 2) {
-        drawMuteGlyph(ctx, layout.titleX + TITLE_TEXT_PAD_X, layout.titleY + layout.titleH / 2, stripInk)
-      }
-      const titleAvailW = Math.max(
-        0,
-        layout.titleW - TITLE_TEXT_PAD_X * 2 - handleReserveRight - glyphReserve - muteReserve,
-      )
-
-      let drawNameOk = false
-      let allowBareEllipsis = false
-      if (showName === 'always') {
-        drawNameOk = titleAvailW >= NAME_ALWAYS_MIN_W
-        allowBareEllipsis = true
-      } else { // auto
-        drawNameOk = titleAvailW >= NAME_AUTO_MIN_W
-      }
-
-      if (drawNameOk) {
-        ctx.save()
-        ctx.beginPath()
-        ctx.rect(
-          layout.titleX + muteReserve + TITLE_TEXT_PAD_X,
-          layout.titleY,
-          titleAvailW,
-          layout.titleH,
-        )
-        ctx.clip()
-        ctx.fillStyle = stripInk
-        ctx.font = uiCanvasFont('600 10px')
-        ctx.textBaseline = 'middle'
-        const fitted = fitText(ctx, pattern?.name || '?', titleAvailW, { allowBareEllipsis })
-        if (fitted) {
-          ctx.fillText(
-            fitted,
-            layout.titleX + muteReserve + TITLE_TEXT_PAD_X,
-            layout.titleY + layout.titleH / 2,
-          )
-        }
-        ctx.restore()
-      }
-    }
+    const r = blockRect(block, trackIdx, scrollOffset, ppb, trackLayout, _blockRect)
+    if (r.x + r.w < 0 || r.x > w) continue // off-screen
+    paintPatternBlock(frame, pass, block, r)
   }
 }
 
@@ -2192,9 +2206,12 @@ export function drawDropPreview(ctx, w, h, scrollOffset, ppb, preview, palette =
   const p = palette ?? resolveTimelinePalette()
 
   const { beat, trackIndex, durationBeats, color, name } = preview
-  const x = beatToPixel(beat, scrollOffset, ppb)
-  const clipW = durationBeats * ppb
-  const y = _trackTop(trackIndex, trackLayout) + CLIP_PAD
+  // Snapped like a real block (blockGeometry.js), so the preview sits exactly
+  // where the dropped clip will be painted.
+  const timeX = beatToPixel(beat, scrollOffset, ppb)
+  const x = snapSpanLeft(timeX)
+  const clipW = snapSpanWidth(timeX, durationBeats * ppb)
+  const y = Math.round(_trackTop(trackIndex, trackLayout)) + CLIP_PAD
   const clipH = TRACK_HEIGHT - CLIP_PAD * 2
 
   // Fill
@@ -2205,7 +2222,7 @@ export function drawDropPreview(ctx, w, h, scrollOffset, ppb, preview, palette =
   ctx.strokeStyle = hexToRgba(color, 0.7)
   ctx.lineWidth = 1
   ctx.setLineDash([4, 3])
-  ctx.strokeRect(x, y, clipW, clipH)
+  ctx.strokeRect(x + 0.5, y + 0.5, clipW - 1, clipH - 1)
   ctx.setLineDash([])
 
   // Name at 50% opacity
@@ -2231,9 +2248,10 @@ export function drawGhostPreview(ctx, w, h, scrollOffset, ppb, ghost, palette = 
   if (!ghost) return
   const p = palette ?? resolveTimelinePalette()
   const { beat, trackIndex, durationBeats, color, name } = ghost
-  const x = beatToPixel(beat, scrollOffset, ppb)
-  const clipW = durationBeats * ppb
-  const y = _trackTop(trackIndex, trackLayout) + GHOST_CLIP_PAD
+  const timeX = beatToPixel(beat, scrollOffset, ppb)
+  const x = snapSpanLeft(timeX)
+  const clipW = snapSpanWidth(timeX, durationBeats * ppb)
+  const y = Math.round(_trackTop(trackIndex, trackLayout)) + GHOST_CLIP_PAD
   const clipH = TRACK_HEIGHT - GHOST_CLIP_PAD * 2
 
   if (x + clipW < 0 || x > w) return
@@ -2244,7 +2262,7 @@ export function drawGhostPreview(ctx, w, h, scrollOffset, ppb, ghost, palette = 
   ctx.strokeStyle = hexToRgba(color, 0.5)
   ctx.lineWidth = 1
   ctx.setLineDash([4, 3])
-  ctx.strokeRect(x, y, clipW, clipH)
+  ctx.strokeRect(x + 0.5, y + 0.5, clipW - 1, clipH - 1)
   ctx.setLineDash([])
 
   if (clipW > CLIP_TEXT_PAD * 2 + 10 && name) {
@@ -2262,18 +2280,20 @@ export function drawGhostPreview(ctx, w, h, scrollOffset, ppb, ghost, palette = 
 }
 
 /**
- * Draw notation ghost clips — translucent preview clips derived from a
- * parsed notation string. Drawn on the content canvas AFTER real clips,
+ * Draw notation ghost clips: translucent preview clips derived from a parsed
+ * notation string, all on ONE row (the track the clips will be inserted on),
+ * each carrying its syllable number in large type so you can read the pattern
+ * straight off the timeline. Drawn on the content canvas AFTER real clips,
  * read from a separate ref; never touches clipsRef.
  *
  * @param {CanvasRenderingContext2D} ctx
  * @param {Array}    ghostClips     Array of { syllableIndex, startTick, lengthTicks, audioOffsetPercent }
- * @param {Array}    clips          Real clip array for collision detection (read-only)
+ * @param {Array}    clips          Real clips ON THE TARGET TRACK, for collision detection (read-only)
  * @param {Function} tickToPixelFn  (tick: number) => x pixel
- * @param {Function} trackYFn       (syllableIndex: number) => track top y pixel (raw, no padding)
+ * @param {number}   rowTop         Top y pixel of the target track row (raw, no padding)
  * @param {object}   theme          Resolved palette from resolveTimelinePalette()
  */
-export function drawGhostClips(ctx, ghostClips, clips, tickToPixelFn, trackYFn, theme) {
+export function drawGhostClips(ctx, ghostClips, clips, tickToPixelFn, rowTop, theme) {
   if (!ghostClips || ghostClips.length === 0) return
   const p = theme ?? resolveTimelinePalette()
   const palette = p.trackPalette || TRACK_PALETTE_FALLBACK
@@ -2283,6 +2303,11 @@ export function drawGhostClips(ctx, ghostClips, clips, tickToPixelFn, trackYFn, 
     ? clips.map(c => ({ start: c.positionTicks | 0, end: (c.positionTicks | 0) + (c.durationTicks | 0) }))
     : []
 
+  const y = rowTop + GHOST_CLIP_PAD
+  const h = TRACK_HEIGHT - GHOST_CLIP_PAD * 2
+  const fontPx = Math.max(10, Math.min(22, h - 6))
+  const boxes = []
+
   for (const gc of ghostClips) {
     const { syllableIndex, startTick } = gc
     const lengthTicks = gc.lengthTicks || 240  // fall back to a 16th note
@@ -2290,14 +2315,11 @@ export function drawGhostClips(ctx, ghostClips, clips, tickToPixelFn, trackYFn, 
 
     const x = tickToPixelFn(startTick)
     const w = tickToPixelFn(startTick + lengthTicks) - x
-    const y = trackYFn(syllableIndex) + GHOST_CLIP_PAD
-    const h = TRACK_HEIGHT - GHOST_CLIP_PAD * 2
-
     if (w < 1) continue
 
-    const hasCollision = clipRanges.some(r => startTick >= r.start && startTick < r.end)
+    const hasCollision = clipRanges.some(r => startTick < r.end && startTick + lengthTicks > r.start)
 
-    ctx.fillStyle = withAlpha(color, 0.4)
+    ctx.fillStyle = withAlpha(color, 0.55)
     ctx.fillRect(x, y, w, h)
 
     ctx.strokeStyle = hasCollision ? p.warning : p.accent
@@ -2305,7 +2327,28 @@ export function drawGhostClips(ctx, ghostClips, clips, tickToPixelFn, trackYFn, 
     ctx.setLineDash([4, 3])
     ctx.strokeRect(x, y, w, h)
     ctx.setLineDash([])
+    boxes.push({ x, w, label: String(syllableIndex + 1), color })
   }
+
+  // Big syllable numbers. A label is skipped, not squeezed, when the room to
+  // the next ghost is narrower than the digit: zoom in to read a dense roll.
+  ctx.save()
+  ctx.font = uiCanvasFont(`700 ${fontPx}px`)
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.lineJoin = 'round'
+  ctx.lineWidth = 3
+  for (let i = 0; i < boxes.length; i++) {
+    const { x, w, label, color } = boxes[i]
+    const room = (i + 1 < boxes.length ? Math.min(boxes[i + 1].x - x, w) : w)
+    if (ctx.measureText(label).width + 2 > room) continue
+    const ink = /^#[0-9a-f]{6}$/i.test(color) ? clipLabelInk(p, color, 0.55) : (p.ink || '#E6E6E6')
+    ctx.strokeStyle = withAlpha(ink === p.inkDark ? (p.ink || '#E6E6E6') : (p.inkDark || '#1B1B1B'), 0.6)
+    ctx.strokeText(label, x + w / 2, y + h / 2 + 1)
+    ctx.fillStyle = ink
+    ctx.fillText(label, x + w / 2, y + h / 2 + 1)
+  }
+  ctx.restore()
 }
 
 export function drawRubberBand(ctx, x1, y1, x2, y2, palette = null) {
@@ -2347,18 +2390,20 @@ export function drawSplitLine(ctx, w, h, scrollOffset, ppb, beat, palette = null
 export function drawMovePreview(ctx, w, h, scrollOffset, ppb, preview, trackLayout = null) {
   if (!preview) return
   const { beat, trackIndex, durationBeats, fillColor, strokeColor } = preview
-  const x = beatToPixel(beat, scrollOffset, ppb)
-  const clipW = durationBeats * ppb
+  // Same snapping and minimum width as the block it previews.
+  const timeX = beatToPixel(beat, scrollOffset, ppb)
+  const x = snapSpanLeft(timeX)
+  const clipW = snapSpanWidth(timeX, durationBeats * ppb, CLIP_MIN_WIDTH_PX)
   // Cull off-screen — mirrors the drawClips cull above.
   if (x + clipW < 0 || x > w) return
-  const y = _trackTop(trackIndex, trackLayout) + GHOST_CLIP_PAD
+  const y = Math.round(_trackTop(trackIndex, trackLayout)) + GHOST_CLIP_PAD
   const clipH = TRACK_HEIGHT - GHOST_CLIP_PAD * 2
 
   ctx.fillStyle = fillColor
   ctx.fillRect(x, y, clipW, clipH)
   ctx.strokeStyle = strokeColor
   ctx.lineWidth = 1.5
-  ctx.strokeRect(x, y, clipW, clipH)
+  ctx.strokeRect(x + 0.75, y + 0.75, clipW - 1.5, clipH - 1.5)
 }
 
 export function drawDeleteSweep(ctx, x1, y1, x2, y2, palette = null) {

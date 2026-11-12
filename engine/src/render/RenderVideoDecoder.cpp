@@ -22,6 +22,12 @@ void DecoderContext::close()
     bgraScratch.shrink_to_fit();
     if (frame)           { av_frame_free(&frame);                           }
     if (hwTransferFrame) { av_frame_free(&hwTransferFrame);                 }
+    if (closestFrame)    { av_frame_free(&closestFrame);                    }
+    hwLumaSrv.Reset();
+    hwChromaSrv.Reset();
+    hwNv12Scratch.Reset();
+    hwScratchW = hwScratchH = 0;
+    hwGpuPathFailed = false;
     if (packet)          { av_packet_free(&packet);                         }
     if (codecCtx)        { avcodec_free_context(&codecCtx);                }
     if (formatCtx)       { avformat_close_input(&formatCtx);               }
@@ -79,6 +85,7 @@ void RenderVideoDecoder::shutdown()
     if (hwDeviceCtx_) {
         av_buffer_unref(&hwDeviceCtx_);
     }
+    nv12Converter_.shutdown();
 }
 
 void RenderVideoDecoder::closeAll()
@@ -88,6 +95,7 @@ void RenderVideoDecoder::closeAll()
     }
     contexts_.clear();
     lruOrder_.clear();
+    failedOpens_.clear();
 }
 
 bool RenderVideoDecoder::closeKey(const std::string& key)
@@ -105,6 +113,8 @@ bool RenderVideoDecoder::closeSource(const std::string& sourcePath)
 {
     // Every stream of the file — a caller closing a path is about to delete or
     // overwrite it, and any one handle left open makes that fail on Windows.
+    // Whatever replaces it deserves a fresh open attempt.
+    failedOpens_.erase(sourcePath);
     bool closed = false;
     for (int i = 0; i < kMaxStreamsPerSource; ++i)
         closed = closeKey(streamKey(sourcePath, i)) || closed;
@@ -151,6 +161,23 @@ bool RenderVideoDecoder::initHwDevice(ID3D11Device* device, ID3D11DeviceContext*
     }
 
     std::fprintf(stderr, "[RenderDecoder] D3D11VA hardware device context initialized\n");
+
+    // GPU-resident extraction for the frames this device will decode. When it
+    // cannot be set up (no NV12 sampling, shader creation failed) every hw
+    // frame takes the CPU transfer path exactly as before — the decode itself
+    // is unaffected. XLETH_HW_NV12_GPU=0 forces that path for A/B comparison.
+    {
+        const char* env = std::getenv("XLETH_HW_NV12_GPU");
+        const bool disabled = env && (env[0] == '0' || env[0] == 'f' || env[0] == 'F' ||
+                                      env[0] == 'n' || env[0] == 'N');
+        if (disabled) {
+            std::fprintf(stderr, "[RenderDecoder] XLETH_HW_NV12_GPU=0: hw frames will take the "
+                                 "CPU transfer path\n");
+        } else if (!nv12Converter_.init(device)) {
+            std::fprintf(stderr, "[RenderDecoder] GPU NV12 path unavailable — hw frames will take "
+                                 "the CPU transfer path\n");
+        }
+    }
     return true;
 }
 
@@ -169,6 +196,20 @@ RenderVideoDecoder::ContextEntry*
 RenderVideoDecoder::openStreamAt(const std::string& key, const std::string& sourcePath,
                                  int streamIndex)
 {
+    // A file that failed to open recently is not tried again until the backoff
+    // has passed (preview only — see setOpenFailureBackoff). Checked before the
+    // eviction below so a dead path cannot push live contexts out either.
+    const bool backoffEnabled = openFailureBackoffSeconds_ > 0.0;
+    if (backoffEnabled) {
+        auto failed = failedOpens_.find(sourcePath);
+        if (failed != failedOpens_.end()) {
+            const auto since = std::chrono::steady_clock::now() - failed->second;
+            if (since < std::chrono::duration<double>(openFailureBackoffSeconds_))
+                return nullptr;
+            failedOpens_.erase(failed);
+        }
+    }
+
     // Evict if at capacity. key (about to be opened below) cannot itself be
     // picked here: it isn't inserted into contexts_/lruOrder_ until after this
     // loop, so evictLruContext() only ever sees OTHER, already-open contexts.
@@ -178,6 +219,8 @@ RenderVideoDecoder::openStreamAt(const std::string& key, const std::string& sour
 
     ContextEntry entry;
     if (!openSource(entry.ctx, sourcePath)) {
+        if (backoffEnabled)
+            failedOpens_[sourcePath] = std::chrono::steady_clock::now();
         return nullptr;
     }
 
@@ -664,6 +707,14 @@ bool RenderVideoDecoder::decodeFrame(DecoderContext& ctx, int64_t frameIndex)
     const int64_t acceptPTS =
         targetPTS - xleth::frametiming::halfFramePts(ctx.frameRate, stream->time_base);
 
+    // Frames that fall short of the target are parked here rather than
+    // dropped, so that if the file ENDS before the target is reached the last
+    // one can be delivered. Without it a request even one frame past the end
+    // failed outright — and the preview asks again every tick, so a note held
+    // to the tail of a file one frame shorter than its metadata claimed cost a
+    // full seek-and-walk-to-EOF per tick, each ending in an error line.
+    if (ctx.closestFrame) av_frame_unref(ctx.closestFrame);
+
     // Read packets and decode until we get a frame at or past targetPTS
     bool gotFrame = false;
     int maxAttempts = 1000;  // safety limit
@@ -695,6 +746,20 @@ bool RenderVideoDecoder::decodeFrame(DecoderContext& ctx, int64_t frameIndex)
                 if (ctx.isIntraOnly || pts >= acceptPTS) break;
             }
             av_frame_free(&drained);
+
+            // The file ran out before the target. Deliver the closest frame it
+            // had: "hold the last frame", the same thing the collector does when
+            // a note outlasts its sample. lastDecodedFrame below is taken from
+            // this frame's own timestamp, so the decoder still knows where it
+            // really is.
+            if (!gotFrame && ctx.closestFrame && ctx.closestFrame->buf[0]) {
+                av_frame_unref(ctx.frame);
+                av_frame_move_ref(ctx.frame, ctx.closestFrame);
+                gotFrame = true;
+                XLETH_RENDER_LOG(std::fprintf(stderr,
+                    "[RenderDecoder] frame %lld is past the end of '%s' — holding its last frame\n",
+                    (long long)frameIndex, ctx.sourcePath.c_str()));
+            }
             break;
         }
 
@@ -744,11 +809,20 @@ bool RenderVideoDecoder::decodeFrame(DecoderContext& ctx, int64_t frameIndex)
                 break;
             }
 
-            // Not yet at target — keep this frame (it's the closest so far)
-            // but continue decoding for non-intra codecs
-            av_frame_unref(ctx.frame);
+            // Not yet at target — park this frame (it's the closest so far)
+            // and continue decoding for non-intra codecs.
+            if (!ctx.closestFrame) ctx.closestFrame = av_frame_alloc();
+            if (ctx.closestFrame) {
+                av_frame_unref(ctx.closestFrame);
+                av_frame_move_ref(ctx.closestFrame, ctx.frame);
+            } else {
+                av_frame_unref(ctx.frame);
+            }
         }
     }
+
+    // Do not sit on a decoder surface between calls.
+    if (ctx.closestFrame) av_frame_unref(ctx.closestFrame);
 
     if (gotFrame) {
         // Record the frame we ACTUALLY decoded, derived from its own timestamp —
@@ -814,13 +888,24 @@ FrameCacheEntry RenderVideoDecoder::decode(const std::string& sourcePath,
 
     // Seek to the target frame
     const int64_t prevDecoded = ctx->lastDecodedFrame;
+    const bool continuedForward = canContinueForward(*ctx, frameIndex);
     if (!seekToFrame(*ctx, frameIndex)) {
         return empty;
     }
 
     // Decode until we get the frame
     ctx->framesDecodedThisCall = 0;
-    if (!decodeFrame(*ctx, frameIndex)) {
+    bool decoded = decodeFrame(*ctx, frameIndex);
+    if (!decoded && continuedForward) {
+        // The forward path read straight into the end of the file without a
+        // single frame coming out — the stream was already sitting at EOF, so
+        // there was nothing to hold. Reposition with a real seek and walk up to
+        // the end once: that pass does produce the file's last frame.
+        ctx->lastDecodedFrame = -1;          // makes seekToFrame actually seek
+        ctx->framesDecodedThisCall = 0;
+        decoded = seekToFrame(*ctx, frameIndex) && decodeFrame(*ctx, frameIndex);
+    }
+    if (!decoded) {
         std::fprintf(stderr, "[RenderDecoder] Failed to decode frame %lld from '%s'\n",
                      (long long)frameIndex, sourcePath.c_str());
         return empty;
@@ -833,6 +918,7 @@ FrameCacheEntry RenderVideoDecoder::decode(const std::string& sourcePath,
         result = extractHwFrame(*ctx, ctx->frame, device, deviceCtx);
     } else {
         result = uploadSwFrame(*ctx, ctx->frame, device, deviceCtx);
+        if (result.texture) ++extractStats_.swFrames;
     }
 
     av_frame_unref(ctx->frame);
@@ -859,21 +945,153 @@ FrameCacheEntry RenderVideoDecoder::decode(const std::string& sourcePath,
 // Path A: D3D11VA hardware frame extraction
 // ===========================================================================
 
+// Colour matrix for a decoded frame's tags. Untagged → BT.601: that is what
+// sws_scale assumes by default on the CPU path (it never reads the tag), and
+// every proxy ProxyTranscoder writes is untagged, so a hw- and a sw-decoded
+// frame of the same file convert identically. Tagged sources get their matrix.
+static Nv12Converter::Matrix matrixForFrame(const AVFrame* frame)
+{
+    switch (frame->colorspace) {
+        case AVCOL_SPC_BT709:       return Nv12Converter::Matrix::BT709;
+        case AVCOL_SPC_BT2020_NCL:
+        case AVCOL_SPC_BT2020_CL:   return Nv12Converter::Matrix::BT2020;
+        case AVCOL_SPC_SMPTE240M:   return Nv12Converter::Matrix::SMPTE240M;
+        default:                    return Nv12Converter::Matrix::BT601;
+    }
+}
+
+FrameCacheEntry RenderVideoDecoder::extractHwFrameOnGpu(DecoderContext& ctx, AVFrame* frame,
+                                                         ID3D11Device* device,
+                                                         ID3D11DeviceContext* deviceCtx)
+{
+    // frame->data[0] is the D3D11VA pool's array texture (BIND_DECODER only,
+    // not sampleable, and recycled by the decoder as soon as this AVFrame is
+    // unref'd — a reference frame can't be the cache entry), data[1] the
+    // array index of this frame's slice.
+    auto* srcTex = reinterpret_cast<ID3D11Texture2D*>(frame->data[0]);
+    const UINT slice = static_cast<UINT>(reinterpret_cast<intptr_t>(frame->data[1]));
+    if (!srcTex) return {};
+
+    D3D11_TEXTURE2D_DESC srcDesc = {};
+    srcTex->GetDesc(&srcDesc);
+    // Only the 8-bit 4:2:0 layout is handled; P010 (10-bit HEVC) and friends
+    // take the transfer path, which converts anything.
+    if (srcDesc.Format != DXGI_FORMAT_NV12) return {};
+    if (slice >= srcDesc.ArraySize) return {};
+
+    // The slice is coded-size (macroblock aligned, e.g. 1280x736 for 720p);
+    // the visible picture is frame->width x height from crop_left/top (which
+    // FFmpeg cannot apply to a hw frame and so leaves in the crop fields).
+    // NV12 copy boxes must be even-aligned.
+    const int left = static_cast<int>(frame->crop_left) & ~1;
+    const int top  = static_cast<int>(frame->crop_top)  & ~1;
+    const int w    = frame->width;
+    const int h    = frame->height;
+    if (w <= 0 || h <= 0 || (w & 1) || (h & 1)) return {};
+    if (left + w > static_cast<int>(srcDesc.Width) || top + h > static_cast<int>(srcDesc.Height))
+        return {};
+
+    // Per-stream NV12 scratch: re-created only when the picture size changes.
+    if (!ctx.hwNv12Scratch || ctx.hwScratchW != w || ctx.hwScratchH != h) {
+        if (!Nv12Converter::createNv12Target(device, w, h, ctx.hwNv12Scratch,
+                                             ctx.hwLumaSrv, ctx.hwChromaSrv)) {
+            return {};
+        }
+        ctx.hwScratchW = w;
+        ctx.hwScratchH = h;
+    }
+
+    // GPU → GPU: the decoded slice into our own texture. Ordered after the
+    // decoder's own work on the same immediate context, as D3D11 guarantees.
+    D3D11_BOX box = {};
+    box.left   = static_cast<UINT>(left);
+    box.top    = static_cast<UINT>(top);
+    box.front  = 0;
+    box.right  = static_cast<UINT>(left + w);
+    box.bottom = static_cast<UINT>(top + h);
+    box.back   = 1;
+    deviceCtx->CopySubresourceRegion(ctx.hwNv12Scratch.Get(), 0, 0, 0, 0, srcTex, slice, &box);
+
+    // Same cap, same rounding as the CPU path: the preview's compositor-size
+    // cap becomes a linear downscale inside the conversion draw, so the cache
+    // entry is the size and byte count uploadSwFrame would have produced.
+    int outW = w, outH = h;
+    cappedOutputSize(w, h, outW, outH);
+
+    Nv12Converter::Params p;
+    p.srcWidth  = w;
+    p.srcHeight = h;
+    p.dstWidth  = outW;
+    p.dstHeight = outH;
+    p.matrix    = matrixForFrame(frame);
+    p.fullRange = (frame->color_range == AVCOL_RANGE_JPEG);
+    // 4:2:0 chroma siting. H.264/MPEG-2 (and anything untagged) site chroma on
+    // the even luma column, vertically between the two rows: half a luma
+    // pixel to the right of where a plain half-resolution sample lands.
+    // TOPLEFT (some HEVC/AV1) is also on the even row; CENTER needs no shift.
+    switch (frame->chroma_location) {
+        case AVCHROMA_LOC_CENTER:
+            break;
+        case AVCHROMA_LOC_TOPLEFT:
+        case AVCHROMA_LOC_TOP:
+            p.chromaShiftU = (frame->chroma_location == AVCHROMA_LOC_TOPLEFT) ? 0.5f / w : 0.0f;
+            p.chromaShiftV = 0.5f / h;
+            break;
+        case AVCHROMA_LOC_LEFT:
+        case AVCHROMA_LOC_UNSPECIFIED:
+        default:
+            p.chromaShiftU = 0.5f / w;
+            break;
+    }
+
+    FrameCacheEntry entry;
+    if (!nv12Converter_.convert(device, deviceCtx, ctx.hwLumaSrv.Get(), ctx.hwChromaSrv.Get(),
+                                p, entry.texture, entry.srv)) {
+        return {};
+    }
+    entry.width           = outW;
+    entry.height          = outH;
+    entry.memorySizeBytes = static_cast<size_t>(outW) * outH * 4;
+    entry.origin          = FrameOrigin::HardwareGpu;
+    return entry;
+}
+
 FrameCacheEntry RenderVideoDecoder::extractHwFrame(DecoderContext& ctx, AVFrame* frame,
                                                     ID3D11Device* device,
                                                     ID3D11DeviceContext* deviceCtx)
 {
-    // D3D11VA produces NV12 texture arrays. Creating an SRV directly on NV12
-    // requires dual-plane views (R8_UNORM for Y, R8G8_UNORM for UV) plus
-    // YUV→BGR shader support — not yet implemented.
-    //
-    // Interim path: transfer the HW frame to CPU via av_hwframe_transfer_data,
+    // D3D11VA produces NV12 texture arrays. Preferred route: keep the frame on
+    // the GPU — copy the slice into an NV12 texture, view it as R8 (Y) and
+    // R8G8 (CbCr) planes and render it through the NV12→BGRA shader straight
+    // into the cache entry (Nv12Converter). No av_hwframe_transfer_data, no
+    // sws_scale, no upload; the per-frame cost is one small copy and one
+    // fullscreen draw instead of the 8-19 ms GPU→CPU→GPU detour measured on
+    // 720p proxies.
+    if (nv12Converter_.isReady() && !ctx.hwGpuPathFailed) {
+        FrameCacheEntry entry = extractHwFrameOnGpu(ctx, frame, device, deviceCtx);
+        if (entry.texture) {
+            ++extractStats_.hwGpuFrames;
+            return entry;
+        }
+        // Logged once per stream; it then stays on the transfer path, which
+        // handles every format (P010, odd sizes) and every failure mode.
+        ctx.hwGpuPathFailed = true;
+        std::fprintf(stderr,
+                     "[RenderDecoder] GPU NV12 path declined for '%s' (%dx%d, hw fmt=%d) — "
+                     "using CPU transfer for this stream\n",
+                     ctx.sourcePath.c_str(), frame->width, frame->height,
+                     frame->hw_frames_ctx
+                         ? (int)reinterpret_cast<AVHWFramesContext*>(frame->hw_frames_ctx->data)->sw_format
+                         : -1);
+    }
+
+    // Fallback path: transfer the HW frame to CPU via av_hwframe_transfer_data,
     // then go through uploadSwFrame which converts NV12→BGRA via sws_scale and
     // uploads a standard D3D11 BGRA texture the compositor already handles.
     //
     // D3D11VA decode still runs on the GPU video engine (faster than SW decode
     // for 1080p H.264) — only the texture format conversion takes a GPU→CPU→GPU
-    // detour. Zero-copy NV12 SRV + YUV shader is a future optimization.
+    // detour.
     //
     // The destination frame is kept on the context and reused. When it still
     // holds buffers of the right shape, av_hwframe_transfer_data copies into
@@ -902,7 +1120,28 @@ FrameCacheEntry RenderVideoDecoder::extractHwFrame(DecoderContext& ctx, AVFrame*
         av_frame_unref(swFrame);
         return {};
     }
-    return uploadSwFrame(ctx, swFrame, device, deviceCtx);
+    FrameCacheEntry entry = uploadSwFrame(ctx, swFrame, device, deviceCtx);
+    if (entry.texture) {
+        entry.origin = FrameOrigin::HardwareTransfer;
+        ++extractStats_.hwTransferFrames;
+    }
+    return entry;
+}
+
+// ===========================================================================
+// Output-size cap (shared by both extraction paths)
+// ===========================================================================
+
+void RenderVideoDecoder::cappedOutputSize(int w, int h, int& outW, int& outH) const
+{
+    outW = w;
+    outH = h;
+    if (maxOutputW_ > 0 && maxOutputH_ > 0 && (w > maxOutputW_ || h > maxOutputH_)) {
+        const double scale = std::min(static_cast<double>(maxOutputW_) / w,
+                                      static_cast<double>(maxOutputH_) / h);
+        outW = std::max(1, static_cast<int>(std::lround(w * scale)));
+        outH = std::max(1, static_cast<int>(std::lround(h * scale)));
+    }
 }
 
 // ===========================================================================
@@ -943,12 +1182,7 @@ FrameCacheEntry RenderVideoDecoder::uploadSwFrame(DecoderContext& ctx, AVFrame* 
     // cache entry shrink with it: a 1280x720 proxy frame capped to 960x540 is
     // 44% fewer bytes in every later step and in the 512 MB frame cache.
     int outW = w, outH = h;
-    if (maxOutputW_ > 0 && maxOutputH_ > 0 && (w > maxOutputW_ || h > maxOutputH_)) {
-        const double scale = std::min(static_cast<double>(maxOutputW_) / w,
-                                      static_cast<double>(maxOutputH_) / h);
-        outW = std::max(1, static_cast<int>(std::lround(w * scale)));
-        outH = std::max(1, static_cast<int>(std::lround(h * scale)));
-    }
+    cappedOutputSize(w, h, outW, outH);
 
     // Cached per context; rebuilt only when the source format or either size
     // changes (sws_getCachedContext compares and reuses).
@@ -1029,6 +1263,7 @@ FrameCacheEntry RenderVideoDecoder::uploadSwFrame(DecoderContext& ctx, AVFrame* 
     entry.width          = outW;
     entry.height         = outH;
     entry.memorySizeBytes = static_cast<size_t>(outW) * outH * 4;
+    entry.origin         = FrameOrigin::Software;   // extractHwFrame overrides for its fallback
 
     return entry;
 }

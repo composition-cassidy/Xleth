@@ -1,7 +1,9 @@
 import React from 'react'
-import { AlertTriangle } from 'lucide-react'
 import { Select } from '../../ui-kit'
 import styles from './Export.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcWarning = iconComponent('warning')
 
 /** A label (with an optional note under it) and its control. `data-export-row` is the hook the tests use. */
 export function Row({ label, note, children }) {
@@ -34,7 +36,7 @@ export function ExportSelect({ label, value, options, onChange, disabled, size =
 export function Banner({ tone = 'info', children }) {
   return (
     <div className={styles.banner} data-tone={tone} role={tone === 'error' ? 'alert' : undefined}>
-      {tone === 'warn' || tone === 'error' ? <AlertTriangle size={14} aria-hidden="true" /> : null}
+      {tone === 'warn' || tone === 'error' ? <IcWarning size={14} aria-hidden="true" /> : null}
       <span>{children}</span>
     </div>
   )

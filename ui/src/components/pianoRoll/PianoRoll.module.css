@@ -31,12 +31,16 @@
     display: flex;
     align-items: center;
     gap: var(--space-1);
-    height: 32px;
+    min-height: 32px;
     padding: 0 var(--space-2);
     overflow-x: auto;
     overflow-y: hidden;
     scrollbar-width: thin;
   }
+
+  /* Narrow widths scroll the row; they never squeeze a control. Every direct
+   * child keeps its natural size (the spacer below opts back in to growing). */
+  .toolbar > * { flex: none; }
 
   .title {
     display: flex;

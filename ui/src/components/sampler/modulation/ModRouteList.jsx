@@ -1,5 +1,4 @@
 import { useMemo, useState } from 'react'
-import { X } from 'lucide-react'
 import { Button, DeviceSection, IconButton, NumberBox, Select, Toggle } from '../../../ui-kit'
 import useSamplerModulationStore from '../../../stores/samplerModulationStore.js'
 import {
@@ -7,6 +6,9 @@ import {
 } from './modTargets.js'
 import { ENV_SOURCE_0, LFO_SOURCE_0, NOTE_SOURCE, VELO_SOURCE } from './modConstants.js'
 import styles from '../Sampler.module.css'
+import { iconComponent } from '../../../ui-kit/icons'
+
+const IcX = iconComponent('x')
 
 // ── Routes ───────────────────────────────────────────────────────────────────
 // Every route in one place: what drives what, how deep (typed or dragged, in the
@@ -83,7 +85,7 @@ export default function ModRouteList({ slotIndex = 0, chainLength = 0 }) {
                 data-route-field="bipolar"
               >±</Toggle>
               <IconButton size="sm" label={`Delete route ${name}`} onClick={() => removeRoute(i)} data-route-field="delete">
-                <X aria-hidden="true" />
+                <IcX aria-hidden="true" />
               </IconButton>
             </div>
           )

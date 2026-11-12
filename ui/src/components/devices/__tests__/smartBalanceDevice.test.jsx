@@ -143,11 +143,11 @@ describe('Smart Balance device in the chain', () => {
   it('pop-out opens the floating window and the docked slot becomes a strip', async () => {
     act(() => root.render(<><DeviceChain /><SmartBalancePanel /></>))
     await flush()
-    act(() => q('button[aria-label="Open Smart balance in a window"]').click())
+    act(() => q('button[aria-label="Open Smart Balance in a window"]').click())
     await flush()
     expect(useSmartBalanceStore.getState().target).toEqual({ trackId: 3, nodeId: 7, storeKey: '3' })
     expect(q('[data-testid="smartbalance-window"] section').getAttribute('data-presentation')).toBe('floating')
-    act(() => q('button[aria-label="Close Smart balance"]').click())
+    act(() => q('button[aria-label="Close Smart Balance"]').click())
     expect(useSmartBalanceStore.getState().target).toBeNull()
   })
 })

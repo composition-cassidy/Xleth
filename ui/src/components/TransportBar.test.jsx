@@ -7,7 +7,7 @@ import TransportBar, { formatBarBeat, formatTime } from './TransportBar.jsx'
 describe('Transport cluster', () => {
   it('lays the controls out in transport order', () => {
     const html = renderToStaticMarkup(<TransportBar />)
-    const order = ['Rewind', 'Stop', 'Play', 'Forward (not available yet)', 'Time 00:00.000', 'Bar 1, beat 1', 'Tempo', 'Tempo lock', 'Auto scroll']
+    const order = ['Rewind', 'Stop', 'Play', 'Forward (not available yet)', 'Time 00:00.000', 'Bar 1, beat 1', 'Tempo', 'Tempo lock', 'Metronome', 'Auto scroll']
     const positions = order.map((label) => html.indexOf(`aria-label="${label}"`))
     positions.forEach((position, index) => expect(position, order[index]).toBeGreaterThan(-1))
     expect([...positions].sort((a, b) => a - b)).toEqual(positions)

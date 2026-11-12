@@ -233,6 +233,10 @@ xleth::clipmod::VideoModulationTimingContext makeVideoTimingContext(
     ctx.clipPitchOffsetSemis = postCacheStretchedModulation ? 0 : event.clipPitchOffsetSemis;
     ctx.clipPitchOffsetCents = postCacheStretchedModulation ? 0 : event.clipPitchOffsetCents;
     ctx.clipStartTimelineSamples = event.clipStartTimelineSamples;
+    // Stretch and reverse move the picture with the audio — see
+    // sourceTimeForCacheSeconds in model/ClipVideoModulationTiming.cpp.
+    ctx.clipStretchRatio = event.clipStretchRatio;
+    ctx.clipReversed     = event.clipReversed;
     return ctx;
 }
 
@@ -518,6 +522,19 @@ std::vector<CellFrameRequest>& FrameCollector::collectRequests(
             // same pixels, and the intra proxy scrubs faster) — but for a
             // swapped region it holds the PRE-SWAP video, so it must yield to
             // the region proxy exactly as it already yields to posterEngaged.
+            //
+            // Why the region proxy is NOT preferred, even though it would make a
+            // note retrigger cheap (its first frame is a keyframe, where the same
+            // moment in the GOP-48 whole-source file costs a ~31-frame walk —
+            // measured ~27 ms per uncached note-on on a desktop GPU): the region
+            // proxy is not frame-exact. ProxyTranscoder keeps the frames whose
+            // PTS is >= the region start, so its frame 0 is the first frame
+            // AFTER the one the region start falls in, and the encoder can leave
+            // it a frame short at the end. The whole-source proxy maps 1:1 onto
+            // source frame indices. Preferring the region proxy was tried and
+            // measured (worst tick 31 ms -> 6 ms) and backed out for that reason;
+            // making it exact means aligning the transcode start to a frame
+            // boundary and versioning the files, not a pick-order change.
             const bool previewProxyEngaged =
                 allowProxy && !posterEngaged && !regionSwapped
                 && src->previewProxyReady && !src->previewProxyPath.empty();

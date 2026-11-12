@@ -58,7 +58,7 @@ afterEach(() => {
   delete window.xleth
 })
 
-describe('Pitch shifter device in the chain', () => {
+describe('Pitch Shifter device in the chain', () => {
   it('hydrates from the engine; pitch prints in st and ct, mix as a percentage', async () => {
     engineParams = params({ semitones: 7, cents: -25, mix: 0.5, size: 40 })
     act(() => root.render(<DeviceChain />))
@@ -139,11 +139,11 @@ describe('Pitch shifter device in the chain', () => {
   it('pop-out opens the floating window and the docked slot becomes a strip', async () => {
     act(() => root.render(<><DeviceChain /><PitchShifterPanel /></>))
     await flush()
-    act(() => q('button[aria-label="Open Pitch shifter in a window"]').click())
+    act(() => q('button[aria-label="Open Pitch Shifter in a window"]').click())
     await flush()
     expect(usePitchShifterStore.getState().target).toEqual({ trackId: 3, nodeId: 7, storeKey: '3' })
     expect(q('[data-testid="pitchshifter-window"] section').getAttribute('data-presentation')).toBe('floating')
-    act(() => q('button[aria-label="Close Pitch shifter"]').click())
+    act(() => q('button[aria-label="Close Pitch Shifter"]').click())
     expect(usePitchShifterStore.getState().target).toBeNull()
   })
 })

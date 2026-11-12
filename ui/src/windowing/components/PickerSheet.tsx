@@ -3,6 +3,7 @@ import type { CSSProperties } from 'react';
 import SamplePicker from '../../components/SamplePicker/SamplePicker.jsx';
 import { useXlethRootContext } from '../contexts/XlethRootContext.jsx';
 import { useShellLayoutStore } from '../layout/shellLayoutStore';
+import { MotionDiv } from '../../ui-kit';
 import styles from './PickerSheet.module.css';
 
 /** The sheet is never shorter than this, so the picker's header, waveform and
@@ -76,7 +77,10 @@ export function PickerSheet() {
 
   const style = { '--picker-sheet-h': `${Math.max(topHeight, PICKER_SHEET_MIN_HEIGHT)}px` } as CSSProperties;
   return (
-    <section
+    <MotionDiv
+      as="section"
+      recipe="sheet"
+      exit
       ref={sheetRef}
       className={styles.sheet}
       style={style}
@@ -87,7 +91,7 @@ export function PickerSheet() {
     >
       {/* key: a different source remounts the picker, which unloads the old one. */}
       <SamplePicker key={String(sourceId)} source={pickerSource} onClose={onClosePicker} scopeRef={sheetRef} />
-    </section>
+    </MotionDiv>
   );
 }
 

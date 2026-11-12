@@ -1,3 +1,4 @@
+import { pearlPlan } from '../ui-kit/pearlRules'
 import { create } from 'zustand'
 import {
   playSandboxPreview, stopSandboxPreview, setSandboxPreviewLoop,
@@ -287,6 +288,12 @@ export function hasMeaningfulSelection(selection, sampleRate) {
   const spanSamples = selection.endSample - selection.startSample
   return spanSamples > 0 && spanSamples / sampleRate > MIN_SELECTION_SEC
 }
+
+// Op types whose row opens (selected, controls showing) the moment they are
+// added — see addOp. The types that carry controls the user sets by hand.
+const OPS_OPENED_ON_ADD = new Set([
+  'gain', 'fade', 'crossfade', 'pitch', 'formantShift', 'declip', 'denoise', 'autotune',
+])
 
 const POLL_MS = 150
 const POLL_MAX_ATTEMPTS = 200 // ~30s ceiling — a stuck render surfaces as an error, not a silent hang
@@ -804,6 +811,17 @@ const useSandboxStore = create((set, get) => ({
     if (layer) get().setLayerSoloed(layerId, !layer.soloed)
   },
 
+  // Output pearl (ui-kit/pearlRules.ts): 'toggle' = on/off, 'solo' = this layer only, or every
+  // layer back on when it is already the only one heard. Clears legacy solo flags as it goes.
+  async pearlLayer(layerId, action) {
+    const layers = get().layers
+    const changes = pearlPlan(layers.map((l) => ({ id: l.id, muted: !!l.muted, soloed: !!l.soloed })), layerId, action)
+    for (const c of changes) {
+      if (c.clearSolo) await get().setLayerSoloed(c.id, false)
+      if (c.muted !== undefined) await get().setLayerMuted(c.id, c.muted)
+    }
+  },
+
   // Gain (dB) / pan (-1..1) / offset (ms, converted to samples at the layer's
   // own bufferSampleRate) — mix params live OUTSIDE the op-stack, so this
   // never triggers a re-render of the layer itself, only the composite (see
@@ -835,6 +853,55 @@ const useSandboxStore = create((set, get) => ({
   setActiveTool(tool) { set({ activeTool: tool }) },
   setSelection(selection) { set({ selection }) },
   clearSelection() { set({ selection: null }) },
+  // The whole active layer, as a selection. Ctrl+A and a double-click on the
+  // waveform both land here.
+  selectAll() {
+    const numSamples = get()._activeNumSamples()
+    if (numSamples > 0) set({ selection: { startSample: 0, endSample: numSamples } })
+  },
+
+  // ── What a range edit acts on ───────────────────────────────────────────
+  // A MEANINGFUL selection is the range. Anything else — no selection, or the
+  // bare cursor a click leaves behind — means "the whole layer", reported as
+  // `whole: true` with endSample -1 (the engine's own "to the end" sentinel, so
+  // the op keeps covering the layer when an earlier op changes its length).
+  //
+  // The cursor is a ZERO-WIDTH selection ({ startSample: X, endSample: X }), not
+  // null (see the playback contract). Gain, Normalize and Reverse used to read
+  // `sel?.startSample ?? 0` straight off it, so with a cursor placed — the
+  // commonest state in the panel — they added an op over an empty range: a new
+  // row in the stack and no audible change.
+  _editRange(layerId) {
+    const state = get()
+    const layer = state.layers.find((l) => l.id === layerId)
+    const sel = state.selection
+    if (sel && hasMeaningfulSelection(sel, layer?.renderedBuffer?.sampleRate)) {
+      return { startSample: sel.startSample, endSample: sel.endSample, whole: false }
+    }
+    return { startSample: 0, endSample: -1, whole: true }
+  },
+
+  // The range a FADE acts on. A selection is the fade. With only a cursor the
+  // fade runs between the cursor and the layer's own edge — "fade in up to
+  // here", "fade out from here" — which is what shaping a sample's head or tail
+  // actually needs. A cursor sitting on that edge leaves nothing between them,
+  // so the fade covers the whole layer instead. Returns null with no rendered
+  // audio to measure against.
+  _fadeRange(layerId, fadeIn) {
+    const state = get()
+    const layer = state.layers.find((l) => l.id === layerId)
+    const numSamples = layer?.renderedBuffer?.numSamples ?? 0
+    if (!(numSamples > 0)) return null
+    const sel = state.selection
+    if (sel && hasMeaningfulSelection(sel, layer.renderedBuffer.sampleRate)) {
+      return { startSample: sel.startSample, lengthSamples: sel.endSample - sel.startSample }
+    }
+    const cursor = Math.max(0, Math.min(numSamples, sel?.startSample ?? 0))
+    const range = fadeIn
+      ? { startSample: 0, lengthSamples: cursor }
+      : { startSample: cursor, lengthSamples: numSamples - cursor }
+    return range.lengthSamples > 0 ? range : { startSample: 0, lengthSamples: numSamples }
+  },
 
   // ── Viewport (zoom / scroll) ────────────────────────────────────────────
   //
@@ -1140,6 +1207,14 @@ const useSandboxStore = create((set, get) => ({
       // (it doesn't mutate the stack), so copying deliberately preserves the
       // selection for a follow-up Cut/Trim on the same range.
       get().clearSelection()
+      // Open the new entry's own controls. An op that arrives with values to
+      // set (a gain, a pitch shift, a fade curve) is one the user is about to
+      // adjust, and making them find the row they just created and click it is
+      // a step nobody needs. Structural edits (trim, cut, paste...) have no
+      // controls, so they leave whatever was selected alone.
+      if (layerId === get().activeLayerId && OPS_OPENED_ON_ADD.has(op.type) && res.opId != null) {
+        get().setSelectedOpId(res.opId)
+      }
       get()._triggerAutoRender(layerId, 'stackAdd')
       get().refreshHistory()
     } catch (e) {
@@ -1314,6 +1389,18 @@ const useSandboxStore = create((set, get) => ({
   setSpcSelectShape(shape) {
     if (shape !== 'rect' && shape !== 'freehand') return
     set({ spcSelectShape: shape })
+  },
+
+  // Pick the tool that owns the pointer: 'select' | 'envelope' | 'paint' |
+  // 'region'. The one entry point the tool bar and the tool shortcuts share.
+  // Paint and Region only mean something over the spectrogram, so arming one
+  // switches the view to it; Envelope draws over either view and leaves the
+  // view alone.
+  selectTool(tool) {
+    if (tool === 'envelope') get().setEnvelopeEditMode(true)
+    else if (tool === 'paint') { get().setPaintEditMode(true); get().setViewMode('spc') }
+    else if (tool === 'region') { get().setSpcSelectMode(true); get().setViewMode('spc') }
+    else set({ envelopeEditMode: false, paintEditMode: false, spcSelectMode: false })
   },
 
   // Committed selection shapes — replaces any previous selection wholesale
@@ -1536,48 +1623,48 @@ const useSandboxStore = create((set, get) => ({
     })
   },
 
-  // REVERSE over the current selection (or the whole buffer if none).
+  // REVERSE over the current selection, or the whole layer (see _editRange).
   async reverseSelection(layerId) {
-    const sel = get().selection
-    await get().addOp(layerId, {
-      type: 'reverse',
-      params: { startSample: sel?.startSample ?? 0, endSample: sel?.endSample ?? -1 },
-    })
+    const { startSample, endSample } = get()._editRange(layerId)
+    await get().addOp(layerId, { type: 'reverse', params: { startSample, endSample } })
   },
 
   // FADE IN/OUT across the current selection. `shape` is one of FADE_SHAPE's
   // keys — the toolbar exposes this as a <select>, satisfying "adjustable
   // curve shapes."
+  //
+  // The range follows _fadeRange: the selection, else between the cursor and
+  // the layer's edge, else the whole layer.
   async fadeSelection(layerId, fadeIn, shape = 'equalPower') {
-    const sel = get().selection
-    if (!sel) return
+    const range = get()._fadeRange(layerId, fadeIn)
+    if (!range) return
     await get().addOp(layerId, {
       type: 'fade',
       params: {
-        startSample: sel.startSample,
-        lengthSamples: sel.endSample - sel.startSample,
+        startSample: range.startSample,
+        lengthSamples: range.lengthSamples,
         shape: FADE_SHAPE[shape] ?? FADE_SHAPE.equalPower,
         fadeIn,
       },
     })
   },
 
-  // GAIN over the current selection (or the whole buffer if none).
+  // GAIN over the current selection, or the whole layer (see _editRange).
   async gainSelection(layerId, gainDb) {
-    const sel = get().selection
+    const { startSample, endSample } = get()._editRange(layerId)
     await get().addOp(layerId, {
       type: 'gain',
-      params: { startSample: sel?.startSample ?? 0, endSample: sel?.endSample ?? -1, gainDb, normalize: false, targetPeakDb: 0 },
+      params: { startSample, endSample, gainDb, normalize: false, targetPeakDb: 0 },
     })
   },
 
   // NORMALIZE the current selection (or the whole buffer) so its peak lands
   // on targetPeakDb.
   async normalizeSelection(layerId, targetPeakDb) {
-    const sel = get().selection
+    const { startSample, endSample } = get()._editRange(layerId)
     await get().addOp(layerId, {
       type: 'gain',
-      params: { startSample: sel?.startSample ?? 0, endSample: sel?.endSample ?? -1, gainDb: 0, normalize: true, targetPeakDb },
+      params: { startSample, endSample, gainDb: 0, normalize: true, targetPeakDb },
     })
   },
 

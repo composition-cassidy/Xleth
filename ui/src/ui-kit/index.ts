@@ -28,6 +28,10 @@ export type { FaderMeterProps } from './FaderMeter';
 export { Button, IconButton } from './Button';
 export type { ButtonProps, IconButtonProps } from './Button';
 export { default as Toggle } from './Toggle';
+export { Pearl } from './Pearl';
+export type { PearlProps } from './Pearl';
+export { pearlPlan, isHeard } from './pearlRules';
+export type { PearlItem, PearlChange } from './pearlRules';
 export { TextField } from './TextField';
 export type { TextFieldProps } from './TextField';
 export { Checkbox } from './Checkbox';
@@ -51,6 +55,15 @@ export type { SelectOption, SelectProps } from './Select';
 export * from './device';
 
 export * from './icons';
+
+export { default as MotionDiv } from './MotionDiv';
+export type { MotionDivProps } from './MotionDiv';
+export {
+  MOTION_TIERS, currentMotionTier, ghostExit, hadUserInput, lastInputWasKeyboard, motionEnabled,
+  motionForcedFlat, motionMs, motionScrollBehavior, subscribeMotionTier, useAfterMount, useGhostExit,
+  useMotionEnter,
+} from './motion';
+export type { GhostExitOptions, MotionChannel, MotionRecipe, MotionTier } from './motion';
 
 export { Menu, MenuItem, MenuSeparator, MenuCustom } from './Menu';
 export type { MenuProps, MenuItemProps } from './Menu';

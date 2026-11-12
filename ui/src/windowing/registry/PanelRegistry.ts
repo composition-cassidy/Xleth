@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { DEFAULT_PRESET_ID, loadPreset } from '../managers/PresetManager';
-import { isDetailDockTab, PANEL_CATALOG, PANEL_IDS, type PanelId } from './panelCatalog';
+import { isDetailDockTab, opensFloating, PANEL_CATALOG, PANEL_IDS, type PanelId } from './panelCatalog';
 
 export type PanelMode = 'floating' | 'docked' | 'maximized';
 /** An edge region: it has a stored thickness and a resizer. */
@@ -200,8 +200,11 @@ export function createPanelState(id: PanelId, index: number): PanelState {
     focused,
     zIndex: focused ? index + 1 : 0,
     // The arrangement starts docked in the center and the detail-dock tabs
-    // start in the dock; nothing starts floating over an empty workspace.
-    mode: PANEL_CATALOG[id].presentation === 'drawer' || isCenter || isDetailDockTab(id) ? 'docked' : 'floating',
+    // start in the dock; nothing starts floating over an empty workspace. A tab
+    // that opens floating (the Sampler) starts hidden like the rest, as a window.
+    mode: PANEL_CATALOG[id].presentation === 'drawer' || isCenter || (isDetailDockTab(id) && !opensFloating(id))
+      ? 'docked'
+      : 'floating',
     floating: { ...PANEL_CATALOG[id].defaultFloating },
     docked: defaultDockedState(id),
     preMaximizeState: null,

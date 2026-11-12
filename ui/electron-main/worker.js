@@ -104,8 +104,8 @@ const SILENT_TIMELINE_METHODS = [
   'timeline_moveClip', 'timeline_resizeClip', 'timeline_resizeClipLeft', 'timeline_stretchClip', 'timeline_stretchClipLeft',
   'timeline_movePatternBlock', 'timeline_resizePatternBlock', 'timeline_resizePatternBlockLeft',
   'timeline_beginClipControlEdit', 'timeline_previewClipControlEdit', 'timeline_commitClipControlEdit', 'timeline_cancelClipControlEdit',
-  'timeline_moveNote', 'timeline_resizeNote', 'timeline_moveNotesBatch', 'timeline_resizeNotesBatch', 'timeline_addNotesBatch', 'timeline_quantizeClipsBatch',
-  'timeline_previewNote', 'timeline_previewNoteOff', 'timeline_previewAllNotesOff',
+  'timeline_moveNote', 'timeline_resizeNote', 'timeline_moveNotesBatch', 'timeline_resizeNotesBatch', 'timeline_addNotesBatch', 'timeline_editPatternNotes', 'timeline_quantizeClipsBatch',
+  'timeline_previewNote', 'timeline_previewNoteOff', 'timeline_previewAllNotesOff', 'timeline_getPatternAuditionState',
 ];
 const SILENT_METHODS = new Set([
   'getFrameRGBA', 'getCurrentFrame', 'getFrameBuffer', 'getTransportState', 'audio_getAllPeaks', 'audio_getRealtimeDiagnostics', 'audio_getAudioPerformanceTelemetry', 'getAudioPerformanceTelemetry', 'audio_setTrackVolume', 'audio_setTrackPan', 'audio_setTrackSpread', 'audio_setMasterVolume', 'audio_getMasterLoudness', 'cache_getWorldActiveJobs',

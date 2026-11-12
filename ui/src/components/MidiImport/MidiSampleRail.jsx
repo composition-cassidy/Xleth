@@ -1,8 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Image, Music2 } from 'lucide-react'
 import { Select, TextField } from '../../ui-kit'
 import styles from './MidiImport.module.css'
 import { getCachedPreview, getSourceFingerprint } from './samplePreviewCache.js'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcFilmStrip = iconComponent('film-strip')
+const IcMusicNotes = iconComponent('music-notes')
+const IcWaveform = iconComponent('waveform')
 
 function getItemKey(item) {
   return item?.id == null ? '__none__' : String(item.id)
@@ -137,8 +141,8 @@ export default function MidiSampleRail({
             ? value == null || Number(value) < 0
             : String(value) === String(item.id)
           const preview = previews[key]
-          const mediaIcon = item.source?.hasVideo === false ? Music2 : Image
-          const MediaIcon = item.isNone ? Music2 : mediaIcon
+          const mediaIcon = item.source?.hasVideo === false ? IcWaveform : IcFilmStrip
+          const MediaIcon = item.isNone ? IcMusicNotes : mediaIcon
 
           return (
             <button

@@ -1,6 +1,7 @@
 import { forwardRef } from 'react';
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
 import { hintAttrs, type HintProps } from './hint';
+import { IconActive } from './icons';
 import buttonStyles from './Button.module.css';
 import type { OnTone } from './Button';
 import styles from './Toggle.module.css';
@@ -16,6 +17,8 @@ export interface ToggleProps extends HintProps, DataAttrs, Omit<ButtonHTMLAttrib
    * never carried by colour alone. Pass a check, a power mark, an M / S letter.
    */
   glyph?: ReactNode;
+  /** Draw the glyph after the label, so "Edit" + a grid glyph reads as "Edit grid". */
+  glyphEnd?: boolean;
   size?: 'sm' | 'md' | 'lg';
   /** `quiet`: an always-on housekeeping toggle keeps a raised g3 control instead of the ink chip. */
   tone?: OnTone;
@@ -27,7 +30,7 @@ export interface ToggleProps extends HintProps, DataAttrs, Omit<ButtonHTMLAttrib
  * `<button aria-pressed>`, so Space and Enter work and screen readers say "pressed".
  */
 export const Toggle = forwardRef<HTMLButtonElement, ToggleProps>(function Toggle(
-  { on, onChange, children, glyph, size = 'md', tone, hint, hintMods, className, type = 'button', onClick, ...rest },
+  { on, onChange, children, glyph, glyphEnd = false, size = 'md', tone, hint, hintMods, className, type = 'button', onClick, ...rest },
   ref,
 ) {
   return (
@@ -46,8 +49,12 @@ export const Toggle = forwardRef<HTMLButtonElement, ToggleProps>(function Toggle
       }}
       {...hintAttrs({ hint, hintMods })}
     >
-      {glyph ? <span className={styles.glyph} aria-hidden="true">{glyph}</span> : null}
-      {children}
+      {/* On: the glyph renders in Fill as well as the chip inverting. */}
+      <IconActive.Provider value={!!on}>
+        {glyph && !glyphEnd ? <span className={styles.glyph} aria-hidden="true">{glyph}</span> : null}
+        {children}
+        {glyph && glyphEnd ? <span className={styles.glyph} aria-hidden="true">{glyph}</span> : null}
+      </IconActive.Provider>
     </button>
   );
 });

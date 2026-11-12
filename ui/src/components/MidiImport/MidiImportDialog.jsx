@@ -4,8 +4,7 @@ import { gmDrumName, findMatchingTrack } from './filenameMatch.js'
 import { MODE_NEW, MODE_UPDATE } from './MidiReimportModeSelect.jsx'
 import { resolveAutoAssignment, rememberAssignments } from './assignmentMemory.js'
 import { useToast } from '../Toast.jsx'
-import { AlertTriangle, Check } from 'lucide-react'
-import { Button, Checkbox, Dialog, Progress, SegmentedControl } from '../../ui-kit'
+import { Button, Checkbox, Dialog, Progress, SegmentedControl, Select } from '../../ui-kit'
 import styles from './MidiImport.module.css'
 import { PPQ } from '../../constants/timeline.js'
 import { getPickerPath, openFilePicker } from '../filePicker/filePickerService.js'
@@ -28,6 +27,10 @@ import {
 import { DEFAULT_TRANSPOSE_SEMITONES, clampTransposeSemitones } from './transpose.js'
 import { playheadClock } from '../../services/PlayheadClock.js'
 import { beatsToTicks } from '../../constants/timeline.js'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcCheckCircle = iconComponent('check-circle')
+const IcWarning = iconComponent('warning')
 
 // ── Placement (dialog-level, one set per import) ─────────────────────────────
 // Position and tile-to-fill apply to CREATE rows only; re-import (update) rows
@@ -40,6 +43,54 @@ export const POSITION_START = 'start'
 export const POSITION_PLAYHEAD = 'playhead'
 
 export const MIDI_BPM_MATCH_TOLERANCE = 0.05
+
+// ── FL Studio projects ───────────────────────────────────────────────────────
+// A .flp is converted to a temp MIDI file in the main process (flp.convert,
+// electron-main/flp-import.js) and then runs through the exact same midi.*
+// pipeline. One output row per FL channel, named after the channel.
+export const IMPORT_FILE_FILTERS = [
+  { name: 'MIDI and FL Studio projects', extensions: ['mid', 'midi', 'flp'] },
+  { name: 'MIDI Files', extensions: ['mid', 'midi'] },
+  { name: 'FL Studio projects', extensions: ['flp'] },
+]
+
+export function isFlpPath(fp) {
+  return /\.flp$/i.test(String(fp || ''))
+}
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
+
+// The detail lines an FLP import adds under the placement options. Pure, so the
+// wording is unit-tested without rendering the dialog.
+export function buildFlpDetails(info) {
+  if (!info) return []
+  const lines = []
+  if (info.pattern) {
+    lines.push(`Playlist is empty: importing pattern “${info.pattern.name}” from the start`)
+  }
+  if (info.hasTempoAutomation) {
+    lines.push(`Tempo automation: first tempo only (${Number(info.startBpm).toFixed(1)} BPM)`)
+  }
+  if (!info.includeMuted) {
+    const parts = []
+    if (info.mutedTracks?.length) parts.push(plural(info.mutedTracks.length, 'playlist track'))
+    if (info.mutedClips > 0) parts.push(plural(info.mutedClips, 'clip'))
+    if (parts.length) lines.push(`Muted, skipped: ${parts.join(', ')}`)
+  }
+  if (info.audioClipTracks > 0) {
+    lines.push('Audio clips: one hit per clip, from the sample start')
+  }
+  return lines
+}
+
+export function hasFlpMutedContent(info) {
+  return !!info && ((info.mutedTracks?.length || 0) > 0 || info.mutedClips > 0 || info.mutedNotes > 0)
+}
+
+export function flpVersionLabel(version) {
+  const [major, minor] = String(version || '').split('.')
+  return major ? `FL Studio ${major}${minor ? `.${minor}` : ''}` : 'FL Studio'
+}
 
 export function areBpmsEffectivelyEqual(sourceBpm, projectBpm, tolerance = MIDI_BPM_MATCH_TOLERANCE) {
   const source = Number(sourceBpm)
@@ -261,7 +312,11 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
   useEffect(() => { initialFilePathRef.current = initialFilePath }, [initialFilePath])
 
   const [phase, setPhase] = useState('idle') // idle | parsing | preview | importing | done | error
+  // filePath is what the engine reads (the .mid, or the temp .mid made from a
+  // .flp); sourcePath is what the user picked and what the dialog shows.
   const [filePath, setFilePath] = useState('')
+  const [sourcePath, setSourcePath] = useState('')
+  const [flpInfo, setFlpInfo] = useState(null)
   const [summary, setSummary] = useState(null)
   const [errorMsg, setErrorMsg] = useState('')
   const [projectBpm, setProjectBpm] = useState(null)
@@ -294,6 +349,8 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
 
     setPhase('idle')
     setFilePath('')
+    setSourcePath('')
+    setFlpInfo(null)
     setSummary(null)
     setErrorMsg('')
     setTempoOverride(true)
@@ -313,10 +370,10 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
       if (!fp) {
         const picked = await openFilePicker({
           mode: 'openFile',
-          title: 'Import MIDI',
-          subtitle: 'Choose a MIDI file to map into the project.',
+          title: 'Import MIDI or FL Studio project',
+          subtitle: 'Choose a MIDI file or an FL Studio project (.flp) to map into the project.',
           actionLabel: 'Import',
-          filters: [{ name: 'MIDI Files', extensions: ['mid', 'midi'] }],
+          filters: IMPORT_FILE_FILTERS,
           legacyPicker: () => window.xleth?.dialog?.openMidiDialog?.(),
         })
         fp = getPickerPath(picked)
@@ -330,12 +387,39 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
       }
 
       console.log('[MidiImport] File selected:', fp)
-      setFilePath(fp)
+      setSourcePath(fp)
       setPhase('parsing')
+
+      // FLP: convert to a temp MIDI first. A project whose arrangement is all
+      // muted retries with muted content included, so there is something to
+      // show (the checkbox then reads ticked and can be cleared).
+      let enginePath = fp
+      if (isFlpPath(fp)) {
+        let flp
+        try {
+          flp = await window.xleth?.flp?.convert?.(fp, {})
+          if (flp && !flp.ok && flp.info?.mutedNotes > 0) {
+            flp = await window.xleth?.flp?.convert?.(fp, { includeMuted: true })
+          }
+        } catch (e) {
+          flp = { ok: false, reason: e?.message }
+        }
+        if (cancelled) return
+        if (!flp?.ok) {
+          console.warn('[MidiImport] FLP convert failure:', flp?.reason)
+          setPhase('error')
+          setErrorMsg(flp?.reason || "Couldn't read the FL Studio project")
+          return
+        }
+        console.log('[MidiImport] FLP converted:', flp.midiPath, flp.info)
+        enginePath = flp.midiPath
+        setFlpInfo(flp.info)
+      }
+      setFilePath(enginePath)
 
       let raw
       try {
-        raw = await window.xleth?.midi?.parseSummary?.(fp)
+        raw = await window.xleth?.midi?.parseSummary?.(enginePath)
       } catch (e) {
         if (cancelled) return
         console.error('[MidiImport] parseSummary error:', e)
@@ -408,6 +492,37 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
     run()
     return () => { cancelled = true }
   }, [isOpen]) // onClose intentionally omitted — stable ref not guaranteed
+
+  // FLP: switching arrangement or the muted filter re-converts and re-reads
+  // the summary. Rows reseed (auto-match runs again) because track indices
+  // change with the content.
+  const reloadFlp = useCallback(async (patch) => {
+    if (!flpInfo || !sourcePath) return
+    const options = {
+      arrangementIndex: flpInfo.arrangementIndex,
+      includeMuted: flpInfo.includeMuted,
+      patternIid: flpInfo.pattern?.iid ?? null,
+      ...patch,
+    }
+    setPhase('parsing')
+    try {
+      const res = await window.xleth.flp.convert(sourcePath, options)
+      if (!res?.ok) throw new Error(res?.reason || "Couldn't read the FL Studio project")
+      const raw = await window.xleth.midi.parseSummary(res.midiPath)
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
+      if (!parsed?.ok) throw new Error(parsed?.reason || 'Failed to read the converted project')
+      setFlpInfo(res.info)
+      setFilePath(res.midiPath)
+      setSummary(parsed)
+      setTrackOptions(initSourceTrackOptions(parsed.tracks || []))
+      setOutputTrackOptions({})
+      setPhase('preview')
+    } catch (e) {
+      console.warn('[MidiImport] FLP reload failed:', e)
+      setErrorMsg(String(e?.message ?? e))
+      setPhase('error')
+    }
+  }, [flpInfo, sourcePath])
 
   // Auto-close 2 s after done phase.
   useEffect(() => {
@@ -618,7 +733,10 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
 
   if (!isOpen) return null
 
-  const fileName = filePath ? filePath.replace(/\\/g, '/').split('/').pop() : ''
+  const shownPath = sourcePath || filePath
+  const fileName = shownPath ? shownPath.replace(/\\/g, '/').split('/').pop() : ''
+  const isFlp = !!flpInfo
+  const flpDetails = buildFlpDetails(flpInfo)
   const filteredSourceTracks = summary ? (summary.tracks || []).filter(t => t.noteCount > 0) : []
   const tempoBpmMatches = areBpmsEffectivelyEqual(summary?.sourceTempo, projectBpm)
   const pitchBendTrackCount = filteredSourceTracks.filter(track => track.hasPitchBend).length
@@ -648,11 +766,13 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
   }
 
   const importing = phase === 'importing'
+  const dialogTitle = isFlp ? 'Import FL Studio project' : 'Import MIDI'
+  const readingFlp = isFlp || isFlpPath(sourcePath)
   const importLabel = enabledCount === 1 ? 'Import 1 track' : `Import ${enabledCount} tracks`
 
   return (
     <Dialog
-      title="Import MIDI"
+      title={dialogTitle}
       width="xl"
       flush
       fill
@@ -683,13 +803,23 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
 
         {(phase === 'idle' || phase === 'parsing') && (
           <div className={styles.status}>
-            <Progress label="Opening MIDI file" value={null} text={phase === 'idle' ? 'Opening file picker…' : 'Parsing MIDI file…'} />
+            <Progress
+              label={readingFlp ? 'Opening FL Studio project' : 'Opening MIDI file'}
+              value={null}
+              text={phase === 'idle'
+                ? 'Opening file picker…'
+                : readingFlp ? 'Reading FL Studio project…' : 'Parsing MIDI file…'}
+            />
           </div>
         )}
 
         {importing && (
           <div className={styles.status}>
-            <Progress label="Importing MIDI" value={null} text="Importing MIDI…" />
+            <Progress
+              label={isFlp ? 'Importing FL Studio project' : 'Importing MIDI'}
+              value={null}
+              text={isFlp ? 'Importing notes…' : 'Importing MIDI…'}
+            />
             <span className={styles.statusSub}>This may take a few seconds for projects with multiple sources.</span>
           </div>
         )}
@@ -697,7 +827,7 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
         {phase === 'error' && (
           <div className={styles.status}>
             <div className={styles.statusLine} data-tone="error" role="alert">
-              <AlertTriangle size={16} aria-hidden="true" />
+              <IcWarning size={16} aria-hidden="true" />
               <span>{errorMsg || 'An error occurred'}</span>
             </div>
           </div>
@@ -706,7 +836,7 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
         {phase === 'done' && (
           <div className={styles.status}>
             <div className={styles.statusLine} data-tone="done">
-              <Check size={16} aria-hidden="true" />
+              <IcCheckCircle size={16} aria-hidden="true" />
               <span>Import complete</span>
             </div>
           </div>
@@ -716,8 +846,9 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
           <>
             {/* File + tempo info */}
             <div className={styles.fileInfo}>
-              <span className={styles.fileName} title={filePath}>{fileName}</span>
+              <span className={styles.fileName} title={shownPath}>{fileName}</span>
               <span className={styles.tempo}>
+                {isFlp ? `${flpVersionLabel(flpInfo.version)} · ` : ''}
                 Source {summary.sourceTempo?.toFixed(1)} BPM
                 {projectBpm != null ? ` · Project ${projectBpm.toFixed(1)} BPM` : ''}
               </span>
@@ -753,9 +884,49 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
               <Checkbox checked={tileToFillProject} onChange={setTileToFillProject}>Loop pattern to fill project</Checkbox>
             </div>
 
-            {(summary.hasMidFileTempoChanges || pitchBendTrackCount > 0 || unassignedOutputCount > 0) && (
+            {/* FL Studio source: which arrangement to read, and whether muted
+                playlist tracks and clips come along. Both re-read the project. */}
+            {isFlp && (flpInfo.arrangements.length > 1 || flpInfo.patterns?.length > 1 || hasFlpMutedContent(flpInfo)) && (
+              <div className={styles.options} role="group" aria-label="FL Studio project">
+                {flpInfo.arrangements.length > 1 && (
+                  <div className={styles.optionGroup}>
+                    <span className={styles.label}>Arrangement</span>
+                    <Select
+                      size="sm"
+                      ariaLabel="FL Studio arrangement"
+                      value={flpInfo.arrangementIndex}
+                      options={flpInfo.arrangements.map(a => ({ value: a.index, label: a.name }))}
+                      onChange={(index) => reloadFlp({ arrangementIndex: index })}
+                    />
+                  </div>
+                )}
+                {flpInfo.pattern && flpInfo.patterns.length > 1 && (
+                  <div className={styles.optionGroup}>
+                    <span className={styles.label}>Pattern</span>
+                    <Select
+                      size="sm"
+                      ariaLabel="FL Studio pattern"
+                      value={flpInfo.pattern.iid}
+                      options={flpInfo.patterns.map(x => ({ value: x.iid, label: x.name }))}
+                      onChange={(iid) => reloadFlp({ patternIid: iid })}
+                    />
+                  </div>
+                )}
+                {hasFlpMutedContent(flpInfo) && (
+                  <Checkbox
+                    checked={flpInfo.includeMuted}
+                    onChange={(checked) => reloadFlp({ includeMuted: checked })}
+                  >
+                    Include muted tracks and clips
+                  </Checkbox>
+                )}
+              </div>
+            )}
+
+            {(summary.hasMidFileTempoChanges || pitchBendTrackCount > 0 || unassignedOutputCount > 0 || flpDetails.length > 0) && (
               <div className={styles.details} role="group" aria-label="Import details">
-                {summary.hasMidFileTempoChanges && (
+                {flpDetails.map(line => <span key={line}>{line}</span>)}
+                {summary.hasMidFileTempoChanges && !isFlp && (
                   <span>MIDI tempo changes: first tempo only</span>
                 )}
                 {pitchBendTrackCount > 0 && (

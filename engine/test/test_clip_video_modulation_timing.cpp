@@ -245,10 +245,100 @@ void clamps()
               "negative source time clamps at lower bound");
 }
 
+// Stretch and reverse: the picture has to move with the audio. The audio side
+// (ClipRenderCache) reads clipDuration / ratio seconds of source from the
+// anchor, reverses that segment when the clip is reversed, then stretches it.
+void stretchAndReverseFollowTheAudio()
+{
+    const ClipModulation none;   // no scratch / vibrato: the plain path
+
+    // makeCtx: source 0..20 s, clip 10 s long, 48 kHz.
+    auto stretched = makeCtx(1.0);
+    stretched.clipStretchRatio = 2.0;
+    checkNear(xleth::clipmod::evaluateVideoClipModulationTiming(none, stretched, false)
+                  .sourceTimeSeconds,
+              0.5, 1e-12, "stretch 2.0: one second of clip consumes half a second of source");
+
+    auto squeezed = makeCtx(1.0);
+    squeezed.clipStretchRatio = 0.5;
+    checkNear(xleth::clipmod::evaluateVideoClipModulationTiming(none, squeezed, false)
+                  .sourceTimeSeconds,
+              2.0, 1e-12, "stretch 0.5: one second of clip consumes two seconds of source");
+
+    auto deadBand = makeCtx(1.0);
+    deadBand.clipStretchRatio = 1.00005;   // inside ClipRenderCache's willStretch dead-band
+    checkNear(xleth::clipmod::evaluateVideoClipModulationTiming(none, deadBand, false)
+                  .sourceTimeSeconds,
+              1.0, 1e-12, "a ratio the audio path does not stretch is not stretched here either");
+
+    auto bad = makeCtx(1.0);
+    bad.clipStretchRatio = 0.0;
+    checkNear(xleth::clipmod::evaluateVideoClipModulationTiming(none, bad, false)
+                  .sourceTimeSeconds,
+              1.0, 1e-12, "a non-positive ratio is treated as 1.0, like the audio path");
+
+    const double oneSample = 1.0 / 48000.0;
+
+    // Reversed: the 10 s clip consumes source [2, 12) and plays it backwards.
+    auto reversed = makeCtx(0.0);
+    reversed.sourceStartTime = 2.0;
+    reversed.sourceClampStartTime = 0.0;
+    reversed.clipReversed = true;
+    checkNear(xleth::clipmod::evaluateVideoClipModulationTiming(none, reversed, false)
+                  .sourceTimeSeconds,
+              12.0 - oneSample, 1e-9, "reversed clip opens on the LAST sample of its segment");
+
+    reversed.clipLocalSeconds = 1.0;
+    checkNear(xleth::clipmod::evaluateVideoClipModulationTiming(none, reversed, false)
+                  .sourceTimeSeconds,
+              11.0 - oneSample, 1e-9, "and runs backward from there");
+
+    reversed.clipLocalSeconds = 10.0;
+    checkNear(xleth::clipmod::evaluateVideoClipModulationTiming(none, reversed, false)
+                  .sourceTimeSeconds,
+              2.0, 1e-9, "arriving at the anchor when the clip ends");
+
+    // Region shorter than the clip: the audio can only reverse what is there.
+    auto shortRegion = makeCtx(1.0);
+    shortRegion.sourceStartTime = 2.0;
+    shortRegion.sourceClampStartTime = 0.0;
+    shortRegion.sourceEndTime = 6.0;        // 4 s of source left, clip wants 10
+    shortRegion.clipReversed = true;
+    checkNear(xleth::clipmod::evaluateVideoClipModulationTiming(none, shortRegion, false)
+                  .sourceTimeSeconds,
+              5.0 - oneSample, 1e-9, "segment is capped at the region end before reversing");
+    shortRegion.clipLocalSeconds = 7.0;
+    checkNear(xleth::clipmod::evaluateVideoClipModulationTiming(none, shortRegion, false)
+                  .sourceTimeSeconds,
+              2.0, 1e-9, "past the reversed segment it rests on the anchor");
+
+    // Reversed AND stretched: 10 s clip at 2.0 consumes 5 s of source, [2, 7).
+    auto both = makeCtx(4.0);
+    both.sourceStartTime = 2.0;
+    both.sourceClampStartTime = 0.0;
+    both.clipReversed = true;
+    both.clipStretchRatio = 2.0;
+    checkNear(xleth::clipmod::evaluateVideoClipModulationTiming(none, both, false)
+                  .sourceTimeSeconds,
+              5.0 - oneSample, 1e-9, "reverse + stretch: 4 s in, 2 s of source consumed from the end");
+
+    // Modulation on a stretched clip moves the readhead inside the cache buffer
+    // (post-stretch), so its result goes through the same mapping.
+    auto modulated = makeCtx(3.0);
+    modulated.clipStretchRatio = 2.0;
+    checkNear(xleth::clipmod::evaluateVideoClipModulationTiming(makeScratch(1.0f), modulated, true)
+                  .sourceTimeSeconds,
+              1.5, 1e-9, "neutral scratch on a 2.0 stretch still consumes source at half speed");
+    checkNear(xleth::clipmod::evaluateVideoClipModulationTiming(makeScratch(2.0f), modulated, true)
+                  .sourceTimeSeconds,
+              3.0, 1e-9, "scratch rate 2 on a 2.0 stretch: cache position 6 s -> source 3 s");
+}
+
 } // namespace
 
 int main()
 {
+    stretchAndReverseFollowTheAudio();
     disabledIsUnmodified();
     scratchRates();
     vibratoAndStaticPitch();

@@ -30,6 +30,20 @@ struct VideoModulationTimingContext {
     int clipPitchOffsetCents = 0;
 
     int64_t clipStartTimelineSamples = 0;
+
+    // Clip time-stretch and reverse, so the picture moves with the audio.
+    //
+    // clipStretchRatio is Clip::stretchRatio: output length / input length.
+    // A clip of timeline duration D consumes only D / ratio seconds of source
+    // (ClipRenderCache reads that much and stretches it), so 2.0 plays the
+    // source at half speed and 0.5 at double speed.
+    //
+    // clipReversed mirrors ClipRenderCache too: it reverses the source segment
+    // the clip consumes, [anchor, anchor + D / ratio) clamped to the region
+    // end, so playback starts at the END of that segment and runs back to the
+    // anchor.
+    double clipStretchRatio = 1.0;
+    bool   clipReversed     = false;
 };
 
 struct VideoModulationTimingResult {

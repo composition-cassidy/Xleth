@@ -225,6 +225,7 @@ export default function EqCanvas({
         preserveAspectRatio="none"
         role="application"
         aria-label="EQ curve. Click the curve to add a band, drag a numbered token to move it, scroll over it to change Q, right-click it for its type."
+        data-wheel-owner="true"
         onWheel={onWheel}
         onMouseDown={onMouseDown}
         onMouseMove={onMouseMove}

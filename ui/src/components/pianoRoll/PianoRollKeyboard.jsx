@@ -41,9 +41,6 @@ export function drawKeyboard(ctx, {
     if (black) {
       ctx.fillStyle = isPressed ? palette.g4 : (isHover ? palette.g3 : palette.g1)
       ctx.fillRect(0, y, blackW, pps)
-      // The two white keys that flank a black key meet at its centre line.
-      ctx.fillStyle = palette.g4
-      ctx.fillRect(blackW, Math.round(y + pps / 2), keyW - blackW, 1)
     } else if (!isBlackKey(pitch - 1) && pitch > PITCH_MIN) {
       // E|F and B|C: two white keys meet directly.
       ctx.fillStyle = palette.g4
@@ -68,7 +65,7 @@ export function drawKeyboard(ctx, {
 
 const PianoRollKeyboard = forwardRef(function PianoRollKeyboard({
   pixelsPerSemitoneRef, scrollYRef, height,
-  onPreviewNote, highlightedPitches,
+  onPreviewNote, highlightedPitches, onSelectPitchRange,
 }, ref) {
   const epoch = useThemeEpoch()
   const wrapRef = useRef(null)
@@ -140,6 +137,26 @@ const PianoRollKeyboard = forwardRef(function PianoRollKeyboard({
     e.preventDefault()
     const p = pitchFromEvent(e)
     if (p == null) return
+    // Ctrl+click: select every note of this pitch; drag for a pitch range;
+    // Ctrl+Shift adds to the selection. No audition on a select gesture.
+    if ((e.ctrlKey || e.metaKey) && onSelectPitchRange) {
+      const additive = e.shiftKey
+      let last = p
+      onSelectPitchRange(p, p, additive)
+      const move = (ev) => {
+        const q = pitchFromEvent(ev)
+        if (q == null || q === last) return
+        last = q
+        onSelectPitchRange(p, q, additive)
+      }
+      const up = () => {
+        window.removeEventListener('mousemove', move)
+        window.removeEventListener('mouseup', up)
+      }
+      window.addEventListener('mousemove', move)
+      window.addEventListener('mouseup', up)
+      return
+    }
     pressedRef.current = p
     draw()
     const release = () => {
@@ -156,7 +173,7 @@ const PianoRollKeyboard = forwardRef(function PianoRollKeyboard({
       ref={wrapRef}
       className={`piano-roll-keyboard ${styles.keyboard}`}
       data-hint="Keyboard"
-      data-hint-mods="Press a key: hear the note"
+      data-hint-mods="Press a key: hear the note · Ctrl+click: select that pitch · Ctrl+drag: a pitch range"
     >
       <canvas
         ref={canvasRef}

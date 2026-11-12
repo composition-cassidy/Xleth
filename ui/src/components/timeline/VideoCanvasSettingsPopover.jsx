@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Link2 } from 'lucide-react'
 import { timelineEvents } from '../../timelineEvents.js'
 import { IconButton, NumberBox, Select, THIN_SPACE } from '../../ui-kit'
 import styles from './VideoCanvasSettingsPopover.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcLink = iconComponent('link')
 
 // ── Project canvas presets ────────────────────────────────────────────────────
 // Mirrors GridSettingsPanel.jsx's ASPECT_PRESETS/RESOLUTION_PRESETS exactly —
@@ -241,7 +243,7 @@ export default function VideoCanvasSettingsPopover({ layout, setLayout, onClose,
               label={dimsLocked ? 'Unlock aspect ratio' : 'Lock aspect ratio'}
               hint={dimsLocked ? 'Aspect locked: width and height stay in ratio' : 'Aspect unlocked: free ratio'}
             >
-              <Link2 aria-hidden="true" />
+              <IcLink aria-hidden="true" />
             </IconButton>
             <NumberBox
               className="gsp-dim-input"

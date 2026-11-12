@@ -117,9 +117,7 @@ describe('per-note devices', () => {
   it('bounce direction is one click, one write', async () => {
     act(() => root.render(<VideoDeviceChain />))
     await flush()
-    const up = Array.from(section('Bounce').querySelectorAll('[role="radio"], button')).find((b) => b.getAttribute('aria-label') === 'Up' || b.textContent.trim() === 'Up')
-    act(() => up.click())
-    await flush()
+    await pick(section('Bounce'), 'Bounce direction', 'Up')
     expect(timeline.setTrackBounceSettings).toHaveBeenCalledTimes(1)
     expect(timeline.setTrackBounceSettings.mock.calls[0][1].directionDeg).toBe(90)
   })

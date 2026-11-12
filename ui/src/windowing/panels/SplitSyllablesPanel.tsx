@@ -31,6 +31,7 @@ interface SplitRegion {
   audioFilePath?: string;
   hasSwappedAudio?: boolean;
   swappedAudioPath?: string;
+  syllables?: Array<{ startTime?: number; quickOffsetPercent?: number }>;
 }
 
 interface SplitSyllablesPanelProps {
@@ -133,7 +134,17 @@ function SplitSyllablesPanelBody() {
   const handleSave = async (syllables: unknown[]) => {
     if (region?.id == null) return;
     try {
-      await window.xleth?.timeline?.setSyllables?.(region.id, syllables);
+      // The splitter only knows boundaries and text. Carry each syllable's saved
+      // Quick Notation 32nd offset over to the syllable that still starts at the
+      // same place, so re-splitting one syllable doesn't wipe the others' tuning.
+      const previous = region.syllables ?? [];
+      const merged = (syllables as Array<{ startTime: number }>).map((syl) => {
+        const match = previous.find((old) => Math.abs((old.startTime ?? -1) - syl.startTime) < 0.001);
+        return match?.quickOffsetPercent != null
+          ? { ...syl, quickOffsetPercent: match.quickOffsetPercent }
+          : syl;
+      });
+      await window.xleth?.timeline?.setSyllables?.(region.id, merged);
       timelineEvents.dispatchEvent(new Event('timeline-regions-changed'));
       usePanelRegistry.getState().closePanel('splitSyllables');
     } catch (e) {

@@ -16,7 +16,7 @@ async function renderMasterStrip(Component) {
   document.body.appendChild(container)
   const root = createRoot(container)
   await act(async () => {
-    root.render(<Component />)
+    root.render(<Component insertsOpen />)
   })
   return { container, root }
 }
@@ -44,6 +44,11 @@ describe('MasterStrip', () => {
     const strip = container.querySelector('[data-testid="master-strip"]')
 
     expect(strip.textContent).toContain('Master')
+    // The head holds "M"; the full name is written up the side of the meter, like a track's.
+    const name = strip.querySelector('[data-testid="strip-name"]')
+    expect(name.textContent).toBe('Master')
+    expect(name.previousElementSibling.getAttribute('aria-label')).toBe('Master meter')
+    expect(strip.querySelector('[class*="numRow"]').textContent).toBe('M')
     const inserts = strip.querySelector('[data-testid="mixer-inserts"]')
     expect(inserts.getAttribute('aria-label')).toBe('Master inserts: No FX')
     expect(inserts.querySelectorAll('[role="option"]')).toHaveLength(0)

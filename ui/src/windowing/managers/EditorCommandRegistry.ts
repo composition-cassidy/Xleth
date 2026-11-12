@@ -1,7 +1,7 @@
 import { PANEL_IDS, type PanelId } from '../registry/panelCatalog';
 import { usePanelRegistry } from '../registry/PanelRegistry';
 
-export type EditorCommandId = 'deleteSelected';
+export type EditorCommandId = 'deleteSelected' | 'undo' | 'redo';
 export type EditorCommandHandler = () => void | boolean | Promise<void | boolean>;
 
 const editorCommands = new Map<EditorCommandId, Map<PanelId, EditorCommandHandler>>();

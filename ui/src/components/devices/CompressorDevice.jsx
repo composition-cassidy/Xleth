@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  DeviceSection, DisplayWell, Knob, Meter, SegmentedControl, Select, Toggle, formatValue,
+  DeviceSection, DisplayWell, Meter, SegmentedControl, Select, Toggle, formatValue,
 } from '../../ui-kit'
+import AutomatableKnob from './AutomatableKnob.jsx'
+import AutomationTarget from './AutomationTarget.jsx'
 import { getManifest } from '../../plugin-ui/manifests/index.js'
 import { PluginUIContext } from '../../plugin-ui/runtime/PluginUIContext.js'
 import useStockEffectParams from '../../plugin-ui/runtime/useStockEffectParams.js'
@@ -53,6 +55,10 @@ function useHeight() {
 // the same painter, the same curve editor, hosted in a DeviceFrame body.
 //
 // Signal order: display (hero) → GR → Detection → Time → Output → Sidechain.
+// The engine's NormalisableRange skew per parameter (only the automation maths
+// needs it; a knob's own travel comes from its range or scale).
+const SKEW = Object.freeze({ ratio: 0.35, attack: 0.3, release: 0.3 })
+
 export default function CompressorDevice({ target, registerApplied, deviceKey, effect }) {
   const manifest = useMemo(() => getManifest(PLUGIN_ID), [])
   const { params, setParam, syncParamsFromPreset } = useStockEffectParams(PLUGIN_ID, manifest, target)
@@ -120,8 +126,11 @@ export default function CompressorDevice({ target, registerApplied, deviceKey, e
 
   const p = (id) => params[id] ?? manifest.params[id].defaultValue
   const knob = (id, label, unit, extra = {}) => (
-    <Knob
+    <AutomatableKnob
       key={id}
+      paramId={id}
+      target={target}
+      skew={SKEW[id] ?? 1}
       label={label}
       value={p(id)}
       min={manifest.params[id].min}
@@ -189,13 +198,15 @@ export default function CompressorDevice({ target, registerApplied, deviceKey, e
             {knob('knee', 'Knee', 'dB')}
           </div>
         </div>
-        <SegmentedControl
-          size="sm"
-          label="Detector"
-          value={Math.round(p('detect_mode'))}
-          options={DETECT_OPTIONS}
-          onChange={(v) => setParam('detect_mode', v)}
-        />
+        <AutomationTarget paramId="detect_mode" target={target}>
+          <SegmentedControl
+            size="sm"
+            label="Detector"
+            value={Math.round(p('detect_mode'))}
+            options={DETECT_OPTIONS}
+            onChange={(v) => setParam('detect_mode', v)}
+          />
+        </AutomationTarget>
       </DeviceSection>
 
       <DeviceSection title="Time" width={124}>

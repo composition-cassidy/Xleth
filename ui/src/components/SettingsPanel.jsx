@@ -1,5 +1,4 @@
 import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import { Check, RefreshCw, X } from 'lucide-react'
 import {
   GLOBAL_STRETCH_METHOD_OPTIONS,
   sanitizeGlobalStretchMethod,
@@ -34,7 +33,11 @@ import {
 } from '../theming/runtime/appearanceTheme'
 import ChromeReadouts from '../theming/editor/ChromeReadouts'
 import { ThemeEditorContent } from '../theming/editor/ThemeEditor'
-import { Button, IconButton, MINUS, NumberBox, Select, TextField, Toggle, formatValue } from '../ui-kit'
+import {
+  Button, IconButton, MINUS, MotionDiv, NumberBox, SegmentedControl, Select, TextField, Toggle, formatValue,
+  useAfterMount, useMotionEnter,
+} from '../ui-kit'
+import { MOTION_TIER_OPTIONS, effectiveMotionTier, useMotionStore } from '../stores/motionStore.js'
 import {
   UI_SCALE_DEFAULT,
   UI_SCALE_MAX,
@@ -50,6 +53,11 @@ import { clipHasVideo, planClipVideoFxApply } from './timeline/clipVideoFxApply.
 import { timelineEvents } from '../timelineEvents.js'
 import { getPickerPath, openFilePicker } from './filePicker/filePickerService.js'
 import { IMAGE_EXTENSIONS } from './filePicker/filePickerHelpers.js'
+import { iconComponent } from '../ui-kit/icons'
+
+const IcArrowsClockwise = iconComponent('arrows-clockwise')
+const IcCheckFill = iconComponent('check', 'fill')
+const IcX = iconComponent('x')
 
 const VALID_NAMING_FORMATS = ['sampleNameOnly', 'categoryAndName', 'sourceAndName', 'fullLegacy']
 
@@ -86,7 +94,7 @@ export const SETTINGS_CATEGORIES = [
   { id: 'audio', tab: 'application', label: 'Audio', summary: 'Output device, buffer size, and realtime diagnostics' },
   { id: 'plugins', tab: 'application', label: 'Plugins', summary: 'Scan and manage VST3 plugins' },
   { id: 'graphics', tab: 'application', label: 'Graphics', summary: 'GPU and preview diagnostics' },
-  { id: 'appearance', tab: 'application', label: 'Appearance', summary: 'Theme, accent color, brightness, and UI scale' },
+  { id: 'appearance', tab: 'application', label: 'Appearance', summary: 'Theme, accent color, brightness, UI scale, and motion' },
   { id: 'shortcuts', tab: 'application', label: 'Shortcuts', summary: 'View and customise keyboard shortcuts' },
   { id: 'launchers', tab: 'application', label: 'Launchers', summary: 'Quick-launch external tools from the toolbar' },
   { id: 'logs', tab: 'application', label: 'Logs', summary: 'Export this session\'s console log' },
@@ -216,7 +224,7 @@ function OnOff({ id, label, on, onChange }) {
       aria-label={label}
       on={!!on}
       onChange={onChange}
-      glyph={<Check size={12} />}
+      glyph={<IcCheckFill size={14} />}
     >
       {on ? 'On' : 'Off'}
     </Toggle>
@@ -232,6 +240,17 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
   const [brightness, setBrightness] = useState(DEFAULT_APPEARANCE_DARKNESS)
   const uiScalePercent = useUiScaleStore((state) => state.percent)
   const setUiScalePercent = useUiScaleStore((state) => state.setPercent)
+  // Motion tier (ui/DESIGN.md section 27): what was picked, and what is in force.
+  const motionTier = useMotionStore((state) => state.tier)
+  const motionFollowSystem = useMotionStore((state) => state.followSystem)
+  const motionSystemReduced = useMotionStore((state) => state.systemReduced)
+  const setMotionTier = useMotionStore((state) => state.setTier)
+  const setMotionFollowSystem = useMotionStore((state) => state.setFollowSystem)
+  const motionInForce = effectiveMotionTier({ tier: motionTier, followSystem: motionFollowSystem, systemReduced: motionSystemReduced })
+  const motionOption = MOTION_TIER_OPTIONS.find((option) => option.value === motionTier) ?? MOTION_TIER_OPTIONS[0]
+  // The dialog's own entrance, and "a page other than the first one shown".
+  const panelEnter = useMotionEnter('dialog')
+  const afterMount = useAfterMount()
   const [chromeHue, setChromeHue] = useState(DEFAULT_APPEARANCE_HUE)
   const [chromeSaturation, setChromeSaturation] = useState(DEFAULT_APPEARANCE_SATURATION)
   const [textContrast, setTextContrast] = useState(DEFAULT_APPEARANCE_CONTRAST)
@@ -1157,7 +1176,7 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
             onClick={applyAudioRescan}
             disabled={audioRescanning}
             hint="Rescan for connected audio devices"
-            glyph={<RefreshCw size={14} aria-hidden="true" className={audioRescanning ? settingsStyles.spin : ''} />}
+            glyph={<IcArrowsClockwise size={14} aria-hidden="true" className={audioRescanning ? settingsStyles.spin : ''} />}
           >
             {audioRescanning ? 'Rescanning…' : 'Rescan'}
           </Button>
@@ -1439,9 +1458,9 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
             </Button>
           </SettingsRow>
           {themeEditorOpen && (
-            <div id="settings-theme-editor" data-theme-editor-host className={settingsStyles.themeEditorHost}>
+            <MotionDiv recipe="page" id="settings-theme-editor" data-theme-editor-host className={settingsStyles.themeEditorHost}>
               <ThemeEditorContent embedded onRequestClose={() => setThemeEditorOpen(false)} />
-            </div>
+            </MotionDiv>
           )}
         </SettingsSection>
       )}
@@ -1469,6 +1488,41 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
             Reset
           </Button>
         </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title="Motion">
+        <SettingsRow
+          label="Interface motion"
+          description={motionOption.description}
+        >
+          <SegmentedControl
+            id="settings-motion-tier"
+            label="Interface motion"
+            value={motionTier}
+            onChange={setMotionTier}
+            options={MOTION_TIER_OPTIONS.map((option) => ({ value: option.value, label: option.label, hint: option.description }))}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Follow the system setting"
+          htmlFor="settings-motion-follow-system"
+          description="When Windows has animation effects turned off (Settings, Accessibility, Visual effects), use Flat whatever is chosen above."
+        >
+          <OnOff
+            id="settings-motion-follow-system"
+            label="Follow the system setting"
+            on={motionFollowSystem}
+            onChange={setMotionFollowSystem}
+          />
+        </SettingsRow>
+        {motionInForce !== motionTier ? (
+          <SettingsHint tone="warning">
+            Windows has animation effects turned off, so XLETH is using Flat. Turn off Follow the system setting to use {motionOption.label}.
+          </SettingsHint>
+        ) : null}
+        <SettingsHint>
+          The playhead, the meters and anything you drag are never animated, in any setting: they always show exactly where things are.
+        </SettingsHint>
       </SettingsSection>
     </>
   )
@@ -1631,13 +1685,17 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
   }
 
   return (
-    <div
+    <MotionDiv
+      recipe="scrim"
+      exit={{ scaleTarget: '[data-dialog-panel]' }}
       className={settingsStyles.overlay}
       onMouseDown={event => {
         if (event.target === event.currentTarget) onClose?.()
       }}
     >
       <div
+        {...panelEnter}
+        data-dialog-panel=""
         className={settingsStyles.panel}
         role="dialog"
         aria-modal="true"
@@ -1647,7 +1705,7 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
         <div className={settingsStyles.header}>
           <h2 id="settings-panel-title" className={settingsStyles.title}>Settings</h2>
           <IconButton label="Close Settings" onClick={onClose}>
-            <X aria-hidden="true" />
+            <IcX aria-hidden="true" />
           </IconButton>
         </div>
 
@@ -1681,8 +1739,12 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
           </nav>
 
           <div className={settingsStyles.content}>
-            <div
+            <MotionDiv
+              // key: each page is its own element, so the `page` recipe replays when the page
+              // changes (never for the page the dialog opens on: the dialog itself is entering).
               key={activeCategory}
+              recipe="page"
+              enter={afterMount}
               className={settingsStyles.page}
               data-settings-category={activeCategory}
               data-settings-tab={activeTabDef.id}
@@ -1692,10 +1754,10 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
                 <div className={settingsStyles.pageDescription}>{activeCategoryDef.summary}</div>
               </div>
               {renderActiveCategory()}
-            </div>
+            </MotionDiv>
           </div>
         </div>
       </div>
-    </div>
+    </MotionDiv>
   )
 }

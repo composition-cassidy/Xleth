@@ -1,5 +1,140 @@
 # Changelog
 
+## 1.3.0-beta
+
+Everything committed after the 1.2.3-beta build (commit `e68d738`, 2026-09-20),
+202 commits, 2026-09-22 to 2026-11-11. The sections below this one
+(`1.2.2-beta` and `Unreleased`) already describe earlier work and are left as
+they were.
+
+### Added
+
+- **Four character compressors on a shared core.** Glue VCA ("glue", an
+  SSL-bus style feedback compressor), Opto ("opto", LA-2A lineage leveler),
+  FET ("fet", 1176 lineage) and Vari-Mu ("varimu", Fairchild lineage tube
+  limiter) are new stock effects. All four are built on a new
+  `CompressorCore` and a shared `DspPrimitives.h` (one-pole smoother, soft-knee
+  gain computer and its exact inverse, TPT SVF, oversampler with matched
+  aligned-dry delay). The feedback topology is solved implicitly each sample so
+  it stays stable at settings where a naive loop diverges. Each has its own
+  device in the Devices tab (one shared `CompressorFamilyDevice` body driven by a
+  per-model config).
+- **Resonance Suppressor "New" HQ engine and a shared `ResonanceCore`.** A
+  new `hq_engine` parameter (Classic / New) on the Resonance Suppressor. The New
+  engine runs a WOLA core with a two-speed detector, a gain computer, three
+  frame-size tiers (Fast 512 / Normal 1024 / High 2048) that switch live without
+  allocating, an aligned-dry output stage, a per-bin cut path below 400 Hz, a
+  weight curve, sharpness control and visualisation tap. The device shows the
+  engine selector, the engine-reported latency and a reduction readout.
+- **Parametric EQ Spectral bands run on the same core.** New
+  `spectral_engine` and `spectral_quality` parameters, a preallocated core, and
+  Spectral / Core engine and quality selectors on the EQ device with Core band
+  indicators and a Core curve.
+- **Quality bench and docs for the core.** An offline RS / EQ Spectral bench
+  (latency, accuracy, jitter, pre-echo, block-size, CPU; G1-G9 gate table with
+  seed sets, waivers and CPU-burst runs) and `ResonanceCore.md` covering
+  architecture, tunables, rejected approaches, the live tier-switching
+  contract and the multi-writer EQ latency rules.
+- **UI kit.** A shared control set (Knob, NumberBox, Fader, canvas Meter,
+  Button, IconButton, Toggle, SegmentedControl, Select, Tabs, Toolbar, Dialog,
+  Menu, EmptyState) on one drag grammar, value scales and unit / tempo-sync
+  parsing, `formatValue` for unit text, an optional modulation ring on Knob and
+  NumberBox, a 20-glyph Xleth icon set, and a dev-only gallery.
+- **Shell and arrangement rebuild.** A mandatory centre region, a tabbed
+  detail dock (Ctrl+Shift+D / double-click a tab for focus mode), transport in
+  the top bar, a bottom hint bar, a real Inspector (selection-driven track and
+  clip properties, flowing into columns when wide), grid layout editing on the
+  Preview, one arrangement with a pinned Snapshots cue lane, and a space rule
+  that folds the top row to a strip with a peek sheet when the window is short.
+- **Every stock effect is a device.** All 25 stock effects (plus GLOSS and the
+  video effects) are devices on one device frame: fixed height, one title bar,
+  a display well, preset and A/B hooks. The Devices tab shows the selected
+  track's chain with an Audio | Video switch; per-note effects and the Zoom /
+  Pan / Rot keyframe editor moved there out of the Inspector.
+- **Themes and UI scale.** Dark, light and high-contrast themes from one
+  ramp table, a global UI scale of 100-200% in 10% steps (canvases re-size by
+  devicePixelRatio), and a neutral-ramp-only theme editor mounted in
+  Settings > Appearance. The top bar fits a 1366x768 window at 200%.
+- **UI audit tooling.** A render harness (`npm run shots`, with theme, scale
+  and viewport options), a read-only audit capture, a stylelint guard and a
+  legacy-CSS ratchet, and `DESIGN.md` as the written UI contract.
+
+### Changed
+
+- **Audio device layer reports what the driver actually does.** Startup probes
+  ASIO, Windows Audio, then Windows Audio (Exclusive Mode) in order instead of
+  short-circuiting into the default device; the reported device type is the
+  real one, never "Default", and skipped drivers log a reason. Output latency is
+  no longer double-counted (it was reported as exactly 2x the buffer), realtime
+  telemetry is judged against the real deadline (the WASAPI shared period, else
+  the buffer), which removes false overruns at small buffers, and
+  `setOutputDevice` refuses without touching the working device when the saved
+  name cannot be resolved. `audio_getDeviceInfo` gains `driver`,
+  `devicePeriodMs`, `deadlineMs` and `deadlineSource`.
+- **The realtime audio callback is allocation-, lock- and log-free.** Debug
+  traces on the audio thread (per note, per voice, metering, a leftover
+  ClipModFX diagnostic) now sit behind `XLETH_RT_TRACE`, which no build defines.
+  Per-block container allocations are gone: plain clip and pattern playback go
+  from ~109 allocations per test run to 0. Effect `reset()` on seek and
+  stop-to-play no longer runs inside the callback; it is posted to the
+  envelope-applier worker and serviced there.
+- **Effect latency changes reach chain PDC from any path.** An effect's
+  `setLatencySamples` now notifies its AudioGraph, so changing EQ Spectral mode,
+  linear phase or oversampling moves the chain latency instead of leaving
+  compensation stale.
+- **One owner for sample / tick / beat conversion** (`RenderClock`): all engine
+  timing conversions route through it.
+- **Mixer on the kit.** Strips with an identity stripe, dB fader and canvas
+  meter, M/S/V at rest and no inspector column; routing cables on a canvas band
+  under the strips; a Loudness dock without placeholders.
+- **Browser, picker and dialogs on the kit.** The Browser is a dense list with
+  search history and a collapsible rail; the Sample Picker is a sheet over the
+  top row, so the shell stays mounted and Esc closes it; Space / I / O are scoped
+  to the sheet. Settings, the VST3 library, Shortcuts, Logs, the theme editor,
+  Export, MIDI import, Quantize, the file picker, Quick Notation, Split
+  Syllables, the Vibrato / Scratch editors and all confirmation dialogs and
+  menus are kit controls in sentence case.
+- **Sampler, Piano Roll, Sample Sandbox and FX Graph on the kit.** The Sampler's
+  Modulation view replaces the pull-out tray, whose handle sat off-screen in the
+  docked shell. The Piano Roll draws keys as one canvas, colours notes by the
+  owning track's identity colour and uses a lollipop event lane. The Sandbox's
+  op stack, layer rail and separation strip moved off `sandbox.css`. The FX Graph
+  has a neutral grid, signal-typed cables, a minimap, one effect picker, and
+  envelope / LFO editors in a floating sheet.
+- **Preview header and picture.** The placeholder shows only before the first
+  frame, the picture always scales to fit on a neutral surround, the header
+  keeps timecode, FPS only while playing, a Poster chip and one View menu.
+- **Selected rows are an accent tint**, not a side bar, and the accent stays
+  off chrome (the ramp never amplifies a tint; saved themes migrate on load).
+- **Cleanup.** Removed the workspace backdrop, the Loop Lab overlay UI, the
+  Overdone / Transient / Distortion layouts and the Amp Stack ANALOG / MODERN
+  skins, dozens of unreferenced components, and thousands of lines of dead or
+  migrated legacy CSS (the Plugin UI Designer is parked outside `src/`, not
+  deleted). Per-interaction debug logs were removed.
+
+### Fixed
+
+- **EQ Spectral rewinds its STFT stream when it re-activates and on
+  un-bypass**, instead of resuming from stale state.
+- **EQ parameter snapshot and band clears happen on the audio thread**, which
+  fixes an RPC locking problem, and a writer mutex covers the EQ latency
+  refresh (multi-writer stress test added).
+- **Resonance Suppressor Low Latency `processBlock` no longer allocates.** The
+  detector and wet filters were rebuilt every block (48 allocations per stereo
+  block); they are now fixed-size biquads written in place. Output is
+  bit-identical to before.
+- **Piano Roll no longer asks the engine for a pattern it cannot have.**
+  `getPattern` is only called for a valid id still in the pattern list.
+- **FX Graph nodes take pointer events again** (drag, select, double-click,
+  menu), and its double-click-to-fit test no longer flakes under load.
+- **Four stale mixer tests repaired** so the UI suite is green.
+
+### Not included
+
+The working tree has about 200 uncommitted modified files (engine timeline,
+clip render cache, WORLD, frame collector, render decoder, bridge exports and
+more). They are not in this entry; they belong in the release that commits them.
+
 ## 1.2.2-beta
 
 ### Changed

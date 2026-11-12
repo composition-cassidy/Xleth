@@ -1,7 +1,7 @@
-import useSandboxStore, { hasMeaningfulSelection } from '../../stores/sandboxStore.js'
-import { EFFECT_REGISTRY } from '../../stores/sandboxEffectRegistry.js'
+import useSandboxStore from '../../stores/sandboxStore.js'
 import { Menu, MenuCustom, MenuItem, MenuSeparator } from '../../ui-kit'
 import { formatSamplesShort } from './sandboxFormat.js'
+import { effectEntry, sentenceCase, useSandboxEffects } from './useSandboxEffects.js'
 import styles from './Sandbox.module.css'
 
 // ── Right-click on the waveform ─────────────────────────────────────────────
@@ -11,75 +11,48 @@ import styles from './Sandbox.module.css'
 // dragged. Right-clicking a selection is the gesture people actually try first
 // in an audio editor.
 //
-// This runs the SAME registry entries the Effect menu does
-// (sandboxEffectRegistry.js) through the same `entry.run`, so the two menus can
-// never offer different behaviour for the same operation — this is a second
-// door, never a second implementation. It shows only the handful of entries
-// that act on a time selection, because that is what was right-clicked;
-// everything else stays in the full menu. It is a kit Menu, so keyboard,
-// outside-press and focus return are the kit's.
+// This runs the SAME registry entries the action bar and the Effects menu do
+// (sandboxEffectRegistry.js, through useSandboxEffects), so the three can never
+// offer different behaviour for the same operation — this is another door,
+// never another implementation. It shows only the entries that act on a time
+// selection or the cursor, because that is what was right-clicked; everything
+// else stays in the full menu. It is a kit Menu, so keyboard, outside-press and
+// focus return are the kit's.
 const CONTEXT_ENTRY_IDS = [
-  'cut', 'copy', 'paste', 'trim', 'silence', 'fadeIn', 'fadeOut', 'normalize', 'reverse',
+  'cut', 'copy', 'paste', 'trim', 'silence', 'fadeIn', 'fadeOut', 'gain', 'normalize', 'reverse',
 ]
 
-/** "Fade In" -> "Fade in": the registry's labels are title case, the UI is sentence case. */
-const sentence = (s) => (s ? s.charAt(0) + s.slice(1).toLowerCase() : s)
-
 export default function SandboxSelectionContextMenu({ at, onClose }) {
-  const layers = useSandboxStore((s) => s.layers)
-  const activeLayerId = useSandboxStore((s) => s.activeLayerId)
   const selection = useSandboxStore((s) => s.selection)
-  const clipboard = useSandboxStore((s) => s.clipboard)
   const zoomToSelection = useSandboxStore((s) => s.zoomToSelection)
-
-  const layer = layers.find((l) => l.id === activeLayerId) ?? null
-  const sampleRate = layer?.renderedBuffer?.sampleRate
-  const hasSelection = hasMeaningfulSelection(selection, sampleRate)
+  const selectAll = useSandboxStore((s) => s.selectAll)
+  const { layer, hasSelection, sampleRate, reasonFor, hintFor, run } = useSandboxEffects()
 
   if (!layer) return null
 
-  const entries = CONTEXT_ENTRY_IDS
-    .map((id) => EFFECT_REGISTRY.find((e) => e.id === id))
-    .filter(Boolean)
-
-  const reasonFor = (entry) => {
-    if (entry.alwaysDisabled) return entry.disabledReason
-    if (entry.needsSelection && !hasSelection) return 'Select a range first'
-    if (entry.needsClipboard && !clipboard) return 'Clipboard is empty'
-    if (entry.maxInstances < Infinity && layer.ops.filter(entry.matchesStack).length >= entry.maxInstances) {
-      return `${entry.whyNoMulti || 'one instance max'} — already in stack`
-    }
-    return null
-  }
-
-  const run = (entry) => {
-    const store = useSandboxStore.getState()
-    entry.run(store, {
-      layerId: layer.id,
-      selection: store.selection,
-      cursorSample: store.selection?.startSample ?? 0,
-      hasSelection,
-    })
-  }
+  const entries = CONTEXT_ENTRY_IDS.map(effectEntry).filter(Boolean)
 
   return (
     <Menu x={at.x} y={at.y} onClose={onClose} label="Selection">
       <MenuCustom>
         <div className={styles.menuCat}>
           {hasSelection
-            ? `Selection · ${formatSamplesShort(selection.endSample - selection.startSample, sampleRate)}`
-            : 'No selection'}
+            ? `Selection, ${formatSamplesShort(selection.endSample - selection.startSample, sampleRate)}`
+            : 'No selection: edits apply to the whole layer'}
         </div>
       </MenuCustom>
-      {entries.map((entry) => {
-        const reason = reasonFor(entry)
-        return (
-          <MenuItem key={entry.id} disabled={!!reason} onSelect={() => run(entry)}>
-            <span title={reason || ''}>{sentence(entry.label)}</span>
-          </MenuItem>
-        )
-      })}
+      {entries.map((entry) => (
+        <MenuItem key={entry.id} disabled={!!reasonFor(entry)} onSelect={() => run(entry)}>
+          <span title={hintFor(entry)}>{sentenceCase(entry.label)}</span>
+        </MenuItem>
+      ))}
       <MenuSeparator />
+      <MenuItem onSelect={() => selectAll()}>
+        <span className={styles.itemLine}>
+          <span>Select all</span>
+          <kbd className={styles.kbd}>Ctrl+A</kbd>
+        </span>
+      </MenuItem>
       <MenuItem disabled={!hasSelection} onSelect={() => zoomToSelection()}>
         <span className={styles.itemLine}>
           <span>Zoom to selection</span>

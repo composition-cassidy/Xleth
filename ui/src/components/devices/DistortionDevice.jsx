@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef } from 'react'
 import {
-  DeviceSection, DisplayWell, Meter, SegmentedControl, formatValue, skewScale,
+  DeviceSection, DisplayWell, Meter, SegmentedControl, Select, formatValue, skewScale,
 } from '../../ui-kit'
 import { getManifest } from '../../plugin-ui/manifests/index.js'
 import useStockEffectParams from '../../plugin-ui/runtime/useStockEffectParams.js'
 import { useEffectMeterPolling, useMeterBus } from '../../plugin-ui/runtime/useEffectMeterPolling.js'
 import AutomatableKnob from './AutomatableKnob.jsx'
+import AutomationTarget from './AutomationTarget.jsx'
 import DistortionCurveCanvas from './DistortionCurveCanvas.jsx'
 import { plainFormat } from './deviceFormat.js'
 import deviceStyles from './deviceBody.module.css'
@@ -117,15 +118,19 @@ export default function DistortionDevice({ target, registerApplied }) {
         </div>
       </DisplayWell>
 
-      <DeviceSection title="Mode" width={300}>
+      <DeviceSection title="Mode" width={236}>
         <div className={styles.mode}>
-          <SegmentedControl
-            size="sm"
-            label="Distortion mode"
-            value={mode}
-            options={MODE_OPTIONS}
-            onChange={(v) => setParam('mode', v)}
-          />
+          <AutomationTarget paramId="mode" target={target}>
+            <Select
+              size="sm"
+              width={120}
+              ariaLabel="Distortion mode"
+              value={mode}
+              options={MODE_OPTIONS}
+              onChange={(v) => setParam('mode', v)}
+              hint="Distortion mode. It sets the shaper curve."
+            />
+          </AutomationTarget>
           <div className={styles.extras}>
             {knob('symmetry', 'Symmetry', {
               unit: '%', size: 40, width: 72, disabled: !analog,
@@ -151,13 +156,15 @@ export default function DistortionDevice({ target, registerApplied }) {
         <div className={deviceStyles.stack}>
           {knob('tone', 'Tone', { unit: 'Hz', scale: TONE_SCALE, skew: 0.23, size: 44, width: 72 })}
           <span className={deviceStyles.caption}>Filter position</span>
-          <SegmentedControl
-            size="sm"
-            label="Tone filter position"
-            value={Math.round(p('filter_pos'))}
-            options={FILTER_OPTIONS}
-            onChange={(v) => setParam('filter_pos', v)}
-          />
+          <AutomationTarget paramId="filter_pos" target={target}>
+            <SegmentedControl
+              size="sm"
+              label="Tone filter position"
+              value={Math.round(p('filter_pos'))}
+              options={FILTER_OPTIONS}
+              onChange={(v) => setParam('filter_pos', v)}
+            />
+          </AutomationTarget>
         </div>
       </DeviceSection>
 

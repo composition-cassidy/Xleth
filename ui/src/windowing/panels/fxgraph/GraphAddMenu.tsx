@@ -88,14 +88,30 @@ export default function GraphAddMenu({
   items: MenuItem[];
   onClose: () => void;
 }) {
+  // The menu renders into document.body, but React delivers its events up the REACT tree, and this
+  // component is mounted inside the canvas viewport. Without this boundary a press on an item
+  // reaches the viewport's pan handler, which preventDefault()s and pointer-captures the canvas,
+  // so the browser retargets the item's click to the canvas: nothing fires and the menu never
+  // closes. display:contents keeps the wrapper out of layout.
+  const stop = (event: React.SyntheticEvent) => event.stopPropagation();
   return (
-    <TrackContextMenu
-      x={x}
-      y={y}
-      items={items}
-      onClose={onClose}
-      menuClassName="xleth-graph-state-preview__add-menu effect-chain-add-menu"
-      submenuClassName="effect-chain-add-submenu"
-    />
+    <div
+      style={{ display: 'contents' }}
+      onPointerDown={stop}
+      onPointerUp={stop}
+      onPointerCancel={stop}
+      onWheel={stop}
+      onDoubleClick={stop}
+      onContextMenu={stop}
+    >
+      <TrackContextMenu
+        x={x}
+        y={y}
+        items={items}
+        onClose={onClose}
+        menuClassName="xleth-graph-state-preview__add-menu effect-chain-add-menu"
+        submenuClassName="effect-chain-add-submenu"
+      />
+    </div>
   );
 }

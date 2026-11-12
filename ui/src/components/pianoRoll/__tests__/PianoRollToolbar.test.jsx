@@ -40,15 +40,36 @@ function renderToolbar(props = {}) {
 describe('Piano Roll toolbar', () => {
   it('names every tool and its one-letter shortcut in the hint bar', () => {
     renderToolbar()
-    const hints = ['Select tool (S)', 'Pencil tool (P)', 'Split tool (C)', 'Delete tool (D)']
+    const hints = ['Select tool (S)', 'Pencil tool (P)', 'Paint tool (B)', 'Slice tool (C)', 'Delete tool (D)']
     for (const h of hints) expect(container.querySelector(`[data-hint="${h}"]`)).not.toBeNull()
     expect(container.querySelector('[aria-label="Pencil tool"]').getAttribute('aria-pressed')).toBe('true')
   })
 
   it('switches tools through the same callback the shortcuts use', () => {
     const p = renderToolbar()
-    act(() => { container.querySelector('[aria-label="Split tool"]').click() })
+    act(() => { container.querySelector('[aria-label="Slice tool"]').click() })
     expect(p.onToolChange).toHaveBeenCalledWith('split')
+  })
+
+  it('plays the pattern on its own and flips loop through separate controls', () => {
+    const p = renderToolbar({ auditionAvailable: true, auditionLoop: true, onToggleAudition: vi.fn(), onAuditionLoopChange: vi.fn() })
+    const play = container.querySelector('[aria-label="Play pattern"]')
+    expect(play.getAttribute('aria-pressed')).toBe('false')
+    act(() => { play.click() })
+    expect(p.onToggleAudition).toHaveBeenCalledTimes(1)
+
+    const loop = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Loop')
+    expect(loop.getAttribute('aria-pressed')).toBe('true')
+    act(() => { loop.click() })
+    expect(p.onAuditionLoopChange).toHaveBeenCalledWith(false)
+  })
+
+  it('shows Stop while auditioning and disables Play with nothing to play', () => {
+    renderToolbar({ auditioning: true, auditionAvailable: true })
+    const stop = container.querySelector('[aria-label="Stop pattern"]')
+    expect(stop.getAttribute('aria-pressed')).toBe('true')
+    renderToolbar({ auditioning: false, auditionAvailable: false })
+    expect(container.querySelector('[aria-label="Play pattern"]').disabled).toBe(true)
   })
 
   it('has one pattern control and no duplicated title label', () => {

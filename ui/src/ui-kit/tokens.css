@@ -33,6 +33,7 @@
     --ui-rec: var(--theme-ui-rec, #E5484D);                              /* record/arm: FILLS AND GLYPHS ONLY (4.40:1 on g1) */
     --ui-rec-text: var(--theme-ui-rec-text, #F67073);                    /* record/arm text */
     --ui-solo: var(--theme-ui-solo, #E8B53A);
+    --ui-pearl: var(--theme-ui-pearl, #69BA7C);                          /* lit output pearl: the track is heard */
     --ui-clip: var(--theme-ui-clip, var(--theme-danger, #FF4757));       /* clipping / error */
     --ui-mute-opacity: 0.45;                                             /* muted content dims to this, plus a mute glyph */
 
@@ -74,6 +75,8 @@
     --row-h: 24px;           /* interactive list rows */
     --row-h-compact: 20px;   /* read-only or keyboard-primary lists only */
     --hit-min: 24px;         /* every hit area is at least this wide and tall */
+    --icon-sm: 14px;         /* rows, menus, button/toggle glyph slots (the icon floor) */
+    --icon-md: 16px;         /* toolbars and icon buttons */
 
     /* ── Shell chrome rows (DESIGN.md 8) ─────────────────────────────────── */
     --shell-topbar-h: 36px;  /* menus, transport, panel toggles, window controls */

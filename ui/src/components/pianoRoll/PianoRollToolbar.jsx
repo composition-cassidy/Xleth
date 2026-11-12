@@ -1,13 +1,21 @@
 import { useState } from 'react'
-import { ArrowDownToLine, ExternalLink, X, ZoomIn, ZoomOut } from 'lucide-react'
 import { timelineEvents } from '../../timelineEvents.js'
 import { SCALE_MODES, ROOT_NOTES, DEFAULT_SCALE, scaleLabel } from './scales.js'
 import {
   IconButton, SegmentedControl, Select, Toggle, Toolbar, ToolbarSeparator,
-  SelectToolIcon, DrawToolIcon, SliceToolIcon, DeleteToolIcon, SamplerIcon, QuickNotationIcon,
+  SelectToolIcon, DrawToolIcon, PaintToolIcon, SliceToolIcon, DeleteToolIcon, SamplerIcon, QuickNotationIcon,
 } from '../../ui-kit'
 import { slotDisplayName } from '../sampler/SlotTabs.jsx'
 import styles from './PianoRoll.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcArrowLineDown = iconComponent('arrow-line-down')
+const IcArrowSquareOut = iconComponent('arrow-square-out')
+const IcMagnifyingGlassMinus = iconComponent('magnifying-glass-minus')
+const IcMagnifyingGlassPlus = iconComponent('magnifying-glass-plus')
+const IcPlay = iconComponent('play')
+const IcStopFill = iconComponent('stop', 'fill')
+const IcX = iconComponent('x')
 
 // Piano Roll title and toolbar (round 2, step 12.5). One 32px row of kit
 // controls. Title: pattern Select (its list also holds New pattern and Rename
@@ -18,15 +26,19 @@ import styles from './PianoRoll.module.css'
 const TOOLS = [
   {
     id: 'select', key: 'S', name: 'Select', Icon: SelectToolIcon,
-    mods: 'Drag empty: lasso · Shift+click: add or remove · Drag a note: move · Drag its right edge: resize · Alt: no snap · Right-click: delete',
+    mods: 'Drag empty: lasso · Ctrl+click: select · Ctrl+Shift+click: add or remove · Drag a note: move (then Shift: keep pitch, Ctrl: keep time) · Shift+drag a note: copy · Drag its right edge: resize · Shift+drag the edge: resize without overlap · Alt: no snap · Right-click: delete',
   },
   {
     id: 'pencil', key: 'P', name: 'Pencil', Icon: DrawToolIcon,
-    mods: 'Click: add a note · Drag a note: move · Drag its right edge: resize · Ctrl+drag empty: lasso · Alt: no snap · Right-click: delete',
+    mods: 'Click: add a note · Shift+drag: add and set its length · Drag a note: move · Shift+drag a note: copy · Drag its right edge: resize · Shift+drag the edge: resize without overlap · Ctrl+drag: select · Alt: no snap · Right-click: delete',
   },
   {
-    id: 'split', key: 'C', name: 'Split', Icon: SliceToolIcon,
-    mods: 'Click a note: split it at the pointer (unsnapped) · Right-click: delete',
+    id: 'paint', key: 'B', name: 'Paint', Icon: PaintToolIcon,
+    mods: 'Drag: paint notes along the stroke · Shift: one note per step · Alt: half-snap steps · Right-click: delete',
+  },
+  {
+    id: 'split', key: 'C', name: 'Slice', Icon: SliceToolIcon,
+    mods: 'Drag a line: slice every note it crosses · Shift+click: slice one note, no drag · Alt: no snap · Right-Shift+click works in any tool',
   },
   {
     id: 'delete', key: 'D', name: 'Delete', Icon: DeleteToolIcon,
@@ -71,6 +83,8 @@ export default function PianoRollToolbar({
   regionSlots = [], refSlotIndex = 0, onRefSlotChange,
   labelMode = 'pitch', onLabelModeChange, sampleViewAvailable = false,
   showGhosts = true, onShowGhostsChange,
+  auditioning = false, auditionLoop = true, auditionAvailable = false,
+  onToggleAudition, onAuditionLoopChange,
 }) {
   const [renaming, setRenaming] = useState(false)
   const [draft, setDraft] = useState('')
@@ -170,6 +184,30 @@ export default function PianoRollToolbar({
       </div>
 
       <ToolbarSeparator />
+      <IconButton
+        size="sm"
+        label={auditioning ? 'Stop pattern' : 'Play pattern'}
+        pressed={auditioning}
+        onClick={onToggleAudition}
+        disabled={!auditionAvailable}
+        hint={auditioning ? 'Stop the pattern audition' : (
+          auditionAvailable
+            ? 'Play this pattern on its own, through its track effects'
+            : 'Play pattern: assign a sample region with notes first')}
+        hintMods="Plays only this pattern, not the arrangement · Starting normal playback stops it"
+      >
+        {auditioning ? <IcStopFill size={16} /> : <IcPlay size={16} />}
+      </IconButton>
+      <Toggle
+        size="sm"
+        on={auditionLoop}
+        onChange={(next) => onAuditionLoopChange?.(next)}
+        disabled={!hasPattern}
+        hint={auditionLoop ? 'Loop on: the pattern repeats until stopped' : 'Loop off: the pattern plays once'}
+        hintMods="Switching it off while playing lets the current pass finish"
+      >Loop</Toggle>
+
+      <ToolbarSeparator />
       <Toolbar label="Piano roll tools">
         {TOOLS.map(({ id, key, name, Icon, mods }) => (
           <IconButton
@@ -177,6 +215,7 @@ export default function PianoRollToolbar({
             size="sm"
             label={`${name} tool`}
             pressed={activeTool === id}
+            keyHint={key}
             onClick={() => onToolChange(id)}
             hint={`${name} tool (${key})`}
             hintMods={mods}
@@ -215,7 +254,7 @@ export default function PianoRollToolbar({
           options={SNAP_OPTIONS}
           onChange={(v) => onSnapChange?.(v)}
           hint="Snap for drawing, moving and resizing notes"
-          hintMods="Alt: no snap · Ctrl: 1/8"
+          hintMods="Alt: no snap"
         />
       </label>
       <Toggle
@@ -273,11 +312,11 @@ export default function PianoRollToolbar({
       >Ghosts</Toggle>
 
       <ToolbarSeparator />
-      <IconButton size="sm" label="Zoom out" onClick={onZoomOut} hint="Zoom out" hintMods="Ctrl+wheel: time zoom · Alt+wheel: pitch zoom">
-        <ZoomOut size={16} />
+      <IconButton size="sm" label="Zoom out" onClick={onZoomOut} hint="Zoom out" hintMods="Ctrl+wheel: time zoom · Alt+wheel on empty grid: pitch zoom · Alt+wheel on a note: velocity">
+        <IcMagnifyingGlassMinus size={16} />
       </IconButton>
-      <IconButton size="sm" label="Zoom in" onClick={onZoomIn} hint="Zoom in" hintMods="Ctrl+wheel: time zoom · Alt+wheel: pitch zoom">
-        <ZoomIn size={16} />
+      <IconButton size="sm" label="Zoom in" onClick={onZoomIn} hint="Zoom in" hintMods="Ctrl+wheel: time zoom · Alt+wheel on empty grid: pitch zoom · Alt+wheel on a note: velocity">
+        <IcMagnifyingGlassPlus size={16} />
       </IconButton>
       <IconButton
         size="sm"
@@ -292,17 +331,17 @@ export default function PianoRollToolbar({
       <span className={styles.spacer} />
       {floating ? (
         <IconButton size="sm" label="Dock" onClick={onDock} hint="Return the piano roll to the dock">
-          <ArrowDownToLine size={16} />
+          <IcArrowLineDown size={16} />
         </IconButton>
       ) : (
         onDetach ? (
           <IconButton size="sm" label="Detach" onClick={onDetach} hint="Float the piano roll in its own window">
-            <ExternalLink size={16} />
+            <IcArrowSquareOut size={16} />
           </IconButton>
         ) : null
       )}
       <IconButton size="sm" label={floating ? 'Close' : 'Back to timeline'} onClick={onClose} hint={floating ? 'Close the piano roll' : 'Close the piano roll and return to the timeline'}>
-        <X size={16} />
+        <IcX size={16} />
       </IconButton>
     </div>
   )

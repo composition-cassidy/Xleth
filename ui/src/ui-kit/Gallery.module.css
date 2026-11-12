@@ -101,4 +101,38 @@
     align-items: flex-end;
     gap: var(--space-2);
   }
+
+  /* Motion section: plain boxes to enter, swap and add. */
+  .motionStack {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .motionPad {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 180px;
+    min-height: 56px;
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g0);
+    color: var(--ui-ink-2);
+    font-size: var(--type-12);
+  }
+
+  .motionChip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--ctl-h-lg);
+    height: var(--ctl-h-lg);
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g3);
+    color: var(--ui-ink);
+    font-size: var(--type-12);
+    font-variant-numeric: tabular-nums;
+  }
 }

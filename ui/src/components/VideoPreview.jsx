@@ -1,8 +1,9 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
-import { Loader2 } from 'lucide-react'
+import { createPortal } from 'react-dom'
 import GridEditorOverlay from './GridEditorOverlay.jsx'
 import GridEditorDock from './GridEditorDock.jsx'
 import GridEditToolbar from './grid/GridEditToolbar.jsx'
+import GridEditFlyout from './grid/GridEditFlyout.jsx'
 import PreviewHeader from './PreviewHeader.jsx'
 import ProxyBatchBadge from './ProxyBatchBadge.jsx'
 import { tokenValue } from '../theming/tokenValue.ts'
@@ -13,6 +14,9 @@ import { getPickerPath, openFilePicker } from './filePicker/filePickerService.js
 import { VIDEO_EXTENSIONS } from './filePicker/filePickerHelpers.js'
 import { subscribe, completePick, cancelPick } from './grid/chromaKeyEyedropper.js'
 import styles from './VideoPreview.module.css'
+import { iconComponent } from '../ui-kit/icons'
+
+const IcSpinnerGap = iconComponent('spinner-gap')
 
 // Mirrors CANVAS_W/CANVAS_H in XlethEngineService.cpp — the shm surface's
 // base resolution before previewResolutionScale is applied.
@@ -138,9 +142,32 @@ function hexToGlColor(hex) {
 
 // ── Component ────────────────────────────────────────────────────────────────
 
+// Below this Preview width the Edit Grid rails cannot sit beside the picture;
+// they open in a flyout beside the panel instead (GridEditFlyout).
+export const GRID_RAILS_MIN_WIDTH = 560
+
+/** Tracks whether the Preview is too narrow for the Edit Grid rails. */
+function useNarrow(ref, threshold) {
+  const [narrow, setNarrow] = useState(false)
+  useEffect(() => {
+    const el = ref.current
+    if (!el || typeof ResizeObserver === 'undefined') return undefined
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect?.width ?? el.clientWidth
+      // A hidden panel measures 0: keep the last answer rather than flip.
+      if (w > 0) setNarrow(w < threshold)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [ref, threshold])
+  return narrow
+}
+
 // headerActions: shell controls for the panel itself (the docked Preview's
 // pop-out), appended to the header row. Docked panels have no titlebar.
-export default function VideoPreview({ headerActions = null } = {}) {
+// headerSlot: a floating/maximized Preview's titlebar slot; when given, the
+// header's controls are portaled there instead of taking a row of their own.
+export default function VideoPreview({ headerActions = null, headerSlot = null } = {}) {
   const gridEditMode = useGridEditStore((s) => s.gridEditMode)
   const setGridEditMode = useGridEditStore((s) => s.setGridEditMode)
   const { isVisible, useOnVisibilityChange } = usePanelVisibility()
@@ -1026,8 +1053,13 @@ export default function VideoPreview({ headerActions = null } = {}) {
     }
   }, [eyedropperActive])
 
-  return (
-    <div className={styles.root} ref={containerRef}>
+  const narrow = useNarrow(containerRef, GRID_RAILS_MIN_WIDTH)
+  // Rails beside the picture when they fit; otherwise a flyout beside the panel,
+  // and the picture keeps the whole stage.
+  const railsInStage = gridEditMode && !narrow
+  const railsInFlyout = gridEditMode && narrow
+
+  const header = (
       <PreviewHeader
         fps={fps}
         mode={mode}
@@ -1044,10 +1076,16 @@ export default function VideoPreview({ headerActions = null } = {}) {
         importing={importing}
         onImport={handleImport}
         headerActions={headerActions}
+        inTitlebar={headerSlot != null}
       />
-      {gridEditMode && <GridEditToolbar />}
-      <div className={styles.stage} data-grid-editing={gridEditMode ? 'true' : undefined} ref={wrapperRef}>
-        <div className={styles.area} ref={canvasAreaRef}>
+  )
+
+  return (
+    <div className={styles.root} ref={containerRef}>
+      {headerSlot ? createPortal(header, headerSlot) : header}
+      <div className={styles.stage} data-grid-editing={railsInStage ? 'true' : undefined} ref={wrapperRef}>
+        {railsInStage && <GridEditorDock />}
+        <div className={styles.area} data-grid-editing={railsInStage ? 'true' : undefined} ref={canvasAreaRef}>
           <canvas ref={canvasRef} width={960} height={540} className={styles.canvas} />
           {!hasFrame && (
             <div className={styles.placeholder} role="status">
@@ -1062,7 +1100,7 @@ export default function VideoPreview({ headerActions = null } = {}) {
           {posterMode && posterLoad.holdingVideo && (
             <div className="poster-load-overlay" role="status" aria-live="polite">
               <div className="poster-load-card">
-                <Loader2 size={22} className="poster-load-spin" />
+                <IcSpinnerGap size={22} className="poster-load-spin" />
                 <div className="poster-load-title">Loading sample previews</div>
                 <div className="poster-load-sub">
                   Poster mode is caching one frame per sample on the timeline.
@@ -1116,8 +1154,14 @@ export default function VideoPreview({ headerActions = null } = {}) {
             </div>
           )}
         </div>
-        {gridEditMode && <GridEditorDock />}
+        {railsInStage && <GridEditToolbar />}
       </div>
+      {railsInFlyout && (
+        <GridEditFlyout anchorRef={containerRef} onClose={() => setGridEditMode?.(false)}>
+          <GridEditorDock />
+          <GridEditToolbar />
+        </GridEditFlyout>
+      )}
     </div>
   )
 }

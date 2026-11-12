@@ -1,8 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import {
-  ClipboardPaste, Copy, FolderOpen, Library, Plus, RefreshCw, Save, Search,
-} from 'lucide-react'
 
 import useFxChainDragStore from '../../stores/fxChainDragStore.js'
 import useEffectChainStore, { resolveFxMode } from '../../stores/effectChainStore.js'
@@ -16,6 +13,19 @@ import {
 import {
   filterChains, findUnavailablePluginIds, groupChainsByFolder,
 } from '../../fx-chains/chainDocument.js'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcBooks = iconComponent('books')
+const IcCaretRight = iconComponent('caret-right')
+const IcClipboard = iconComponent('clipboard')
+const IcCopy = iconComponent('copy')
+const IcFloppyDisk = iconComponent('floppy-disk')
+const IcFolder = iconComponent('folder')
+const IcFolderOpen = iconComponent('folder-open')
+const IcMagnifyingGlass = iconComponent('magnifying-glass')
+const IcPlus = iconComponent('plus')
+const IcSwap = iconComponent('swap')
+const IcWarning = iconComponent('warning')
 
 const EMPTY_CHAIN = []
 const HOLD_TO_DRAG_MS = 220
@@ -53,7 +63,7 @@ function LibrarySubmenu({ entries, availableIds, targetIsEmpty, onChoose, onFlyo
   return (
     <div className="fxchain-submenu" onMouseDown={(e) => e.stopPropagation()}>
       <div className="fxchain-search">
-        <Search size={12} aria-hidden="true" />
+        <IcMagnifyingGlass size={14} aria-hidden="true" />
         <input
           ref={inputRef}
           type="text"
@@ -76,7 +86,7 @@ function LibrarySubmenu({ entries, availableIds, targetIsEmpty, onChoose, onFlyo
         {groups.map((group) => (
           <div key={group.folder ?? '__root__'}>
             <div className="fxchain-lib-group">
-              {group.folder ? <FolderOpen size={11} aria-hidden="true" /> : null}
+              {group.folder ? <IcFolder size={14} aria-hidden="true" /> : null}
               <span>{group.folder ?? 'Library'}</span>
             </div>
             {group.chains.map((chain) => {
@@ -101,7 +111,7 @@ function LibrarySubmenu({ entries, availableIds, targetIsEmpty, onChoose, onFlyo
                 >
                   <span className="fxchain-lib-name">{chain.name}</span>
                   {missing.length > 0 && (
-                    <span className="fxchain-lib-warn" title={`not installed: ${missing.join(', ')}`}>▲</span>
+                    <span className="fxchain-lib-warn" title={`not installed: ${missing.join(', ')}`}><IcWarning size={14} aria-label="Some plugins are not installed" /></span>
                   )}
                   <span className="fxchain-lib-count">{chain.effectCount} fx</span>
                 </button>
@@ -131,8 +141,8 @@ function SaveChainDialog({ defaultName, effects, folders, canSaveStrip, onCancel
   }, [name, folder, includeStrip, onSave])
 
   return createPortal(
-    <div className="fxchain-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel() }}>
-      <div className="fxchain-dialog" role="dialog" aria-modal="true" aria-label="Save FX chain">
+    <div data-mo="scrim" className="fxchain-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel() }}>
+      <div data-mo="dialog" className="fxchain-dialog" role="dialog" aria-modal="true" aria-label="Save FX chain">
         <h4>Save FX Chain</h4>
         <div className="fxchain-dialog-body">
           <label htmlFor="fxchain-name">Name</label>
@@ -502,7 +512,7 @@ export default function FxChainMenuLayer() {
             onMouseUp={endHold}
           >
             <span className="fxchain-grip" aria-hidden="true" />
-            <span className="fxchain-glyph"><Save size={13} /></span>
+            <span className="fxchain-glyph"><IcFloppyDisk size={14} /></span>
             <span className="fxchain-mi-stack">
               <span>Save FX Chain…</span>
               <span className="fxchain-mi-sub">
@@ -520,7 +530,7 @@ export default function FxChainMenuLayer() {
             disabled={chainEmpty || graphMode}
             onClick={handleCopy}
           >
-            <span className="fxchain-glyph"><Copy size={13} /></span>
+            <span className="fxchain-glyph"><IcCopy size={14} /></span>
             <span>Copy FX Chain</span>
           </button>
 
@@ -531,7 +541,7 @@ export default function FxChainMenuLayer() {
             disabled={!clipboard || graphMode}
             onClick={handlePaste}
           >
-            <span className="fxchain-glyph"><ClipboardPaste size={13} /></span>
+            <span className="fxchain-glyph"><IcClipboard size={14} /></span>
             <span>Paste FX Chain</span>
             {clipboard && (
               <span className="fxchain-shortcut">{clipboard.effects.length} fx</span>
@@ -556,12 +566,12 @@ export default function FxChainMenuLayer() {
               disabled={graphMode}
               onClick={(e) => { e.stopPropagation(); if (!graphMode) setLibraryOpen(true) }}
             >
-              <span className="fxchain-glyph"><Library size={13} /></span>
+              <span className="fxchain-glyph"><IcBooks size={14} /></span>
               <span className="fxchain-mi-stack">
                 <span>FX Chain Library</span>
                 {graphMode && <span className="fxchain-mi-sub">chain mode only</span>}
               </span>
-              <span className="fxchain-arrow">▸</span>
+              <span className="fxchain-arrow"><IcCaretRight size={14} /></span>
             </button>
 
             {libraryOpen && !graphMode && (
@@ -588,7 +598,7 @@ export default function FxChainMenuLayer() {
             onClick={handleOpenFolder}
             onMouseEnter={() => setLibraryOpen(false)}
           >
-            <span className="fxchain-glyph"><FolderOpen size={13} /></span>
+            <span className="fxchain-glyph"><IcFolderOpen size={14} /></span>
             <span>Open Library Folder</span>
           </button>
         </div>,
@@ -603,7 +613,7 @@ export default function FxChainMenuLayer() {
             className="fxchain-mi"
             onClick={(e) => { e.stopPropagation(); handleChooseSaved(flyout.chain, 'replace') }}
           >
-            <span className="fxchain-glyph"><RefreshCw size={13} /></span>
+            <span className="fxchain-glyph"><IcSwap size={14} /></span>
             <span>Replace chain</span>
           </button>
           <button
@@ -612,7 +622,7 @@ export default function FxChainMenuLayer() {
             className="fxchain-mi"
             onClick={(e) => { e.stopPropagation(); handleChooseSaved(flyout.chain, 'append') }}
           >
-            <span className="fxchain-glyph"><Plus size={13} /></span>
+            <span className="fxchain-glyph"><IcPlus size={14} /></span>
             <span>Add to chain</span>
           </button>
         </div>,

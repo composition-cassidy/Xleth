@@ -145,6 +145,7 @@ const SANDBOX_EDIT_COMMANDS: ShortcutCommand[] = [
   { id: 'sandbox.copy', label: 'Copy Selection', group: 'sandboxEdit', scope: SANDBOX_SCOPE, defaultCombo: 'Ctrl+c', aliases: ['Ctrl+C'] },
   { id: 'sandbox.paste', label: 'Paste', group: 'sandboxEdit', scope: SANDBOX_SCOPE, defaultCombo: 'Ctrl+v', aliases: ['Ctrl+V'] },
   { id: 'sandbox.duplicateLayer', label: 'Duplicate Layer', group: 'sandboxEdit', scope: SANDBOX_SCOPE, defaultCombo: 'Ctrl+d', aliases: ['Ctrl+D'] },
+  { id: 'sandbox.selectAll', label: 'Select All', group: 'sandboxEdit', scope: SANDBOX_SCOPE, defaultCombo: 'Ctrl+a', aliases: ['Ctrl+A'] },
 ];
 
 const SANDBOX_VIEW_COMMANDS: ShortcutCommand[] = [
@@ -167,6 +168,11 @@ const SANDBOX_VIEW_COMMANDS: ShortcutCommand[] = [
   },
   { id: 'sandbox.toggleLoop', label: 'Toggle Loop Playback', group: 'sandboxView', scope: SANDBOX_SCOPE, defaultCombo: 'l', aliases: ['L'] },
   { id: 'sandbox.playComposite', label: 'Play Composite', group: 'sandboxView', scope: SANDBOX_SCOPE, defaultCombo: ' ' },
+  // The four pointer tools, in the order the tool bar shows them. One letter each, like the timeline's tools.
+  { id: 'sandbox.toolSelect', label: 'Select Tool', group: 'sandboxView', scope: SANDBOX_SCOPE, defaultCombo: 's', aliases: ['S'] },
+  { id: 'sandbox.toolEnvelope', label: 'Envelope Tool', group: 'sandboxView', scope: SANDBOX_SCOPE, defaultCombo: 'e', aliases: ['E'] },
+  { id: 'sandbox.toolPaint', label: 'Paint Tool', group: 'sandboxView', scope: SANDBOX_SCOPE, defaultCombo: 'b', aliases: ['B'] },
+  { id: 'sandbox.toolRegion', label: 'Region Tool', group: 'sandboxView', scope: SANDBOX_SCOPE, defaultCombo: 'r', aliases: ['R'] },
 ];
 
 export const SHORTCUT_COMMANDS: ShortcutCommand[] = [

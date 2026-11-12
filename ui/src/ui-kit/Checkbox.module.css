@@ -40,14 +40,21 @@
     background: var(--ui-on);
   }
 
-  .box:checked::after {
+  /* The check glyph is always there at zero size, so checking the box can land it
+   * (--mo-state: instant until the lively tier) and a box that mounts checked never animates. */
+  .box::after {
     content: "";
     width: 3px;
     height: 7px;
     margin-top: -2px;
     border: solid var(--ui-on-fg);
     border-width: 0 2px 2px 0;
-    transform: rotate(45deg);
+    transform: rotate(45deg) scale(0);
+    transition: transform var(--mo-state) var(--mo-ease-pop);
+  }
+
+  .box:checked::after {
+    transform: rotate(45deg) scale(1);
   }
 
   .box:indeterminate {
@@ -59,7 +66,10 @@
     content: "";
     width: 8px;
     height: 2px;
+    margin-top: 0;
+    border: 0;
     background: var(--ui-on-fg);
+    transform: none;
   }
 
   .box:focus-visible {

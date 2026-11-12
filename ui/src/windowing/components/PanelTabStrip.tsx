@@ -1,9 +1,11 @@
 import React, { useRef } from 'react';
 import type { CSSProperties, KeyboardEvent, PointerEvent } from 'react';
-import { X } from 'lucide-react';
 import { armPanelDrag, useIsTabDropTarget } from '../managers/DragManager';
 import { PANEL_CATALOG, panelTypeColorVar, type PanelId } from '../registry/panelCatalog';
 import { usePanelRegistry, type DockArea } from '../registry/PanelRegistry';
+import { iconComponent } from '../../ui-kit/icons';
+
+const IcX = iconComponent('x');
 import './windowing.css';
 
 export interface PanelTabStripProps {
@@ -58,7 +60,7 @@ function PanelTab({ id, active, onActivate, onClose, onPointerDown, onKeyDown }:
           onClose(id);
         }}
       >
-        <X aria-hidden="true" strokeWidth={2} />
+        <IcX aria-hidden="true" />
       </button>
     </div>
   );

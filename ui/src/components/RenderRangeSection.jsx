@@ -1,9 +1,12 @@
 import React, { useEffect, useState } from 'react'
-import { ChevronDown, ChevronRight } from 'lucide-react'
 import { Button } from '../ui-kit'
 import { exportStyles as styles } from './exportPresets/exportKit.jsx'
 import TailRenderControls from './TailRenderControls.jsx'
 import useLoopRegionStore from '../stores/loopRegionStore.js'
+import { iconComponent } from '../ui-kit/icons'
+
+const IcCaretDown = iconComponent('caret-down')
+const IcCaretRight = iconComponent('caret-right')
 
 // Shared collapsible wrapper around TailRenderControls (End Behavior, tail
 // fade limits, Start Processing From). Used identically by the audio export
@@ -46,7 +49,7 @@ export default function RenderRangeSection({ disabled = false, children }) {
         <Button
           variant="ghost"
           aria-expanded={!collapsed}
-          glyph={collapsed ? <ChevronRight /> : <ChevronDown />}
+          glyph={collapsed ? <IcCaretRight /> : <IcCaretDown />}
           onClick={() => setCollapsed((c) => !c)}
           data-render-range-header=""
         >

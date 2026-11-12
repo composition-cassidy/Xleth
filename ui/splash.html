@@ -3,279 +3,140 @@
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy"
-  content="default-src 'none'; img-src file: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+  content="default-src 'none'; img-src 'self' file: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
 <title>XLETH — Splash Screen</title>
 <!--
-  XLETH SPLASH SCREEN — design mockup for Claude Code
-  =====================================================
-  Inspiration: Vegas Pro 12 splash (wordmark left, version block right,
-  status text + progress bar bottom-left, copyright strip bottom,
-  diagonal carbon corner bands, big translucent play motif).
+  XLETH SPLASH SCREEN
+  ===================
+  One flat surface from the workspace's own neutral ramp (ui/DESIGN.md
+  section 3): no gradients, no textures, no decorative shapes. The one
+  designed element is the progress bar, drawn as a bar/beat ruler with a
+  playhead, because that is XLETH's own world and it carries real data.
 
-  XLETH design system applied:
-    - Surface hierarchy #0b0b0b -> #1c1c1c, single teal accent #00b896
-    - Flat, zero border-radius everywhere
-    - Krasen's signature hard shadow: 4px 5px 0 rgba(0,0,0,0.5), no blur
-    - CSS custom-property tokens, no hardcoded hex outside :root
-    - Offline-safe: system fonts only (Segoe UI is guaranteed on Windows),
-      no webfonts, no external requests. xleth.svg must sit beside this file.
+  This window renders before ThemeProvider exists, so the tokens below are a
+  frozen copy of the workspace dark defaults. Components only reference
+  var(--*); no colour literal appears outside :root. Offline-safe: system
+  fonts only, no external requests; xleth.svg must sit beside this file.
 
-  INTEGRATION POINTS for Claude Code are marked with [INTEGRATE].
+  [INTEGRATE] points are marked in the script.
 -->
 <style>
   :root {
-    --surface-0: #0b0b0b;
-    --surface-1: #1c1c1c;
-    --surface-2: #242424;
-    --accent: #00b896;
-    --accent-dim: rgba(0, 184, 150, 0.14);
-    --text-hi: #f2f2f2;
-    --text-mid: #b5b5b5;
-    --text-lo: #6f6f6f;
-    --hard-shadow: 4px 5px 0 rgba(0, 0, 0, 0.5);
+    --g0: #141414;
+    --g1: #1b1b1b;
+    --g4: #3a3a3a;
+    --boundary: #747474;
+    --ink: #e6e6e6;
+    --ink-2: #b4b4b4;
+    --ink-3: #929292;   /* dimmest text allowed: 5.5:1 on g1 */
+    --value: #33ced6;   /* default accent */
+    --backdrop: #050505; /* browser-preview backdrop only; the real window is the card */
+    --font: "Barlow", "Inter", "Noto Sans", "Segoe UI", system-ui, sans-serif;
     --splash-w: 640px;
     --splash-h: 400px;
+    --pad: 40px;
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
   html, body {
     height: 100%;
-    background: #050505; /* page backdrop — preview only, not part of the splash */
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-family: "Segoe UI", system-ui, sans-serif;
+    background: var(--backdrop);
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--font);
+    font-variant-numeric: tabular-nums;
     user-select: none;
   }
 
-  /* ============================================================
-     SPLASH CARD — the actual splash surface (frameless window)
-     ============================================================ */
   .splash {
     position: relative;
-    width: var(--splash-w);
-    height: var(--splash-h);
+    width: var(--splash-w); height: var(--splash-h);
     overflow: hidden;
-    border-radius: 0;
-    box-shadow: var(--hard-shadow);
-    background:
-      /* teal beam sweeping from top-left, echoing Vegas's blue beam */
-      linear-gradient(115deg,
-        rgba(0, 184, 150, 0.10) 0%,
-        rgba(0, 184, 150, 0.04) 28%,
-        rgba(0, 0, 0, 0) 52%),
-      /* dark diagonal falloff: surface-2 -> surface-1 -> surface-0 */
-      linear-gradient(135deg,
-        var(--surface-2) 0%,
-        var(--surface-1) 45%,
-        var(--surface-0) 100%);
+    background: var(--g1);
+    /* a frameless window has no edge of its own against a dark desktop */
+    border: 1px solid var(--g4);
+    display: flex; flex-direction: column;
+    padding: var(--pad);
   }
 
-  /* Giant translucent X — XLETH's own glyph, not Vegas's play button */
-  .x-motif {
-    position: absolute;
-    right: -40px;
-    top: 50%;
-    width: 420px;
-    height: 480px;
-    transform: translateY(-50%);
-    pointer-events: none;
-  }
-  .x-motif::before,
-  .x-motif::after {
-    content: "";
-    position: absolute;
-    left: 50%;
-    top: 50%;
-    width: 96px;
-    height: 560px;
-    background: var(--accent-dim);
-  }
-  .x-motif::before { transform: translate(-50%, -50%) rotate(45deg); }
-  .x-motif::after  { transform: translate(-50%, -50%) rotate(-45deg); }
-
-  /* Diagonal carbon corner bands (Vegas's carbon fibre corners) */
-  .carbon {
-    position: absolute;
-    width: 260px;
-    height: 260px;
-    background:
-      repeating-linear-gradient(45deg,
-        rgba(0, 0, 0, 0.55) 0 2px,
-        rgba(255, 255, 255, 0.03) 2px 4px),
-      linear-gradient(135deg, #161616, #050505);
-    pointer-events: none;
-  }
-  .carbon-tr {
-    top: 0; right: 0;
-    clip-path: polygon(38% 0, 100% 0, 100% 38%);
-  }
-  .carbon-bl {
-    bottom: 0; left: 0;
-    clip-path: polygon(0 62%, 0 100%, 62% 100%);
-  }
-  /* thin teal seam along each carbon diagonal */
-  .carbon-seam {
-    position: absolute;
-    width: 320px;
-    height: 2px;
-    background: linear-gradient(90deg, var(--accent), rgba(0, 184, 150, 0));
-    pointer-events: none;
-  }
-  .seam-tr { top: 65px; right: -40px; transform: rotate(-45deg); transform-origin: right center; }
-  .seam-bl { bottom: 65px; left: -40px; transform: rotate(-45deg); transform-origin: left center;
-             background: linear-gradient(90deg, rgba(0,184,150,0), var(--accent)); }
-
-  /* ============================================================
-     CONTENT LAYOUT
-     ============================================================ */
-  .content {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    padding: 56px 48px 0 56px;
-  }
-
-  /* LEFT — wordmark */
-  .brand {
-    flex: 0 0 auto;
-    display: flex;
-    flex-direction: column;
-    justify-content: flex-start;
-  }
-
-  /*
-    xleth.svg has ~38% empty headroom in its viewBox; the crop box
-    trims it optically so the wordmark sits tight. Width drives height.
-  */
-  .logo-crop {
-    width: 340px;
-    height: 112px;           /* visible band of the SVG (content ends at viewBox bottom) */
-    overflow: hidden;
-  }
+  /* ---- identity ---- */
+  /* xleth.svg has ~38% empty headroom in its viewBox; the crop box trims it
+     so the wordmark sits tight. Width drives height. */
+  .logo-crop { width: 300px; height: 99px; overflow: hidden; }
   .logo-crop img {
-    width: 340px;
-    display: block;
-    margin-top: -68px;       /* hides the ~38% empty headroom in the viewBox */
-    /* SVG paths carry no fill -> render black; force XLETH white wordmark */
-    filter: brightness(0) invert(1) drop-shadow(3px 4px 0 rgba(0, 0, 0, 0.5));
+    width: 300px; display: block; margin-top: -60px;
+    /* SVG paths carry no fill and render black; force the white wordmark. */
+    filter: brightness(0) invert(1);
   }
+  .tagline { margin-top: 12px; font-size: 13px; font-weight: 500; color: var(--ink); }
+  .dedication { margin-top: 4px; font-size: 12px; color: var(--ink-3); }
 
-  .tagline {
-    margin-top: 14px;
-    font-size: 13px;
-    font-weight: 600;
-    letter-spacing: 6px;
-    color: var(--accent);
-    text-transform: uppercase;
-    text-shadow: 2px 3px 0 rgba(0, 0, 0, 0.5);
-  }
-  .dedication {
-    margin-top: 8px;
-    font-size: 12px;
-    font-style: italic;
-    color: var(--text-lo);
-  }
-
-  /* RIGHT — version block (Vegas's right-aligned info column) */
-  .version-block {
-    margin-left: auto;
-    padding-top: 6px;
-    text-align: left;
-    font-size: 12px;
-    line-height: 1.75;
-    color: var(--text-mid);
-  }
-  .version-block .product {
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--text-hi);
-  }
-  .version-block .version {
-    color: var(--text-mid);
-  }
-
-  /* Small teal badge top-right inside the carbon band (the "SONY" slot) */
-  .corner-badge {
-    position: absolute;
-    top: 18px;
-    right: 18px;
-    width: 34px;
-    height: 34px;
-    background: var(--accent);
-    color: var(--surface-0);
-    font-size: 20px;
-    font-weight: 700;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    box-shadow: var(--hard-shadow);
-  }
-
-  /* ============================================================
-     BOTTOM — status, progress, copyright
-     ============================================================ */
+  /* ---- boot status: label, then the ruler ---- */
+  .boot { margin-top: auto; }
   .status-row {
-    position: absolute;
-    left: 56px;
-    bottom: 56px;
-    width: 340px;
+    display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+    margin-bottom: 8px;
   }
   .status-text {
-    font-size: 12px;
-    color: var(--accent); /* matches current "Starting compositor..." teal */
-    margin-bottom: 8px;
-    min-height: 16px;
+    font-size: 12px; color: var(--ink-2);
+    min-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .progress-track {
-    width: 100%;
-    height: 4px;
-    background: #000;
-    box-shadow: var(--hard-shadow);
+  .status-pct { flex: none; font-size: 12px; color: var(--ink-3); }
+
+  /* The progress bar as a ruler: a bar line every 8 divisions, a beat line
+     every division, a baseline that fills with progress, and a playhead at
+     the current position. Real progress, not decoration. */
+  .ruler {
+    position: relative;
+    height: 20px;
+    --divisions: 32;
+    background:
+      linear-gradient(var(--boundary), var(--boundary)) left bottom / 100% 1px no-repeat,
+      linear-gradient(to right, var(--boundary) 1px, transparent 1px) left bottom / calc(100% / 4) 12px repeat-x,
+      linear-gradient(to right, var(--g4) 1px, transparent 1px) left bottom / calc(100% / var(--divisions)) 6px repeat-x;
+    border-right: 1px solid var(--boundary);
   }
-  .progress-fill {
-    height: 100%;
-    width: 0%;
-    background: var(--accent);
+  .ruler-fill {
+    position: absolute; left: 0; bottom: 0;
+    height: 2px; width: 0%;
+    background: var(--value);
     transition: width 0.45s ease;
   }
+  .ruler-head {
+    position: absolute; bottom: 0; left: 0;
+    width: 1px; height: 20px;
+    background: var(--value);
+    transition: left 0.45s ease;
+  }
 
-
+  .meta-row {
+    display: flex; justify-content: flex-end;
+    margin-top: 12px;
+    font-size: 11px; color: var(--ink-3);
+  }
 </style>
 </head>
 <body>
 
   <div class="splash" id="splash">
-    <div class="x-motif"></div>
-    <div class="carbon carbon-tr"></div>
-    <div class="carbon carbon-bl"></div>
-    <div class="carbon-seam seam-tr"></div>
-    <div class="carbon-seam seam-bl"></div>
-
-    <div class="content">
-      <div class="brand">
-        <div class="logo-crop">
-          <!-- xleth.svg sits beside this HTML file -->
-          <img src="xleth.svg" alt="XLETH">
-        </div>
-        <div class="tagline">The YTPMVer's DAW</div>
-        <div class="dedication">In honor of Adubuyrus</div>
-      </div>
-
-      <div class="version-block">
-        <div class="product">XLETH</div>
-        <div class="version" id="versionLabel">Version 1.2.2-beta 64-bit</div>
-      </div>
+    <div class="logo-crop">
+      <!-- xleth.svg sits beside this HTML file -->
+      <img src="xleth.svg" alt="XLETH">
     </div>
+    <div class="tagline">The YTPMVer's DAW</div>
+    <div class="dedication">In honor of Adubuyrus</div>
 
-    <div class="corner-badge">X</div>
-
-    <div class="status-row">
-      <div class="status-text" id="statusText">Starting&hellip;</div>
-      <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+    <div class="boot">
+      <div class="status-row">
+        <div class="status-text" id="statusText" role="status" aria-live="polite">Starting&hellip;</div>
+        <div class="status-pct" id="statusPct">0 %</div>
+      </div>
+      <div class="ruler" id="ruler" role="progressbar" aria-label="Startup progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div class="ruler-fill" id="rulerFill"></div>
+        <div class="ruler-head" id="rulerHead"></div>
+      </div>
+      <div class="meta-row"><span id="versionLabel">Version 1.2.2-beta 64-bit</span></div>
     </div>
-
   </div>
 
 <script>
@@ -291,11 +152,19 @@
   versionLabel.textContent = 'Version ' + (versionParam || '1.2.2-beta') + ' 64-bit';
 
   const statusText = document.getElementById('statusText');
-  const progressFill = document.getElementById('progressFill');
+  const statusPct = document.getElementById('statusPct');
+  const ruler = document.getElementById('ruler');
+  const rulerFill = document.getElementById('rulerFill');
+  const rulerHead = document.getElementById('rulerHead');
 
   function setStatus(message) { statusText.textContent = message; }
   function setProgress(percent) {
-    progressFill.style.width = Math.max(0, Math.min(100, percent)) + '%';
+    const p = Math.max(0, Math.min(100, percent));
+    rulerFill.style.width = p + '%';
+    rulerHead.style.left = 'calc(' + p + '% - ' + (p >= 100 ? 1 : 0) + 'px)';
+    // thin space before the unit, per the workspace value format
+    statusPct.textContent = Math.round(p) + ' %';
+    ruler.setAttribute('aria-valuenow', String(Math.round(p)));
   }
 
   // Public surface of the splash window. electron-main drives this with real

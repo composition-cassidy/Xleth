@@ -1,9 +1,12 @@
-import { Link2, Link2Off } from 'lucide-react'
 import { IconButton } from '../../ui-kit'
 import type { TokenDef } from '../tokens/catalog'
 import { DERIVED_FORMULA_TOKEN_NAMES_SET } from '../tokens/catalog'
 import ColorPicker from './ColorPicker'
 import styles from './ThemeEditor.module.css'
+import { iconComponent } from '../../ui-kit/icons';
+
+const IcLinkBreakReg = iconComponent('link-break', 'regular');
+const IcLinkReg = iconComponent('link', 'regular');
 
 interface Props {
   token: TokenDef
@@ -61,7 +64,7 @@ export default function TokenRow({ token, resolvedValue, isDetached, isReadOnly,
           hint={isDetached ? 'Re-attach to derivation formula' : 'Detach and use an explicit override'}
           onClick={() => onDetachToggle(token.name)}
         >
-          {isDetached ? <Link2Off aria-hidden="true" /> : <Link2 aria-hidden="true" />}
+          {isDetached ? <IcLinkBreakReg aria-hidden="true" /> : <IcLinkReg aria-hidden="true" />}
         </IconButton>
       )}
     </div>

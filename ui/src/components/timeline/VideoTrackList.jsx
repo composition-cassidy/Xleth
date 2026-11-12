@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { GripVertical, SlidersHorizontal } from 'lucide-react'
 import { IconButton } from '../../ui-kit'
 import useTrackIdentityColors from '../inspector/useTrackIdentityColors.js'
 import styles from './VideoTrackList.module.css'
@@ -17,6 +16,10 @@ import {
   getHoldThresholdBeats,
   formatHoldThreshold,
 } from './holdLastFrame.js'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcDotsSixVertical = iconComponent('dots-six-vertical')
+const IcSlidersHorizontal = iconComponent('sliders-horizontal')
 
 const notifyTracks = () => timelineEvents.dispatchEvent(new Event('timeline-tracks-changed'))
 
@@ -39,7 +42,7 @@ const notifyTracks = () => timelineEvents.dispatchEvent(new Event('timeline-trac
  *
  * The vtl-* class names are test/hook names only; styling is the CSS module.
  */
-export default function VideoTrackList({ tracks = [], layout, identity: identityProp }) {
+export default function VideoTrackList({ tracks = [], layout, identity: identityProp, compact = false }) {
   const ownIdentity = useTrackIdentityColors(identityProp ? null : tracks)
   const identity = identityProp ?? ownIdentity
   // Edit = select the track in the arrangement and show it in the Inspector.
@@ -196,11 +199,11 @@ export default function VideoTrackList({ tracks = [], layout, identity: identity
           aria-hidden={draggable ? undefined : true}
           onMouseDown={draggable ? (e) => handleDragStart(track.id, dragIdx, e) : undefined}
         >
-          <GripVertical size={13} aria-hidden="true" />
+          <IcDotsSixVertical size={14} aria-hidden="true" />
         </span>
         <span className={`vtl-row-name ${styles.name}`} title={track.name}>{track.name}</span>
         <span className={`vtl-row-badge ${styles.badge}`} data-kind={placement.kind}>
-          {placementBadgeLabel(placement)}
+          {placementBadgeLabel(placement, { short: compact })}
         </span>
         <IconButton
           size="sm"
@@ -211,14 +214,14 @@ export default function VideoTrackList({ tracks = [], layout, identity: identity
             openTrackVideoProperties(track.id)
           }}
         >
-          <SlidersHorizontal aria-hidden="true" />
+          <IcSlidersHorizontal aria-hidden="true" />
         </IconButton>
       </div>
     )
   }
 
   return (
-    <div className={styles.root}>
+    <div className={styles.root} data-compact={compact || undefined}>
       <div className={styles.listHeader}>
         <span className={styles.count}>{placed.length} placed, frontmost first</span>
       </div>

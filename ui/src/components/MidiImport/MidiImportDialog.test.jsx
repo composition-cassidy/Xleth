@@ -9,7 +9,11 @@ import {
   buildMidiImportOptions,
   buildOutputTracks,
   buildSamplePickerItems,
+  buildFlpDetails,
+  flpVersionLabel,
   getEffectiveTempoOverride,
+  hasFlpMutedContent,
+  isFlpPath,
   resolveRowMode,
   MODE_NEW,
   MODE_UPDATE,
@@ -410,5 +414,37 @@ describe('MidiTrackRow redesigned layout', () => {
     ])
 
     expect(buildTargetOptions([])).toEqual([{ value: MODE_NEW, label: 'New track' }])
+  })
+})
+
+describe('FL Studio project import helpers', () => {
+  it('recognises .flp paths', () => {
+    expect(isFlpPath('C:\Songs\Base.FLP')).toBe(true)
+    expect(isFlpPath('C:/Songs/base.mid')).toBe(false)
+    expect(isFlpPath(null)).toBe(false)
+  })
+
+  it('labels the FL version by major.minor', () => {
+    expect(flpVersionLabel('26.1.5.5613')).toBe('FL Studio 26.1')
+    expect(flpVersionLabel('')).toBe('FL Studio')
+  })
+
+  it('lists tempo automation, skipped muted content and audio clips', () => {
+    const info = {
+      hasTempoAutomation: true, startBpm: 120, includeMuted: false,
+      mutedTracks: ['Track 1', 'Track 3'], mutedClips: 1, mutedNotes: 40, audioClipTracks: 2,
+    }
+    expect(buildFlpDetails(info)).toEqual([
+      'Tempo automation: first tempo only (120.0 BPM)',
+      'Muted, skipped: 2 playlist tracks, 1 clip',
+      'Audio clips: one hit per clip, from the sample start',
+    ])
+    expect(buildFlpDetails({ ...info, includeMuted: true, hasTempoAutomation: false, audioClipTracks: 0 })).toEqual([])
+    expect(hasFlpMutedContent(info)).toBe(true)
+    expect(hasFlpMutedContent({ mutedTracks: [], mutedClips: 0, mutedNotes: 0 })).toBe(false)
+    expect(buildFlpDetails(null)).toEqual([])
+    expect(buildFlpDetails({ pattern: { iid: 2, name: 'Drop' }, includeMuted: true })).toEqual([
+      'Playlist is empty: importing pattern “Drop” from the start',
+    ])
   })
 })

@@ -12,8 +12,8 @@
 
   /* Icon glyphs (an SVG) sit at text size, like a letter glyph would. */
   .glyph svg {
-    width: var(--type-13);
-    height: var(--type-13);
+    width: var(--icon-sm);
+    height: var(--icon-sm);
   }
 
   .toggle[data-on="true"] .glyph {

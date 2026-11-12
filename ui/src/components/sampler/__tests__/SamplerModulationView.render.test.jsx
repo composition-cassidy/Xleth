@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import useSamplerModDragStore from '../../../stores/samplerModDragStore.js'
 import useSamplerModulationStore from '../../../stores/samplerModulationStore.js'
 import { LFO_SOURCE_0 } from '../modulation/modConstants.js'
-import { TARGET_SLOT_SEM, TARGET_SRC_AMOUNT } from '../modulation/modTargets.js'
+import { TARGET_ENV_STAGE_TIME, TARGET_SLOT_SEM, TARGET_SRC_AMOUNT } from '../modulation/modTargets.js'
 import { createHarness, makeSlot, stubCanvas } from './samplerHarness.jsx'
 
 const h = createHarness()
@@ -124,23 +124,39 @@ describe('drag-to-route', () => {
     expect(lastSet().routes[0]).toMatchObject({ source: LFO_SOURCE_0, target: TARGET_SRC_AMOUNT, index: 0, bipolar: true })
   })
 
-  it('holding a drag over the Main tab opens Main, where the source can be dropped', async () => {
+  it('drops a source on the slot bar without leaving the Modulation view', async () => {
     await mount()
+    const semi = h.slider('Semi')
+    expect(semi, 'the slot bar is shown in the Modulation view').toBeTruthy()
     aimAt(null)
     await act(async () => { sourceTab('LFO 1').dispatchEvent(mouse('pointerdown')) })
-    aimAt(h.tab('Main'))
-    await act(async () => { window.dispatchEvent(mouse('pointermove', { clientX: 60, clientY: 5 })) })
-    await act(async () => { await new Promise((r) => setTimeout(r, 450)) })
-    await h.settle()
-    const semi = h.slider('Semi')
-    expect(semi, 'Main view should have opened').toBeTruthy()
     aimAt(semi)
     await act(async () => { window.dispatchEvent(mouse('pointermove', { clientX: 61, clientY: 6 })) })
     await act(async () => { window.dispatchEvent(mouse('pointerup', { clientX: 61, clientY: 6 })) })
     await h.settle()
+    expect(h.container.querySelector('[data-view="modulation"]')).toBeTruthy()
     expect(lastSet().routes[0]).toMatchObject({ source: LFO_SOURCE_0, target: TARGET_SLOT_SEM, index: 0 })
     // The routed box now draws its modulated range.
     expect(h.slider('Semi').querySelector('[data-mod-ring]')).not.toBeNull()
+  })
+
+  it('holding a drag over the Envelope tab opens that view, where the source can be dropped', async () => {
+    await mount()
+    aimAt(null)
+    await act(async () => { sourceTab('LFO 1').dispatchEvent(mouse('pointerdown')) })
+    aimAt(h.tab('Envelope'))
+    await act(async () => { window.dispatchEvent(mouse('pointermove', { clientX: 60, clientY: 5 })) })
+    await act(async () => { await new Promise((r) => setTimeout(r, 450)) })
+    await h.settle()
+    const view = h.container.querySelector('[data-view="envelope"]')
+    expect(view, 'Envelope view should have opened').toBeTruthy()
+    expect(h.container.querySelector('[data-view="modulation"]')).toBeNull()
+    const attack = view.querySelector('[data-env-stage="attack"]')
+    aimAt(attack)
+    await act(async () => { window.dispatchEvent(mouse('pointermove', { clientX: 61, clientY: 6 })) })
+    await act(async () => { window.dispatchEvent(mouse('pointerup', { clientX: 61, clientY: 6 })) })
+    await h.settle()
+    expect(lastSet().routes[0]).toMatchObject({ source: LFO_SOURCE_0, target: TARGET_ENV_STAGE_TIME })
   })
 
   it('creates nothing when released over empty space', async () => {

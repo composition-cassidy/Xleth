@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react'
+import { motionForcedFlat } from '../ui-kit/motion'
 
 // Shared spring-based view animator — Timeline and Piano Roll both mount one
 // instance each (own state, same code: see useTimelineZoom/useTimelineScroll
@@ -221,7 +222,9 @@ export default function useViewAnimator({ springs: springConfig, omega = DEFAULT
     const spring = springsRef.current.get(key)
     if (!spring) return
     spring.target = value
-    if (immediate) {
+    // Motion tier 1 (flat, ui/DESIGN.md section 27): no eased zoom or scroll, every change
+    // lands at once. With no tier set at all (unit tests) the spring behaves as it always has.
+    if (immediate || motionForcedFlat()) {
       // Don't make a caller that just wants an instant snap (e.g. a
       // scrollbar thumb drag, or clamping scrollX after content shrinks)
       // wait a frame for a value that isn't going to animate anyway — and

@@ -1,12 +1,11 @@
 import { useState, useRef, useCallback } from 'react'
 import { TRACK_HEIGHT } from '../../constants/timeline.js'
 import { TRACK_PALETTE_FALLBACK } from './trackColorResolver.js'
-import { PianoIcon, WaveformIcon, EllipsisIcon } from './TrackTypeIcons.jsx'
-import { IconButton, Toggle } from '../../ui-kit'
+import { Icon, IconButton, Pearl, Toggle } from '../../ui-kit'
 import { pickLabelInk } from '../../ui-kit/colorMath'
 import styles from './TrackHeader.module.css'
 
-// From this lane height up the header stacks: name row, then the M / S / V row.
+// From this lane height up the header stacks: name row, then the pearl / V row.
 const STACK_HEADER_FROM = 56
 
 /**
@@ -14,7 +13,7 @@ const STACK_HEADER_FROM = 56
  * down the left edge and a colour chip that holds the type glyph (and opens the
  * colour popover); the clips already carry the full colour, so the header does
  * not. The name is ink on g2 in every state, muted included: only the stripe and
- * chip dim. M / S / V are kit Toggles, visible at rest. The track-menu button is
+ * chip dim. The output pearl and the V (Visual only) toggle are visible at rest. The track-menu button is
  * not in the resting row (it gave its 28px to the name): it shows over the end of
  * the name while the row is hovered or holds focus, and the same menu opens from
  * a right-click or the menu key anywhere on the row.
@@ -22,7 +21,7 @@ const STACK_HEADER_FROM = 56
 export default function TrackHeader({
   track, index, trackColor, labelInks = null, isFocused, isSelected,
   trackHeight = TRACK_HEIGHT,
-  onMute, onSolo, onVisualOnly, onRename, onRequestContextMenu, onFocus, onSelect,
+  onMute, onSolo, onPearl, lit, onVisualOnly, onRename, onRequestContextMenu, onFocus, onSelect,
   onDragStart, onDragOver, onDrop,
   onOpenColorPicker,
   onOpenInMixer,
@@ -111,7 +110,7 @@ export default function TrackHeader({
         data-hint-mods={isPatternTrack ? 'Pattern track' : 'Clip track'}
       >
         <span className={styles.chipFace}>
-          {isPatternTrack ? <PianoIcon size={12} /> : <WaveformIcon size={12} />}
+          {isPatternTrack ? <Icon name="piano-keys" size={14} /> : <Icon name="xleth-squiggle" size={14} />}
         </span>
       </button>
 
@@ -148,29 +147,23 @@ export default function TrackHeader({
         hint="Track menu"
         hintMods="Right-click the row or press the menu key for the same menu"
       >
-        <EllipsisIcon size={12} />
+        <Icon name="dots-three" />
       </IconButton>
 
-      {/* M / S / V: kit Toggles, visible at rest. On = the inverted ink chip
-          (solo in the solo colour). A muted track also dims its stripe, chip and
-          lane content, so state is never colour alone. */}
+      {/* Output pearl + Visual only. The pearl is lit when the track is heard (filled vs hollow,
+          never colour alone); click = on/off, right-click = solo (ui-kit/pearlRules.ts). A muted
+          track also dims its stripe, chip and lane content. */}
       <div className={styles.cluster} role="group" aria-label={`${track.name} state`}>
-        <Toggle
-          size="sm" className={styles.state} data-kind="mute"
-          on={!!track.muted} onChange={() => onMute(track.id)}
-          glyph="M" aria-label={`Mute ${track.name}`}
-          hint="Mute: silences the track; its clips dim"
-        />
-        <Toggle
-          size="sm" className={styles.state} data-kind="solo"
-          on={!!track.solo} onChange={() => onSolo(track.id)}
-          glyph="S" aria-label={`Solo ${track.name}`}
-          hint="Solo: hear only soloed tracks"
+        <Pearl
+          lit={lit ?? !track.muted}
+          label={track.name}
+          onToggle={() => (onPearl ? onPearl(track.id, 'toggle') : onMute?.(track.id))}
+          onSolo={() => (onPearl ? onPearl(track.id, 'solo') : onSolo?.(track.id))}
         />
         <Toggle
           size="sm" className={styles.state} data-kind="visual"
           on={!!track.visualOnly} onChange={() => onVisualOnly(track.id)}
-          glyph="V" aria-label={`Visual only ${track.name}`}
+          glyph={<Icon name="eye" />} aria-label={`Visual only ${track.name}`}
           hint="Visual only: silences audio, keeps grid triggers"
         />
       </div>

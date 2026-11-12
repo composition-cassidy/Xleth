@@ -6,6 +6,7 @@ import ReactDOM from 'react-dom/client'
 import XlethRoot from './XlethRoot.jsx'
 import NodeEditorWindow from './NodeEditorWindow.jsx'
 import { ThemeProvider } from './theming/runtime/ThemeProvider'
+import { installWheelToHorizontalScroll } from './hooks/wheelToHorizontalScroll'
 
 // UI font weights
 import '@fontsource/inter/300.css'
@@ -24,6 +25,8 @@ import '@fontsource/ibm-plex-mono/500.css'
 
 import './styles/legacy.css'
 import './ui-kit/tokens.css'
+import './ui-kit/motion.css'
+import { useMotionStore } from './stores/motionStore.js'
 
 const params = new URLSearchParams(window.location.search)
 const view = params.get('view')
@@ -36,6 +39,13 @@ const UI_KIT_GALLERY = import.meta.env.VITE_XLETH_UI_KIT_GALLERY === '1' || impo
 const Gallery = UI_KIT_GALLERY ? React.lazy(() => import('./ui-kit/Gallery.jsx')) : null
 
 console.log('[UI] App mounting', view ? `(view=${view}, key=${storeKey})` : '')
+
+// How much the interface moves (Settings > Appearance > Motion). Until this resolves, and in
+// every window that never calls it, nothing animates (ui-kit/motion.css: no attribute is flat).
+useMotionStore.getState().hydrate()
+
+// Plain wheel over a sideways scrollbar scrolls it sideways (see hooks/wheelToHorizontalScroll.js).
+installWheelToHorizontalScroll()
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>

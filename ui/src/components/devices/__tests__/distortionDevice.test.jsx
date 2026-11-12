@@ -34,6 +34,15 @@ let engineParams
 
 const flush = async () => { await act(async () => { await new Promise((r) => setTimeout(r, 0)) }) }
 const q = (sel) => container.querySelector(sel)
+// A Select: open the trigger, then click the option in the portalled listbox.
+const trigger = (label) => q(`button[aria-haspopup="listbox"][aria-label="${label}"]`)
+const pick = (label, optionLabel) => {
+  expect(trigger(label), `select "${label}"`).toBeTruthy()
+  act(() => trigger(label).click())
+  const option = Array.from(document.querySelectorAll('[role="option"]')).find((o) => o.textContent.trim() === optionLabel)
+  expect(option, `option "${optionLabel}"`).toBeTruthy()
+  act(() => option.click())
+}
 const slider = (label) => q(`[role="slider"][aria-label="${label}"]`)
 const aria = (label) => slider(label)?.getAttribute('aria-valuetext')
 const sent = (id) => audio.setEffectParameter.mock.calls.filter((c) => c[2] === id)
@@ -100,11 +109,11 @@ describe('Distortion device in the chain', () => {
     act(() => root.render(<DeviceChain />))
     await flush()
     await flush()
-    const group = q('[role="radiogroup"][aria-label="Distortion mode"]')
-    const labels = Array.from(group.querySelectorAll('[role="radio"]')).map((b) => b.textContent)
+    expect(trigger('Distortion mode').textContent).toBe('Analog')
+    act(() => trigger('Distortion mode').click())
+    const labels = Array.from(document.querySelectorAll('[role="option"]')).map((o) => o.textContent.trim())
     expect(labels).toEqual(['Tube', 'Soft clip', 'Hard clip', 'Analog', 'Crush', 'Fuzz', 'Sine'])
-    expect(group.querySelector('[aria-checked="true"]').textContent).toBe('Analog')
-    act(() => Array.from(group.querySelectorAll('[role="radio"]')).find((b) => b.textContent === 'Fuzz').click())
+    act(() => Array.from(document.querySelectorAll('[role="option"]')).find((o) => o.textContent.trim() === 'Fuzz').click())
     expect(sent('mode')[sent('mode').length - 1].slice(2)).toEqual(['mode', 5])
   })
 
@@ -115,7 +124,7 @@ describe('Distortion device in the chain', () => {
     expect(slider('Symmetry').getAttribute('aria-disabled')).toBeNull()
     expect(slider('Bits').getAttribute('aria-disabled')).toBe('true')
     expect(slider('Downsample').getAttribute('aria-disabled')).toBe('true')
-    act(() => Array.from(container.querySelectorAll('[role="radio"]')).find((b) => b.textContent === 'Crush').click())
+    pick('Distortion mode', 'Crush')
     expect(slider('Symmetry').getAttribute('aria-disabled')).toBe('true')
     expect(slider('Bits').getAttribute('aria-disabled')).toBeNull()
   })

@@ -22,20 +22,13 @@ function lucideImports(source: string): string[] {
   return names;
 }
 
-// Generic stand-ins for Xleth's own panels and tools (DESIGN.md: icons).
-const BANNED_AS_IDENTITY = [
-  'Music', 'Music2', 'Music3', 'Music4', 'Piano', 'AudioWaveform', 'AudioLines', 'Sliders', 'SlidersHorizontal',
-  'SlidersVertical', 'Clock3', 'Video', 'Workflow', 'Scissors', 'MousePointer2', 'MousePointer', 'Pencil',
-  'FlaskConical', 'PanelLeft', 'PanelRight', 'Blocks',
-];
-
 describe('panel and tool icons', () => {
   it('every panel is drawn from the Xleth icon family', () => {
     for (const id of ACTIVE_PANEL_IDS) {
       const Icon = PANEL_CATALOG[id].icon;
       const html = renderToStaticMarkup(<Icon />);
-      expect(html, id).toContain('viewBox="0 0 16 16"');
-      expect(html, id).toContain('stroke-width="1.5"');
+      // The one family: Phosphor's 256 grid (custom XLETH glyphs are drawn to the same grid).
+      expect(html, id).toContain('viewBox="0 0 256 256"');
       expect(html, id).toContain('aria-hidden="true"');
     }
   });
@@ -45,7 +38,7 @@ describe('panel and tool icons', () => {
     expect(new Set(drawings).size).toBe(drawings.length);
   });
 
-  it('the identity files import no generic music, slider or tool glyphs from Lucide', () => {
+  it('the identity files import nothing from Lucide (Phosphor is the only family)', () => {
     for (const file of [
       'windowing/registry/panelCatalog.ts',
       'components/TitleBar.jsx',
@@ -56,8 +49,7 @@ describe('panel and tool icons', () => {
       'windowing/components/DetailDock.tsx',
       'windowing/components/PanelTabStrip.tsx',
     ]) {
-      const used = lucideImports(read(file)).filter((name) => BANNED_AS_IDENTITY.includes(name));
-      expect(used, file).toEqual([]);
+      expect(lucideImports(read(file)), file).toEqual([]);
     }
   });
 

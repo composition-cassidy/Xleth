@@ -2,6 +2,7 @@
 #include "Command.h"
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -17,7 +18,9 @@ class Timeline;
 //   • redo()    pops the redo stack, calls cmd->execute(), pushes onto undo stack.
 //   • If undoStack exceeds maxHistory, the oldest entry is silently dropped.
 //
-// NOT thread-safe — call from a single thread only.
+// NOT thread-safe — call from a single thread only. (setMutationMutex below
+// does not change that: it protects the TIMELINE against a concurrent reader,
+// not this class against a second writer.)
 
 class UndoManager {
 public:
@@ -90,10 +93,34 @@ public:
     // timeline (it runs while the command stacks are consistent but unlocked).
     void setPostMutationHook(std::function<void()> hook);
 
+    // ─── Mutation guard ───────────────────────────────────────────────────────
+    // When set, the mutex is held for exactly the span in which a command
+    // changes the timeline — Command::execute() and Command::undo() — and
+    // released before stack bookkeeping and the post-mutation hook run.
+    //
+    // It exists for the one other thread that reads the timeline: the video
+    // thread, which looks up tracks, regions and sources on every preview
+    // frame. Those are std::map lookups; a command inserting or erasing a node
+    // in the same map underneath one is a data race that can walk a tree
+    // mid-rebalance or read a node that was just freed. Locking around each
+    // mutation handler would work only until the next handler forgets — a
+    // handful of them took the lock and well over a hundred did not. Every
+    // timeline mutation goes through this class by project invariant, so one
+    // lock here covers all of them, including command types not written yet.
+    //
+    // Recursive on purpose: several bridge handlers already hold this same
+    // mutex around their execute() call (so that follow-up work lands in the
+    // same critical section), and they must keep working unchanged.
+    //
+    // The pointee must outlive the UndoManager. nullptr (the default) disables
+    // the guard, which is what every unit test wants.
+    void setMutationMutex(std::recursive_mutex* mutex);
+
 private:
     void firePostMutationHook() const;
 
     std::function<void()> postMutationHook_;
+    std::recursive_mutex* mutationMutex_ = nullptr;
 
     std::vector<std::unique_ptr<Command>> undoStack_;
     std::vector<std::unique_ptr<Command>> redoStack_;

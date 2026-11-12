@@ -406,6 +406,7 @@ export default function ResonanceCurveOverlay({ params, setParam, selectedBandId
         height="100%"
         viewBox={`0 0 ${w} ${h}`}
         preserveAspectRatio="none"
+        data-wheel-owner="true"
         onWheel={onWheel}
       >
         <rect

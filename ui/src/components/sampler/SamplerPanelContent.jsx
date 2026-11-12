@@ -1,10 +1,13 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { timelineEvents } from '../../timelineEvents.js'
 import { Tabs } from '../../ui-kit'
+import { pearlPlan } from '../../ui-kit/pearlRules'
 import SlotTabs, { MAX_SLOTS } from './SlotTabs.jsx'
 import AuditionBar from './AuditionBar.jsx'
 import PatchBar from './PatchBar.jsx'
+import SlotBar from './SlotBar.jsx'
 import SamplerMainView from './SamplerMainView.jsx'
+import SamplerEnvelopeView from './SamplerEnvelopeView.jsx'
 import SamplerPlaybackView from './SamplerPlaybackView.jsx'
 import SamplerModulationView from './SamplerModulationView.jsx'
 import { ModDragGhost } from './modulation/ModDragLayer.jsx'
@@ -21,9 +24,11 @@ import { nudgeEventFor, applyRecordFor, autoLoopSummary } from './autoLoopTeleme
 import styles from './Sampler.module.css'
 
 // ── Sampler ─────────────────────────────────────────────────────────────────
-// The per-region sampler every pattern track's notes play through. One 28px
-// header (slot tabs | patch | views), one body, one audition bar. The views
-// share one height, so switching never resizes the panel and nothing animates.
+// The per-region sampler every pattern track's notes play through, as a window
+// of its own. Top to bottom: the slots (layers) and the patch, the selected
+// slot's level and pitch, the view tabs directly over the body they switch, and
+// the audition bar. The views share one body, so switching never resizes the
+// window and nothing animates.
 //
 // Data flow (unchanged): `slots` mirrors the engine's slot list; `settings` holds
 // the SELECTED slot's per-sample fields plus the region-level fields. Every drag
@@ -31,7 +36,8 @@ import styles from './Sampler.module.css'
 // (one SetSamplerSettingsCommand, one Ctrl+Z).
 
 const VIEW_TABS = [
-  { id: 'main', label: 'Main', hint: 'Waveform, trim, loop, amp envelope, pitch, prep and process for the selected slot' },
+  { id: 'main', label: 'Sample', hint: 'The waveform, trim, loop, note mode, time stretch and process for the selected slot' },
+  { id: 'envelope', label: 'Envelope', hint: 'The amp envelope: how the level of every note rises, holds and fades' },
   { id: 'playback', label: 'Playback', hint: 'Voicing, glide, arpeggiator and per-note effects' },
   { id: 'modulation', label: 'Modulation', hint: 'Envelopes, LFOs, velocity and note response, and the routes they drive' },
 ]
@@ -431,6 +437,26 @@ export default function SamplerPanelContent({ regionId, onClose }) {
       timelineEvents.dispatchEvent(new CustomEvent('timeline-sampler-changed', { detail: { regionId } }))
     } catch (e) {
       console.warn('[SamplerPanelContent] slot commit failed:', e.message)
+    }
+  }, [regionId])
+
+  // Output pearl on a slot (ui-kit/pearlRules.ts): one commit for the whole change, so a solo
+  // that mutes several slots is a single settings write.
+  const pearlSlot = useCallback(async (slotIdx, action) => {
+    if (regionId == null) return
+    const cur = slotsRef.current
+    const changes = pearlPlan(cur.map((sl, i) => ({ id: i, muted: !!sl.mute, soloed: !!sl.solo })), slotIdx, action)
+    if (changes.length === 0) return
+    const next = cur.map((sl, i) => {
+      const c = changes.find((x) => x.id === i)
+      return c ? { ...sl, mute: c.muted ?? !!sl.mute, solo: c.clearSolo ? false : sl.solo } : sl
+    })
+    setSlots(next)
+    try {
+      await window.xleth?.timeline?.updateSamplerSettings(regionId, { slots: next })
+      timelineEvents.dispatchEvent(new CustomEvent('timeline-sampler-changed', { detail: { regionId } }))
+    } catch (e) {
+      console.warn('[SamplerPanelContent] slot pearl commit failed:', e.message)
     }
   }, [regionId])
 
@@ -837,34 +863,52 @@ export default function SamplerPanelContent({ regionId, onClose }) {
     ? Math.round(180 * (numSamples / waveViewLen))
     : 180
 
+  const slotActions = {
+    swap: () => swapSlot(selectedSlot),
+    duplicate: () => duplicateSlot(selectedSlot),
+    copy: copySlot,
+    paste: pasteSlot,
+    rename: () => setRenameSignal((n) => n + 1),
+    remove: () => removeSlot(selectedSlot),
+  }
   const mainActions = {
     setField, setFields, commit, commitField, commitPrep, commitLoopPoints, commitSmpPoints,
-    previewSlotField, commitSlotField, toggleSlotFlag, runAutoLoop,
-    slot: {
-      swap: () => swapSlot(selectedSlot),
-      duplicate: () => duplicateSlot(selectedSlot),
-      copy: copySlot,
-      paste: pasteSlot,
-      rename: () => setRenameSignal((n) => n + 1),
-      remove: () => removeSlot(selectedSlot),
-    },
+    runAutoLoop,
+    slot: slotActions,
   }
 
   return (
-    <div className={styles.root} data-sampler-view={tab}>
-      <div className={styles.header}>
-        <SlotTabs
-          slots={slots}
-          selectedSlot={selectedSlot}
-          onSelectSlot={setSelectedSlot}
-          onAddSlot={() => addSlot()}
-          onAddSlotFromPath={(path) => addSlot(path)}
-          onDropSlotAudio={(i, path) => swapSlot(i, path)}
-          onRenameSlot={renameSlot}
-          renameSignal={renameSignal}
-          busy={slotBusy}
-        />
+    <div className={styles.root}>
+      <div className={styles.shell} data-sampler-view={tab}>
+        <div className={styles.slotRow}>
+          <SlotTabs
+            slots={slots}
+            selectedSlot={selectedSlot}
+            onSelectSlot={setSelectedSlot}
+            onAddSlot={() => addSlot()}
+            onAddSlotFromPath={(path) => addSlot(path)}
+            onDropSlotAudio={(i, path) => swapSlot(i, path)}
+            onRenameSlot={renameSlot}
+            renameSignal={renameSignal}
+            busy={slotBusy}
+          />
+        </div>
         <PatchBar onSave={savePatch} onLoad={loadPatch} disabled={regionId == null} />
+
+        {/* The selected slot's level and pitch: under its tab, in every view. */}
+        <SlotBar
+          slots={slots}
+          slotIndex={selectedSlot}
+          maxSlots={MAX_SLOTS}
+          rootNote={settings.rootNote}
+          busy={slotBusy}
+          canPaste={canPaste}
+          actions={{
+            previewSlotField, commitSlotField, toggleSlotFlag, pearlSlot, setField, commitField,
+            slot: slotActions,
+          }}
+        />
+
         <Tabs
           className={styles.views}
           label="Sampler views"
@@ -872,71 +916,70 @@ export default function SamplerPanelContent({ regionId, onClose }) {
           value={tab}
           onChange={setTab}
         />
-      </div>
 
-      <div className={styles.body}>
-        {tab === 'main' && (
-          <SamplerMainView
-            regionId={regionId}
-            slots={slots}
-            slotIndex={selectedSlot}
-            maxSlots={MAX_SLOTS}
-            settings={settings}
-            numSamples={numSamples}
-            sampleRate={sampleRate}
-            sourceName={sourceName}
-            sourcePath={sourcePath}
-            sourceDuration={sourceDuration}
-            slotBusy={slotBusy}
-            canPaste={canPaste}
-            prepBusy={prepBusy}
-            prepBypassed={prepBypassed}
-            autoBusy={autoBusy}
-            autoResult={autoResult}
-            playPosition={playPosition}
-            snapZero={snapZero}
-            onSnapZero={setSnapZero}
-            waveView={waveView}
-            onWaveViewChange={onWaveViewChange}
-            sampleDragRange={sampleDragRange}
-            actions={mainActions}
-          />
-        )}
-        {tab === 'playback' && (
-          <SamplerPlaybackView
-            regionId={regionId}
-            settings={settings}
-            slotIndex={selectedSlot}
-            sourceDuration={sourceDuration}
-            prepBusy={prepBusy}
-            prepBypassed={prepBypassed}
-            actions={{
-              setField, setFields, commit, commitField,
-              commitChainField, previewChainField, addMangleInstance, moveMangleInstance, removeMangleInstance,
-            }}
-          />
-        )}
-        {tab === 'modulation' && (
-          <SamplerModulationView
-            slotIndex={selectedSlot}
-            chainLength={Array.isArray(settings.mangleChain) ? settings.mangleChain.length : 0}
-            bpm={bpm}
-          />
-        )}
-      </div>
+        <div className={styles.body}>
+          {tab === 'main' && (
+            <SamplerMainView
+              regionId={regionId}
+              slots={slots}
+              slotIndex={selectedSlot}
+              settings={settings}
+              numSamples={numSamples}
+              sampleRate={sampleRate}
+              sourceName={sourceName}
+              sourcePath={sourcePath}
+              sourceDuration={sourceDuration}
+              slotBusy={slotBusy}
+              prepBusy={prepBusy}
+              prepBypassed={prepBypassed}
+              autoBusy={autoBusy}
+              autoResult={autoResult}
+              playPosition={playPosition}
+              snapZero={snapZero}
+              onSnapZero={setSnapZero}
+              waveView={waveView}
+              onWaveViewChange={onWaveViewChange}
+              sampleDragRange={sampleDragRange}
+              actions={mainActions}
+            />
+          )}
+          {tab === 'envelope' && <SamplerEnvelopeView bpm={bpm} />}
+          {tab === 'playback' && (
+            <SamplerPlaybackView
+              regionId={regionId}
+              settings={settings}
+              slotIndex={selectedSlot}
+              sourceDuration={sourceDuration}
+              prepBusy={prepBusy}
+              prepBypassed={prepBypassed}
+              actions={{
+                setField, setFields, commit, commitField,
+                commitChainField, previewChainField, addMangleInstance, moveMangleInstance, removeMangleInstance,
+              }}
+            />
+          )}
+          {tab === 'modulation' && (
+            <SamplerModulationView
+              slotIndex={selectedSlot}
+              chainLength={Array.isArray(settings.mangleChain) ? settings.mangleChain.length : 0}
+              bpm={bpm}
+            />
+          )}
+        </div>
 
-      {/* The audition keyboard applies to every view and is the panel's only
-          "is this thing making a sound" affordance, so it is always shown. */}
-      <AuditionBar
-        octaveShift={octaveShift}
-        onOctaveShift={(n) => setOctaveShift(clampOctaveShift(n))}
-        velocity={velocity}
-        onVelocity={setVelocity}
-        heldCount={heldCount}
-        rootNote={settings.rootNote ?? 60}
-        onPreviewRoot={previewRootNote}
-        disabled={regionId == null}
-      />
+        {/* The audition keyboard applies to every view and is the panel's only
+            "is this thing making a sound" affordance, so it is always shown. */}
+        <AuditionBar
+          octaveShift={octaveShift}
+          onOctaveShift={(n) => setOctaveShift(clampOctaveShift(n))}
+          velocity={velocity}
+          onVelocity={setVelocity}
+          heldCount={heldCount}
+          rootNote={settings.rootNote ?? 60}
+          onPreviewRoot={previewRootNote}
+          disabled={regionId == null}
+        />
+      </div>
 
       <ModDragGhost />
     </div>

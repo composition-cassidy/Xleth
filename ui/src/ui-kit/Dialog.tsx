@@ -1,9 +1,12 @@
 import { useEffect, useId, useRef } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { X } from 'lucide-react';
 import { IconButton } from './Button';
 import styles from './Dialog.module.css';
+import { useGhostExit, useMotionEnter } from './motion';
+import { iconComponent } from './icons';
+
+const IcX = iconComponent('x');
 
 const FOCUSABLE = 'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
@@ -41,6 +44,10 @@ export interface DialogProps {
 export default function Dialog({ title, onClose, onEnter, dismissable = true, children, actions, width = 'md', className, flush = false, fill = false, above = false }: DialogProps) {
   const titleId = useId();
   const panel = useRef<HTMLDivElement>(null);
+  const backdrop = useRef<HTMLDivElement>(null);
+  const scrimEnter = useMotionEnter('scrim');
+  const panelEnter = useMotionEnter('dialog');
+  useGhostExit(backdrop, { scaleTarget: '[data-dialog-panel]' });
   const callbacks = useRef({ onClose, onEnter, dismissable });
   callbacks.current = { onClose, onEnter, dismissable };
 
@@ -81,6 +88,8 @@ export default function Dialog({ title, onClose, onEnter, dismissable = true, ch
 
   return createPortal(
     <div
+      ref={backdrop}
+      {...scrimEnter}
       className={styles.backdrop}
       data-above={above || undefined}
       onMouseDown={(e) => { if (e.target === e.currentTarget && dismissable) onClose?.(); }}
@@ -91,6 +100,8 @@ export default function Dialog({ title, onClose, onEnter, dismissable = true, ch
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
+        {...panelEnter}
+        data-dialog-panel=""
         className={`${styles.panel}${className ? ` ${className}` : ''}`}
         data-width={width}
         data-fill={fill || undefined}
@@ -99,7 +110,7 @@ export default function Dialog({ title, onClose, onEnter, dismissable = true, ch
         <div className={styles.header}>
           <h2 id={titleId} className={styles.title}>{title}</h2>
           {dismissable && onClose ? (
-            <IconButton label="Close" size="sm" onClick={onClose}><X size={14} /></IconButton>
+            <IconButton label="Close" size="sm" onClick={onClose}><IcX size={14} /></IconButton>
           ) : null}
         </div>
         <div className={styles.body} data-flush={flush || undefined}>{children}</div>

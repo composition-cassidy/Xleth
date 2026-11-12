@@ -13,13 +13,17 @@
 // measured, every value reads "—" with its unit, and the bars are not drawn.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ChevronsLeft, ChevronsRight, RotateCcw } from 'lucide-react'
 import { IconButton, Select, Toggle, formatValue } from '../ui-kit'
 import { tokenValue } from '../theming/tokenValue.ts'
 import { useThemeEpoch } from '../theming/useThemeEpoch.js'
 import { PLATFORM_TARGETS } from '../constants/loudnessTargets.js'
 import useMixerUiStore from './mixer/mixerUiStore.js'
 import styles from './MasterLoudnessMeter.module.css'
+import { iconComponent } from '../ui-kit/icons'
+
+const IcArrowCounterClockwise = iconComponent('arrow-counter-clockwise')
+const IcCaretDoubleLeft = iconComponent('caret-double-left')
+const IcCaretDoubleRight = iconComponent('caret-double-right')
 
 // LoudnessAnalyzer::kNoMeasurement. A finite sentinel rather than -Infinity so
 // it survives JSON; anything at or below it means "nothing measured yet".
@@ -327,7 +331,7 @@ export default function MasterLoudnessMeter() {
           data-hint-mods="Click: open the dock"
           onClick={() => setUserOpen(true)}
         >
-          <ChevronsLeft size={14} aria-hidden="true" />
+          <IcCaretDoubleLeft size={14} aria-hidden="true" />
           <span className={styles.railText}>Loudness</span>
           <span className={styles.railState}>Off</span>
         </button>
@@ -346,12 +350,12 @@ export default function MasterLoudnessMeter() {
         <IconButton
           size="sm" label="Reset loudness" onClick={handleReset}
           hint="Reset integrated loudness, loudness range and true peak"
-        ><RotateCcw size={12} aria-hidden="true" /></IconButton>
+        ><IcArrowCounterClockwise size={14} aria-hidden="true" /></IconButton>
         {enabled ? null : (
           <IconButton
             size="sm" label="Collapse the loudness dock" onClick={() => setUserOpen(false)}
             hint="Collapse the loudness dock to a rail. It opens again when metering is turned on."
-          ><ChevronsRight size={14} aria-hidden="true" /></IconButton>
+          ><IcCaretDoubleRight size={14} aria-hidden="true" /></IconButton>
         )}
       </header>
 

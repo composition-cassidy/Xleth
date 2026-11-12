@@ -1,8 +1,11 @@
 import { useState } from 'react'
-import { ChevronDown, ChevronRight } from 'lucide-react'
 import type { SubsystemMeta, TokenDef } from '../tokens/catalog'
 import TokenRow from './TokenRow'
 import styles from './ThemeEditor.module.css'
+import { iconComponent } from '../../ui-kit/icons';
+
+const IcCaretDown = iconComponent('caret-down');
+const IcCaretRight = iconComponent('caret-right');
 
 interface Props {
   category: string
@@ -33,7 +36,7 @@ export default function TokenCategoryTree({
   return (
     <div className={styles.category}>
       <button type="button" className={styles.treeHeader} aria-expanded={categoryOpen} onClick={() => setCategoryOpen(o => !o)}>
-        {categoryOpen ? <ChevronDown size={12} aria-hidden="true" /> : <ChevronRight size={12} aria-hidden="true" />}
+        {categoryOpen ? <IcCaretDown size={14} aria-hidden="true" /> : <IcCaretRight size={14} aria-hidden="true" />}
         <span className={styles.categoryName}>{category}</span>
       </button>
 
@@ -43,7 +46,7 @@ export default function TokenCategoryTree({
         return (
           <div key={sub.key} className={styles.subsystem}>
             <button type="button" className={styles.treeHeader} aria-expanded={isOpen} onClick={() => toggleSub(sub.key)}>
-              {isOpen ? <ChevronDown size={12} aria-hidden="true" /> : <ChevronRight size={12} aria-hidden="true" />}
+              {isOpen ? <IcCaretDown size={14} aria-hidden="true" /> : <IcCaretRight size={14} aria-hidden="true" />}
               <span className={styles.subName} data-deferred={sub.plannedDeferred || undefined}>
                 {sub.displayName}
                 {sub.plannedDeferred && ' (coming soon)'}

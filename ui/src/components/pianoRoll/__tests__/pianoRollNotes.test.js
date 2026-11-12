@@ -91,7 +91,7 @@ describe('ghost notes', () => {
     expect(same).toEqual([0, 1920])
     // Pattern 3 is trimmed by 480: its note at 480 lands on the block start; the note at 0 is cut.
     const other = ghosts.filter((g) => g.kind === 'other')
-    expect(other).toEqual([{ positionTicks: 0, durationTicks: 240, pitch: 72, kind: 'other' }])
+    expect(other).toEqual([expect.objectContaining({ positionTicks: 0, durationTicks: 240, pitch: 72, kind: 'other' })])
     // Pattern 4 does not overlap the anchor block.
     expect(ghosts.some((g) => g.pitch === 40)).toBe(false)
   })

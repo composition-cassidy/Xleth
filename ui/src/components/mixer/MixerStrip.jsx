@@ -1,6 +1,5 @@
 import { memo, useCallback, useEffect, useRef } from 'react'
-import { VolumeX } from 'lucide-react'
-import { Fader, Knob, Meter, NumberBox, Select, Toggle, dbTaperScale } from '../../ui-kit'
+import { Fader, Icon, Knob, Meter, NumberBox, Pearl, Select, Toggle, isHeard, dbTaperScale, motionScrollBehavior, useMotionEnter } from '../../ui-kit'
 import useMixerStore, { MASTER_OUTPUT_TARGET_ID, normalizeOutputTargetId } from '../../stores/mixerStore.js'
 import useTimelineFocusStore from '../../stores/timelineFocusStore.js'
 import useEffectChainStore, { resolveFxMode } from '../../stores/effectChainStore.js'
@@ -42,7 +41,23 @@ export function openDevicesFor(chainKey, trackId, deviceIndex = null) {
   if (deviceIndex != null) requestDeviceReveal(chainKey, deviceIndex)
 }
 
-function MixerStrip({ trackId, index, color, stripW = 72, insertRowCount = 5 }) {
+/**
+ * The strip's name, written up the side of the meter (reads bottom to top, starts at the
+ * bottom, an ellipsis takes the top of a long one). It is decoration for the eye: the strip's
+ * group label already names the track, so it is hidden from assistive tech. The text sits in an
+ * absolutely placed child, so a long name never lends the fader row any height.
+ */
+export function VerticalName({ name }) {
+  return (
+    <span className={styles.vname} title={name} aria-hidden="true" data-testid="strip-name">
+      <span className={styles.vtext}>{name}</span>
+    </span>
+  )
+}
+
+function MixerStrip({ trackId, index, color, stripW = 72, insertRowCount = 5, insertsOpen = false, enter = false }) {
+  // Decided once, when the strip mounts: true only for a track added to a mixer already on screen.
+  const enterAttrs = useMotionEnter('insert', enter)
   const fxKey = String(trackId)
   const track = useMixerStore(s => s.tracks[trackId])
   const tracks = useMixerStore(s => s.tracks)
@@ -54,8 +69,7 @@ function MixerStrip({ trackId, index, color, stripW = 72, insertRowCount = 5 }) 
   const setOutputRoute = useMixerStore(s => s.setOutputRoute)
   const getEligibleOutputTargets = useMixerStore(s => s.getEligibleOutputTargets)
   const refreshRouting = useMixerStore(s => s.refreshRouting)
-  const toggleMute = useMixerStore(s => s.toggleMute)
-  const toggleSolo = useMixerStore(s => s.toggleSolo)
+  const pearl = useMixerStore(s => s.pearl)
   const toggleVisualOnly = useMixerStore(s => s.toggleVisualOnly)
   const selected = useMixerStore(s => s.selectedChainKey === fxKey)
   const setSelectedChainKey = useMixerStore(s => s.setSelectedChainKey)
@@ -72,7 +86,7 @@ function MixerStrip({ trackId, index, color, stripW = 72, insertRowCount = 5 }) 
   const routeTarget = routeTargetId === MASTER_OUTPUT_TARGET_ID ? null : tracks[routeTargetId]
 
   useEffect(() => {
-    if (selected) stripRef.current?.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' })
+    if (selected) stripRef.current?.scrollIntoView({ behavior: motionScrollBehavior(), inline: 'nearest', block: 'nearest' })
   }, [selected])
 
   // The insert list reads the chain cache, which only the Devices and FX Graph
@@ -121,6 +135,7 @@ function MixerStrip({ trackId, index, color, stripW = 72, insertRowCount = 5 }) 
   return (
     <div
       ref={stripRef}
+      {...enterAttrs}
       className={styles.strip}
       style={{ '--strip-id': color, '--strip-w': `${stripW}px` }}
       data-selected={selected}
@@ -135,42 +150,41 @@ function MixerStrip({ trackId, index, color, stripW = 72, insertRowCount = 5 }) 
       onClick={handleSelect}
       onContextMenu={handleContextMenu}
     >
-      {/* Number over name: two rows, so a 10-character name is whole at 72px. */}
+      {/* The number alone: the name is written up the side of the meter (below), as on a hardware strip. */}
       <div className={styles.head} title={name}>
         <span className={styles.numRow}>
           <span className={styles.num}>{index}</span>
-          {track.muted ? <VolumeX className={styles.muteGlyph} size={12} aria-hidden="true" /> : null}
+          {track.muted ? <Icon name="speaker-simple-x" weight="fill" className={styles.muteGlyph} size={14} /> : null}
         </span>
-        <span className={styles.name}>{name}</span>
       </div>
 
-      <InsertList name={name} chain={chain} fxMode={fxMode} rows={insertRowCount} onOpen={handleOpenInsert} />
+      <InsertList name={name} chain={chain} fxMode={fxMode} rows={insertRowCount} expanded={insertsOpen} onOpen={handleOpenInsert} />
 
       <div className={styles.toggles}>
-        <Toggle
-          size="sm" className={styles.toggle} on={!!track.muted} onChange={() => toggleMute(trackId)}
-          aria-label={`Mute ${name}`} hint="Mute. Dims the strip and silences this track."
-        >M</Toggle>
-        <Toggle
-          size="sm" className={`${styles.toggle} ${styles.solo}`} on={!!track.solo} onChange={() => toggleSolo(trackId)}
-          aria-label={`Solo ${name}`} hint="Solo. Plays only soloed tracks."
-        >S</Toggle>
+        <Pearl
+          className={styles.pearl}
+          lit={isHeard({ id: trackId, muted: !!track.muted, soloed: !!track.solo }, Object.values(tracks).filter(Boolean).map(t => ({ id: t.id, muted: !!t.muted, soloed: !!t.solo })))}
+          label={name}
+          onToggle={() => pearl(trackId, 'toggle')}
+          onSolo={() => pearl(trackId, 'solo')}
+        />
         <Toggle
           size="sm" className={styles.toggle} on={!!track.visualOnly} onChange={() => toggleVisualOnly(trackId)}
-          aria-label={`Visual only ${name}`} hint="Visual only. Silences the audio, keeps grid triggers."
-        >V</Toggle>
+          glyph={<Icon name="eye" />} aria-label={`Visual only ${name}`} hint="Visual only. Silences the audio, keeps grid triggers."
+        />
       </div>
 
-      {/* Pan left, width right. The words are printed once, in the mixer's gutter; each knob
-          keeps its accessible name, its value text and its hint. */}
+      {/* Pan left, width right: two plain dials, no words and no numbers (the pointer is the
+          reading; straight up is centre / 100 %). Each keeps its accessible name, its value
+          text and its hint, and double-click still types a value. */}
       <div className={styles.knobs}>
         <Knob
-          className={styles.knob} label="Pan" hideLabel size={20} width={knobW} bipolar min={-1} max={1} defaultValue={0}
+          className={styles.knob} label="Pan" hideLabel hideValue minimal size={20} width={knobW} bipolar min={-1} max={1} defaultValue={0}
           value={track.pan} format={formatPan} parse={parsePan}
           onChange={handlePan} onCommit={handlePan} hint={`Pan of ${name}`}
         />
         <Knob
-          className={styles.knob} label="Width" hideLabel size={20} width={knobW} min={0} max={2} defaultValue={1}
+          className={styles.knob} label="Width" hideLabel hideValue minimal size={20} width={knobW} min={0} max={2} defaultValue={1}
           value={track.spread} format={formatWidth} parse={parseWidth}
           onChange={handleSpread} onCommit={handleSpread} hint={`Stereo width of ${name}`}
         />
@@ -194,6 +208,7 @@ function MixerStrip({ trackId, index, color, stripW = 72, insertRowCount = 5 }) 
           label={name} channels={2} well="panel" tone="audio" scale="ticks" clipLatch="latched"
           subscribe={subscribe} hint={`Level of ${name}, in dB. The scale is printed once, at the left of the mixer.`}
         />
+        <VerticalName name={name} />
       </div>
 
       <div className={styles.cableSpace} aria-hidden="true" />

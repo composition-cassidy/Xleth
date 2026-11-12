@@ -1,35 +1,23 @@
-import { useEffect, useRef, useState } from 'react'
-import { MoreHorizontal } from 'lucide-react'
 import {
-  Button, DeviceSection, IconButton, Knob, Menu, MenuItem, MenuSeparator, NumberBox,
-  Select, Toggle, formatValue,
+  Button, DeviceSection, Knob, Select, Toggle, formatValue,
 } from '../../ui-kit'
 import FieldSelect from './FieldSelect.jsx'
 import SamplerWaveform from './SamplerWaveform.jsx'
-import { ModKnob, ModNumberBox } from './kitMod.jsx'
 import {
-  formatGainDb, formatOffset, formatPan, formatSamplePosition, formatTime, noteName,
-  noteValueCodec, parseGainDb, parseNote, parseOffset, parsePan, parseSamplePosition,
+  formatOffset, formatSamplePosition, formatTime, parseOffset, parseSamplePosition,
   sampleCountText, samplesToMs, slotColorVar, slotColorVarName,
 } from './samplerFormat.js'
 import { slotDisplayName } from './SlotTabs.jsx'
-import {
-  TARGET_SLOT_VOLUME, TARGET_SLOT_PAN, TARGET_SLOT_SEM, TARGET_SLOT_FINE, TARGET_SLOT_COARSE,
-  TARGET_ENV_STAGE_TIME,
-} from './modulation/modTargets.js'
-import {
-  ENV_SOURCE_0, NOTE_VALUES, STAGE_DELAY, STAGE_ATTACK, STAGE_HOLD, STAGE_DECAY, STAGE_RELEASE,
-} from './modulation/modConstants.js'
-import useSamplerModulationStore from '../../stores/samplerModulationStore.js'
 import styles from './Sampler.module.css'
 
-// ── Main view ───────────────────────────────────────────────────────────────
+// ── Sample view ─────────────────────────────────────────────────────────────
 // The waveform is the hero: a recessed g0 well drawn in the selected slot's
-// identity colour, with the slot's own header row (name, source, root note,
-// mute / solo, slot menu, snap and zoom). Beside it a fixed 240px column of
-// per-slot pitch, level, prep and process. Below it, one row of section strips
-// in signal order: Mode → Trim → Loop → Amp envelope. Everything fits the
-// default dock height at 1080p (28 header + 305 body + 28 audition bar).
+// identity colour, under a file row (what is loaded, Replace, snap and zoom). It
+// takes every pixel the window has left. Under it, two rows of titled sections:
+// Trim and Loop (the two things drawn on the waveform), then Mode, Time stretch
+// and Process. The rows wrap in a narrow window and sit beside the waveform when
+// the Sampler is docked. Level and pitch are in the slot bar above every view;
+// the amp envelope has the Envelope view.
 
 // PREP algorithms. Values are engine StretchMethod ids, the same five the
 // timeline's clip stretch uses, ordered by how often they are the right answer.
@@ -68,79 +56,29 @@ const PROCESS = [
   { field: 'reversed', label: 'Reverse', name: 'Reverse', what: 'plays the sample backwards' },
 ]
 
-const ENV_STAGES = [
-  { key: 'delay', label: 'Delay', stage: STAGE_DELAY },
-  { key: 'attack', label: 'Attack', stage: STAGE_ATTACK },
-  { key: 'hold', label: 'Hold', stage: STAGE_HOLD },
-  { key: 'decay', label: 'Decay', stage: STAGE_DECAY },
-]
-const NOTE_CODEC = noteValueCodec(NOTE_VALUES)
-
-// The strips need about this many px; below it the amp envelope folds to its
-// title (it is Env 1, also edited in Modulation) so Mode, Trim and Loop stay whole.
-const STRIPS_FULL_W = 1230
-
 const round = (v) => Math.round(v)
 
-// ── Pitch and level ───────────────────────────────────────────────────────────
-function PitchLevel({ slot, slotIndex, disabled, onPreview, onCommit }) {
-  const v = (f, d = 0) => Number(slot?.[f] ?? d)
-  const box = (field, props) => (
-    <ModNumberBox
-      key={field}
-      width={109}
-      disabled={disabled}
-      value={v(field, field === 'volume' ? 1 : 0)}
-      onChange={(x) => onPreview(slotIndex, field, x)}
-      onCommit={(x) => onCommit(slotIndex, field, x)}
-      data-slot-field={field}
-      {...props}
-    />
-  )
-  const reg = (target) => ({ target, index: slotIndex, stage: 0, scale: 1 })
-  return (
-    <div className={styles.sideSection}>
-      <DeviceSection title="Pitch and level" className={styles.sideStrip}>
-        <div className={styles.grid2}>
-          {/* Octave is deliberately not a modulation target: the engine has none. */}
-          {box('octave', { label: 'Octave', min: -4, max: 4, step: 1, quantize: round, defaultValue: 0, bipolar: true,
-            format: (x) => formatOffset(x, 'oct'), parse: parseOffset, pxPerRange: 160, hint: 'Transpose this slot by octaves' })}
-          {box('semitone', { label: 'Semi', min: -12, max: 12, step: 1, quantize: round, defaultValue: 0, bipolar: true,
-            format: (x) => formatOffset(x, 'st'), parse: parseOffset, pxPerRange: 192, modTarget: reg(TARGET_SLOT_SEM),
-            hint: 'Transpose this slot in semitones' })}
-          {box('fine', { label: 'Fine', min: -100, max: 100, step: 1, defaultValue: 0, bipolar: true,
-            format: (x) => formatOffset(x, 'ct'), parse: parseOffset, modTarget: reg(TARGET_SLOT_FINE),
-            hint: 'Fine tune this slot in cents' })}
-          {box('coarse', { label: 'Coarse', min: -48, max: 48, step: 1, quantize: round, defaultValue: 0, bipolar: true,
-            format: (x) => formatOffset(x, 'st'), parse: parseOffset, pxPerRange: 384, modTarget: reg(TARGET_SLOT_COARSE),
-            hint: 'Coarse tune this slot in semitones (±4 octaves)' })}
-          {box('volume', { label: 'Volume', min: 0, max: 2, step: 0.01, defaultValue: 1,
-            format: formatGainDb, parse: parseGainDb, modTarget: reg(TARGET_SLOT_VOLUME),
-            hint: 'Level of this slot. Linear gain 0 to 2 (up to +6.0 dB)' })}
-          {box('pan', { label: 'Pan', min: -1, max: 1, step: 0.01, defaultValue: 0, bipolar: true,
-            format: formatPan, parse: parsePan, modTarget: reg(TARGET_SLOT_PAN), hint: 'Stereo position of this slot' })}
-        </div>
-      </DeviceSection>
-    </div>
-  )
-}
-
-// ── Prep ──────────────────────────────────────────────────────────────────────
+// ── Time stretch (the engine's PREP bake) ─────────────────────────────────────
 function Prep({ settings, busy, bypassed, onLive, onCommit }) {
-  const status = busy ? 'Baking…' : (bypassed ? 'Unity, no bake' : null)
+  const status = busy ? 'Baking…' : (bypassed ? 'Off' : null)
   return (
-    <div className={styles.sideSection}>
       <DeviceSection
-        title="Prep"
-        className={styles.sideStrip}
+        title="Time stretch"
+        className={styles.section}
+        data-section="prep"
         actions={(
           <>
-            {status ? <span className={styles.caption} role="status">{status}</span> : null}
+            {status ? (
+              <span
+                className={styles.caption} role="status"
+                data-hint={bypassed && !busy ? 'Off at 100 % stretch and 0 ct shift: the slot plays its raw sample' : undefined}
+              >{status}</span>
+            ) : null}
             <Button
               size="sm"
               disabled={bypassed}
               onClick={() => onCommit({ prepStretch: 1, prepShiftCents: 0 })}
-              hint="Return to unity stretch and zero shift: the slot plays its raw sample with no bake"
+              hint="Back to 100 % stretch and 0 ct shift: the slot plays its raw sample again"
             >Reset</Button>
           </>
         )}
@@ -149,7 +87,7 @@ function Prep({ settings, busy, bypassed, onLive, onCommit }) {
           <Select
             size="sm"
             className={styles.prepAlgo}
-            ariaLabel="Prep algorithm"
+            ariaLabel="Stretch algorithm"
             value={settings.prepAlgorithm}
             options={PREP_ALGOS}
             onChange={(v) => onCommit({ prepAlgorithm: Number(v) })}
@@ -176,15 +114,13 @@ function Prep({ settings, busy, bypassed, onLive, onCommit }) {
           />
         </div>
       </DeviceSection>
-    </div>
   )
 }
 
 // ── Process ───────────────────────────────────────────────────────────────────
 function Process({ settings, onToggle }) {
   return (
-    <div className={styles.sideSection}>
-      <DeviceSection title="Process" className={styles.sideStrip}>
+      <DeviceSection title="Process" className={styles.section} data-section="process">
         <div className={styles.grid2}>
           {PROCESS.map((p) => (
             <Toggle
@@ -200,130 +136,17 @@ function Process({ settings, onToggle }) {
           ))}
         </div>
       </DeviceSection>
-    </div>
-  )
-}
-
-// ── Amp envelope (Env 1) ──────────────────────────────────────────────────────
-function AmpEnvelope({ folded, onFoldChange }) {
-  const env = useSamplerModulationStore((s) => s.config?.envs?.[0])
-  const previewEnv = useSamplerModulationStore((s) => s.previewEnv)
-  const commitMod = useSamplerModulationStore((s) => s.commit)
-  const hint = 'Env 1 is the amp envelope. Its curves, and tempo sync, are in Modulation.'
-
-  if (!env) {
-    return (
-      <DeviceSection title="Amp envelope" folded={folded} onFoldChange={onFoldChange}>
-        <span className={styles.caption}>Loading…</span>
-      </DeviceSection>
-    )
-  }
-  const sync = !!env.tempoSync
-  const live = (patch) => previewEnv(0, patch)
-  const done = (patch) => { previewEnv(0, patch); commitMod() }
-  const stageReg = (stage) => ({ target: TARGET_ENV_STAGE_TIME, index: ENV_SOURCE_0, stage, scale: 1 })
-
-  const time = ({ key, label, stage }) => (sync ? (
-    <Knob
-      key={key} label={label} codec={NOTE_CODEC} defaultValue={0}
-      value={env[key]?.noteValue ?? 0}
-      onChange={(x) => live({ [key]: { ...env[key], noteValue: Math.round(x) } })}
-      onCommit={(x) => done({ [key]: { ...env[key], noteValue: Math.round(x) } })}
-      hint={`${label}, as a note value at the project tempo. ${hint}`}
-    />
-  ) : (
-    <ModKnob
-      key={key} label={label} unit="ms" min={0} max={5000} defaultValue={0} quantize={round}
-      modTarget={stageReg(stage)}
-      value={env[key]?.ms ?? 0}
-      onChange={(x) => live({ [key]: { ...env[key], ms: Math.round(x) } })}
-      onCommit={(x) => done({ [key]: { ...env[key], ms: Math.round(x) } })}
-      hint={`${label} time. ${hint}`}
-    />
-  ))
-
-  return (
-    <DeviceSection title="Amp envelope" folded={folded} onFoldChange={onFoldChange} data-section="amp">
-      <div className={styles.knobRow}>
-        {ENV_STAGES.map(time)}
-        <Knob
-          label="Sustain" unit="%" min={0} max={100} defaultValue={100} quantize={round}
-          value={env.sustainPct ?? 100}
-          onChange={(x) => live({ sustainPct: Math.round(x) })}
-          onCommit={(x) => done({ sustainPct: Math.round(x) })}
-          hint={`Sustain level while a note is held. ${hint}`}
-        />
-        {time({ key: 'release', label: 'Release', stage: STAGE_RELEASE })}
-      </div>
-    </DeviceSection>
-  )
-}
-
-// ── Slot menu ─────────────────────────────────────────────────────────────────
-function SlotMenu({ slotIndex, slotCount, maxSlots, busy, canPaste, actions }) {
-  const [at, setAt] = useState(null)
-  const btnRef = useRef(null)
-  const isRegion = slotIndex === 0
-  const full = slotCount >= maxSlots
-  return (
-    <>
-      <IconButton
-        ref={btnRef}
-        size="sm"
-        label={`Slot ${slotIndex + 1} actions`}
-        aria-haspopup="menu"
-        aria-expanded={!!at}
-        onClick={() => {
-          const r = btnRef.current?.getBoundingClientRect()
-          setAt(r ? { x: r.left, y: r.bottom } : { x: 0, y: 0 })
-        }}
-        hint="Load or replace audio, duplicate, copy and paste settings, rename, remove"
-      >
-        <MoreHorizontal aria-hidden="true" />
-      </IconButton>
-      {at ? (
-        <Menu x={at.x} y={at.y} onClose={() => setAt(null)} label={`Slot ${slotIndex + 1} actions`}>
-          <MenuItem disabled={busy} onSelect={actions.swap}>
-            {isRegion ? 'Replace region audio…' : 'Replace slot audio…'}
-          </MenuItem>
-          <MenuItem disabled={busy || full} onSelect={actions.duplicate}>Duplicate slot</MenuItem>
-          <MenuSeparator />
-          <MenuItem disabled={busy} onSelect={actions.copy}>Copy settings</MenuItem>
-          <MenuItem disabled={busy || !canPaste} onSelect={actions.paste}>Paste settings</MenuItem>
-          <MenuItem onSelect={actions.rename}>Rename</MenuItem>
-          <MenuSeparator />
-          <MenuItem danger disabled={isRegion || busy} onSelect={actions.remove}>
-            {isRegion ? 'Slot 1 holds the region sample' : 'Remove slot'}
-          </MenuItem>
-        </Menu>
-      ) : null}
-    </>
   )
 }
 
 // ── The view ──────────────────────────────────────────────────────────────────
 export default function SamplerMainView({
-  regionId, slots, slotIndex, maxSlots, settings, numSamples, sampleRate, sourceName, sourcePath,
-  sourceDuration, slotBusy, canPaste, prepBusy, prepBypassed, autoBusy, autoResult, playPosition,
+  regionId, slots, slotIndex, settings, numSamples, sampleRate, sourceName, sourcePath,
+  sourceDuration, slotBusy, prepBusy, prepBypassed, autoBusy, autoResult, playPosition,
   snapZero, onSnapZero, waveView, onWaveViewChange, sampleDragRange, actions,
 }) {
   const slot = slots[slotIndex] || {}
   const sr = sampleRate || 48000
-
-  const stripsRef = useRef(null)
-  const [stripsW, setStripsW] = useState(0)
-  const [ampFoldUser, setAmpFoldUser] = useState(null)
-  useEffect(() => {
-    const el = stripsRef.current
-    if (!el || typeof ResizeObserver === 'undefined') return undefined
-    const ro = new ResizeObserver((entries) => {
-      const w = Math.round(entries[0]?.contentRect.width || 0)
-      setStripsW((cur) => (cur === w ? cur : w))
-    })
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [])
-  const ampFolded = ampFoldUser ?? (stripsW > 0 && stripsW < STRIPS_FULL_W)
 
   // Sample-position knobs: the range stays absolute (so the readout and type-in
   // mean what they say); what scales with zoom is the TRAVEL, so a drag across
@@ -355,64 +178,43 @@ export default function SamplerMainView({
 
   return (
     <div className={styles.main} data-view="main">
-      <div className={styles.left}>
-        {/* ── Waveform well ─────────────────────────────────────────────── */}
-        <div className={styles.well} style={{ '--slot-color': slotColorVar(slotIndex) }}>
-          <div className={styles.wellHead}>
-            <span className={styles.swatch} aria-hidden="true" />
-            <span className={styles.wellName} data-hint={sourcePath || sourceName}>
-              {slotIndex + 1} · {slotDisplayName(slot, slotIndex)}
-            </span>
-            <span className={styles.wellMeta} data-hint={`${sourceName} · ${sampleCountText(numSamples)}`}>
-              {formatValue(sr, 'Hz')} · {formatTime((sourceDuration || 0) * 1000)}
-            </span>
-            <NumberBox
-              label="Root"
-              width={84}
-              value={settings.rootNote ?? 60}
-              min={0} max={127} step={1} quantize={round} defaultValue={60}
-              pxPerRange={600}
-              format={noteName} parse={parseNote}
-              onChange={(x) => actions.setField('rootNote', Math.round(x))}
-              onCommit={(x) => actions.commitField('rootNote', Math.round(x))}
-              hint="Root note: the key that plays this slot at its own pitch. Type a note (C4) or drag."
-              data-field="rootNote"
-            />
-            <div className={styles.flags}>
-              <Toggle
-                size="sm" className={styles.flag} on={!!slot.mute}
-                onChange={() => actions.toggleSlotFlag(slotIndex, 'mute')}
-                aria-label={`Mute slot ${slotIndex + 1}`} hint="Mute this slot. Its tab dims and shows a mute glyph."
-              >M</Toggle>
-              <Toggle
-                size="sm" className={`${styles.flag} ${styles.solo}`} on={!!slot.solo}
-                onChange={() => actions.toggleSlotFlag(slotIndex, 'solo')}
-                aria-label={`Solo slot ${slotIndex + 1}`} hint="Solo this slot: only soloed slots play"
-              >S</Toggle>
-              <SlotMenu
-                slotIndex={slotIndex} slotCount={slots.length} maxSlots={maxSlots}
-                busy={slotBusy} canPaste={canPaste} actions={actions.slot}
-              />
-            </div>
-            <span className={styles.spacer} />
-            <div className={styles.wellTools} role="toolbar" aria-label="Waveform view">
-              <Toggle
-                size="sm" on={snapZero} onChange={onSnapZero}
-                hint="Trim and loop handles snap to the nearest zero crossing on release. Hold Alt while dragging to place one exactly."
-              >Snap</Toggle>
-              <Button
-                size="sm" disabled={numSamples === 0}
-                onClick={() => waveView.api?.zoomToSelection?.()}
-                hint="Zoom the waveform to the trim selection"
-              >Zoom to trim</Button>
-              <Button
-                size="sm" disabled={!waveView.api?.zoomed}
-                onClick={() => waveView.api?.zoomToFit?.()}
-                hint="Show the whole sample (or double-click the waveform)"
-              >Fit</Button>
-              <span className={styles.zoomReadout} data-hint="Visible span of the sample">{zoomText}</span>
-            </div>
+      {/* ── Waveform well ───────────────────────────────────────────────── */}
+      <div className={styles.well} style={{ '--slot-color': slotColorVar(slotIndex) }}>
+        <div className={styles.wellHead}>
+          <span className={styles.swatch} aria-hidden="true" />
+          <span className={styles.wellName} data-hint={sourcePath || sourceName || slotDisplayName(slot, slotIndex)}>
+            {sourceName || slotDisplayName(slot, slotIndex)}
+          </span>
+          <span className={styles.wellMeta} data-hint={sampleCountText(numSamples)}>
+            {formatValue(sr, 'Hz')} · {formatTime((sourceDuration || 0) * 1000)}
+          </span>
+          <Button
+            size="sm" disabled={slotBusy}
+            onClick={actions.slot.swap}
+            hint={slotIndex === 0
+              ? "Load another audio file as the region's sample. Its settings, and every other slot, are kept."
+              : 'Load another audio file into this slot. Its settings are kept. Or drop a file on the slot tab.'}
+            data-field="replaceAudio"
+          >Replace…</Button>
+          <span className={styles.spacer} />
+          <div className={styles.wellTools} role="toolbar" aria-label="Waveform view">
+            <Toggle
+              size="sm" on={snapZero} onChange={onSnapZero}
+              hint="Trim and loop handles snap to the nearest zero crossing on release. Hold Alt while dragging to place one exactly."
+            >Snap</Toggle>
+            <Button
+              size="sm" disabled={numSamples === 0}
+              onClick={() => waveView.api?.zoomToSelection?.()}
+              hint="Zoom the waveform to the trim selection"
+            >Zoom to trim</Button>
+            <Button
+              size="sm" disabled={!waveView.api?.zoomed}
+              onClick={() => waveView.api?.zoomToFit?.()}
+              hint="Show the whole sample (or double-click the waveform)"
+            >Fit</Button>
+            <span className={styles.zoomReadout} data-hint="Visible span of the sample">{zoomText}</span>
           </div>
+        </div>
           <div className={styles.canvasHost}>
             <SamplerWaveform
               regionId={regionId}
@@ -439,23 +241,12 @@ export default function SamplerMainView({
               colorVar={slotColorVarName(slotIndex)}
             />
           </div>
-        </div>
+      </div>
 
-        {/* ── Strips, in signal order ───────────────────────────────────── */}
-        <div className={styles.strips} ref={stripsRef}>
-          <DeviceSection title="Mode" data-section="mode">
-            <FieldSelect
-              label="Notes"
-              width={104}
-              value={sustained ? 'sustained' : 'oneshot'}
-              options={MODE_OPTIONS}
-              onChange={(v) => actions.commitField('crossfadeEnabled', v === 'sustained')}
-              hint={MODE_HINT}
-              data-field="crossfadeEnabled"
-            />
-          </DeviceSection>
-
-          <DeviceSection title="Trim" data-section="trim">
+      {/* ── Sections: what is drawn on the waveform first, then the rest ───── */}
+      <div className={styles.sections}>
+        <div className={styles.sectionRow}>
+          <DeviceSection title="Trim" data-section="trim" className={styles.section}>
             <div className={styles.knobRow}>
               {pos('smpStart', 'Start', settings.smpStart, {
                 max: Math.max(0, numSamples - 1),
@@ -500,6 +291,7 @@ export default function SamplerMainView({
           <DeviceSection
             title="Loop"
             data-section="loop"
+            className={styles.section}
             actions={(
               <>
                 {sustained
@@ -568,22 +360,27 @@ export default function SamplerMainView({
             </div>
           </DeviceSection>
 
-          <AmpEnvelope folded={ampFolded} onFoldChange={setAmpFoldUser} />
+        </div>
+
+        <div className={styles.sectionRow}>
+          <DeviceSection title="Mode" data-section="mode" className={styles.section}>
+            <FieldSelect
+              label="Notes"
+              width={104}
+              value={sustained ? 'sustained' : 'oneshot'}
+              options={MODE_OPTIONS}
+              onChange={(v) => actions.commitField('crossfadeEnabled', v === 'sustained')}
+              hint={MODE_HINT}
+              data-field="crossfadeEnabled"
+            />
+          </DeviceSection>
+          <Prep
+            settings={settings} busy={prepBusy} bypassed={prepBypassed}
+            onLive={actions.setFields} onCommit={actions.commitPrep}
+          />
+          <Process settings={settings} onToggle={actions.commitField} />
         </div>
       </div>
-
-      {/* ── Right column: this slot's pitch, level, prep, process ───────── */}
-      <aside className={styles.side} aria-label={`Slot ${slotIndex + 1} settings`}>
-        <PitchLevel
-          slot={slot} slotIndex={slotIndex} disabled={slotBusy}
-          onPreview={actions.previewSlotField} onCommit={actions.commitSlotField}
-        />
-        <Prep
-          settings={settings} busy={prepBusy} bypassed={prepBypassed}
-          onLive={actions.setFields} onCommit={actions.commitPrep}
-        />
-        <Process settings={settings} onToggle={actions.commitField} />
-      </aside>
     </div>
   )
 }

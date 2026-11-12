@@ -1,4 +1,6 @@
-import { Loader2 } from 'lucide-react'
+import { iconComponent } from '../ui-kit/icons'
+
+const IcSpinnerGap = iconComponent('spinner-gap')
 
 /**
  * Small non-blocking progress badge for a batch of background proxy work
@@ -19,7 +21,7 @@ export default function ProxyBatchBadge({ label, title, batch, pct, testId }) {
       title={title}
       data-testid={testId}
     >
-      <Loader2 size={12} className="poster-load-spin" />
+      <IcSpinnerGap size={14} className="poster-load-spin" />
       <span className="proxy-migration-label">{label}</span>
       <span className="proxy-migration-count">
         {Math.min(batch.completed + 1, batch.total)} / {batch.total}

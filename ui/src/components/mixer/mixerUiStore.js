@@ -31,7 +31,24 @@ export function readLoudnessDockOpen() {
   }
 }
 
+/** Whether the strips list their inserts by name. Closed unless the user opened it. */
+export const INSERTS_OPEN_KEY = 'xleth.mixer.insertsOpen'
+
+export function readInsertsOpen() {
+  try {
+    return localStorage.getItem(INSERTS_OPEN_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
 const useMixerUiStore = create((set) => ({
+  insertsOpen: readInsertsOpen(),
+  setInsertsOpen: (open) => {
+    const next = !!open
+    try { localStorage.setItem(INSERTS_OPEN_KEY, next ? '1' : '0') } catch { /* session only */ }
+    set({ insertsOpen: next })
+  },
   stripWidthMode: readStripWidthMode(),
   setStripWidthMode: (mode) => {
     const next = mode === 'normal' ? 'normal' : 'compact'

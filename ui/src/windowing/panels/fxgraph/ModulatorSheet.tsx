@@ -1,8 +1,10 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
-import { X } from 'lucide-react';
 import { Icon, IconButton, type GlyphName } from '../../../ui-kit';
 import styles from './ModulatorEditors.module.css';
+import { iconComponent } from '../../../ui-kit/icons';
+
+const IcX = iconComponent('x');
 
 // The floating editor for an envelope, an LFO or a cable's mapping: a title bar (glyph, name,
 // close) over the editor's own controls. SheetFrame is the frame alone; ModulatorSheet portals
@@ -103,6 +105,7 @@ export function SheetFrame({
   return (
     <div
       {...dataAttributes}
+      data-mo="pop"
       className={styles.sheet}
       style={{ left: pos.x, top: pos.y }}
       role="dialog"
@@ -128,7 +131,7 @@ export function SheetFrame({
         <Icon name={glyph} size={16} className={styles.sheetGlyph} />
         <span className={styles.sheetTitleText} title={title}>{title}</span>
         <IconButton label={`Close ${title}`} size="sm" className={closeClassName} onClick={onClose}>
-          <X size={14} strokeWidth={1.5} aria-hidden="true" />
+          <IcX size={14} aria-hidden="true" />
         </IconButton>
       </div>
       <div className={styles.sheetBody}>{children}</div>

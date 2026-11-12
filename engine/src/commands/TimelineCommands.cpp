@@ -2005,6 +2005,38 @@ std::string ResizeNotesBatchCommand::describe() const {
          + " (pattern=" + std::to_string(patternId_) + ")";
 }
 
+// ─── EditPatternNotesCommand ──────────────────────────────────────────────────
+
+EditPatternNotesCommand::EditPatternNotesCommand(int patternId, std::vector<PatternNote> after,
+                                                 const Timeline& timeline)
+    : patternId_(patternId), after_(std::move(after))
+{
+    const Pattern* p = timeline.getPattern(patternId);
+    if (!p) {
+        std::cerr << "[Undo] ERROR EditPatternNotesCommand: patternId=" << patternId
+                  << " not found\n";
+        return;
+    }
+    before_ = p->notes;
+    valid_ = true;
+}
+
+void EditPatternNotesCommand::execute(Timeline& timeline) {
+    if (!valid_) return;
+    // First run assigns ids to new notes in place; redo reuses them.
+    timeline.setPatternNotesKeepIds(patternId_, after_);
+}
+
+void EditPatternNotesCommand::undo(Timeline& timeline) {
+    if (!valid_) return;
+    std::vector<PatternNote> before = before_;
+    timeline.setPatternNotesKeepIds(patternId_, before);
+}
+
+std::string EditPatternNotesCommand::describe() const {
+    return "Edit Notes (pattern=" + std::to_string(patternId_) + ")";
+}
+
 // ─── ResizeNoteCommand ────────────────────────────────────────────────────────
 
 ResizeNoteCommand::ResizeNoteCommand(int patternId, int noteId, TickTime newDuration,

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { labelColor } from '../constants/labels.js'
 import SampleRow from './SampleRow.jsx'
 import SampleThumbnail from './SampleThumbnail.jsx'
@@ -54,6 +54,13 @@ export default function SampleGroup({
     }
   }, [label, collapsed, samples, onFetchRootNotes])
 
+  // One stable callback for every tile (a per-tile inline closure would defeat
+  // SampleThumbnail's memo and re-render the whole grid on each parent render).
+  const handleOpen = useCallback((region) => {
+    const src = sources[region.sourceId]
+    if (src && onOpenPicker) onOpenPicker(src)
+  }, [sources, onOpenPicker])
+
   return (
     <div className={styles.group} role="group" aria-label={`${label}, ${samples.length} samples`}>
       {/* ── Group header ───────────────────────────────────────────── */}
@@ -83,11 +90,11 @@ export default function SampleGroup({
                   isActive={region.id === activeSampleId}
                   onSelect={onSelect}
                   onContextMenu={onContextMenu}
-                  sourceName={src?.name || '?'}
                   sourceFilePath={src?.filePath || ''}
                   sourceHasVideo={src?.hasVideo}
+                  sourceDuration={src?.duration}
                   rootNote={rootNotes[region.sourceId] ?? null}
-                  onDoubleClick={() => { if (src && onOpenPicker) onOpenPicker(src) }}
+                  onOpen={handleOpen}
                 />
               )
             })}

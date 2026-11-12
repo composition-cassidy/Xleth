@@ -1,7 +1,9 @@
-import { Loader2 } from 'lucide-react'
 import { SourceAudioIcon, SourceVideoIcon } from '../ui-kit'
 import { formatClock } from './browser/browserFormat.js'
 import styles from './browser/Browser.module.css'
+import { iconComponent } from '../ui-kit/icons'
+
+const IcSpinnerGap = iconComponent('spinner-gap')
 
 /**
  * One imported source in the Media list: a 24px row with its type glyph, name,
@@ -75,7 +77,7 @@ export default function SourceCard({
       <span className={styles.name} title={source.name}>{source.name}</span>
       {proxyPending && (
         <span className={styles.rowGlyph} role="img" aria-label="Transcoding proxy" title="Transcoding proxy">
-          <Loader2 size={12} className={styles.spin} aria-hidden="true" />
+          <IcSpinnerGap size={14} className={styles.spin} aria-hidden="true" />
         </span>
       )}
       <span className={styles.duration}>{formatClock(source.duration || 0)}</span>

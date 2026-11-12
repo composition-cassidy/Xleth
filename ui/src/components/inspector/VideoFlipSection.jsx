@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeftRight, ArrowUpDown, Plus, RefreshCw, RotateCcw, RotateCw, Square, X } from 'lucide-react'
 import {
   IconButton, Menu, MenuItem, MenuSeparator, NumberBox, SectionHeader, SegmentedControl, Select,
 } from '../../ui-kit'
@@ -12,19 +11,32 @@ import {
 } from './videoFlipModel.js'
 import RowToggle from './RowToggle.jsx'
 import styles from './Inspector.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcPlus = iconComponent('plus')
+const IcX = iconComponent('x')
+const IcXFlip180 = iconComponent('xleth-flip-180')
+const IcXFlip90ccw = iconComponent('xleth-flip-90ccw')
+const IcXFlip90cw = iconComponent('xleth-flip-90cw')
+const IcXFlipHorizontal = iconComponent('xleth-flip-horizontal')
+const IcXFlipNone = iconComponent('xleth-flip-none')
+const IcXFlipStyleCcw = iconComponent('xleth-flip-style-ccw')
+const IcXFlipStyleCw = iconComponent('xleth-flip-style-cw')
+const IcXFlipStyleHorizontal = iconComponent('xleth-flip-style-horizontal')
+const IcXFlipVertical = iconComponent('xleth-flip-vertical')
 
 const ORIENTATION_GLYPH = {
-  none: Square,
-  horizontal: ArrowLeftRight,
-  vertical: ArrowUpDown,
-  'rotate-180': RefreshCw,
-  'rotate-90-cw': RotateCw,
-  'rotate-90-ccw': RotateCcw,
+  none: IcXFlipNone,
+  horizontal: IcXFlipHorizontal,
+  vertical: IcXFlipVertical,
+  'rotate-180': IcXFlip180,
+  'rotate-90-cw': IcXFlip90cw,
+  'rotate-90-ccw': IcXFlip90ccw,
 }
-const STYLE_GLYPH = { none: Square, horizontal: ArrowLeftRight, clockwise: RotateCw, counterclockwise: RotateCcw }
+const STYLE_GLYPH = { none: IcXFlipNone, horizontal: IcXFlipStyleHorizontal, clockwise: IcXFlipStyleCw, counterclockwise: IcXFlipStyleCcw }
 
 function OrientationGlyph({ orientation, size = 14 }) {
-  const G = ORIENTATION_GLYPH[orientation] ?? Square
+  const G = ORIENTATION_GLYPH[orientation] ?? IcXFlipNone
   return <G size={size} aria-hidden="true" />
 }
 
@@ -177,7 +189,7 @@ export default function VideoFlipSection({ track, onCommit }) {
             disabled={off || n >= MAX_FLIP_STATES}
             onClick={addState}
           >
-            <Plus aria-hidden="true" />
+            <IcPlus aria-hidden="true" />
           </IconButton>
         </div>
       </Row>
@@ -209,7 +221,7 @@ export default function VideoFlipSection({ track, onCommit }) {
             <span key={p} className={styles.pitchChip}>
               {midiNoteLabel(p)}
               <IconButton size="sm" label={`Remove ${midiNoteLabel(p)}`} disabled={off} onClick={() => setModConfig({ pitches: pitches.filter((x) => x !== p) })}>
-                <X aria-hidden="true" />
+                <IcX aria-hidden="true" />
               </IconButton>
             </span>
           ))}
@@ -224,7 +236,7 @@ export default function VideoFlipSection({ track, onCommit }) {
             onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addPitch() } }}
           />
           <IconButton size="sm" label="Add pitch" disabled={off} onClick={addPitch}>
-            <Plus aria-hidden="true" />
+            <IcPlus aria-hidden="true" />
           </IconButton>
         </Row>
       )}

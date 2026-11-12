@@ -393,19 +393,16 @@
     font-size: var(--type-12);
   }
 
+  /* A spinner turns only while the motion tier lets ambient loops run (ui-kit/motion.css);
+   * paused, it is a static glyph beside text that says what is happening. */
   .spin {
-    animation: spin 1s linear infinite;
+    animation: spin var(--mo-loop) linear infinite;
+    animation-play-state: var(--mo-ambient, paused);
   }
 
   @keyframes spin {
     to {
       transform: rotate(360deg);
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .spin {
-      animation: none;
     }
   }
 

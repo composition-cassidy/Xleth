@@ -4,12 +4,135 @@
 #include "render/RenderVideoDecoder.h"
 #include "render/GpuDeviceManager.h"
 #include "render/FrameCache.h"
+#include "render/Nv12Converter.h"
 
+// This suite is only ever built in Release; without this the asserts below
+// compiled to nothing and every test "passed" by construction.
+#undef NDEBUG
+#include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cstdio>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
+#include <process.h>   // _getpid
+#include <string>
+#include <vector>
+
+// Hard check that survives any build configuration (the hw-path tests below
+// were written with this rather than assert()).
+#define CHECK(cond, msg)                                                          \
+    do {                                                                          \
+        if (!(cond)) {                                                            \
+            std::fprintf(stderr, "[TEST:RenderDecoder] FAIL: %s  [%s] at line %d\n", \
+                         msg, #cond, __LINE__);                                   \
+            std::_Exit(1);                                                        \
+        }                                                                         \
+    } while (0)
+
+// ── Helpers for the hardware-path tests ─────────────────────────────────────
+
+// ffmpeg CLI for synthesizing H.264 fixtures at test time (no checked-in
+// binaries: .gitignore blocks *.mp4). The vendored build first, then PATH.
+static std::string findFfmpeg()
+{
+    const char* candidates[] = {
+        "vendor/ffmpeg/bin/ffmpeg.exe",
+        "../vendor/ffmpeg/bin/ffmpeg.exe",
+        "../../vendor/ffmpeg/bin/ffmpeg.exe",
+        "../../../vendor/ffmpeg/bin/ffmpeg.exe",
+    };
+    for (const char* c : candidates)
+        if (std::filesystem::exists(c)) return std::filesystem::absolute(c).string();
+    // PATH lookup: `where` succeeds only when something is found.
+    if (std::system("where ffmpeg >nul 2>nul") == 0) return "ffmpeg";
+    return "";
+}
+
+// 2 s of testsrc2 at 1280x720 / 30 fps as long-GOP H.264 4:2:0 — the shape of
+// a whole-source preview proxy. tag709=true encodes the RGB test pattern with
+// the BT.709 matrix AND tags the stream bt709; otherwise libx264's input is
+// converted with swscale's default (BT.601) and left untagged, exactly like
+// the proxies ProxyTranscoder writes.
+static bool makeH264Fixture(const std::string& ffmpeg, const std::string& outPath, bool tag709)
+{
+    std::string cmd = "\"\"" + ffmpeg + "\" -y -loglevel error -f lavfi "
+                      "-i testsrc2=duration=2:size=1280x720:rate=30 ";
+    if (tag709) {
+        cmd += "-vf scale=out_color_matrix=bt709:out_range=tv "
+               "-colorspace bt709 -color_primaries bt709 -color_trc bt709 ";
+    }
+    cmd += "-pix_fmt yuv420p -c:v libx264 -preset veryfast -crf 16 -g 48 \"" + outPath + "\"\"";
+    const int rc = std::system(cmd.c_str());
+    return rc == 0 && std::filesystem::exists(outPath);
+}
+
+// GPU texture → CPU BGRA bytes (tightly packed, w*4 per row).
+static bool readbackBGRA(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11Texture2D* tex,
+                         std::vector<uint8_t>& out, int& w, int& h)
+{
+    D3D11_TEXTURE2D_DESC d = {};
+    tex->GetDesc(&d);
+    d.Usage          = D3D11_USAGE_STAGING;
+    d.BindFlags      = 0;
+    d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    d.MiscFlags      = 0;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> staging;
+    if (FAILED(dev->CreateTexture2D(&d, nullptr, &staging))) return false;
+    ctx->CopyResource(staging.Get(), tex);
+    D3D11_MAPPED_SUBRESOURCE m = {};
+    if (FAILED(ctx->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &m))) return false;
+    w = static_cast<int>(d.Width);
+    h = static_cast<int>(d.Height);
+    out.resize(static_cast<size_t>(w) * h * 4);
+    for (int y = 0; y < h; ++y)
+        std::memcpy(out.data() + static_cast<size_t>(y) * w * 4,
+                    static_cast<const uint8_t*>(m.pData) + static_cast<size_t>(y) * m.RowPitch,
+                    static_cast<size_t>(w) * 4);
+    ctx->Unmap(staging.Get(), 0);
+    return true;
+}
+
+struct ImageDiff {
+    double meanAbs   = 0.0;   // over B,G,R of every pixel
+    int    maxAbs    = 0;
+    double fracOver24 = 0.0;  // fraction of pixels with any channel off by > 24
+    bool   alphaOpaque = true;
+};
+
+static ImageDiff diffBGRA(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b, int w, int h)
+{
+    ImageDiff r;
+    const size_t n = static_cast<size_t>(w) * h;
+    double sum = 0.0;
+    size_t over = 0;
+    for (size_t i = 0; i < n; ++i) {
+        int worst = 0;
+        for (int c = 0; c < 3; ++c) {
+            const int d = std::abs(int(a[i * 4 + c]) - int(b[i * 4 + c]));
+            sum += d;
+            if (d > worst) worst = d;
+        }
+        if (worst > r.maxAbs) r.maxAbs = worst;
+        if (worst > 24) ++over;
+        if (a[i * 4 + 3] != 255 || b[i * 4 + 3] != 255) r.alphaOpaque = false;
+    }
+    r.meanAbs    = sum / static_cast<double>(n * 3);
+    r.fracOver24 = static_cast<double>(over) / static_cast<double>(n);
+    return r;
+}
+
+static const char* originName(FrameOrigin o)
+{
+    switch (o) {
+        case FrameOrigin::Software:         return "Software";
+        case FrameOrigin::HardwareGpu:      return "HardwareGpu";
+        case FrameOrigin::HardwareTransfer: return "HardwareTransfer";
+        default:                            return "Unknown";
+    }
+}
 
 // Helper: get the path to test_proxy.mov relative to the executable
 static std::string findTestProxy()
@@ -211,6 +334,273 @@ int main()
         assert(entry.width == 320 && entry.height == 240);
 
         std::fprintf(stderr, "[TEST:RenderDecoder] Test 9: PASSED\n");
+    }
+
+    // ── Test 10: NV12 → RGB matrix rows (pure math, no GPU) ────────────────
+    {
+        std::fprintf(stderr, "\n[TEST:RenderDecoder] --- Test 10: YUV->RGB matrix rows ---\n");
+        auto apply = [](const float rows[12], float y, float u, float v, float out[3]) {
+            const float in[4] = { y / 255.0f, u / 255.0f, v / 255.0f, 1.0f };
+            for (int i = 0; i < 3; ++i) {
+                float s = 0.0f;
+                for (int k = 0; k < 4; ++k) s += rows[i * 4 + k] * in[k];
+                out[i] = std::min(1.0f, std::max(0.0f, s)) * 255.0f;
+            }
+        };
+        float rows[12], rgb[3];
+        // Limited-range BT.601: studio white / black / the ITU red test vector.
+        Nv12Converter::yuvToRgbRows(Nv12Converter::Matrix::BT601, false, rows);
+        apply(rows, 235, 128, 128, rgb);
+        CHECK(std::fabs(rgb[0] - 255) < 0.75f && std::fabs(rgb[1] - 255) < 0.75f && std::fabs(rgb[2] - 255) < 0.75f,
+              "601 limited: Y=235 -> white");
+        apply(rows, 16, 128, 128, rgb);
+        CHECK(rgb[0] < 0.75f && rgb[1] < 0.75f && rgb[2] < 0.75f, "601 limited: Y=16 -> black");
+        apply(rows, 81, 90, 240, rgb);   // (255,0,0) in BT.601 limited
+        CHECK(rgb[0] > 250.0f && rgb[1] < 4.0f && rgb[2] < 4.0f, "601 limited: (81,90,240) -> red");
+        // Limited-range BT.709 pure green: Y=173 Cb=42 Cr=26.
+        Nv12Converter::yuvToRgbRows(Nv12Converter::Matrix::BT709, false, rows);
+        apply(rows, 173, 42, 26, rgb);
+        CHECK(rgb[0] < 4.0f && rgb[1] > 250.0f && rgb[2] < 4.0f, "709 limited: (173,42,26) -> green");
+        // Full range: Y=255 is white, Y=0 black.
+        Nv12Converter::yuvToRgbRows(Nv12Converter::Matrix::BT601, true, rows);
+        apply(rows, 255, 128, 128, rgb);
+        CHECK(rgb[0] > 254.5f && rgb[1] > 254.5f && rgb[2] > 254.5f, "601 full: Y=255 -> white");
+        apply(rows, 0, 128, 128, rgb);
+        CHECK(rgb[0] < 0.5f && rgb[1] < 0.5f && rgb[2] < 0.5f, "601 full: Y=0 -> black");
+        std::fprintf(stderr, "[TEST:RenderDecoder] Test 10: PASSED\n");
+    }
+
+    // ── Tests 11-13: hardware frames stay on the GPU ───────────────────────
+    // Needs D3D11VA, the GPU NV12 path and an ffmpeg CLI for an H.264 fixture.
+    // Compares the GPU route (NV12 copy + shader) against the software route
+    // (sws_scale) of a second decoder that never had initHwDevice() called.
+    if (!hwOk) {
+        std::fprintf(stderr, "\n[TEST:RenderDecoder] SKIP Tests 11-13: no D3D11VA on this device\n");
+    } else if (!decoder.hwGpuPathAvailable()) {
+        std::fprintf(stderr, "\n[TEST:RenderDecoder] SKIP Tests 11-13: GPU NV12 path unavailable "
+                             "(NV12 sampling unsupported or XLETH_HW_NV12_GPU=0)\n");
+    } else {
+        const std::string ffmpeg = findFfmpeg();
+        const auto tmpDir = std::filesystem::temp_directory_path() /
+                            ("xleth_test_render_decoder_" + std::to_string(::_getpid()));
+        std::error_code ec;
+        std::filesystem::create_directories(tmpDir, ec);
+        const std::string h264Path    = (tmpDir / "testsrc_601_untagged.mp4").string();
+        const std::string h264Path709 = (tmpDir / "testsrc_709_tagged.mp4").string();
+
+        if (ffmpeg.empty()) {
+            std::fprintf(stderr, "\n[TEST:RenderDecoder] SKIP Tests 11-13: no ffmpeg "
+                                 "(vendor/ffmpeg/bin or PATH) to synthesize an H.264 fixture\n");
+        } else if (!makeH264Fixture(ffmpeg, h264Path, false)) {
+            std::fprintf(stderr, "\n[TEST:RenderDecoder] SKIP Tests 11-13: ffmpeg could not encode "
+                                 "the H.264 fixture (libx264 missing?)\n");
+        } else {
+            RenderVideoDecoder swDecoder;   // no initHwDevice(): always sws_scale
+            const auto statsBefore = decoder.extractStats();
+
+            // ── Test 11: GPU route, parity with the CPU route ──────────────
+            {
+                std::fprintf(stderr, "\n[TEST:RenderDecoder] --- Test 11: hw frame stays on GPU (untagged, BT.601) ---\n");
+
+                FrameCacheEntry hw = decoder.decode(h264Path, 10, device, deviceCtx);
+                CHECK(hw.texture && hw.srv, "hw decode of frame 10 produced a texture");
+                const bool hwEngaged =
+                    decoder.decodePathFor(h264Path) == RenderVideoDecoder::DecodePath::Hardware;
+                std::fprintf(stderr, "[TEST:RenderDecoder] decodePath=%s origin=%s %dx%d\n",
+                             hwEngaged ? "hardware" : "software", originName(hw.origin),
+                             hw.width, hw.height);
+                if (!hwEngaged) {
+                    std::fprintf(stderr, "[TEST:RenderDecoder] SKIP Tests 11-13: D3D11VA declined "
+                                         "the H.264 fixture on this device (software fallback)\n");
+                } else {
+                    CHECK(hw.origin == FrameOrigin::HardwareGpu,
+                          "a D3D11VA frame must take the GPU route, never the CPU transfer");
+                    CHECK(hw.width == 1280 && hw.height == 720, "uncapped: full 1280x720");
+                    CHECK(hw.memorySizeBytes == 1280u * 720u * 4u, "memorySizeBytes = w*h*4 (BGRA)");
+                    D3D11_TEXTURE2D_DESC desc = {};
+                    hw.texture->GetDesc(&desc);
+                    CHECK(desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM, "cache entry is BGRA");
+                    CHECK((desc.BindFlags & D3D11_BIND_SHADER_RESOURCE) != 0, "entry is sampleable");
+
+                    // Two more, sequential: still the GPU route, counters move.
+                    FrameCacheEntry hw11 = decoder.decode(h264Path, 11, device, deviceCtx);
+                    FrameCacheEntry hw12 = decoder.decode(h264Path, 12, device, deviceCtx);
+                    CHECK(hw11.origin == FrameOrigin::HardwareGpu && hw12.origin == FrameOrigin::HardwareGpu,
+                          "sequential hw frames take the GPU route");
+                    const auto& st = decoder.extractStats();
+                    CHECK(st.hwGpuFrames == statsBefore.hwGpuFrames + 3, "hwGpuFrames counted 3");
+                    CHECK(st.hwTransferFrames == statsBefore.hwTransferFrames,
+                          "no av_hwframe_transfer_data on the hw path");
+
+                    // Parity against sws_scale on the same frame. Both convert
+                    // with BT.601 (untagged source); sws_scale's unscaled
+                    // NV12→BGRA uses nearest chroma where the shader samples
+                    // linearly, so edges of the test pattern differ by design —
+                    // the mean must be within a couple of levels and the
+                    // alpha fully opaque. A wrong matrix or range would move
+                    // the mean by 4-10+ levels on this saturated pattern.
+                    FrameCacheEntry sw = swDecoder.decode(h264Path, 10, device, deviceCtx);
+                    CHECK(sw.texture && sw.origin == FrameOrigin::Software, "sw reference decoded");
+                    CHECK(sw.width == hw.width && sw.height == hw.height, "same size on both routes");
+                    std::vector<uint8_t> hwPx, swPx;
+                    int w1, h1, w2, h2;
+                    CHECK(readbackBGRA(device, deviceCtx, hw.texture.Get(), hwPx, w1, h1), "readback hw");
+                    CHECK(readbackBGRA(device, deviceCtx, sw.texture.Get(), swPx, w2, h2), "readback sw");
+                    const ImageDiff d = diffBGRA(hwPx, swPx, w1, h1);
+                    std::fprintf(stderr, "[TEST:RenderDecoder] GPU vs sws_scale (601): mean=%.3f max=%d "
+                                         ">24: %.3f%% alphaOpaque=%d\n",
+                                 d.meanAbs, d.maxAbs, d.fracOver24 * 100.0, d.alphaOpaque ? 1 : 0);
+                    CHECK(d.alphaOpaque, "both routes write alpha 255");
+                    CHECK(d.meanAbs <= 2.0, "GPU and CPU conversions agree (mean abs diff <= 2 levels)");
+                    // testsrc2 is nothing but hard chroma edges and text; the
+                    // two chroma reconstructions disagree on those pixels only
+                    // (measured ~3% on this pattern, mean 1.6). Real footage
+                    // has far fewer such pixels.
+                    CHECK(d.fracOver24 <= 0.06, "large per-pixel differences confined to pattern edges (<= 6%)");
+                    std::fprintf(stderr, "[TEST:RenderDecoder] Test 11: PASSED\n");
+
+                    // ── Test 11b: a request past the end holds the last frame ──
+                    // The fixture has 60 frames (0..59). A file one frame
+                    // shorter than its metadata claims is routine (an encoder
+                    // that drops its final frame), and the preview re-requests
+                    // every tick — so this must succeed, not fail forever.
+                    {
+                        std::fprintf(stderr, "\n[TEST:RenderDecoder] --- Test 11b: past the end holds the last frame ---\n");
+                        FrameCacheEntry lastSw = swDecoder.decode(h264Path, 59, device, deviceCtx);
+                        CHECK(lastSw.texture, "sw: last real frame (59) decodes");
+                        // 60: the forward path, straight into EOF.
+                        FrameCacheEntry pastSw = swDecoder.decode(h264Path, 60, device, deviceCtx);
+                        CHECK(pastSw.texture, "sw: frame 60 (one past the end) returns a frame");
+                        // 75: a fresh seek that walks to EOF without reaching the target.
+                        FrameCacheEntry farSw = swDecoder.decode(h264Path, 75, device, deviceCtx);
+                        CHECK(farSw.texture, "sw: frame 75 (well past the end) returns a frame");
+                        if (lastSw.texture && pastSw.texture && farSw.texture) {
+                            std::vector<uint8_t> a, b, c;
+                            int w, h, w2, h2, w3, h3;
+                            CHECK(readbackBGRA(device, deviceCtx, lastSw.texture.Get(), a, w, h), "readback 59");
+                            CHECK(readbackBGRA(device, deviceCtx, pastSw.texture.Get(), b, w2, h2), "readback 60");
+                            CHECK(readbackBGRA(device, deviceCtx, farSw.texture.Get(), c, w3, h3), "readback 75");
+                            CHECK(a == b, "frame 60 is pixel-identical to the last frame");
+                            CHECK(a == c, "frame 75 is pixel-identical to the last frame");
+                        }
+                        // And the decoder still knows where it is: an in-range
+                        // frame right after is the real one, not a held one.
+                        FrameCacheEntry back = swDecoder.decode(h264Path, 10, device, deviceCtx);
+                        CHECK(back.texture, "sw: an in-range frame after a held one decodes");
+
+                        // Same on the hardware route.
+                        FrameCacheEntry lastHw = decoder.decode(h264Path, 59, device, deviceCtx);
+                        FrameCacheEntry pastHw = decoder.decode(h264Path, 60, device, deviceCtx);
+                        FrameCacheEntry farHw  = decoder.decode(h264Path, 75, device, deviceCtx);
+                        CHECK(lastHw.texture && pastHw.texture && farHw.texture,
+                              "hw: frames 59, 60 and 75 all return a frame");
+                        std::fprintf(stderr, "[TEST:RenderDecoder] Test 11b: PASSED\n");
+                    }
+
+                    // ── Test 12: setMaxOutputSize cap applies on the GPU route ─
+                    {
+                        std::fprintf(stderr, "\n[TEST:RenderDecoder] --- Test 12: output cap on the GPU route ---\n");
+                        decoder.setMaxOutputSize(960, 540);
+                        swDecoder.setMaxOutputSize(960, 540);
+                        FrameCacheEntry hwC = decoder.decode(h264Path, 20, device, deviceCtx);
+                        FrameCacheEntry swC = swDecoder.decode(h264Path, 20, device, deviceCtx);
+                        CHECK(hwC.texture && hwC.origin == FrameOrigin::HardwareGpu, "capped hw decode on GPU route");
+                        CHECK(hwC.width == 960 && hwC.height == 540, "hw entry capped to 960x540");
+                        CHECK(hwC.memorySizeBytes == 960u * 540u * 4u, "capped memorySizeBytes honest");
+                        CHECK(swC.width == 960 && swC.height == 540, "sw entry capped to 960x540");
+                        D3D11_TEXTURE2D_DESC cd = {};
+                        hwC.texture->GetDesc(&cd);
+                        CHECK(cd.Width == 960 && cd.Height == 540, "texture itself is 960x540");
+                        std::vector<uint8_t> a, b;
+                        int wa, ha, wb, hb;
+                        CHECK(readbackBGRA(device, deviceCtx, hwC.texture.Get(), a, wa, ha), "readback capped hw");
+                        CHECK(readbackBGRA(device, deviceCtx, swC.texture.Get(), b, wb, hb), "readback capped sw");
+                        const ImageDiff dc = diffBGRA(a, b, wa, ha);
+                        std::fprintf(stderr, "[TEST:RenderDecoder] capped GPU vs sws_scale: mean=%.3f max=%d >24: %.3f%%\n",
+                                     dc.meanAbs, dc.maxAbs, dc.fracOver24 * 100.0);
+                        CHECK(dc.alphaOpaque, "capped: alpha 255");
+                        CHECK(dc.meanAbs <= 2.5, "capped: GPU and CPU downscales agree (mean <= 2.5)");
+                        decoder.setMaxOutputSize(0, 0);
+                        swDecoder.setMaxOutputSize(0, 0);
+                        std::fprintf(stderr, "[TEST:RenderDecoder] Test 12: PASSED\n");
+                    }
+
+                    // ── Test 13: BT.709-tagged source gets the BT.709 matrix ──
+                    // The same RGB pattern encoded with the 709 matrix and
+                    // tagged bt709 must decode (GPU route) to the same RGB as
+                    // the untagged 601 encode — matrices cancel. The CPU route
+                    // ignores the tag (sws_scale default) and must land
+                    // measurably further away: that is the difference the
+                    // GPU route is allowed to have from the old output.
+                    if (!makeH264Fixture(ffmpeg, h264Path709, true)) {
+                        std::fprintf(stderr, "\n[TEST:RenderDecoder] SKIP Test 13: ffmpeg could not encode the bt709 fixture\n");
+                    } else {
+                        std::fprintf(stderr, "\n[TEST:RenderDecoder] --- Test 13: BT.709-tagged source ---\n");
+                        FrameCacheEntry hwT = decoder.decode(h264Path709, 10, device, deviceCtx);
+                        CHECK(hwT.texture && hwT.origin == FrameOrigin::HardwareGpu, "tagged source on GPU route");
+                        FrameCacheEntry swT = swDecoder.decode(h264Path709, 10, device, deviceCtx);
+                        CHECK(swT.texture, "tagged source sw reference");
+                        std::vector<uint8_t> t, s;
+                        int wt, ht, ws, hs;
+                        CHECK(readbackBGRA(device, deviceCtx, hwT.texture.Get(), t, wt, ht), "readback tagged hw");
+                        CHECK(readbackBGRA(device, deviceCtx, swT.texture.Get(), s, ws, hs), "readback tagged sw");
+                        const ImageDiff gpuTvsU = diffBGRA(t, hwPx, wt, ht);   // GPU 709 decode vs GPU 601 decode
+                        const ImageDiff swTvsU  = diffBGRA(s, hwPx, ws, hs);   // CPU (601 on 709 data) vs GPU 601 decode
+                        std::fprintf(stderr, "[TEST:RenderDecoder] 709-tagged: GPU(709) vs untagged GPU: mean=%.3f max=%d; "
+                                             "sws_scale(601 on 709 data) vs untagged GPU: mean=%.3f max=%d\n",
+                                     gpuTvsU.meanAbs, gpuTvsU.maxAbs, swTvsU.meanAbs, swTvsU.maxAbs);
+                        CHECK(gpuTvsU.meanAbs <= 2.5, "GPU route decodes a 709-tagged source to the same RGB as the 601 encode");
+                        CHECK(swTvsU.meanAbs > gpuTvsU.meanAbs + 1.0,
+                              "the tag matters: the CPU route's untagged default lands further away");
+                        std::fprintf(stderr, "[TEST:RenderDecoder] Test 13: PASSED\n");
+                    }
+
+                    // ── Test 14: per-frame cost, GPU route vs CPU transfer route ──
+                    // Informational (printed, not asserted — timing). A third
+                    // decoder is initialised with XLETH_HW_NV12_GPU=0 so its hw
+                    // frames take the old av_hwframe_transfer_data + sws_scale
+                    // + upload route; both decode the same 30 sequential 720p
+                    // frames after a warm-up decode.
+                    {
+                        std::fprintf(stderr, "\n[TEST:RenderDecoder] --- Test 14: extract cost A/B (informational) ---\n");
+                        _putenv_s("XLETH_HW_NV12_GPU", "0");
+                        RenderVideoDecoder transferDecoder;
+                        const bool tOk = transferDecoder.initHwDevice(device, deviceCtx);
+                        _putenv_s("XLETH_HW_NV12_GPU", "");
+                        CHECK(tOk && !transferDecoder.hwGpuPathAvailable(),
+                              "XLETH_HW_NV12_GPU=0 keeps the CPU transfer route");
+
+                        auto timeRun = [&](RenderVideoDecoder& d, FrameOrigin expect) -> double {
+                            FrameCacheEntry warm = d.decode(h264Path, 29, device, deviceCtx);
+                            CHECK(warm.texture, "warm-up decode");
+                            deviceCtx->Flush();
+                            const auto t0 = std::chrono::steady_clock::now();
+                            for (int f = 30; f < 60; ++f) {
+                                FrameCacheEntry e = d.decode(h264Path, f, device, deviceCtx);
+                                CHECK(e.texture && e.origin == expect, "A/B decode took the expected route");
+                            }
+                            deviceCtx->Flush();
+                            return std::chrono::duration<double, std::milli>(
+                                       std::chrono::steady_clock::now() - t0).count() / 30.0;
+                        };
+                        const double gpuMs      = timeRun(decoder, FrameOrigin::HardwareGpu);
+                        const double transferMs = timeRun(transferDecoder, FrameOrigin::HardwareTransfer);
+                        std::fprintf(stderr, "[TEST:RenderDecoder] 720p hw frame, decode+extract per frame: "
+                                             "GPU route %.2f ms, CPU transfer route %.2f ms (sw path for "
+                                             "reference below)\n", gpuMs, transferMs);
+                        const double swMs = timeRun(swDecoder, FrameOrigin::Software);
+                        std::fprintf(stderr, "[TEST:RenderDecoder] software decode route %.2f ms per frame\n", swMs);
+                        CHECK(transferDecoder.extractStats().hwTransferFrames == 31, "A/B transfer decoder counted its frames");
+                        transferDecoder.shutdown();
+                        std::fprintf(stderr, "[TEST:RenderDecoder] Test 14: PASSED\n");
+                    }
+                }
+            }
+            swDecoder.shutdown();
+        }
+        decoder.closeSource(h264Path);
+        decoder.closeSource(h264Path709);
+        std::filesystem::remove_all(tmpDir, ec);
     }
 
     // Explicit cleanup: release FFmpeg hw device context and all decoder

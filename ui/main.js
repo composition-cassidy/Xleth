@@ -1379,6 +1379,16 @@ ipcMain.handle('xleth:midi:executeImport', (_, noteData, optionsJson) =>
     // preload.js guarantees noteData is a Buffer; the pipe client base64-encodes it.
     callWorker('midi_executeImport', [noteData, optionsJson]));
 
+// FL Studio project import: the .flp is converted to a temp MIDI file here in
+// main (pure JS, electron-main/flp-import.js); the dialog then runs the normal
+// midi.* pipeline on that path.
+ipcMain.handle('xleth:flp:convert', (_, filePath, options) => {
+  const result = require('./electron-main/flp-import.js').convertFlpFile(filePath, options || {});
+  log(`[FlpImport] ${filePath} → ${result.ok ? result.midiPath : 'FAILED: ' + result.reason}` +
+      (result.info ? ` (arrangement ${result.info.arrangementIndex}, ${result.info.tracks.length} tracks)` : ''));
+  return result;
+});
+
 // Replaced by WaveformMipmap N-API bindings — see WaveformMipmap.h
 // Pipeline A (extractPCM, pcmCache, buildPeaks, getWaveformData/Region IPC) removed.
 
@@ -1517,7 +1527,9 @@ ipcMain.handle('xleth:dialog:importMIDI', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog(win, {
     title: 'Import MIDI',
     filters: [
+      { name: 'MIDI and FL Studio projects', extensions: ['mid', 'midi', 'flp'] },
       { name: 'MIDI Files', extensions: ['mid', 'midi'] },
+      { name: 'FL Studio projects', extensions: ['flp'] },
       { name: 'All Files', extensions: ['*'] },
     ],
     properties: ['openFile'],

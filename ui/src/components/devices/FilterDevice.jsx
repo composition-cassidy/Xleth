@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createStore } from 'zustand/vanilla'
 import { useStore } from 'zustand'
-import { Plus, X } from 'lucide-react'
 import {
   Button, DeviceSection, DisplayWell, IconButton, SegmentedControl, Select, Toggle, formatValue, skewScale,
 } from '../../ui-kit'
@@ -16,6 +15,10 @@ import { fractionPercent, plainFormat } from './deviceFormat.js'
 import { useFilterLiveLoop, useLiveFrame } from './filterLive.js'
 import deviceStyles from './deviceBody.module.css'
 import styles from './FilterDevice.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcPlus = iconComponent('plus')
+const IcX = iconComponent('x')
 
 const WELL_W = 420
 const FREQ_SKEW = 0.23
@@ -251,13 +254,13 @@ export default function FilterDevice({ target, registerApplied }) {
                   {TYPE_SHORT[t]}
                 </button>
                 <IconButton size="sm" label={`Remove slot ${i + 1}`} onClick={() => handleRemoveSlot(i)}>
-                  <X aria-hidden="true" />
+                  <IcX aria-hidden="true" />
                 </IconButton>
               </div>
             )
           })}
           {slots.length < MAX_SLOTS ? (
-            <Button size="sm" glyph={<Plus aria-hidden="true" />} onClick={handleAddSlot} hint="Add a filter slot (up to eight, in series)">
+            <Button size="sm" glyph={<IcPlus aria-hidden="true" />} onClick={handleAddSlot} hint="Add a filter slot (up to eight, in series)">
               Add slot
             </Button>
           ) : null}

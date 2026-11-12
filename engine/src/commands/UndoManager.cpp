@@ -11,9 +11,29 @@ void UndoManager::firePostMutationHook() const {
     if (postMutationHook_) postMutationHook_();
 }
 
+void UndoManager::setMutationMutex(std::recursive_mutex* mutex) {
+    mutationMutex_ = mutex;
+}
+
+namespace {
+
+// Holds the mutation mutex, if there is one, for the enclosing scope.
+struct MutationLock {
+    explicit MutationLock(std::recursive_mutex* m) : mutex(m) { if (mutex) mutex->lock(); }
+    ~MutationLock() { if (mutex) mutex->unlock(); }
+    MutationLock(const MutationLock&) = delete;
+    MutationLock& operator=(const MutationLock&) = delete;
+    std::recursive_mutex* mutex;
+};
+
+} // namespace
+
 void UndoManager::execute(std::unique_ptr<Command> cmd, Timeline& timeline) {
     const std::string desc = cmd->describe();
-    cmd->execute(timeline);
+    {
+        MutationLock lock(mutationMutex_);
+        cmd->execute(timeline);
+    }
     // A command that opts out of undo history has still mutated the timeline, so
     // the hook must fire on this path too.
     if (!cmd->shouldRecordInUndoHistory()) {
@@ -67,7 +87,10 @@ bool UndoManager::undo(Timeline& timeline) {
 
     auto& cmd = undoStack_.back();
     const std::string desc = cmd->describe();
-    cmd->undo(timeline);
+    {
+        MutationLock lock(mutationMutex_);
+        cmd->undo(timeline);
+    }
     redoStack_.push_back(std::move(cmd));
     undoStack_.pop_back();
 
@@ -87,7 +110,10 @@ bool UndoManager::redo(Timeline& timeline) {
 
     auto& cmd = redoStack_.back();
     const std::string desc = cmd->describe();
-    cmd->execute(timeline);
+    {
+        MutationLock lock(mutationMutex_);
+        cmd->execute(timeline);
+    }
     if (!cmd->shouldRecordInUndoHistory()) {
         firePostMutationHook();
         return false;

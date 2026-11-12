@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { Plus, X } from 'lucide-react'
 import { IconButton, hintAttrs } from '../../ui-kit'
 import useSamplerModulationStore from '../../stores/samplerModulationStore.js'
 import EnvEditor from './modulation/EnvEditor.jsx'
@@ -12,10 +11,14 @@ import {
 } from './modulation/modConstants.js'
 import { sourceLabel } from './modulation/modTargets.js'
 import styles from './Sampler.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcPlus = iconComponent('plus')
+const IcX = iconComponent('x')
 
 // ── Modulation view ─────────────────────────────────────────────────────────
-// Routes on the left; on the right one strip of sources (Env 1..6, LFO 1..6,
-// Velocity, Note) above the selected source's editor. Every source tab is also
+// One strip of sources (Env 1..6, LFO 1..6, Velocity, Note) above the selected
+// source's editor, and the routes under it (beside it when the Sampler is docked). Every source tab is also
 // the drag-to-route handle: click selects it, a drag drops it on any control
 // that accepts modulation (holding the drag over the Main or Playback tab opens
 // that view). Env 1 is the amp envelope: permanent, no remove.
@@ -47,7 +50,7 @@ function SourceTab({ source, label, active, routed, onSelect, onRemove, startDra
       </div>
       {onRemove ? (
         <IconButton size="sm" className={styles.sourceRemove} label={`Remove ${label} and its routes`} onClick={onRemove}>
-          <X aria-hidden="true" />
+          <IcX aria-hidden="true" />
         </IconButton>
       ) : null}
     </div>
@@ -131,19 +134,18 @@ export default function SamplerModulationView({ slotIndex, chainLength, bpm }) {
 
   return (
     <div className={styles.modulation} data-view="modulation">
-      <ModRouteList slotIndex={slotIndex} chainLength={chainLength} />
       <div className={styles.modRight}>
         <div className={styles.sourceStrip} role="tablist" aria-label="Modulation sources">
           {envPresent.map((p, i) => (p ? tab('env', i, ENV_SOURCE_0 + i, i === 0 ? null : () => removeEnv(i)) : null))}
           <IconButton size="sm" label="Add an envelope" disabled={envCount >= NUM_ENVS} onClick={addEnvTab}
             hint={envCount >= NUM_ENVS ? `All ${NUM_ENVS} envelopes are in use` : 'Add an envelope'}>
-            <Plus aria-hidden="true" />
+            <IcPlus aria-hidden="true" />
           </IconButton>
           <span className={styles.stripGap} aria-hidden="true" />
           {lfoPresent.map((p, i) => (p ? tab('lfo', i, LFO_SOURCE_0 + i, () => removeLfo(i)) : null))}
           <IconButton size="sm" label="Add an LFO" disabled={lfoCount >= NUM_LFOS} onClick={addLfoTab}
             hint={lfoCount >= NUM_LFOS ? `All ${NUM_LFOS} LFOs are in use` : 'Add an LFO'}>
-            <Plus aria-hidden="true" />
+            <IcPlus aria-hidden="true" />
           </IconButton>
           <span className={styles.stripGap} aria-hidden="true" />
           {tab('velo', 0, VELO_SOURCE, null)}
@@ -151,6 +153,7 @@ export default function SamplerModulationView({ slotIndex, chainLength, bpm }) {
         </div>
         {editor}
       </div>
+      <ModRouteList slotIndex={slotIndex} chainLength={chainLength} />
     </div>
   )
 }

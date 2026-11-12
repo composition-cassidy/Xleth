@@ -1,5 +1,6 @@
 /* Button and IconButton (also the base look of Toggle). Neutral outline at rest;
- * "on" is the inverted ink chip (DESIGN.md 3.2), never a hue. No hover lift.
+ * "on" is the inverted ink chip (DESIGN.md 3.2), never a hue. No hover lift; hover and state
+ * colour changes take their duration from ui-kit/motion.css, and so does the press-in below.
  * `data-tone="quiet"` is the on-state of housekeeping toggles that are on nearly all
  * the time (region toggles, tempo lock): raised g3, its 3:1 outline, ink glyph. */
 @layer kit {
@@ -60,9 +61,22 @@
   .icon[data-size="sm"] { width: var(--ctl-h-sm); }
   .icon[data-size="lg"] { width: var(--ctl-h-lg); }
 
+  /* A tool picker's IconButton shows its one-letter shortcut beside the icon, always visible. */
+  .icon[data-key] {
+    width: auto;
+    gap: 2px;
+    padding: 0 var(--space-1);
+  }
+
+  .key {
+    font-size: var(--type-11);
+    font-weight: var(--weight-semibold);
+    font-family: var(--ui-font-mono);
+  }
+
   .icon svg {
-    width: var(--type-16);
-    height: var(--type-16);
+    width: var(--icon-md);
+    height: var(--icon-md);
   }
 
   .glyph {
@@ -70,8 +84,8 @@
   }
 
   .glyph svg {
-    width: var(--type-13);
-    height: var(--type-13);
+    width: var(--icon-sm);
+    height: var(--icon-sm);
   }
 
   .btn:is(:hover, [data-state="hover"]):not(:disabled) {
@@ -86,6 +100,11 @@
   .btn:is(:active, [data-state="active"]):not(:disabled) {
     background: var(--ui-g0);
     color: var(--ui-ink);
+  }
+
+  /* Press-in: `none` until the lively tier (ui-kit/motion.css, --mo-press-scale). */
+  .btn:is(:active, [data-state="active"]):not(:disabled) {
+    scale: var(--mo-press-scale, none);
   }
 
   .btn:is(:focus-visible, [data-state="focus"]) {

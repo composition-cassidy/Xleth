@@ -1,31 +1,35 @@
-import { useRef, useEffect, useCallback } from 'react'
-import { tokenValue } from '../../../theming/tokenValue.ts'
+import { useRef, useEffect, useCallback, useMemo } from 'react'
 import { useThemeEpoch } from '../../../theming/useThemeEpoch.js'
 import { evalLfoShape } from './modEval.js'
 import { SEG_LINE, MAX_LFO_POINTS } from './modConstants.js'
+import {
+  HANDLE_HIT, RULER_H, drawHandle, drawTag, drawTicks, hLine, palette, prepCanvas, rgba,
+} from './modCanvas.js'
 
 // ── LFO shape point editor (canvas only) ─────────────────────────────────────
-// A controlled canvas over the engine's `{t, v, seg, tension}[]` shape. Drawing
-// goes through evalLfoShape so STEP / LINE / CURVE segments and the cyclic wrap
-// look EXACTLY like the audio thread renders them.
+// A controlled canvas over the engine's `{t, v, seg, tension}[]` shape: ONE cycle,
+// on a phase ruler (0, 1/4, 1/2, 3/4, and how long the cycle lasts) and a value
+// axis (+1, 0, −1). Drawing goes through evalLfoShape so Step / Line / Curve
+// segments and the cyclic wrap look EXACTLY like the audio thread renders them.
+// How the cycle plays out in time (rate, delay, rise) is the strip under it
+// (LfoTimeline): this canvas is the shape, that one is the scale.
 //
-// This is deliberately canvas-drawn end to end — points, grid, handles and the
-// hit-testing all live in canvas pixel space. A DOM-overlay handle layer would
-// drift against the canvas on scroll/zoom and corrupt hit-testing, which the
-// panel scrolls, so it is never used here.
+// Canvas-drawn end to end: points, grid, handles and hit-testing all live in
+// canvas pixel space, so nothing drifts when the panel scrolls.
 //
 // Interactions:
 //   drag handle          move the point (t clamped between neighbours, v in ±1)
-//   double-click empty   add a point (LINE segment) at the cursor
+//   double-click empty   add a point (Line segment) at the cursor
 //   right / alt click    delete a point (keeps a minimum of two)
 //   click handle         select it (segment tools + tension act on the selection)
 //
 // Edits are LOCAL until mouseup: a drag streams through onPreview; onCommit
 // fires once, on release. Discrete edits (add / delete) commit immediately.
 
-const HANDLE_R = 4
-const HANDLE_HIT = 11
-const PAD_Y = 8
+const PAD_L = 30
+const PAD_R = 10
+const PAD_T = 8
+const PAD_B = 8
 
 function snapTo(value, divisions, lo, hi) {
   if (!divisions || divisions < 1) return value
@@ -35,6 +39,9 @@ function snapTo(value, divisions, lo, hi) {
   return Math.max(lo, Math.min(hi, snapped))
 }
 
+const PHASE_LABELS = { 0: '0', 1: '1/4', 2: '1/2', 3: '3/4' }
+const signed2 = (v) => `${v > 0 ? '+' : (v < 0 ? '−' : '')}${Math.abs(v).toFixed(2)}`
+
 export default function ModShapeCanvas({
   points,
   selectedIdx = -1,
@@ -43,6 +50,7 @@ export default function ModShapeCanvas({
   color,
   width = 460,
   height = 150,
+  cycleText = '',
   onPreview,
   onCommit,
   onSelect,
@@ -53,104 +61,104 @@ export default function ModShapeCanvas({
   const pointsRef = useRef(points)
   pointsRef.current = points
 
-  const xOf = useCallback((t) => t * width, [width])
-  const yOf = useCallback((v) => (height / 2) - v * (height / 2 - PAD_Y), [height])
-  const tOf = useCallback((px) => Math.max(0, Math.min(1, px / width)), [width])
-  const vOf = useCallback((py) => Math.max(-1, Math.min(1, (height / 2 - py) / (height / 2 - PAD_Y))), [height])
+  const box = useMemo(() => ({
+    x: PAD_L, y: RULER_H + PAD_T,
+    w: Math.max(20, width - PAD_L - PAD_R),
+    h: Math.max(20, height - RULER_H - PAD_T - PAD_B),
+  }), [width, height])
+
+  const xOf = useCallback((t) => box.x + t * box.w, [box])
+  const yOf = useCallback((v) => box.y + box.h / 2 - v * (box.h / 2), [box])
+  const tOf = useCallback((px) => Math.max(0, Math.min(1, (px - box.x) / box.w)), [box])
+  const vOf = useCallback((py) => Math.max(-1, Math.min(1, (box.y + box.h / 2 - py) / (box.h / 2))), [box])
 
   const draw = useCallback(() => {
     const c = canvasRef.current
     if (!c) return
-    const dpr = window.devicePixelRatio || 1
-    c.width = width * dpr
-    c.height = height * dpr
-    c.style.width = `${width}px`
-    c.style.height = `${height}px`
-    const ctx = c.getContext('2d')
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    const ctx = prepCanvas(c, width, height)
+    const pal = palette(color)
+    const right = box.x + box.w
+    const bottom = box.y + box.h
 
-    const bg = tokenValue('--ui-g0') || tokenValue('--theme-bg-primary')
-    const gridCol = tokenValue('--ui-g4') || tokenValue('--theme-border-subtle')
-    const resolvedColor = color?.startsWith('var(')
-      ? tokenValue(color.slice(4, -1)) || tokenValue('--ui-signal-parameter')
-      : (color || tokenValue('--ui-signal-parameter'))
-
-    ctx.fillStyle = bg
+    ctx.fillStyle = pal.bg
     ctx.fillRect(0, 0, width, height)
+    ctx.fillStyle = pal.header
+    ctx.fillRect(0, 0, width, RULER_H)
 
-    // Snap grid.
-    ctx.strokeStyle = gridCol
-    ctx.globalAlpha = 0.5
+    // Snap grid (faint), under the quarter-cycle ruler lines.
     ctx.lineWidth = 1
+    ctx.strokeStyle = pal.faint
     if (snapX >= 1) {
       for (let i = 1; i < snapX; i++) {
-        const x = (i / snapX) * width
-        ctx.beginPath(); ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, height); ctx.stroke()
+        const x = Math.round(xOf(i / snapX)) + 0.5
+        ctx.beginPath(); ctx.moveTo(x, box.y); ctx.lineTo(x, bottom); ctx.stroke()
       }
     }
     if (snapY >= 1) {
-      for (let i = 1; i < snapY; i++) {
-        const y = (i / snapY) * height
-        ctx.beginPath(); ctx.moveTo(0, y + 0.5); ctx.lineTo(width, y + 0.5); ctx.stroke()
-      }
+      for (let i = 1; i < snapY; i++) hLine(ctx, box.y + (i / snapY) * box.h, box.x, right)
     }
-    ctx.globalAlpha = 1
 
-    // Zero line.
-    ctx.strokeStyle = gridCol
-    ctx.lineWidth = 1
-    ctx.beginPath(); ctx.moveTo(0, height / 2 + 0.5); ctx.lineTo(width, height / 2 + 0.5); ctx.stroke()
+    // Phase ruler: quarters of one cycle, and how long that cycle lasts.
+    const ticks = []
+    for (let i = 0; i <= 8; i++) {
+      ticks.push({ x: xOf(i / 8), major: i % 2 === 0, label: i % 2 === 0 && i < 8 ? PHASE_LABELS[i / 2] : '' })
+    }
+    drawTicks(ctx, pal, ticks, { rulerY: 0, plotY0: box.y, plotY1: bottom, clipX0: box.x, clipX1: right })
+    ctx.font = pal.font
+    ctx.textBaseline = 'middle'
+    if (cycleText) {
+      ctx.fillStyle = pal.ink2
+      ctx.textAlign = 'right'
+      ctx.fillText(cycleText, right, RULER_H / 2 - 1)
+    }
+
+    // Value axis: +1, 0, −1.
+    ctx.textAlign = 'right'
+    for (const [v, text] of [[1, '+1'], [0, '0'], [-1, '−1']]) {
+      ctx.strokeStyle = pal.line
+      hLine(ctx, yOf(v), box.x, right)
+      ctx.fillStyle = pal.ink2
+      ctx.fillText(text, box.x - 5, yOf(v))
+    }
 
     const pts = pointsRef.current
     if (!Array.isArray(pts) || pts.length === 0) return
 
-    // Shape fill + line, sampled through the engine evaluator (smooth = 0: the
-    // editor shows the raw editable shape).
-    const line = []
-    for (let px = 0; px <= width; px++) {
-      const phase = px / width
-      line.push({ x: px, y: yOf(evalLfoShape(pts, phase, 0)) })
-    }
-
-    const rgb = hexToRgb(resolvedColor)
+    // Shape, sampled through the engine evaluator (smooth = 0: the editor shows
+    // the raw editable shape). Flat fill to the zero line.
+    const n = Math.max(2, Math.round(box.w))
     ctx.beginPath()
-    ctx.moveTo(0, line[0].y)
-    for (const p of line) ctx.lineTo(p.x, p.y)
-    ctx.lineTo(width, height / 2)
-    ctx.lineTo(0, height / 2)
+    ctx.moveTo(box.x, yOf(0))
+    for (let i = 0; i <= n; i++) ctx.lineTo(box.x + (i / n) * box.w, yOf(evalLfoShape(pts, i / n, 0)))
+    ctx.lineTo(right, yOf(0))
     ctx.closePath()
-    const grad = ctx.createLinearGradient(0, 0, 0, height)
-    grad.addColorStop(0, `rgba(${rgb.r},${rgb.g},${rgb.b},0.16)`)
-    grad.addColorStop(1, `rgba(${rgb.r},${rgb.g},${rgb.b},0.02)`)
-    ctx.fillStyle = grad
+    ctx.fillStyle = rgba(pal.signal, 0.14)
     ctx.fill()
 
     ctx.beginPath()
-    ctx.strokeStyle = resolvedColor
+    ctx.strokeStyle = pal.signal
     ctx.lineWidth = 1.5
-    for (let i = 0; i < line.length; i++) {
-      if (i === 0) ctx.moveTo(line[i].x, line[i].y)
-      else ctx.lineTo(line[i].x, line[i].y)
+    ctx.lineJoin = 'round'
+    for (let i = 0; i <= n; i++) {
+      const x = box.x + (i / n) * box.w
+      const y = yOf(evalLfoShape(pts, i / n, 0))
+      if (i === 0) ctx.moveTo(x, y)
+      else ctx.lineTo(x, y)
     }
     ctx.stroke()
 
-    // Handles.
-    const cardBg = tokenValue('--ui-g3') || tokenValue('--theme-bg-elevated')
     for (let i = 0; i < pts.length; i++) {
-      const px = xOf(pts[i].t)
-      const py = yOf(pts[i].v)
-      const sel = i === selectedIdx
-      ctx.beginPath()
-      ctx.arc(px, py, sel ? HANDLE_R + 1.5 : HANDLE_R, 0, Math.PI * 2)
-      ctx.fillStyle = sel ? resolvedColor : cardBg
-      ctx.fill()
-      ctx.strokeStyle = resolvedColor
-      ctx.lineWidth = 1.5
-      ctx.stroke()
+      drawHandle(ctx, pal, xOf(pts[i].t), yOf(pts[i].v), { active: i === selectedIdx })
     }
-  }, [color, width, height, snapX, snapY, selectedIdx, xOf, yOf, themeEpoch])
+    // The selected point's position, printed: phase as a share of the cycle, value ±1.
+    const sel = pts[selectedIdx]
+    if (sel) {
+      drawTag(ctx, pal, `${Math.round(sel.t * 100)} % · ${signed2(sel.v)}`, xOf(sel.t), yOf(sel.v), box)
+    }
+  }, [color, width, height, box, snapX, snapY, selectedIdx, cycleText, xOf, yOf, themeEpoch])
 
-  useEffect(() => { draw() }, [draw])
+  // `points` is read through a ref inside draw, so it is a dependency here.
+  useEffect(() => { draw() }, [draw, points])
 
   const hitTest = useCallback((mx, my) => {
     const pts = pointsRef.current
@@ -164,8 +172,8 @@ export default function ModShapeCanvas({
     const c = canvasRef.current
     const rect = c.getBoundingClientRect()
     return [
-      (clientX - rect.left) * (width / rect.width),
-      (clientY - rect.top) * (height / rect.height),
+      (clientX - rect.left) * (width / (rect.width || width)),
+      (clientY - rect.top) * (height / (rect.height || height)),
     ]
   }, [width, height])
 
@@ -246,20 +254,12 @@ export default function ModShapeCanvas({
   return (
     <canvas
       ref={canvasRef}
+      role="img"
+      aria-label="LFO shape, one cycle"
       onMouseDown={onMouseDown}
       onDoubleClick={onDoubleClick}
       onContextMenu={(e) => e.preventDefault()}
-      style={{ display: 'block', cursor: 'crosshair', width: '100%', height }}
+      style={{ display: 'block', cursor: 'crosshair', width, height }}
     />
   )
-}
-
-function hexToRgb(hex) {
-  if (typeof hex !== 'string') return { r: 120, g: 200, b: 210 }
-  let h = hex.trim()
-  if (h.startsWith('#')) h = h.slice(1)
-  if (h.length === 3) h = h.split('').map((ch) => ch + ch).join('')
-  const n = parseInt(h, 16)
-  if (Number.isNaN(n)) return { r: 120, g: 200, b: 210 }
-  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 }
 }

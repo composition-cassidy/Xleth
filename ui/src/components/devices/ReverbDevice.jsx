@@ -1,5 +1,7 @@
 import React, { useEffect } from 'react'
-import { DeviceSection, DisplayWell, Knob, Select, THIN_SPACE } from '../../ui-kit'
+import { DeviceSection, DisplayWell, Select, THIN_SPACE } from '../../ui-kit'
+import AutomatableKnob from './AutomatableKnob.jsx'
+import AutomationTarget from './AutomationTarget.jsx'
 import ReverbDecayFieldVisualizer from '../mixer/ReverbDecayFieldVisualizer.jsx'
 import ReverbFilterCurve from '../mixer/ReverbFilterCurve.jsx'
 import { REVERB_STYLE_LABELS, STYLE_PLATE, styleIndexOf } from '../mixer/reverbVizMath.js'
@@ -41,6 +43,10 @@ const labelFor = (id, styleIdx, fallback) => (styleIdx === STYLE_PLATE ? PLATE_L
 
 // Signal order: decay field (hero) -> Space -> Decay -> Reflections -> Filter -> Output.
 // Hero control: Decay.
+// The engine's NormalisableRange skew per parameter (only the automation maths
+// needs it; a knob's own travel comes from its range or scale).
+const SKEW = Object.freeze({ decay: 0.3, hicut: 0.23, locut: 0.3 })
+
 export default function ReverbDevice({ target, registerApplied }) {
   const { params, preview, commit, syncParamsFromPreset } = useDeviceParams('reverb', DEFAULTS, target)
   useEffect(() => {
@@ -52,8 +58,11 @@ export default function ReverbDevice({ target, registerApplied }) {
   const styleIdx = styleIndexOf(params.style)
 
   const knob = (id, label, unit, extra = {}) => (
-    <Knob
+    <AutomatableKnob
       key={id}
+      paramId={id}
+      target={target}
+      skew={SKEW[id] ?? 1}
       label={label}
       value={params[id]}
       min={RANGES[id]?.[0]}
@@ -77,14 +86,16 @@ export default function ReverbDevice({ target, registerApplied }) {
 
       <DeviceSection title="Space" width={132}>
         <div className={styles.column}>
-          <Select
-            size="sm"
-            ariaLabel="Reverb style"
-            value={styleIdx}
-            options={STYLE_OPTIONS}
-            onChange={(v) => commit('style', v)}
-            hint="Each style is a different reverb engine, not a preset of one"
-          />
+          <AutomationTarget paramId="style" target={target}>
+            <Select
+              size="sm"
+              ariaLabel="Reverb style"
+              value={styleIdx}
+              options={STYLE_OPTIONS}
+              onChange={(v) => commit('style', v)}
+              hint="Each style is a different reverb engine, not a preset of one"
+            />
+          </AutomationTarget>
         </div>
         <div className={styles.pair}>
           {knob('predelay', 'Pre-delay', 'ms', { size: 36, width: 62 })}

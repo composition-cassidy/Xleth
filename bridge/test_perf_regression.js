@@ -314,6 +314,28 @@ async function main() {
     ok(cad1.readbackPolicyActive === 0,
        `readback policy stayed FastImmediate (readbackPolicyActive=${cad1.readbackPolicyActive})`);
 
+    // Hardware-decoded frames must stay on the GPU. The decoder converts a
+    // D3D11VA frame with a GPU copy + NV12→BGRA shader; the old route
+    // (av_hwframe_transfer_data + sws_scale + upload, 8-19 ms per 720p frame)
+    // is now only a fallback and must not fire while the GPU path is up.
+    // Not applicable (and reported, not asserted) when the fixture is decoded
+    // in software or the device cannot sample NV12.
+    console.log('\n[ hardware decode stays on the GPU ]');
+    ok('decoderHwGpuFrames' in cad1 && 'decoderHwTransferFrames' in cad1 && 'decoderHwGpuPath' in cad1,
+       'diagnostic exposes counters.decoderHwGpuFrames / decoderHwTransferFrames / decoderHwGpuPath');
+    const srcDiag = (addon.diag_getVisualPreviewDiagnostic().activeSources) || [];
+    const hwDecodeActive = srcDiag.some((s) => s.decodePath === 'hardware');
+    if (hwDecodeActive && cad1.decoderHwGpuPath) {
+      ok(cad1.decoderHwGpuFrames > 0,
+         `hw frames converted on the GPU: ${cad1.decoderHwGpuFrames}`);
+      ok(cad1.decoderHwTransferFrames === 0,
+         `no hw frame took the CPU transfer path (decoderHwTransferFrames=${cad1.decoderHwTransferFrames})`);
+    } else {
+      console.log(`  n/a: decodePath=${srcDiag.map((s) => s.decodePath).join(',') || 'none'} ` +
+                  `gpuPath=${cad1.decoderHwGpuPath} (gpu=${cad1.decoderHwGpuFrames} ` +
+                  `transfer=${cad1.decoderHwTransferFrames} sw=${cad1.decoderSwFrames})`);
+    }
+
     // ── Summary table (always printed — this is what makes a failure
     //    diagnosable from CI output alone, no local repro needed) ───────────
     const c = (lastSnapshot && lastSnapshot.c) || {};

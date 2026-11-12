@@ -4,6 +4,7 @@ import { PITCH_MIN, PITCH_MAX, pitchLabel, visibleRows, gridTiers } from './pian
 import { readPianoRollPalette } from './pianoRollPalette.js'
 import { drawNotes, drawGhosts, noteStyle } from './pianoRollNotes.js'
 import { DEFAULT_SCALE, isPitchInScale, snapPitchToScale } from './scales.js'
+import { snapTicksOf, quantizeStarts, sliceAt, sliceAlongLine, legatoResize, paintNotes } from './pianoRollEdits.js'
 
 import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
 import styles from './PianoRoll.module.css'
@@ -39,6 +40,52 @@ const ACTION = {
   RESIZE_NOTE: 'resize-note',
   LASSO: 'lasso',
   PAN: 'pan',
+  LEGATO: 'legato',             // Shift + drag a right edge: resize without overlap
+  DRAW_STRETCH: 'draw-stretch', // Pencil + Shift: drag sets the new note's length
+  PAINT: 'paint',
+  SLICE_LINE: 'slice-line',
+  RIGHT_PRESS: 'right-press',   // right press on empty grid: click deselects, drag slices
+  SCRUB: 'scrub',               // Alt + right-drag
+}
+
+// -- Left/right modifier sides ----------------------------------------------
+// FL gives Right-Shift and Right-Alt their own meaning, and a pointer event
+// only says "Shift is down". The physical side is tracked from key events
+// (capture phase, so nothing upstream can swallow them). A side flag only
+// counts while the event itself still reports the modifier, so a keyup lost
+// to a focus change can never leave it stuck on.
+const sideKeys = { shiftRight: false, altRight: false }
+let sideKeysInstalled = false
+function installSideKeyTracker() {
+  if (sideKeysInstalled || typeof window === 'undefined') return
+  sideKeysInstalled = true
+  const set = (e, down) => {
+    if (e.code === 'ShiftRight') sideKeys.shiftRight = down
+    if (e.code === 'AltRight' || e.key === 'AltGraph') sideKeys.altRight = down
+  }
+  window.addEventListener('keydown', (e) => set(e, true), true)
+  window.addEventListener('keyup', (e) => set(e, false), true)
+  window.addEventListener('blur', () => { sideKeys.shiftRight = false; sideKeys.altRight = false })
+}
+export function setSideKeysForTest(next) { Object.assign(sideKeys, next) }
+function isRightShift(e) { return !!e.shiftKey && sideKeys.shiftRight }
+// AltGr layouts deliver Right-Alt as Ctrl+Alt (or as the AltGraph modifier).
+function isRightAlt(e) {
+  return sideKeys.altRight && (!!e.altKey || !!e.getModifierState?.('AltGraph'))
+}
+
+// Ghost note under the pointer (other patterns drawn behind this one).
+function resolveGhostHit(ghosts, localX, localY, pixelsPerBeat, pixelsPerSemitone, scrollX, scrollY) {
+  if (!ghosts?.length) return null
+  for (let i = ghosts.length - 1; i >= 0; i--) {
+    const g = ghosts[i]
+    if (!Number.isInteger(g.patternId)) continue
+    const x = ticksToBeats(g.positionTicks) * pixelsPerBeat - scrollX
+    const w = Math.max(MIN_NOTE_HITBOX_PX, ticksToBeats(g.durationTicks) * pixelsPerBeat)
+    const y = (PITCH_MAX - g.pitch) * pixelsPerSemitone - scrollY
+    if (localX >= x && localX < x + w && localY >= y && localY < y + pixelsPerSemitone) return g
+  }
+  return null
 }
 
 // Find the first dropped FL Studio Score (.fsc) file by name extension.
@@ -99,6 +146,7 @@ export function resolvePointerIntent({
   if (activeTool === 'split') {
     return hit ? { intent: 'split', note: hit.note, hit } : { intent: 'none', note: null, hit: null }
   }
+  if (activeTool === 'paint') return { intent: 'draw', note: hit?.note ?? null, hit }
   if (!hit) {
     // 'draw' only for the pencil tool; select-tool empty space starts a lasso.
     return { intent: activeTool === 'pencil' ? 'draw' : 'lasso', note: null, hit: null }
@@ -122,7 +170,7 @@ export function cursorForIntent(intent, activeTool) {
   if (intent === 'draw') return 'crosshair'
   if (activeTool === 'delete') return 'not-allowed'
   if (activeTool === 'split') return 'col-resize'
-  if (activeTool === 'pencil') return 'crosshair'
+  if (activeTool === 'pencil' || activeTool === 'paint') return 'crosshair'
   return 'default'
 }
 
@@ -228,6 +276,7 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
   patternId,
   notes, patternLengthTicks,
   activeTool, slideMode = false, stickyNoteLength, setStickyNoteLength, stickyVelocity = 1.0, setStickyVelocity,
+  stickySlideCurve = null, onTouchNote,
   selectedNoteIds, setSelectedNoteIds,
   pixelsPerBeatRef, pixelsPerSemitoneRef, scrollXRef, scrollYRef,
   width, height,
@@ -236,7 +285,9 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
   scale = DEFAULT_SCALE,
   noteColor = null, labelMode = 'pitch', refSlot = null, ghosts = null,
   snap = '1/16', onPan,
+  timeSel = null, onClearTimeSel, onCommitNotes, onScrub, onSwitchToGhost,
 }, ref) {
+  useEffect(() => { installSideKeyTracker() }, [])
   const dprEpoch = useThemeEpoch() // Phase 7: re-size and redraw at the new devicePixelRatio when the UI scale changes
   const bgRef = useRef(null)
   const ctRef = useRef(null)
@@ -299,12 +350,30 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
   setStickyNoteLengthRef.current = setStickyNoteLength
   const slideModeRef = useRef(slideMode)
   slideModeRef.current = slideMode
+  const stickySlideCurveRef = useRef(stickySlideCurve)
+  stickySlideCurveRef.current = stickySlideCurve
+  // Fired when a pointerdown touches an existing note (pencil or select): the
+  // editor then draws new notes with that note's properties.
+  const onTouchNoteRef = useRef(onTouchNote)
+  onTouchNoteRef.current = onTouchNote
   const scaleRef = useRef(scale)
   scaleRef.current = scale
   const snapRef = useRef(snap)
   snapRef.current = snap
   const onPanRef = useRef(onPan)
   onPanRef.current = onPan
+  const onCommitNotesRef = useRef(onCommitNotes)
+  onCommitNotesRef.current = onCommitNotes
+  const onScrubRef = useRef(onScrub)
+  onScrubRef.current = onScrub
+  const onSwitchToGhostRef = useRef(onSwitchToGhost)
+  onSwitchToGhostRef.current = onSwitchToGhost
+  const onClearTimeSelRef = useRef(onClearTimeSel)
+  onClearTimeSelRef.current = onClearTimeSel
+  const timeSelRef = useRef(timeSel)
+  timeSelRef.current = timeSel
+  // Last right press on empty grid, for the ghost double right-click.
+  const lastRightPressRef = useRef(null)
   // Note look (step 12.3): read by both draw paths from refs, like every other
   // draw input, so the imperative per-frame redraw never sees stale values.
   const lookRef = useRef(null)
@@ -337,7 +406,11 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
   // by the overlay at their preview position for the duration of the drag.
   function draggedNoteIds() {
     const ds = dragStateRef.current
-    if (!ds || ds.action === ACTION.LASSO || ds.action === ACTION.PAN) return null
+    if (!ds) return null
+    if (ds.action === ACTION.LEGATO) return ds.hidden
+    // Copies leave their originals in place; the rest edit nothing on screen.
+    if (ds.action !== ACTION.MOVE_NOTES && ds.action !== ACTION.RESIZE_NOTE) return null
+    if (ds.clone) return null
     return new Set(ds.originals.keys())
   }
 
@@ -358,6 +431,21 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
     const sY = scrollYRef.current
     drawBackground(bg, w, h, ppb, pps, sX, sY, lenBeats, palette, scaleRef.current)
     ct.clearRect(0, 0, w, h)
+    const ts = timeSelRef.current
+    if (ts && ts.end > ts.start) {
+      const x0 = ticksToBeats(ts.start) * ppb - sX
+      const x1 = ticksToBeats(ts.end) * ppb - sX
+      if (x1 > 0 && x0 < w) {
+        ct.save()
+        ct.globalAlpha = 0.12
+        ct.fillStyle = palette.select
+        ct.fillRect(x0, 0, x1 - x0, h)
+        ct.globalAlpha = 0.6
+        ct.fillRect(Math.round(x0), 0, 1, h)
+        ct.fillRect(Math.round(x1) - 1, 0, 1, h)
+        ct.restore()
+      }
+    }
     const style = noteStyleFor(palette)
     drawGhosts(ct, w, h, lookRef.current.ghosts, ppb, pps, sX, sY, style)
     drawNotes(ct, w, h, notesRef.current, selectedNoteIdsRef.current, ppb, pps, sX, sY, style, draggedNoteIds())
@@ -384,7 +472,7 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
   useEffect(() => {
     redraw()
   }, [notes, selectedNoteIds, width, height, patternLengthTicks, themeTick, dprEpoch,
-      scale.enabled, scale.root, scale.mode, noteColor, labelMode, refSlot, ghosts])
+      scale.enabled, scale.root, scale.mode, noteColor, labelMode, refSlot, ghosts, timeSel])
 
   // Redraw all canvases when the active theme changes — tokenValue() reads
   // CSS variables at draw time, but the draw effects only rerun on prop/state
@@ -405,11 +493,11 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
   // Row under the cursor, clamped to the keyboard range. With Snap to Scale on,
   // the row is pulled to the nearest scale tone so a note can only ever be
   // placed on a degree of the active scale.
-  const pixelToPitch = useCallback((localY) => {
+  const pixelToPitch = useCallback((localY, { raw = false } = {}) => {
     const pitch = PITCH_MAX - Math.floor((localY + scrollYRef.current) / pixelsPerSemitoneRef.current)
     const clamped = Math.max(PITCH_MIN, Math.min(PITCH_MAX, pitch))
     const sc = scaleRef.current
-    if (!sc?.enabled) return clamped
+    if (raw || !sc?.enabled) return clamped
     return snapPitchToScale(clamped, sc.root, sc.mode, PITCH_MIN, PITCH_MAX)
   }, [])
 
@@ -441,13 +529,16 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
     }
   }, [])
 
+  // The note list after an edit, committed as one undo entry by the owner.
+  const commit = useCallback((next) => onCommitNotesRef.current?.(next), [])
+
   const handlePointerDown = useCallback((e) => {
     const ppb = pixelsPerBeatRef.current
     const pps = pixelsPerSemitoneRef.current
     const sX = scrollXRef.current
     const sY = scrollYRef.current
+    const snapTicks = snapTicksOf(snapRef.current)
 
-    // Right-click = delete (FL-style), works with any tool, immediately.
     // Middle-drag pans both axes (approved at the step 12 checkpoint). Captured
     // like any gesture; the view moves 1:1 with the pointer, nothing is edited.
     if (e.button === 1) {
@@ -463,41 +554,149 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
       }
       return
     }
+    const pos = getLocalXY(e)
+    if (!pos) return
+    const { localX, localY } = pos
+    const hit = resolveNoteHit(notesRef.current, localX, localY, ppb, pps, sX, sY)
+    const snapMods = { alt: e.altKey }
+
+    // Mouse X1 (back) over a ghost note: edit that pattern.
+    if (e.button === 3) {
+      e.preventDefault()
+      const ghost = resolveGhostHit(lookRef.current.ghosts, localX, localY, ppb, pps, sX, sY)
+      if (ghost) onSwitchToGhostRef.current?.(ghost.patternId)
+      return
+    }
+
     if (e.button === 2) {
       e.preventDefault()
-      const pos = getLocalXY(e)
-      if (!pos) return
-      const hit = resolveNoteHit(notesRef.current, pos.localX, pos.localY, ppb, pps, sX, sY)
-      if (hit) onRemoveNoteRef.current?.(hit.note.id)
+      // Right-Alt + right-click: quantize the selection (or the note clicked).
+      if (isRightAlt(e)) {
+        const sel = selectedNoteIdsRef.current
+        const ids = sel.size ? new Set(sel) : hit ? new Set([hit.note.id]) : null
+        if (ids) commit(quantizeStarts(notesRef.current, ids, snapTicks))
+        return
+      }
+      // Alt + right-drag: scrub — the pointer is the playhead.
+      if (e.altKey) {
+        const tick = Math.max(0, Math.round(((localX + sX) / ppb) * PPQ))
+        startGesture(e, { action: ACTION.SCRUB, tick })
+        onScrubRef.current?.(tick)
+        return
+      }
+      // Right-Shift + right-click: slice the note and drop its smaller part.
+      if (isRightShift(e)) {
+        if (hit) {
+          const tick = pixelToTick(localX, snapMods)
+          commit(sliceAt(notesRef.current, new Set([hit.note.id]), tick, { deleteSmallest: true }))
+        }
+        return
+      }
+      // Right-click a note: delete it (FL-style), with any tool, immediately.
+      if (hit) {
+        onRemoveNoteRef.current?.(hit.note.id)
+        return
+      }
+      // Double right-click on a ghost note: edit that pattern.
+      const now = performance.now()
+      const last = lastRightPressRef.current
+      const ghost = resolveGhostHit(lookRef.current.ghosts, localX, localY, ppb, pps, sX, sY)
+      if (ghost && last && now - last.t < 450 && Math.abs(last.x - localX) < 6 && Math.abs(last.y - localY) < 6) {
+        lastRightPressRef.current = null
+        onSwitchToGhostRef.current?.(ghost.patternId)
+        return
+      }
+      lastRightPressRef.current = { t: now, x: localX, y: localY }
+      // Right press on empty grid: a click deselects all; a drag slices along
+      // the drawn line (FL's right-click-and-hold slice).
+      startGesture(e, {
+        action: ACTION.RIGHT_PRESS,
+        startX: localX, startY: localY,
+        tick0: pixelToTick(localX, snapMods), pitch0: pixelToPitch(localY, { raw: true }),
+      })
       return
     }
     if (e.button !== 0) return
     e.preventDefault()
-    const pos = getLocalXY(e)
-    if (!pos) return
-    const { localX, localY } = pos
-    const modifiers = { alt: e.altKey, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey }
-    const hit = resolveNoteHit(notesRef.current, localX, localY, ppb, pps, sX, sY)
+    const ctrl = e.ctrlKey || e.metaKey
+    const shift = e.shiftKey
+
+    // Right-Shift + click: slice notes, with any tool (a right edge still
+    // takes the Shift edge drag below).
+    if (isRightShift(e) && !(hit && hit.nearRight)) {
+      const tick = pixelToTick(localX, snapMods)
+      startGesture(e, {
+        action: ACTION.SLICE_LINE,
+        tick0: tick, pitch0: pixelToPitch(localY, { raw: true }),
+        tick1: tick, pitch1: pixelToPitch(localY, { raw: true }),
+      })
+      return
+    }
+
+    // Ctrl, in every tool: select. Click a note = that note; Ctrl+Shift adds
+    // (or removes an already-selected one); click empty = deselect all; drag =
+    // rectangle (added to the selection with Shift).
+    if (ctrl) {
+      startGesture(e, {
+        action: ACTION.LASSO,
+        ctrlClick: true,
+        startX: localX, startY: localY,
+        startHitId: hit ? hit.note.id : null,
+        startWorldX: localX + sX, startWorldY: localY + sY,
+        currentWorldX: localX + sX, currentWorldY: localY + sY,
+        additive: shift,
+        baseSelection: new Set(selectedNoteIdsRef.current),
+      })
+      return
+    }
 
     if (activeTool === 'delete') {
       if (hit) onRemoveNoteRef.current?.(hit.note.id)
       return
     }
 
+    // Slice tool: drag a cut line across notes; Shift cuts at the click
+    // without dragging; Alt drops the snap.
     if (activeTool === 'split') {
-      if (hit) {
-        const clickTick = pixelToTick(localX, { alt: true })
-        const splitPoint = clickTick - hit.note.positionTicks
-        if (splitPoint > 0 && splitPoint < hit.note.durationTicks) {
-          onResizeNoteRef.current?.(hit.note.id, splitPoint)
-          onAddNoteRef.current?.({
-            positionTicks: hit.note.positionTicks + splitPoint,
-            durationTicks: hit.note.durationTicks - splitPoint,
-            pitch: hit.note.pitch,
-            velocity: hit.note.velocity,
-          })
-        }
+      const tick = pixelToTick(localX, snapMods)
+      if (shift) {
+        if (hit) commit(sliceAt(notesRef.current, new Set([hit.note.id]), tick))
+        return
       }
+      startGesture(e, {
+        action: ACTION.SLICE_LINE,
+        tick0: tick, pitch0: pixelToPitch(localY, { raw: true }),
+        tick1: tick, pitch1: pixelToPitch(localY, { raw: true }),
+      })
+      return
+    }
+
+    // Paint tool: a note in every slot the stroke crosses. Shift = monophonic
+    // (one note per slot), Alt = half-snap slots.
+    if (activeTool === 'paint') {
+      const slotTicks = e.altKey ? Math.max(MIN_NOTE_DURATION_TICKS, Math.round(snapTicks / 2)) : Math.max(MIN_NOTE_DURATION_TICKS, stickyNoteLength)
+      const exact = ((localX + sX) / ppb) * PPQ
+      const originTicks = Math.max(0, Math.floor(exact / snapTicks) * snapTicks)
+      const pitch = pixelToPitch(localY)
+      const cell = { slot: Math.floor((exact - originTicks) / slotTicks), pitch }
+      const ds = {
+        action: ACTION.PAINT,
+        mono: shift,
+        originTicks, slotTicks,
+        cells: [cell],
+        lastCell: cell,
+        template: {
+          velocity: stickyVelocity,
+          ...(slideModeRef.current && {
+            isSlide: true,
+            slideCurveCx: stickySlideCurveRef.current?.cx ?? 0.5,
+            slideCurveCy: stickySlideCurveRef.current?.cy ?? 0.5,
+          }),
+        },
+      }
+      ds.preview = paintNotes(notesRef.current, ds.cells, { originTicks, slotTicks, template: ds.template, mono: ds.mono })
+      onPreviewNoteRef.current?.(pitch)
+      startGesture(e, ds)
       return
     }
 
@@ -508,93 +707,108 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
     // Full note copies, not just the three edited fields: the overlay renders
     // the live preview through drawNotes(), which also needs id/velocity/
     // isSlide to draw the note exactly as the content layer would.
-    const beginDrag = (hit, isMultiMove) => {
+    const groupOf = (h) => {
+      const sel = selectedNoteIdsRef.current
+      return sel.has(h.note.id) && sel.size > 1
+    }
+    const beginDrag = (h, isMultiMove, { clone = false } = {}) => {
       const originals = new Map()
       if (isMultiMove) {
         for (const n of notesRef.current) {
           if (selectedNoteIdsRef.current.has(n.id)) originals.set(n.id, { ...n })
         }
         // Ensure anchor is in the map even if selection state was stale.
-        if (!originals.has(hit.note.id)) originals.set(hit.note.id, { ...hit.note })
+        if (!originals.has(h.note.id)) originals.set(h.note.id, { ...h.note })
       } else {
-        originals.set(hit.note.id, { ...hit.note })
+        originals.set(h.note.id, { ...h.note })
       }
       startGesture(e, {
-        action: hit.nearRight ? ACTION.RESIZE_NOTE : ACTION.MOVE_NOTES,
+        action: (h.nearRight && !clone) ? ACTION.RESIZE_NOTE : ACTION.MOVE_NOTES,
+        clone,
+        startShift: shift,
+        startCtrl: ctrl,
         startX: localX, startY: localY,
         scrollXAtStart: sX, scrollYAtStart: sY,
-        anchorNoteId: hit.note.id,
+        anchorNoteId: h.note.id,
         originals,
         previewDeltaTicks: 0,
         previewDeltaPitch: 0,
-        origDurationTicks: hit.note.durationTicks,
-        previewDurationTicks: hit.note.durationTicks,
-        snapBypassed: modifiers.alt,
+        origDurationTicks: h.note.durationTicks,
+        previewDurationTicks: h.note.durationTicks,
+        snapBypassed: e.altKey,
       })
     }
 
-    if (activeTool === 'pencil') {
-      // Ctrl+drag on empty space (or over notes) = lasso selection
-      if (modifiers.ctrl && !hit) {
+    if (hit) {
+      // Click existing note → it becomes the template for the next new note.
+      onTouchNoteRef.current?.(hit.note)
+      // Shift + drag a right edge: resize without overlapping (the boundary
+      // between touching notes moves; see legatoResize).
+      if (shift && hit.nearRight) {
+        const sel = selectedNoteIdsRef.current
+        const dragIds = sel.has(hit.note.id) ? new Set(sel) : new Set([hit.note.id])
+        const anchorEnd = hit.note.positionTicks + hit.note.durationTicks
         startGesture(e, {
-          action: ACTION.LASSO,
-          startWorldX: localX + sX, startWorldY: localY + sY,
-          currentWorldX: localX + sX, currentWorldY: localY + sY,
-          additive: e.shiftKey,
-          baseSelection: new Set(selectedNoteIdsRef.current),
+          action: ACTION.LEGATO,
+          anchorNoteId: hit.note.id,
+          anchorEnd,
+          dragIds,
+          base: notesRef.current,
+          preview: [],
+          hidden: new Set([hit.note.id]),
+          result: null,
         })
         return
       }
-      if (!hit) {
-        const posTicks = pixelToTick(localX, modifiers)
-        const pitch = pixelToPitch(localY)
-        onPreviewNoteRef.current?.(pitch)
-        onAddNoteRef.current?.({
-          positionTicks: posTicks,
-          durationTicks: stickyNoteLength,
-          pitch,
-          velocity: stickyVelocity,
-          ...(slideModeRef.current && { isSlide: true, slideCurveCx: 0.5, slideCurveCy: 0.5 }),
-        })
-      } else {
-        // Click existing note → select, begin drag
-        const wasSelected = selectedNoteIdsRef.current.has(hit.note.id)
-        if (!wasSelected) {
-          setSelectedNoteIdsRef.current(new Set([hit.note.id]))
-        }
-        beginDrag(hit, wasSelected && selectedNoteIdsRef.current.size > 1)
+      // Shift + drag a note: drag out copies (the selection, if it's in it).
+      if (shift) {
+        beginDrag(hit, groupOf(hit), { clone: true })
+        return
       }
+      const wasSelected = selectedNoteIdsRef.current.has(hit.note.id)
+      if (!wasSelected) {
+        setSelectedNoteIdsRef.current(new Set([hit.note.id]))
+      }
+      if (activeTool === 'select') onPreviewNoteRef.current?.(hit.note.pitch)
+      beginDrag(hit, wasSelected && selectedNoteIdsRef.current.size > 1)
+      return
+    }
+
+    if (activeTool === 'pencil') {
+      const posTicks = pixelToTick(localX, snapMods)
+      const pitch = pixelToPitch(localY)
+      const note = {
+        positionTicks: posTicks,
+        durationTicks: stickyNoteLength,
+        pitch,
+        velocity: stickyVelocity,
+        ...(slideModeRef.current && {
+          isSlide: true,
+          slideCurveCx: stickySlideCurveRef.current?.cx ?? 0.5,
+          slideCurveCy: stickySlideCurveRef.current?.cy ?? 0.5,
+        }),
+      }
+      onPreviewNoteRef.current?.(pitch)
+      // Shift: stretch mode — the drag sets the new note's length.
+      if (shift) {
+        startGesture(e, { action: ACTION.DRAW_STRETCH, note, preview: [{ ...note, id: -1 }] })
+        return
+      }
+      onAddNoteRef.current?.(note)
       return
     }
 
     if (activeTool === 'select') {
-      if (hit) {
-        if (e.shiftKey) {
-          // Shift-click toggles selection; do NOT start a drag.
-          const next = new Set(selectedNoteIdsRef.current)
-          if (next.has(hit.note.id)) next.delete(hit.note.id)
-          else next.add(hit.note.id)
-          setSelectedNoteIdsRef.current(next)
-          return
-        }
-        const wasSelected = selectedNoteIdsRef.current.has(hit.note.id)
-        if (!wasSelected) {
-          setSelectedNoteIdsRef.current(new Set([hit.note.id]))
-        }
-        onPreviewNoteRef.current?.(hit.note.pitch)
-        beginDrag(hit, wasSelected && selectedNoteIdsRef.current.size > 1)
-      } else {
-        // Start lasso on empty space (no modifier needed in select mode)
-        startGesture(e, {
-          action: ACTION.LASSO,
-          startWorldX: localX + sX, startWorldY: localY + sY,
-          currentWorldX: localX + sX, currentWorldY: localY + sY,
-          additive: e.shiftKey,
-          baseSelection: e.shiftKey ? new Set(selectedNoteIdsRef.current) : new Set(),
-        })
-      }
+      // Lasso on empty space (no modifier needed in select mode); Shift adds.
+      startGesture(e, {
+        action: ACTION.LASSO,
+        startWorldX: localX + sX, startWorldY: localY + sY,
+        currentWorldX: localX + sX, currentWorldY: localY + sY,
+        additive: shift,
+        baseSelection: shift ? new Set(selectedNoteIdsRef.current) : new Set(),
+      })
     }
-  }, [activeTool, stickyNoteLength, stickyVelocity, getLocalXY, pixelToTick, pixelToPitch, startGesture])
+  }, [activeTool, stickyNoteLength, stickyVelocity, getLocalXY, pixelToTick, pixelToPitch, startGesture, commit])
 
   // Clamp tick/pitch deltas so no note in the group exits valid range.
   const clampGroupDeltas = useCallback((originals, deltaTicks, deltaPitch) => {
@@ -661,11 +875,97 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
       return
     }
 
-    const modifiers = { alt: e.altKey, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey }
+    // Snap is the Snap select, or free with Alt. Ctrl/Shift never change the
+    // grid in the piano roll — they mean select / clone / lock axis here.
+    const modifiers = { alt: e.altKey }
 
     if (ds.action === ACTION.LASSO) {
       ds.currentWorldX = localX + scrollXRef.current
       ds.currentWorldY = localY + scrollYRef.current
+      redrawOverlayLayer()
+      return
+    }
+
+    if (ds.action === ACTION.SCRUB) {
+      const tick = Math.max(0, Math.round(((localX + scrollXRef.current) / pixelsPerBeatRef.current) * PPQ))
+      if (tick !== ds.tick) {
+        ds.tick = tick
+        onScrubRef.current?.(tick)
+        redrawOverlayLayer()
+      }
+      return
+    }
+
+    if (ds.action === ACTION.RIGHT_PRESS) {
+      if (Math.hypot(localX - ds.startX, localY - ds.startY) < 4) return
+      // Became a drag: slice along the line from the press point.
+      dragStateRef.current = {
+        action: ACTION.SLICE_LINE,
+        tick0: ds.tick0, pitch0: ds.pitch0,
+        tick1: pixelToTick(localX, modifiers), pitch1: pixelToPitch(localY, { raw: true }),
+      }
+      redrawOverlayLayer()
+      return
+    }
+
+    if (ds.action === ACTION.SLICE_LINE) {
+      const tick1 = pixelToTick(localX, modifiers)
+      const pitch1 = pixelToPitch(localY, { raw: true })
+      if (tick1 !== ds.tick1 || pitch1 !== ds.pitch1) {
+        ds.tick1 = tick1
+        ds.pitch1 = pitch1
+        redrawOverlayLayer()
+      }
+      return
+    }
+
+    if (ds.action === ACTION.PAINT) {
+      const exact = ((localX + scrollXRef.current) / pixelsPerBeatRef.current) * PPQ
+      const slot = Math.floor((exact - ds.originTicks) / ds.slotTicks)
+      const pitch = pixelToPitch(localY)
+      const last = ds.lastCell
+      if (slot === last.slot && pitch === last.pitch) return
+      // Fill every slot between the last cell and this one so a fast stroke
+      // leaves no gaps; pitches are interpolated along the way.
+      const steps = Math.max(1, Math.abs(slot - last.slot))
+      for (let i = 1; i <= steps; i++) {
+        const s = slot === last.slot ? slot : last.slot + Math.sign(slot - last.slot) * i
+        const p = Math.round(last.pitch + ((pitch - last.pitch) * i) / steps)
+        ds.cells.push({ slot: s, pitch: p })
+      }
+      if (pitch !== last.pitch) onPreviewNoteRef.current?.(pitch)
+      ds.lastCell = { slot, pitch }
+      ds.preview = paintNotes(notesRef.current, ds.cells, {
+        originTicks: ds.originTicks, slotTicks: ds.slotTicks, template: ds.template, mono: ds.mono,
+      })
+      redrawOverlayLayer()
+      return
+    }
+
+    if (ds.action === ACTION.DRAW_STRETCH) {
+      const beatAtCursor = (localX + scrollXRef.current) / pixelsPerBeatRef.current
+      const endTicks = beatsToTicks(snapBeatToGrid(Math.max(0, beatAtCursor), modifiers, snapRef.current))
+      const dur = Math.max(MIN_NOTE_DURATION_TICKS, endTicks - ds.note.positionTicks)
+      if (dur !== ds.preview[0].durationTicks) {
+        ds.preview = [{ ...ds.preview[0], durationTicks: dur }]
+        redrawOverlayLayer()
+      }
+      return
+    }
+
+    if (ds.action === ACTION.LEGATO) {
+      const beatAtCursor = (localX + scrollXRef.current) / pixelsPerBeatRef.current
+      const endTicks = beatsToTicks(snapBeatToGrid(Math.max(0, beatAtCursor), modifiers, snapRef.current))
+      const want = endTicks - ds.anchorEnd
+      if (ds.result && want === ds.wantDelta) return
+      ds.wantDelta = want
+      const result = legatoResize(ds.base, ds.dragIds, ds.anchorNoteId, want, MIN_NOTE_DURATION_TICKS)
+      ds.result = result
+      const hidden = new Set([ds.anchorNoteId, ...result.touched])
+      const hiddenChanged = hidden.size !== ds.hidden.size || [...hidden].some((id) => !ds.hidden.has(id))
+      ds.hidden = hidden
+      ds.preview = result.notes.filter((n) => hidden.has(n.id))
+      if (hiddenChanged) redraw()
       redrawOverlayLayer()
       return
     }
@@ -677,8 +977,12 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
       // the grabbed notes stay anchored to the cursor in pattern coordinates.
       const dx = (localX + scrollXRef.current) - (ds.startX + ds.scrollXAtStart)
       const dy = (localY + scrollYRef.current) - (ds.startY + ds.scrollYAtStart)
-      const deltaBeats = dx / ppb
-      let deltaPitch = -Math.round(dy / pps)
+      // FL axis locks: Shift pressed after the click (not held for a clone)
+      // keeps the pitch; Ctrl pressed after the click keeps the timing.
+      const lockPitch = e.shiftKey && !ds.startShift
+      const lockTime = (e.ctrlKey || e.metaKey) && !ds.startCtrl
+      const deltaBeats = lockTime ? 0 : dx / ppb
+      let deltaPitch = lockPitch ? 0 : -Math.round(dy / pps)
 
       // Snap the anchor's destination, then derive a grid-aligned tick delta
       // that is applied identically to every note in `originals`.
@@ -693,12 +997,11 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
         const dest = Math.max(PITCH_MIN, Math.min(PITCH_MAX, anchorOrig.pitch + deltaPitch))
         deltaPitch = snapPitchToScale(dest, sc.root, sc.mode, PITCH_MIN, PITCH_MAX) - anchorOrig.pitch
       }
-      const anchorNewBeat = snapBeatToGrid(
+      const snappedDeltaTicks = lockTime ? 0 : beatsToTicks(snapBeatToGrid(
         Math.max(0, ticksToBeats(anchorOrig.positionTicks) + deltaBeats),
         modifiers,
         snapRef.current,
-      )
-      const snappedDeltaTicks = beatsToTicks(anchorNewBeat) - anchorOrig.positionTicks
+      )) - anchorOrig.positionTicks
 
       // Clamp so no note leaves valid range
       const { clampedTicks, clampedPitch } = clampGroupDeltas(ds.originals, snappedDeltaTicks, deltaPitch)
@@ -722,7 +1025,7 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
         redrawOverlayLayer()
       }
     }
-  }, [clampGroupDeltas])
+  }, [clampGroupDeltas, pixelToTick, pixelToPitch])
 
   // pointerup: commits once. Local preview only lived on dragStateRef/canvas —
   // this is the single bridge write (or single batch write) for the whole
@@ -735,7 +1038,24 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
     }
     if (!ds) return
     let committed = false
-    if (ds.action === ACTION.MOVE_NOTES) {
+    if (ds.action === ACTION.MOVE_NOTES && ds.clone) {
+      // Shift-drag copies: originals stay, the copies land where they were
+      // dropped and become the selection (even with no movement, like FL).
+      if (ds.previewDeltaTicks !== 0 || ds.previewDeltaPitch !== 0) {
+      committed = true
+      const copies = []
+      for (const [, orig] of ds.originals) {
+        const { id, ...rest } = orig
+        copies.push({
+          ...rest,
+          positionTicks: orig.positionTicks + ds.previewDeltaTicks,
+          pitch: orig.pitch + ds.previewDeltaPitch,
+          _select: true,
+        })
+      }
+      commit([...notesRef.current, ...copies])
+      }
+    } else if (ds.action === ACTION.MOVE_NOTES) {
       if (ds.previewDeltaTicks !== 0 || ds.previewDeltaPitch !== 0) {
         committed = true
         const moves = []
@@ -771,26 +1091,68 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
         }
         setStickyNoteLengthRef.current?.(ds.previewDurationTicks)
       }
-    } else if (ds.action === ACTION.LASSO) {
-      // Compute notes whose bbox intersects the lasso rect (world-space)
-      const x0 = Math.min(ds.startWorldX, ds.currentWorldX)
-      const x1 = Math.max(ds.startWorldX, ds.currentWorldX)
-      const y0 = Math.min(ds.startWorldY, ds.currentWorldY)
-      const y1 = Math.max(ds.startWorldY, ds.currentWorldY)
-      const ppb = pixelsPerBeatRef.current
-      const pps = pixelsPerSemitoneRef.current
-      const hitIds = new Set(ds.additive ? ds.baseSelection : [])
-      for (const note of notesRef.current) {
-        const nx = ticksToBeats(note.positionTicks) * ppb
-        const nw = Math.max(2, ticksToBeats(note.durationTicks) * ppb)
-        const ny = (PITCH_MAX - note.pitch) * pps
-        const nh = pps
-        // AABB intersection
-        if (nx < x1 && nx + nw > x0 && ny < y1 && ny + nh > y0) {
-          hitIds.add(note.id)
-        }
+    } else if (ds.action === ACTION.LEGATO) {
+      if (ds.result && ds.result.delta !== 0) {
+        committed = true
+        commit(ds.result.notes)
+        const anchor = ds.result.notes.find((n) => n.id === ds.anchorNoteId)
+        if (anchor) setStickyNoteLengthRef.current?.(anchor.durationTicks)
       }
-      setSelectedNoteIdsRef.current(hitIds)
+    } else if (ds.action === ACTION.DRAW_STRETCH) {
+      committed = true
+      const dur = ds.preview[0].durationTicks
+      onAddNoteRef.current?.({ ...ds.note, durationTicks: dur })
+      setStickyNoteLengthRef.current?.(dur)
+    } else if (ds.action === ACTION.PAINT) {
+      if (ds.preview.length) {
+        committed = true
+        commit([...notesRef.current, ...ds.preview])
+      }
+    } else if (ds.action === ACTION.SLICE_LINE) {
+      const next = sliceAlongLine(notesRef.current, ds)
+      if (next.length !== notesRef.current.length) commit(next)
+    } else if (ds.action === ACTION.SCRUB) {
+      onScrubRef.current?.(null)
+    } else if (ds.action === ACTION.RIGHT_PRESS) {
+      // A plain right-click on empty grid deselects everything.
+      setSelectedNoteIdsRef.current(new Set())
+      onClearTimeSelRef.current?.()
+    } else if (ds.action === ACTION.LASSO) {
+      const moved = ds.ctrlClick
+        && Math.hypot(ds.currentWorldX - ds.startWorldX, ds.currentWorldY - ds.startWorldY) >= 3
+      if (ds.ctrlClick && !moved) {
+        // Ctrl+click: pick one note (Ctrl+Shift toggles it); on empty grid,
+        // deselect all.
+        if (ds.startHitId != null) {
+          const next = ds.additive ? new Set(ds.baseSelection) : new Set()
+          if (ds.additive && next.has(ds.startHitId)) next.delete(ds.startHitId)
+          else next.add(ds.startHitId)
+          setSelectedNoteIdsRef.current(next)
+        } else if (!ds.additive) {
+          setSelectedNoteIdsRef.current(new Set())
+          onClearTimeSelRef.current?.()
+        }
+      } else {
+        // Compute notes whose bbox intersects the lasso rect (world-space)
+        const x0 = Math.min(ds.startWorldX, ds.currentWorldX)
+        const x1 = Math.max(ds.startWorldX, ds.currentWorldX)
+        const y0 = Math.min(ds.startWorldY, ds.currentWorldY)
+        const y1 = Math.max(ds.startWorldY, ds.currentWorldY)
+        const ppb = pixelsPerBeatRef.current
+        const pps = pixelsPerSemitoneRef.current
+        const hitIds = new Set(ds.additive ? ds.baseSelection : [])
+        for (const note of notesRef.current) {
+          const nx = ticksToBeats(note.positionTicks) * ppb
+          const nw = Math.max(2, ticksToBeats(note.durationTicks) * ppb)
+          const ny = (PITCH_MAX - note.pitch) * pps
+          const nh = pps
+          // AABB intersection
+          if (nx < x1 && nx + nw > x0 && ny < y1 && ny + nh > y0) {
+            hitIds.add(note.id)
+          }
+        }
+        setSelectedNoteIdsRef.current(hitIds)
+      }
     }
     if (committed) {
       // A move/resize commit is an async bridge round-trip (moveNote/
@@ -815,7 +1177,7 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
       redraw()
       redrawOverlayLayer()
     }
-  }, [])
+  }, [commit])
 
   // pointercancel (e.g. Alt+Tab, OS gesture interrupt mid-drag): abort without
   // committing anything — safer than the old window-mouseup approach, which
@@ -826,6 +1188,7 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
       containerRef.current.dataset.cursor = cursorForIntent('none', activeToolRef.current)
     }
     if (!dragStateRef.current) return
+    if (dragStateRef.current.action === ACTION.SCRUB) onScrubRef.current?.(null)
     dragStateRef.current = null
     redraw()
     redrawOverlayLayer()
@@ -921,6 +1284,28 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
           })
       }
       drawNotes(ov, w, h, previewNotes, selectedNoteIdsRef.current, ppb, pps, sX, sY, noteStyleFor(palette))
+    } else if (ds.action === ACTION.LEGATO || ds.action === ACTION.DRAW_STRETCH || ds.action === ACTION.PAINT) {
+      if (ds.preview?.length) {
+        const sel = ds.action === ACTION.LEGATO ? selectedNoteIdsRef.current : new Set()
+        drawNotes(ov, w, h, ds.preview, sel, ppb, pps, sX, sY, noteStyleFor(palette))
+      }
+    } else if (ds.action === ACTION.SLICE_LINE) {
+      const xAt = (t) => ticksToBeats(t) * ppb - sX
+      const yAt = (p) => (PITCH_MAX - p) * pps - sY + pps / 2
+      const flat = ds.pitch0 === ds.pitch1
+      ov.save()
+      ov.strokeStyle = palette.select
+      ov.lineWidth = 1.5
+      ov.setLineDash([4, 3])
+      ov.beginPath()
+      ov.moveTo(xAt(ds.tick0), yAt(ds.pitch0) - (flat ? pps / 2 : 0))
+      ov.lineTo(xAt(ds.tick1), yAt(ds.pitch1) + (flat ? pps / 2 : 0))
+      ov.stroke()
+      ov.restore()
+    } else if (ds.action === ACTION.SCRUB) {
+      const x = Math.round(ticksToBeats(ds.tick / 1) * ppb - sX)
+      ov.fillStyle = palette.select
+      ov.fillRect(x, 0, 1, h)
     } else if (ds.action === ACTION.LASSO) {
       // Convert world-space lasso coords to screen-space for rendering
       const sx0 = ds.startWorldX - sX
@@ -956,6 +1341,16 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
   // handle never needs to be rebuilt to stay current.
   useImperativeHandle(ref, () => ({
     redraw: () => { redraw(); redrawOverlayLayer() },
+    // Note under a client-space point (Alt+wheel note edits), or null.
+    noteAt: (clientX, clientY) => {
+      const rect = containerRef.current?.getBoundingClientRect()
+      if (!rect) return null
+      const localX = clientX - rect.left
+      const localY = clientY - rect.top
+      if (localX < 0 || localY < 0 || localX > rect.width || localY > rect.height) return null
+      return resolveNoteHit(notesRef.current, localX, localY, pixelsPerBeatRef.current,
+        pixelsPerSemitoneRef.current, scrollXRef.current, scrollYRef.current)?.note ?? null
+    },
   }), [])
 
   // Initial/reset cursor for the active tool — overridden live by
@@ -972,7 +1367,9 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerCancel}
       // Middle button: no browser autoscroll; the pan gesture owns it.
-      onMouseDown={(e) => { if (e.button === 1) e.preventDefault() }}
+      onMouseDown={(e) => { if (e.button === 1 || e.button === 3 || e.button === 4) e.preventDefault() }}
+      // X1/X2 must not navigate the window back/forward.
+      onMouseUp={(e) => { if (e.button === 3 || e.button === 4) e.preventDefault() }}
       onContextMenu={(e) => e.preventDefault()}
       onDrop={(e) => handleFscDropEvent(e, onDropFsc)}
       onDragOver={(e) => {

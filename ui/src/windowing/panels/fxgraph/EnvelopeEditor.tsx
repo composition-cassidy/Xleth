@@ -1,9 +1,11 @@
 import React from 'react';
-import { Check } from 'lucide-react';
 import { createDefaultEnvelopeNodeData, normalizeEnvelopeNodeData } from '../../../fxgraph/graphState.js';
 import { Button, MINUS, NumberBox, Toggle, formatValue, skewScale } from '../../../ui-kit';
 import ModulatorSheet, { type SheetAnchor } from './ModulatorSheet';
 import modStyles from './ModulatorEditors.module.css';
+import { iconComponent } from '../../../ui-kit/icons';
+
+const IcCheckFill = iconComponent('check', 'fill');
 
 // EVC-R3 - compact Envelope Modulator UI.
 //
@@ -453,7 +455,7 @@ export function IncludeSlideNotesControl({
     <Toggle
       size="sm"
       on={data.includeSlideNotes === true}
-      glyph={<Check aria-hidden="true" />}
+      glyph={<IcCheckFill aria-hidden="true" />}
       onChange={(next) => onChange({ includeSlideNotes: next })}
     >
       Include slide notes

@@ -143,7 +143,7 @@ describe('the model configs mirror the engine layouts', () => {
   })
 })
 
-describe('Glue comp device in the chain', () => {
+describe('Glue Comp device in the chain', () => {
   const GLUE = {
     threshold: -22.5, makeup: 3, ratio: 2.0000001, attack: 1, release: 3, topology: 1, sc_hpf_on: 1, sc_hpf_freq: 200, color: 0,
   }
@@ -222,11 +222,11 @@ describe('Glue comp device in the chain', () => {
     act(() => root.render(<><DeviceChain /><GlueCompPanel /></>))
     await flush()
     await flush()
-    act(() => q('button[aria-label="Open Glue comp in a window"]').click())
+    act(() => q('button[aria-label="Open Glue Comp in a window"]').click())
     await flush()
     expect(useGlueCompStore.getState().target).toEqual({ trackId: 3, nodeId: 7, storeKey: '3' })
     expect(q('[data-testid="glue-window"] section').getAttribute('data-presentation')).toBe('floating')
-    act(() => q('button[aria-label="Close Glue comp"]').click())
+    act(() => q('button[aria-label="Close Glue Comp"]').click())
     expect(useGlueCompStore.getState().target).toBeNull()
   })
 
@@ -238,7 +238,7 @@ describe('Glue comp device in the chain', () => {
   })
 })
 
-describe('Opto comp device in the chain', () => {
+describe('Opto Comp device in the chain', () => {
   const OPTO = { peak_reduction: 12, gain: 5.5, mode: 0.9999999 }
 
   it('hydrates from the engine, rounding the mode; no Time section (the cell sets attack and release)', async () => {
@@ -260,7 +260,7 @@ describe('Opto comp device in the chain', () => {
     expect(checked('Mode')).toBe(0)
     for (const id of ['peak_reduction', 'gain']) expect(q(`[data-automation-param="${id}"]`), id).not.toBeNull()
     expect(q('[data-param="mode"]')).not.toBeNull()
-    expect(q('[data-automation-param="mode"]')).toBeNull()
+    expect(q('[data-automation-param="mode"]')).not.toBeNull()
   })
 
   it('the gain-reduction readout follows meter slot 2', async () => {
@@ -277,18 +277,18 @@ describe('Opto comp device in the chain', () => {
     act(() => root.render(<><DeviceChain /><OptoCompPanel /></>))
     await flush()
     await flush()
-    act(() => q('button[aria-label="Open Opto comp in a window"]').click())
+    act(() => q('button[aria-label="Open Opto Comp in a window"]').click())
     await flush()
     expect(useOptoCompStore.getState().target).toEqual({ trackId: 3, nodeId: 7, storeKey: '3' })
     expect(q('[data-testid="opto-window"] section').getAttribute('data-presentation')).toBe('floating')
-    act(() => q('button[aria-label="Close Opto comp"]').click())
+    act(() => q('button[aria-label="Close Opto Comp"]').click())
     expect(useOptoCompStore.getState().target).toBeNull()
     expect(readFileSync(path.resolve(__dirname, '../../mixer/OptoCompPanel.jsx'), 'utf8')).not.toMatch(/PluginUIKitKnob|optocomp-/)
     expect(readFileSync(path.resolve(__dirname, '../../../styles/app.css'), 'utf8')).not.toMatch(/\.optocomp-/)
   })
 })
 
-describe('FET comp device in the chain', () => {
+describe('FET Comp device in the chain', () => {
   const FET = { input: 21, output: -6.5, attack: 6.2, release: 2, ratio: 3.9999999 }
 
   it('hydrates from the engine, rounding the ratio; there is no threshold', async () => {
@@ -322,7 +322,7 @@ describe('FET comp device in the chain', () => {
     expect(container.textContent).toContain('1.1 s')
   })
 
-  it('the ratio buttons commit the engine index; All is index 4 and is not automatable', async () => {
+  it('the ratio buttons commit the engine index; All is index 4 and is automatable too', async () => {
     setup('fet', { ...FET, ratio: 0 })
     await mountChain()
     expect(checked('Ratio')).toBe(0)
@@ -331,7 +331,7 @@ describe('FET comp device in the chain', () => {
     act(() => radios('Ratio')[4].click())
     expect(sent('ratio').at(-1)).toEqual([3, 7, 'ratio', 4])
     expect(radios('Ratio').filter((b) => b.getAttribute('aria-checked') === 'true').map((b) => b.textContent)).toEqual(['All'])
-    expect(q('[data-automation-param="ratio"]')).toBeNull()
+    expect(q('[data-automation-param="ratio"]')).not.toBeNull()
     for (const id of ['input', 'output', 'attack', 'release']) expect(q(`[data-automation-param="${id}"]`), id).not.toBeNull()
   })
 
@@ -349,18 +349,18 @@ describe('FET comp device in the chain', () => {
     act(() => root.render(<><DeviceChain /><FetCompPanel /></>))
     await flush()
     await flush()
-    act(() => q('button[aria-label="Open FET comp in a window"]').click())
+    act(() => q('button[aria-label="Open FET Comp in a window"]').click())
     await flush()
     expect(useFetCompStore.getState().target).toEqual({ trackId: 3, nodeId: 7, storeKey: '3' })
     expect(q('[data-testid="fet-window"] section').getAttribute('data-presentation')).toBe('floating')
-    act(() => q('button[aria-label="Close FET comp"]').click())
+    act(() => q('button[aria-label="Close FET Comp"]').click())
     expect(useFetCompStore.getState().target).toBeNull()
     expect(readFileSync(path.resolve(__dirname, '../../mixer/FetCompPanel.jsx'), 'utf8')).not.toMatch(/PluginUIKitKnob|fetcomp-/)
     expect(readFileSync(path.resolve(__dirname, '../../../styles/app.css'), 'utf8')).not.toMatch(/\.fetcomp-/)
   })
 })
 
-describe('Vari-mu comp device in the chain', () => {
+describe('Vari-Mu Comp device in the chain', () => {
   const VM = { input: 4, output: -2, time_constant: 4.0000001, mode: 0 }
   const timeText = () => q('[data-hint^="What this position means"]').textContent
 
@@ -390,7 +390,7 @@ describe('Vari-mu comp device in the chain', () => {
     expect(sent('time_constant').at(-1)).toEqual([3, 7, 'time_constant', 6])
     expect(timeText()).toContain('Auto 300 ms · 10 s · 25 s')
     expect(timeText()).toContain('0.2 ms')
-    expect(q('[data-automation-param="time_constant"]')).toBeNull()
+    expect(q('[data-automation-param="time_constant"]')).not.toBeNull()
   })
 
   it('Mode is Linked | Mid-side (never Lat/Vert) and commits the engine index', async () => {
@@ -429,11 +429,11 @@ describe('Vari-mu comp device in the chain', () => {
     act(() => root.render(<><DeviceChain /><VariMuCompPanel /></>))
     await flush()
     await flush()
-    act(() => q('button[aria-label="Open Vari-mu comp in a window"]').click())
+    act(() => q('button[aria-label="Open Vari-Mu Comp in a window"]').click())
     await flush()
     expect(useVariMuCompStore.getState().target).toEqual({ trackId: 3, nodeId: 7, storeKey: '3' })
     expect(q('[data-testid="varimu-window"] section').getAttribute('data-presentation')).toBe('floating')
-    act(() => q('button[aria-label="Close Vari-mu comp"]').click())
+    act(() => q('button[aria-label="Close Vari-Mu Comp"]').click())
     expect(useVariMuCompStore.getState().target).toBeNull()
     expect(readFileSync(path.resolve(__dirname, '../../mixer/VariMuCompPanel.jsx'), 'utf8')).not.toMatch(/PluginUIKitKnob|varimu-(panel|knob|gr|seg|switch|tc)/)
     expect(readFileSync(path.resolve(__dirname, '../../../styles/app.css'), 'utf8')).not.toMatch(/\.varimu-/)

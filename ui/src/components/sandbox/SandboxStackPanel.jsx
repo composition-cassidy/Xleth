@@ -1,4 +1,3 @@
-import { Crosshair, GripVertical, Redo2, Trash2, TriangleAlert, Undo2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import useSandboxStore, {
   RIPPLE_MODE, FADE_SHAPE, PITCH_MODE, findEnvelopeOp, clampGainEnvelopeFollower, GAIN_ENVELOPE_MODE,
@@ -11,8 +10,16 @@ import { allowedPitchClasses } from './autotuneCorrectionPreview.js'
 import { FADE_SHAPES } from './sandboxToolConstants.js'
 import { formatRange, formatSamplesShort } from './sandboxFormat.js'
 import { opSampleRange, resolveOpRange } from './sandboxOpRange.js'
-import { Button, Checkbox, IconButton, MINUS, NumberBox, Select, Toggle } from '../../ui-kit'
+import { Button, Checkbox, IconButton, MINUS, NumberBox, PanelHeader, Select, Toggle } from '../../ui-kit'
+import { useEffectMenuButton } from './SandboxMenuBar.jsx'
 import styles from './Sandbox.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcDotsSixVertical = iconComponent('dots-six-vertical')
+const IcFrameCorners = iconComponent('frame-corners')
+const IcPlus = iconComponent('plus')
+const IcTrash = iconComponent('trash')
+const IcWarning = iconComponent('warning')
 
 const RIPPLE_MODE_NAME = Object.fromEntries(Object.entries(RIPPLE_MODE).map(([k, v]) => [v, k]))
 const FADE_SHAPE_NAME = Object.fromEntries(Object.entries(FADE_SHAPE).map(([k, v]) => [v, k]))
@@ -70,6 +77,12 @@ function AutotuneKeyboard({ rootPc, activePcs, onToggle }) {
   )
 }
 
+/** A fade curve as the row names it: "equal power", not the enum key "equalPower". */
+const curveName = (shape) => {
+  const key = FADE_SHAPE_NAME[shape]
+  return (FADE_SHAPES.find((s) => s.value === key)?.label ?? String(key ?? shape)).toLowerCase()
+}
+
 // A short human-readable summary of an op's params — shown on every module
 // row (selected or not), so the collapsed rail is still scannable.
 //
@@ -98,10 +111,19 @@ function describeParams(op, rate) {
       return `@ ${at(p.atSample)} (${RIPPLE_MODE_NAME[p.mode] ?? p.mode}${p.mode === RIPPLE_MODE.gap ? `, gap ${at(p.gapSamples)}` : ''})`
     case 'reverse':
       return range(p.startSample, p.endSample)
-    case 'fade':
-      return `${p.fadeIn ? 'in' : 'out'}, ${at(p.lengthSamples)} (${FADE_SHAPE_NAME[p.shape] ?? p.shape})`
-    case 'gain':
-      return p.normalize ? `normalize → ${p.targetPeakDb} dBFS` : `${p.gainDb} dB`
+    case 'fade': {
+      // A fade can sit anywhere (the engine fades [start, start + length)), so
+      // the row says where, not only how long.
+      const where = Number.isFinite(p.startSample)
+        ? `${at(p.startSample)} → ${at(p.startSample + p.lengthSamples)}`
+        : at(p.lengthSamples)
+      return `${p.fadeIn ? 'in' : 'out'}, ${where}, ${curveName(p.shape)}`
+    }
+    case 'gain': {
+      // endSample -1 is the engine's "to the end": a gain over the whole layer.
+      const scope = p.endSample > p.startSample ? range(p.startSample, p.endSample) : 'whole layer'
+      return p.normalize ? `normalize → ${p.targetPeakDb} dBFS, ${scope}` : `${signed(p.gainDb ?? 0)} dB, ${scope}`
+    }
     case 'gainEnvelope': {
       // Breakpoint count plus the range it spans — enough to tell two curves
       // apart in the stack without trying to render a shape in a text row.
@@ -112,7 +134,7 @@ function describeParams(op, rate) {
       return `${pts.length} pt, ${Math.min(...dbs).toFixed(1)}…${Math.max(...dbs).toFixed(1)} dB (${modeLabel})`
     }
     case 'crossfade':
-      return `@ ${at(p.atSample)}, ${at(p.lengthSamples)} (${FADE_SHAPE_NAME[p.shape] ?? p.shape})`
+      return `@ ${at(p.atSample)}, ${at(p.lengthSamples)}, ${curveName(p.shape)}`
     case 'pitch': {
       const cents = `${p.cents >= 0 ? '+' : ''}${p.cents}¢`
       // Varispeed's length change is the thing a user most needs told, and the
@@ -165,11 +187,15 @@ function describeParams(op, rate) {
 // One numeric op parameter: a kit NumberBox (drag it or type a value). It previews locally while dragging and
 // COMMITS once on release, Enter or blur, so a drag across the range is one undoable edit and one re-render
 // rather than one per tick — the contract the gain-envelope drag and the spectral-paint stroke follow.
+// Three across in the sidebar. At the 64px these used to be, the label was cut to its first letter ("C…")
+// beside the value it named.
+const PARAM_W = 92
+
 function Param({ label, value, onCommit, disabled, hint, ...range }) {
   return (
     <NumberBox
       label={label}
-      width={64}
+      width={PARAM_W}
       value={value}
       disabled={disabled}
       hint={label}
@@ -387,7 +413,7 @@ function InlineOpParamEditor({
       <div className={styles.params} data-wrap>
         {refusedOps > 0 && (
           <div className={styles.refusal}>
-            <TriangleAlert size={12} aria-hidden="true" />
+            <IcWarning size={14} aria-hidden="true" />
             <span>{refusalReason || 'Autotune declined this input.'}</span>
           </div>
         )}
@@ -519,7 +545,7 @@ function OpModule({
       onDragEnd={onDragEnd}
     >
       <div className={styles.opRow} data-op-row onClick={() => onSelect(op.id)}>
-        <GripVertical size={12} className={styles.grip} aria-hidden="true" />
+        <IcDotsSixVertical size={14} className={styles.grip} aria-hidden="true" />
         <span className={styles.opIndex}>{String(index + 1).padStart(2, '0')}</span>
         <div className={styles.opLabel}>
           <span className={styles.opType}>{opTypeLabel(op.type)}</span>
@@ -533,12 +559,12 @@ function OpModule({
             hint="Zoom to range" hintMods="Zoom the waveform to the range this operation covers"
             onClick={(e) => { e.stopPropagation(); onReveal(op) }}
           >
-            <Crosshair />
+            <IcFrameCorners />
           </IconButton>
         )}
         {refused && (
           <span className={styles.refusalBadge} title={refusalReason || 'Autotune declined this input.'}>
-            <TriangleAlert size={12} aria-label="Autotune declined this input" />
+            <IcWarning size={14} aria-label="Autotune declined this input" />
           </span>
         )}
         <Toggle
@@ -555,7 +581,7 @@ function OpModule({
           size="sm" variant="ghost" label={`Remove ${opTypeLabel(op.type)}`} hint="Remove operation"
           onClick={(e) => { e.stopPropagation(); onRemove(layerId, op.id) }}
         >
-          <Trash2 />
+          <IcTrash />
         </IconButton>
       </div>
       {selected && HAS_INLINE_PARAMS.has(op.type) && (
@@ -571,14 +597,16 @@ function OpModule({
   )
 }
 
-// Pure op-list rail (the "Op stack" header + undo / redo above ONLY the ordered
-// op rows). Adding an op lives in the Effect menu (SandboxMenuBar.jsx, driven
-// by sandboxEffectRegistry.js) and Bake / Swap in in the bottom transport
-// (SandboxTransport.jsx) — this panel only lists, reorders, bypasses, removes
-// and inline-edits whatever is already on the stack, plus undo/redo for the
-// whole sandbox (shared with SandboxStatusBar's depth readout — same
-// `history`/`undo`/`redo` store fields).
-export default function SandboxStackPanel() {
+// The edit stack: every edit and effect applied to the ACTIVE layer, in the
+// order the engine runs them. It sits directly under the layer list in the
+// sidebar, so the two read as one hierarchy — a layer, then what has been done
+// to it. Rows are listed, reordered (drag), bypassed, removed and edited in
+// place here; the header's Add button opens the same Effects menu the action
+// bar does (SandboxMenuBar.jsx, driven by sandboxEffectRegistry.js), because
+// "add something" belongs where the result lands as well as where the commands
+// live. Undo and redo moved to the action bar: they act on the whole Sandbox,
+// not on this list.
+export default function SandboxStackPanel({ onOpenAdvancedSeparation }) {
   const layers = useSandboxStore((s) => s.layers)
   const activeLayerId = useSandboxStore((s) => s.activeLayerId)
   const selection = useSandboxStore((s) => s.selection)
@@ -590,9 +618,7 @@ export default function SandboxStackPanel() {
   const clearSpectralPaint = useSandboxStore((s) => s.clearSpectralPaint)
   const reorderOp = useSandboxStore((s) => s.reorderOp)
   const revealRange = useSandboxStore((s) => s.revealRange)
-  const history = useSandboxStore((s) => s.history)
-  const undo = useSandboxStore((s) => s.undo)
-  const redo = useSandboxStore((s) => s.redo)
+  const addMenu = useEffectMenuButton(onOpenAdvancedSeparation)
   // Lifted to the store (P5-4) so SandboxWaveformCanvas can tell whether the
   // selected op is AUTOTUNE and draw its pitch curve overlay — see
   // setSelectedOpId's own comment (sandboxStore.js).
@@ -657,37 +683,29 @@ export default function SandboxStackPanel() {
     reorderOp(layer.id, from, to)
   }
 
-  // Same shared-UndoManager gating SandboxStatusBar's own buttons use — the
-  // undo stack belongs to the engine, not this panel, and is shared with the
-  // Timeline.
-  const canUndo = history.canUndo && history.undoDomain === 'sandbox'
-  const canRedo = history.canRedo && history.redoDomain === 'sandbox'
-  const undoTitle = !history.canUndo
-    ? 'Nothing to undo'
-    : canUndo ? `Undo ${history.undoDescription}` : `Next undo is a ${history.undoDomain} edit (${history.undoDescription})`
-  const redoTitle = !history.canRedo
-    ? 'Nothing to redo'
-    : canRedo ? `Redo ${history.redoDescription}` : `Next redo is a ${history.redoDomain} edit (${history.redoDescription})`
-
-
   return (
-    <div className={styles.stack}>
-      <div className={styles.stackHeader}>
-        <h3 className={styles.stackTitle}>Op stack</h3>
-        <div className={styles.stackUndo}>
-          <IconButton size="sm" label="Undo" disabled={!canUndo} onClick={() => undo()} hint="Undo" hintMods={undoTitle}>
-            <Undo2 />
-          </IconButton>
-          <IconButton size="sm" label="Redo" disabled={!canRedo} onClick={() => redo()} hint="Redo" hintMods={redoTitle}>
-            <Redo2 />
-          </IconButton>
-        </div>
-        {layer && <span className={styles.opCount}>{layer.ops.length} op{layer.ops.length === 1 ? '' : 's'}</span>}
-      </div>
+    <section className={styles.stack} aria-label="Edit stack">
+      <PanelHeader
+        title="Edit stack"
+        meta={layer ? `${layer.ops.length} on ${layer.name}` : undefined}
+      >
+        <IconButton
+          size="sm" label="Add an edit or effect" disabled={!layer}
+          aria-haspopup="menu" aria-expanded={addMenu.open}
+          onClick={addMenu.onClick}
+          hint="Add an edit or effect"
+          hintMods="Opens the Effects menu. New entries go to the end of the stack"
+        >
+          <IcPlus />
+        </IconButton>
+      </PanelHeader>
+      {addMenu.menu}
       <div className={styles.opList}>
         {!layer && <div className={styles.empty}>No layer selected.</div>}
         {layer && layer.ops.length === 0 && (
-          <div className={styles.empty}>No operations yet. Add one from the Effect menu.</div>
+          <div className={styles.empty}>
+            Nothing applied yet. Every edit and effect lands here in order, where you can change, bypass, reorder or remove it.
+          </div>
         )}
         {layer?.ops.map((op, index) => (
           <OpModule
@@ -718,6 +736,6 @@ export default function SandboxStackPanel() {
           />
         ))}
       </div>
-    </div>
+    </section>
   )
 }

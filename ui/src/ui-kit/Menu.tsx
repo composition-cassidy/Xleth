@@ -1,8 +1,11 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode } from 'react';
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { Check } from 'lucide-react';
 import styles from './Menu.module.css';
+import { useGhostExit, useMotionEnter } from './motion';
+import { iconComponent } from './icons';
+
+const IcCheck = iconComponent('check');
 
 const SURFACE_ATTR = 'data-xleth-menu';
 const ITEM_SELECTOR = '[role^="menuitem"]:not([aria-disabled="true"])';
@@ -16,6 +19,18 @@ export interface MenuProps {
   /** Accessible name of the menu. */
   label?: string;
   className?: string;
+  /**
+   * For a submenu: the x of its parent menu's left edge. When the menu does not fit to the
+   * right of `x`, it opens to the LEFT of the parent instead (its right edge meets this x)
+   * rather than being clamped back over the parent.
+   */
+  flipX?: number;
+  /**
+   * How it was asked for, which decides its motion channel (ui-kit/motion.css): `context` is a
+   * right-click menu (in the edit loop: instant until the lively tier), `popover` (the default)
+   * is a menu opened from a button.
+   */
+  kind?: 'popover' | 'context';
   children: ReactNode;
 }
 
@@ -28,9 +43,11 @@ const CloseContext = createContext<(() => void) | null>(null);
  * Several menus may be open at once (a submenu is a second Menu): a press inside any menu
  * surface is never "outside".
  */
-export function Menu({ x, y, onClose, label = 'Menu', className, children }: MenuProps) {
+export function Menu({ x, y, onClose, label = 'Menu', className, flipX, kind = 'popover', children }: MenuProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ left: x, top: y });
+  const enter = useMotionEnter(kind === 'context' ? 'context' : 'pop');
+  useGhostExit(ref);
   const returnFocus = useRef<Element | null>(null);
 
   // Clamp into the viewport, again whenever the menu's own size changes (items can appear
@@ -40,7 +57,9 @@ export function Menu({ x, y, onClose, label = 'Menu', className, children }: Men
     if (!el) return undefined;
     const clamp = () => {
       const r = el.getBoundingClientRect();
-      const left = Math.max(4, Math.min(x, window.innerWidth - r.width - 4));
+      let wantLeft = x;
+      if (flipX !== undefined && x + r.width > window.innerWidth - 4) wantLeft = flipX - r.width + 2;
+      const left = Math.max(4, Math.min(wantLeft, window.innerWidth - r.width - 4));
       const top = Math.max(4, Math.min(y, window.innerHeight - r.height - 4));
       setPos((p) => (p.left === left && p.top === top ? p : { left, top }));
     };
@@ -49,7 +68,7 @@ export function Menu({ x, y, onClose, label = 'Menu', className, children }: Men
     const ro = new ResizeObserver(clamp);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [x, y]);
+  }, [x, y, flipX]);
 
   // Focus the surface on open so the arrow keys work, and give focus back on close.
   useEffect(() => {
@@ -100,7 +119,8 @@ export function Menu({ x, y, onClose, label = 'Menu', className, children }: Men
         tabIndex={-1}
         {...{ [SURFACE_ATTR]: '' }}
         className={`${styles.menu}${className ? ` ${className}` : ''}`}
-        style={{ left: pos.left, top: pos.top }}
+        {...enter}
+        style={{ left: pos.left, top: pos.top, '--mo-origin': `${Math.max(0, x - pos.left)}px ${Math.max(0, y - pos.top)}px` } as CSSProperties}
         onKeyDown={onKeyDown}
         onContextMenu={(e) => e.preventDefault()}
       >
@@ -147,7 +167,7 @@ export function MenuItem({ children, onSelect, icon, danger, disabled, checked, 
       }}
     >
       {checked !== undefined ? (
-        <span className={styles.lead} aria-hidden="true">{checked ? <Check size={12} strokeWidth={2} /> : null}</span>
+        <span className={styles.lead} aria-hidden="true">{checked ? <IcCheck size={14} /> : null}</span>
       ) : icon ? (
         <span className={styles.lead} aria-hidden="true">{icon}</span>
       ) : null}

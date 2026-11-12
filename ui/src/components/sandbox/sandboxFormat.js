@@ -23,6 +23,30 @@ export function formatTime(seconds) {
   return neg ? `-${body}` : body
 }
 
+// The transport clock: always "m:ss.mmm", so the digits hold still while the
+// playhead runs (formatTime drops the minutes under a minute, which makes a
+// running readout jump width at 1:00). Not for anything the user types back in.
+export function formatClock(seconds) {
+  if (seconds == null || !Number.isFinite(seconds)) return '-:--.---'
+  const s = Math.max(0, seconds)
+  const mins = Math.floor(s / 60)
+  return `${mins}:${(s - mins * 60).toFixed(3).padStart(6, '0')}`
+}
+
+// What a user types into a time field → seconds, or null for "not a time".
+// Accepts what formatTime prints ("0.625", "1:02.500") plus the two units
+// people write by hand: "625ms" and "0.625 s". A bare number is seconds.
+export function parseTime(text) {
+  const t = String(text ?? '').trim().toLowerCase().replace(',', '.')
+  if (!t) return null
+  const ms = /^(-?\d*\.?\d+)\s*ms$/.exec(t)
+  if (ms) return Number(ms[1]) / 1000
+  const clock = /^(\d+):(\d{1,2}(?:\.\d*)?)\s*s?$/.exec(t)
+  if (clock) return Number(clock[1]) * 60 + Number(clock[2])
+  const sec = /^(-?\d*\.?\d+)\s*s?$/.exec(t)
+  return sec ? Number(sec[1]) : null
+}
+
 // Sample index → readout time, against a buffer's own rate. A missing rate
 // means the buffer has not arrived yet; say nothing rather than divide by a
 // guessed 48000 and print a confidently wrong number.

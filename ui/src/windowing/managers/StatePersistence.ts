@@ -16,12 +16,19 @@ import {
   normalizeFocus,
 } from '../registry/panelStateMerge';
 import { DEFAULT_PRESET_ID, loadPreset } from './PresetManager';
+import { PANEL_CATALOG, PANEL_IDS, opensFloating } from '../registry/panelCatalog';
 
 // v3 added collapsed panels and dock tab groups. v4 is the tiled shell: a
 // mandatory center and a tabbed detail dock. Envelopes from v4 on are merged
 // field-by-field over the current defaults, so a later version that only adds
 // fields keeps the user's arrangement.
-export const LAYOUT_SCHEMA_VERSION = 4;
+// v5: the Sampler opens as its own window (catalog `opensFloating`). A v4 layout
+// holds it as a bottom-dock tab at the old fixed 820x870 float size, so loading
+// one moves it to its window once; where the user puts it afterwards is kept.
+export const LAYOUT_SCHEMA_VERSION = 5;
+
+/** First version whose saved position for an `opensFloating` panel is the user's own. */
+export const FLOATING_TAB_LAYOUT_VERSION = 5;
 
 // Below this, a saved layout was arranged for the floating-timeline shell.
 // Merging it would rebuild that shell (a floating arrangement over an empty
@@ -143,15 +150,33 @@ export async function loadPersistedState(): Promise<boolean> {
   }
 
   const merged = mergePanelStateMap(createInitialPanelStates(), parsed.panels);
-  usePanelRegistry.setState({
-    // Slot invariants are re-derived rather than trusted: a persisted tab group
-    // whose other members are now hidden collapses back to a plain slot.
-    panels: normalizeDockSlots(normalizeFocus(merged)),
-    dockRegionSizes: mergeDockRegionSizes(
-      createInitialDockRegionSizes(),
-      parsed.dockRegionSizes,
-      MIN_DOCK_REGION_SIZES,
-    ),
-  });
+  const floatsTabs = version < FLOATING_TAB_LAYOUT_VERSION;
+  if (floatsTabs) {
+    for (const id of PANEL_IDS) {
+      if (!opensFloating(id)) continue;
+      merged[id] = {
+        ...merged[id],
+        mode: 'floating',
+        floating: { ...PANEL_CATALOG[id].defaultFloating },
+        docked: { ...merged[id].docked, tabGroupId: null, tabOrder: 0, tabActive: true },
+        preMaximizeState: null,
+      };
+    }
+  }
+  // Slot invariants are re-derived rather than trusted: a persisted tab group
+  // whose other members are now hidden collapses back to a plain slot.
+  const panels = normalizeDockSlots(normalizeFocus(merged));
+  const dockRegionSizes = mergeDockRegionSizes(
+    createInitialDockRegionSizes(),
+    parsed.dockRegionSizes,
+    MIN_DOCK_REGION_SIZES,
+  );
+  usePanelRegistry.setState({ panels, dockRegionSizes });
+  if (floatsTabs) {
+    // Written now, so the move happens exactly once: a Sampler the user docks
+    // afterwards is not floated again by the next launch.
+    await currentAdapter.write(serializeLayoutEnvelope(panels, dockRegionSizes));
+    console.log(`[Shell] layout v${version} -> v${LAYOUT_SCHEMA_VERSION}: the Sampler opens in its own window`);
+  }
   return true;
 }

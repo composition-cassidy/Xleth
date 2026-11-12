@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useRef } from 'react'
 import {
-  DeviceSection, Meter, SegmentedControl, Select, formatValue,
+  DeviceSection, Meter, Select, formatValue,
 } from '../../ui-kit'
 import { useEffectMeterPolling, useMeterBus } from '../../plugin-ui/runtime/useEffectMeterPolling.js'
 import AutomatableKnob from './AutomatableKnob.jsx'
+import AutomationTarget from './AutomationTarget.jsx'
 import { plainFormat } from './deviceFormat.js'
 import useDeviceParams from './useDeviceParams.js'
 import deviceStyles from './deviceBody.module.css'
@@ -124,14 +125,17 @@ export default function AmpDevice({ target, registerApplied }) {
     <>
       <DeviceSection title="Input" width={296}>
         <div className={styles.input}>
-          <SegmentedControl
-            size="md"
-            label="Amp model"
-            value={model}
-            options={MODEL_OPTIONS}
-            onChange={(v) => commit('model', v)}
-            hint="Amp model. It re-voices the whole chain."
-          />
+          <AutomationTarget paramId="model" target={target}>
+            <Select
+              size="sm"
+              width={140}
+              ariaLabel="Amp model"
+              value={model}
+              options={MODEL_OPTIONS}
+              onChange={(v) => commit('model', v)}
+              hint="Amp model. It re-voices the whole chain."
+            />
+          </AutomationTarget>
           <div className={styles.row}>
             {knob('drive', 'Drive', { format: amount, size: 56, width: 84, hint: 'Input drive into the preamp' })}
             {knob('gate', 'Gate', { format: amount, hint: 'Noise gate threshold. 0 is off.' })}
@@ -155,14 +159,16 @@ export default function AmpDevice({ target, registerApplied }) {
 
       <DeviceSection title="Cabinet" width={172}>
         <div className={deviceStyles.column}>
-          <Select
-            size="sm"
-            ariaLabel="Cabinet"
-            value={cab}
-            options={CAB_OPTIONS}
-            onChange={(v) => commit('cab', v)}
-            hint="Cabinet impulse response. Independent of the model."
-          />
+          <AutomationTarget paramId="cab" target={target}>
+            <Select
+              size="sm"
+              ariaLabel="Cabinet"
+              value={cab}
+              options={CAB_OPTIONS}
+              onChange={(v) => commit('cab', v)}
+              hint="Cabinet impulse response. Independent of the model."
+            />
+          </AutomationTarget>
           <span className={deviceStyles.caption}>
             {cab === 0 ? `Auto follows the ${MODELS[model][1]} cabinet` : 'Set by hand'}
           </span>

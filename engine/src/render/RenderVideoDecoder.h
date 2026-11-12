@@ -49,6 +49,7 @@
 // GpuDeviceManager.h guards NOMINMAX before <d3d11_4.h>
 #include "GpuDeviceManager.h"
 #include "FrameCache.h"       // FrameCacheEntry, FrameCacheKey
+#include "Nv12Converter.h"    // hw path: NV12 → BGRA on the GPU
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -71,6 +72,21 @@ struct DecoderContext {
     // Kept across decodes so the transfer reuses its buffers instead of
     // allocating (and page-faulting in) a fresh ~1.4 MB frame every time.
     AVFrame*         hwTransferFrame = nullptr;
+    // The most recent frame decodeFrame() produced that fell SHORT of its
+    // target. If the file ends before the target is reached, this is the
+    // closest frame the file has and is what gets delivered — see decodeFrame.
+    AVFrame*         closestFrame = nullptr;
+    // hw path, GPU-resident variant: the NV12 texture the decoded array slice
+    // is copied into (CopySubresourceRegion), with its two plane views. One
+    // per stream, re-created only when the frame size changes; the BGRA
+    // texture the shader renders from it is the cache entry, so this is the
+    // only per-frame scratch and it never leaves the GPU.
+    Microsoft::WRL::ComPtr<ID3D11Texture2D>          hwNv12Scratch;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> hwLumaSrv;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> hwChromaSrv;
+    int              hwScratchW   = 0;
+    int              hwScratchH   = 0;
+    bool             hwGpuPathFailed = false;  // logged once; stream stays on the transfer path
     SwsContext*      swsCtx       = nullptr;   // sw path: src fmt → BGRA
     std::vector<uint8_t> bgraScratch;           // sws destination, reused per frame
     int              videoStreamIdx = -1;
@@ -154,6 +170,21 @@ public:
     /** True if D3D11VA hardware decode is available. */
     bool hasHwAccel() const { return hwDeviceCtx_ != nullptr; }
 
+    /** True when hardware-decoded frames are converted on the GPU (NV12 copy
+     *  + shader) rather than through av_hwframe_transfer_data + sws_scale.
+     *  Set up by initHwDevice(); false when the device cannot sample NV12 or
+     *  XLETH_HW_NV12_GPU=0 is in the environment (A/B switch). */
+    bool hwGpuPathAvailable() const { return nv12Converter_.isReady(); }
+
+    /** Per-path frame counts since construction — the preview diagnostic and
+     *  the perf gate read these to prove no hw frame took the CPU detour. */
+    struct ExtractStats {
+        uint64_t hwGpuFrames      = 0;   // D3D11VA → GPU copy + shader
+        uint64_t hwTransferFrames = 0;   // D3D11VA → CPU transfer + sws_scale (fallback)
+        uint64_t swFrames         = 0;   // software decode → sws_scale
+    };
+    const ExtractStats& extractStats() const { return extractStats_; }
+
     /** Cap decoded frames to fit within w x h (aspect preserved, never
      *  upscaled); 0 x 0 = no cap, the default. The preview sets this to its
      *  compositor surface. Export never sets it, so export decodes originals
@@ -206,6 +237,33 @@ public:
     /** Full shutdown: close all contexts and release the hw device context.
      *  Call before destroying the D3D11 device (GpuDeviceManager). */
     void shutdown();
+
+    /** After a file fails to open, refuse to try it again for this long.
+     *
+     *  0 (the default) retries on every request, which is what an export
+     *  wants: each frame is decoded exactly once, so a retry costs nothing and
+     *  a transient failure must not blank later frames.
+     *
+     *  The live preview asks for the same file again on EVERY tick. A source
+     *  that cannot be opened — offline media, a drive that went away — would
+     *  otherwise cost a failed avformat_open_input and a log line per cell,
+     *  sixty times a second, for as long as it stays on screen. The preview
+     *  sets a couple of seconds; the cell simply stays empty in between, and
+     *  the file is picked up again shortly after it comes back.
+     *
+     *  closeSource() / closeAll() forget recorded failures, so a path that is
+     *  about to be rewritten is retried straight away. */
+    void setOpenFailureBackoff(double seconds) { openFailureBackoffSeconds_ = seconds; }
+
+    /** True while `sourcePath` is inside its open-failure backoff, i.e. the
+     *  last attempt to OPEN it failed. Lets the preview tell "this file cannot
+     *  be opened" (drop the proxy, fall back to another file) from "this frame
+     *  could not be decoded" (transient; keep the file). Always false when no
+     *  backoff is configured. */
+    bool openFailedRecently(const std::string& sourcePath) const
+    {
+        return failedOpens_.find(sourcePath) != failedOpens_.end();
+    }
 
     /** Set sequential hint for a source. VESTIGIAL — kept for API
      *  compatibility only. seekToFrame() no longer consults this flag; the
@@ -286,6 +344,11 @@ private:
     // setActiveContextBudget(), starts at the historical fixed value.
     int contextBudget_ = MAX_OPEN_CONTEXTS;
 
+    // See setOpenFailureBackoff(). Keyed by source path (not stream key): a
+    // file that will not open will not open as a second stream either.
+    double openFailureBackoffSeconds_ = 0.0;
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> failedOpens_;
+
     // Path decode() is currently servicing, if any. Eviction (LRU or idle)
     // skips this path so a frame's own decode can never be evicted out from
     // under itself on the video thread.
@@ -317,16 +380,35 @@ private:
     /** Read packets until we get the target frame. */
     bool decodeFrame(DecoderContext& ctx, int64_t frameIndex);
 
-    /** Path A: extract D3D11 texture from hw-decoded AVFrame. */
+    /** Path A: extract D3D11 texture from hw-decoded AVFrame. Tries the
+     *  GPU-resident route (extractHwFrameOnGpu) first and falls back to the
+     *  CPU transfer + uploadSwFrame when that is unavailable or fails. */
     FrameCacheEntry extractHwFrame(DecoderContext& ctx, AVFrame* frame,
                                    ID3D11Device* device, ID3D11DeviceContext* deviceCtx);
+
+    /** Path A, GPU-resident: CopySubresourceRegion the decoded NV12 array
+     *  slice into ctx.hwNv12Scratch, then render it through the NV12→BGRA
+     *  shader into the cache entry's texture (downscaled to the
+     *  setMaxOutputSize cap in the same pass). Empty entry on any failure. */
+    FrameCacheEntry extractHwFrameOnGpu(DecoderContext& ctx, AVFrame* frame,
+                                        ID3D11Device* device, ID3D11DeviceContext* deviceCtx);
 
     /** Path B: sws_scale to BGRA → staging texture → default texture + SRV. */
     FrameCacheEntry uploadSwFrame(DecoderContext& ctx, AVFrame* frame,
                                   ID3D11Device* device, ID3D11DeviceContext* deviceCtx);
 
+    /** Output size for a decoded w x h frame under the setMaxOutputSize cap
+     *  (aspect preserved, never upscaled). The ONE place both extraction
+     *  paths compute it, so a hw- and a sw-decoded frame of the same source
+     *  land in the cache at the same size and byte count. */
+    void cappedOutputSize(int w, int h, int& outW, int& outH) const;
+
     // ── D3D11VA hw device context (shared across all decoder contexts) ──────
     AVBufferRef* hwDeviceCtx_ = nullptr;   // AVHWDeviceContext wrapping our device
+
+    // NV12 → BGRA shader pass for the GPU-resident hw path (initHwDevice).
+    Nv12Converter nv12Converter_;
+    ExtractStats  extractStats_;
 
     int maxOutputW_ = 0;   // setMaxOutputSize(); 0 = decode size
     int maxOutputH_ = 0;

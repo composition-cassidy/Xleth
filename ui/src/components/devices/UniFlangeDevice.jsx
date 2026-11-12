@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react'
-import { DeviceSection, DisplayWell, Knob } from '../../ui-kit'
+import { DeviceSection, DisplayWell } from '../../ui-kit'
+import AutomatableKnob from './AutomatableKnob.jsx'
 import UniFlangeScope from './UniFlangeScope.jsx'
 import useDeviceParams from './useDeviceParams.js'
 import useDeviceUiStore from './deviceUiStore.js'
@@ -49,8 +50,10 @@ export default function UniFlangeDevice({ target, registerApplied, deviceKey }) 
   const setView = useDeviceUiStore((s) => s.setView)
 
   const knob = (id, label, extra = {}) => (
-    <Knob
+    <AutomatableKnob
       key={id}
+      paramId={id}
+      target={target}
       label={label}
       value={params[id]}
       min={RANGES[id][0]}

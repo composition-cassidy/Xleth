@@ -1,10 +1,12 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react'
-import { Repeat } from 'lucide-react'
 import useLoopRegionStore, { loopMinLengthTicks } from '../../stores/loopRegionStore.js'
 import {
   PPQ, snapBeatToGrid, beatsToTicks,
 } from '../../constants/timeline.js'
 import styles from './LoopRegionBar.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcRepeat = iconComponent('repeat')
 
 // The overlay the ruler hosts the bar in (TimelineView mounts it).
 export const loopRegionOverlayClassName = styles.overlay
@@ -232,7 +234,7 @@ const LoopRegionBar = forwardRef(function LoopRegionBar({
         data-hint={active ? 'Loop armed' : 'Loop not armed'}
         data-hint-mods="Click: arm or disarm"
       >
-        <Repeat size={10} aria-hidden="true" />
+        <IcRepeat size={14} aria-hidden="true" />
       </button>
     </div>
   )

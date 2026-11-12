@@ -1,0 +1,45 @@
+/* The output pearl. Lit: a solid green bead. Off: a hollow ring on
+ * the ground colour. Filled vs hollow carries the state, not the hue alone (DESIGN.md 3.2). */
+@layer kit {
+  .pearl {
+    width: var(--hit-min);
+    height: var(--hit-min);
+    min-width: var(--hit-min);
+    display: inline-grid;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    cursor: pointer;
+    flex: none;
+  }
+
+  .bead {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    box-sizing: border-box;
+    border: 1.5px solid var(--ui-boundary);
+    background: var(--ui-g0);
+  }
+
+  .pearl:hover .bead {
+    border-color: var(--ui-ink-2);
+  }
+
+  .pearl[data-lit="true"] .bead {
+    border-color: var(--ui-pearl);
+    background: var(--ui-pearl);
+  }
+
+  .pearl:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 1px;
+  }
+
+  .pearl:disabled {
+    cursor: default;
+    opacity: var(--ui-mute-opacity);
+  }
+}

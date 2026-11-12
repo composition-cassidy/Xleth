@@ -2,10 +2,11 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { createStore } from 'zustand/vanilla'
 import { useStore } from 'zustand'
-import { MoreHorizontal } from 'lucide-react'
 import {
-  DeviceMenu, DeviceSection, DisplayWell, Knob, SegmentedControl, Select, Toggle, formatValue, skewScale,
+  DeviceMenu, DeviceSection, DisplayWell, SegmentedControl, Select, Toggle, formatValue, skewScale,
 } from '../../ui-kit'
+import AutomatableKnob from './AutomatableKnob.jsx'
+import AutomationTarget from './AutomationTarget.jsx'
 import {
   eqStoreInitializer, BAND_TYPES, BAND_MODES, CHANNEL_META, CHANNEL_MODES,
 } from '../../stores/eqStore.js'
@@ -24,6 +25,10 @@ import {
 import EqCanvas from '../mixer/EqCanvas.jsx'
 import useDeviceUiStore from './deviceUiStore.js'
 import styles from './EqDevice.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcCheck = iconComponent('check')
+const IcDotsThree = iconComponent('dots-three')
 
 const WELL_W = 512
 const FREQ_SCALE = skewScale(FREQ_MIN, FREQ_MAX, 0.23)
@@ -366,7 +371,7 @@ function BandTypeMenu({ menu, band, onType, onDuplicate, onDelete, onClose }) {
   const left = Math.min(menu.x, window.innerWidth - 168)
   const top = Math.min(menu.y, window.innerHeight - 280)
   return createPortal(
-    <div ref={ref} className={styles.menu} role="menu" aria-label={`Band ${menu.index + 1} type`} style={{ left, top }}>
+    <div ref={ref} data-mo="context" className={styles.menu} role="menu" aria-label={`Band ${menu.index + 1} type`} style={{ left, top }}>
       {BAND_TYPES.map((label, i) => (
         <button
           key={label}
@@ -376,6 +381,7 @@ function BandTypeMenu({ menu, band, onType, onDuplicate, onDelete, onClose }) {
           className={styles.menuItem}
           onClick={() => { onType(i); onClose() }}
         >
+          <span className={styles.menuCheck} aria-hidden="true">{band.type === i ? <IcCheck size={14} /> : null}</span>
           {label}
         </button>
       ))}
@@ -483,13 +489,15 @@ export default function EqDevice({ target, registerApplied, deviceKey }) {
   const bandKnobs = band ? (
     <>
       <div className={styles.knobs} style={{ '--ui-value': color }}>
-        <Knob
+        <AutomatableKnob
+          paramId={`b${idx}_freq`} target={target}
           label="Frequency" value={band.freq} scale={FREQ_SCALE} unit="Hz" defaultValue={1000} size={44} width={64}
           onChange={(v) => setBandParam(idx, 'freq', Math.round(v * 10) / 10)}
           onCommit={(v) => setBandParam(idx, 'freq', Math.round(v * 10) / 10)}
           data-param={`b${idx}_freq`}
         />
-        <Knob
+        <AutomatableKnob
+          paramId={`b${idx}_gain`} target={target}
           label="Gain" value={band.gain} min={GAIN_MIN} max={GAIN_MAX} unit="dB" defaultValue={0} size={44} width={64}
           bipolar formatOptions={{ signed: true }}
           hint={core && spectralBand ? CORE_GAIN_HINT : undefined}
@@ -497,7 +505,8 @@ export default function EqDevice({ target, registerApplied, deviceKey }) {
           onCommit={(v) => setBandParam(idx, 'gain', Math.round(v * 10) / 10)}
           data-param={`b${idx}_gain`}
         />
-        <Knob
+        <AutomatableKnob
+          paramId={`b${idx}_q`} target={target}
           label="Q" value={band.q} scale={Q_SCALE} defaultValue={0.707} size={44} width={56}
           format={(v) => v.toFixed(2)}
           onChange={(v) => setBandParam(idx, 'q', Math.round(v * 100) / 100)}
@@ -506,12 +515,18 @@ export default function EqDevice({ target, registerApplied, deviceKey }) {
         />
       </div>
       <div className={styles.row}>
-        <Select size="sm" ariaLabel="Band type" value={band.type} options={typeOptions} onChange={(v) => setBandParam(idx, 'type', v)} />
-        <Select size="sm" ariaLabel="Band mode" value={band.mode || 0} options={modeOptions} onChange={(v) => setBandParam(idx, 'mode', v)} />
+        <AutomationTarget paramId={`b${idx}_type`} target={target}>
+          <Select size="sm" ariaLabel="Band type" value={band.type} options={typeOptions} onChange={(v) => setBandParam(idx, 'type', v)} />
+        </AutomationTarget>
+        <AutomationTarget paramId={`b${idx}_mode`} target={target}>
+          <Select size="sm" ariaLabel="Band mode" value={band.mode || 0} options={modeOptions} onChange={(v) => setBandParam(idx, 'mode', v)} />
+        </AutomationTarget>
       </div>
       <div className={styles.row}>
         <SegmentedControl size="sm" label="Band channel" value={band.channel || 'stereo'} options={channelOptions} onChange={(ch) => setBandChannel(idx, ch)} />
-        <Toggle size="sm" on={!!band.enabled} onChange={(on) => setBandParam(idx, 'enabled', on ? 1 : 0)} hint="Turn this band on or off">On</Toggle>
+        <AutomationTarget paramId={`b${idx}_enabled`} target={target}>
+          <Toggle size="sm" on={!!band.enabled} onChange={(on) => setBandParam(idx, 'enabled', on ? 1 : 0)} hint="Turn this band on or off">On</Toggle>
+        </AutomationTarget>
         <DeviceMenu
           label={`More for band ${idx + 1}`}
           items={[
@@ -519,7 +534,7 @@ export default function EqDevice({ target, registerApplied, deviceKey }) {
             { label: 'Delete band', danger: true, onSelect: () => removeBand(idx) },
           ]}
         >
-          <MoreHorizontal aria-hidden="true" />
+          <IcDotsThree aria-hidden="true" />
         </DeviceMenu>
       </div>
       {upwardOnCore ? <p className={styles.note} role="note">{CORE_UPWARD_HINT}</p> : null}
@@ -594,8 +609,10 @@ export default function EqDevice({ target, registerApplied, deviceKey }) {
               const isSens = f.key === 'spec_sens'
               const unit = DYN_UNITS[f.key]
               return (
-                <Knob
+                <AutomatableKnob
                   key={f.key}
+                  paramId={`b${idx}_${f.key}`}
+                  target={target}
                   label={DYN_LABELS[f.key]}
                   value={band[f.key] ?? f.def}
                   min={f.min}

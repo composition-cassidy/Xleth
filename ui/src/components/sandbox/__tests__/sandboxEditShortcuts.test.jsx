@@ -6,6 +6,7 @@ import { handleKeyEvent, destroy, resetBindingsForTest } from '../../../windowin
 import { createInitialPanelStates, usePanelRegistry } from '../../../windowing/registry/PanelRegistry'
 import useSandboxStore from '../../../stores/sandboxStore.js'
 import { useSandboxEditShortcuts } from '../useSandboxEditShortcuts.js'
+import { useSandboxViewShortcuts } from '../useSandboxViewShortcuts.js'
 
 // Same flag the other component tests in this repo set — see
 // SandboxSeparationStrip.test.jsx.
@@ -15,6 +16,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true
 // than a bare call. A component that renders nothing is the whole harness.
 function ShortcutHost() {
   useSandboxEditShortcuts()
+  useSandboxViewShortcuts()
   return null
 }
 
@@ -162,5 +164,37 @@ describe('Sample Sandbox edit shortcuts', () => {
     usePanelRegistry.getState().openPanel('mixer')
     handleKeyEvent(keyEvent('Delete'))
     expect(actions.cutSelection).not.toHaveBeenCalled()
+  })
+
+  it('Ctrl+A selects the whole layer and claims the key', () => {
+    const e = ctrl('a')
+    handleKeyEvent(e)
+    expect(useSandboxStore.getState().selection).toEqual({ startSample: 0, endSample: 48000 })
+    expect(e.defaultPrevented).toBe(true)
+  })
+
+  // One letter per tool, through the same store action the tool bar's buttons call.
+  it('S, E, B and R pick the pointer tool', () => {
+    const tool = () => {
+      const s = useSandboxStore.getState()
+      return s.paintEditMode ? 'paint' : s.envelopeEditMode ? 'envelope' : s.spcSelectMode ? 'region' : 'select'
+    }
+    handleKeyEvent(keyEvent('e'))
+    expect(tool()).toBe('envelope')
+    handleKeyEvent(keyEvent('b'))
+    expect(tool()).toBe('paint')
+    expect(useSandboxStore.getState().viewMode).toBe('spc')
+    handleKeyEvent(keyEvent('R')) // Caps Lock still resolves
+    expect(tool()).toBe('region')
+    handleKeyEvent(keyEvent('s'))
+    expect(tool()).toBe('select')
+  })
+
+  it('tool keys are left alone while the layer has not rendered', () => {
+    useSandboxStore.setState({ layers: [layer({ renderState: 'rendering' })] })
+    const e = keyEvent('e')
+    handleKeyEvent(e)
+    expect(useSandboxStore.getState().envelopeEditMode).toBe(false)
+    expect(e.defaultPrevented).toBe(false)
   })
 })

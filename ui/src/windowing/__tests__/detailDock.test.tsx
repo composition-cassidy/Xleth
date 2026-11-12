@@ -95,6 +95,62 @@ describe('detail dock', () => {
     expect(openTabs()).toEqual(['pianoRoll']);
   });
 
+  it('the Sampler tab opens the Sampler in its own window, not in the dock', () => {
+    expect(PANEL_CATALOG.sampler.opensFloating).toBe(true);
+    expect(stateOf('sampler')).toBe('stowed');
+
+    activateDetailTab('sampler');
+    const { sampler } = usePanelRegistry.getState().panels;
+    expect(sampler.mode).toBe('floating');
+    expect(sampler.hidden).toBe(false);
+    expect(stateOf('sampler')).toBe('popped');
+    // The dock itself stays as it was: opening the window does not expand it.
+    expect(openTabs()).toEqual([]);
+    expect(renderDock()).toContain('aria-label="Dock Sampler here"');
+
+    // Closed, it comes back as a window again.
+    usePanelRegistry.getState().closePanel('sampler');
+    activateDetailTab('sampler');
+    expect(usePanelRegistry.getState().panels.sampler.mode).toBe('floating');
+    expect(stateOf('sampler')).toBe('popped');
+  });
+
+  it('the F-key and an opener that hands over a region open the Sampler window too', () => {
+    usePanelRegistry.getState().togglePanel('sampler');
+    expect(stateOf('sampler')).toBe('popped');
+    usePanelRegistry.getState().togglePanel('sampler');
+    expect(stateOf('sampler')).toBe('stowed');
+    usePanelRegistry.getState().openPanel('sampler', { regionId: 3 });
+    expect(usePanelRegistry.getState().panels.sampler.mode).toBe('floating');
+  });
+
+  it('a Sampler the user docks stays a dock tab until they pop it out again', () => {
+    activateDetailTab('sampler');
+    togglePopOutDetailTab('sampler');
+    expect(usePanelRegistry.getState().panels.sampler.mode).toBe('docked');
+    expect(openTabs()).toEqual(['sampler']);
+
+    // Collapsed and reopened from its tab, it opens in the dock: the choice is kept.
+    activateDetailTab('sampler');
+    expect(stateOf('sampler')).toBe('docked');
+    activateDetailTab('sampler');
+    expect(openTabs()).toEqual(['sampler']);
+
+    togglePopOutDetailTab('sampler');
+    expect(usePanelRegistry.getState().panels.sampler.mode).toBe('floating');
+  });
+
+  it('the Sampler window is resizable and can be maximized', () => {
+    const entry = PANEL_CATALOG.sampler as { resizable?: boolean; minWidth: number; minHeight: number };
+    expect(entry.resizable).not.toBe(false);
+    expect(entry.minWidth).toBeGreaterThanOrEqual(560);
+    activateDetailTab('sampler');
+    usePanelRegistry.getState().maximizePanel('sampler');
+    expect(usePanelRegistry.getState().panels.sampler.mode).toBe('maximized');
+    const html = renderToStaticMarkup(<PanelFrame id="sampler"><div /></PanelFrame>);
+    expect(html).toContain('aria-label="Restore Sampler"');
+  });
+
   it('renders the open panel without its own titlebar: the tab is the title', () => {
     activateDetailTab('mixer');
     const html = renderDock();

@@ -1050,6 +1050,8 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   derivedFormula('--theme-ui-rec', 'solid', 'Foundations', 'ui-semantic'),
   derivedFormula('--theme-ui-rec-text', 'solid', 'Foundations', 'ui-semantic'),
   derivedFormula('--theme-ui-solo', 'solid', 'Foundations', 'ui-semantic'),
+  // Track output pearl (lit = heard). The ramp's own green, so every theme gets a matching pearl.
+  alias('--theme-ui-pearl', '--theme-ui-signal-events', 'ui-semantic', 'Foundations'),
 
   // ─── UI kit: signal-type hues (ui/DESIGN.md §3.3) ─────────────────────
   derivedFormula('--theme-ui-signal-audio', 'solid', 'Foundations', 'ui-signal'),

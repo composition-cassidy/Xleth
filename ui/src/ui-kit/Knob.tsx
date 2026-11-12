@@ -1,6 +1,6 @@
 import { useMemo, useRef } from 'react';
 import type { CSSProperties, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react';
-import { ARC_START_DEG, ARC_SWEEP_DEG, arcPath, knobGeometry } from './arc';
+import { ARC_START_DEG, ARC_SWEEP_DEG, arcPath, knobGeometry, minimalDialGeometry } from './arc';
 import { hintAttrs, VALUE_HINT_MODS } from './hint';
 import styles from './Knob.module.css';
 import { MOD_HINT_MODS, modAttrs, modRangeNorm, useModRing, type ControlMod } from './modRing';
@@ -23,6 +23,18 @@ export interface KnobProps extends ValueControlProps, DataAttrs {
    * The value under the dial always stays.
    */
   hideLabel?: boolean;
+  /**
+   * Do not print the value under the dial (it stays in `aria-valuetext`, and double-click still
+   * opens the typing field, drawn over the dial). For a knob whose position is the whole reading
+   * (the mixer's Pan and Width): the cell is then just the dial, centred in its hit area.
+   */
+  hideValue?: boolean;
+  /**
+   * A plain dial: a disc and a pointer, with no track arc, value arc or centre tick. The pointer
+   * is the whole reading, and takes the value colour while it is dragged. Straight up is the
+   * middle of the range, so a pan or width knob at rest points up.
+   */
+  minimal?: boolean;
   /** Optional modulation ring (see modRing.ts). Absent = an ordinary knob. */
   mod?: ControlMod | null;
   /** Right-click, for hosts that add a menu (automation). Ignored while `mod` owns right-click. */
@@ -40,7 +52,7 @@ const MIN_MOD_SWEEP_DEG = 8;
 export default function Knob(props: KnobProps) {
   const {
     label, value, defaultValue, disabled = false, bipolar = false, centre, size = 32, width = 56, hideLabel = false,
-    pxPerRange = DEFAULT_KNOB_PX, hint, hintMods, className, onChange, onCommit, onCancel,
+    hideValue = false, minimal = false, pxPerRange = DEFAULT_KNOB_PX, hint, hintMods, className, onChange, onCommit, onCancel,
     min, max, scale, unit, formatOptions, format, parse, codec, step, stepNorm, quantize, mod = null,
     ...rest
   } = props;
@@ -72,6 +84,7 @@ export default function Knob(props: KnobProps) {
   const text = resolved.format(shown);
   const norm = resolved.scale.toNorm(shown);
   const geo = knobGeometry(norm, bipolar ? centreNormOf(resolved.scale, centre) : null, size);
+  const plain = minimal ? minimalDialGeometry(norm, size) : null;
   const aria = ariaNumbers(resolved.scale, shown);
 
   // The modulated range is a second arc INSIDE the value arc, drawn in the same SVG
@@ -130,6 +143,8 @@ export default function Knob(props: KnobProps) {
       data-bipolar={bipolar || undefined}
       data-disabled={disabled || undefined}
       data-no-label={hideLabel || undefined}
+      data-no-value={hideValue || undefined}
+      data-minimal={minimal || undefined}
       {...modAttrs(mod)}
       {...hintAttrs({
         hint: routed && mod?.tooltip ? mod.tooltip : hint,
@@ -139,15 +154,24 @@ export default function Knob(props: KnobProps) {
     >
       {hideLabel ? null : <span className={styles.label}>{label}</span>}
       <svg ref={dialRef} className={styles.dial} width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true" focusable="false">
-        <path className={styles.track} d={geo.track} />
-        {geo.value ? <path className={styles.arc} d={geo.value} /> : null}
-        {geo.zero ? <line className={styles.zero} {...geo.zero} /> : null}
-        <line className={styles.pointer} {...geo.pointer} />
+        {plain ? (
+          <>
+            <circle className={styles.body} cx={plain.c} cy={plain.c} r={plain.r} />
+            <line className={styles.pointer} {...plain.pointer} />
+          </>
+        ) : (
+          <>
+            <path className={styles.track} d={geo.track} />
+            {geo.value ? <path className={styles.arc} d={geo.value} /> : null}
+            {geo.zero ? <line className={styles.zero} {...geo.zero} /> : null}
+            <line className={styles.pointer} {...geo.pointer} />
+          </>
+        )}
         {modPath ? <path className={styles.mod} d={modPath} data-mod-ring="" /> : null}
       </svg>
       {drag.editing ? (
         <input className={styles.input} aria-label={`${label} value`} {...drag.editorProps} />
-      ) : (
+      ) : hideValue ? null : (
         <span className={styles.value}>{text}</span>
       )}
     </div>

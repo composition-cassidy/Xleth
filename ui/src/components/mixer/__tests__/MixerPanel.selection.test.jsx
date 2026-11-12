@@ -16,7 +16,8 @@ async function loadMixerPanelFixture() {
   const panelModule = await import('../MixerPanel.jsx')
   const { default: useMixerStore } = await import('../../../stores/mixerStore.js')
   const { default: useTimelineFocusStore } = await import('../../../stores/timelineFocusStore.js')
-  return { MixerPanel: panelModule.default, useMixerStore, useTimelineFocusStore }
+  const { default: useMixerUiStore } = await import('../mixerUiStore.js')
+  return { MixerPanel: panelModule.default, useMixerStore, useTimelineFocusStore, useMixerUiStore }
 }
 
 function makeTimelineTrack(id, name) {
@@ -150,7 +151,8 @@ describe('MixerPanel selection and layout', () => {
   })
 
   it('keeps the master strip and the loudness dock fixed, after the scrolling strips', async () => {
-    const { MixerPanel, useMixerStore } = await loadMixerPanelFixture()
+    const { MixerPanel, useMixerStore, useMixerUiStore } = await loadMixerPanelFixture()
+    useMixerUiStore.setState({ insertsOpen: true })
     window.xleth.timeline.getTracks.mockResolvedValue([makeTimelineTrack(7, 'Bass'), makeTimelineTrack(8, 'Keys')])
     useMixerStore.setState({
       visible: true,
@@ -174,11 +176,13 @@ describe('MixerPanel selection and layout', () => {
     expect(scroll.querySelectorAll('[data-testid^="mixer-strip-"]')).toHaveLength(2)
     expect(dock.querySelector('[data-testid="master-strip"]')).not.toBeNull()
     expect(dock.textContent).toMatch(/loudness/i)
-    // What every strip shares is printed once, in the gutter.
-    expect(gutter.textContent).toContain('Pan')
-    expect(gutter.textContent).toContain('Width')
+    // What every strip shares is printed once, in the gutter: the dB scale. The pan and width
+    // knobs carry no words, in the gutter or on a strip.
     expect(gutter.textContent).toContain('dB')
+    expect(gutter.textContent).not.toContain('Pan')
+    expect(gutter.textContent).not.toContain('Width')
     expect(scroll.textContent).not.toContain('Pan')
+    expect(scroll.textContent).not.toContain('Width')
     expect(gutter.querySelector('[role="img"]').getAttribute('aria-label')).toBe('Level scale, 0 to −60 dB')
     // No chain on any strip: the insert area is one row for the whole mixer, not five empty ones.
     expect(panel.getAttribute('data-insert-rows')).toBe('1')
@@ -186,6 +190,38 @@ describe('MixerPanel selection and layout', () => {
     for (const list of panel.querySelectorAll('[data-testid="mixer-inserts"]')) {
       expect(list.querySelectorAll('[data-insert-row]')).toHaveLength(1)
     }
+    await act(async () => root.unmount())
+  })
+
+  it('inserts are closed by default; the gutter FX button opens them for every strip and remembers it', async () => {
+    const { MixerPanel, useMixerStore, useMixerUiStore } = await loadMixerPanelFixture()
+    window.xleth.timeline.getTracks.mockResolvedValue([makeTimelineTrack(7, 'Bass')])
+    useMixerStore.setState({
+      visible: true,
+      tracks: { 7: { id: 7, name: 'Bass', volume: 1, pan: 0, spread: 1, muted: false, solo: false, visualOnly: false } },
+      trackOrder: [7],
+      selectedChainKey: '7',
+    })
+
+    const { container, root } = renderPanel(MixerPanel)
+    await flushEffects()
+
+    const panel = container.querySelector('[data-testid="mixer-panel"]')
+    const toggle = container.querySelector('[data-testid="mixer-inserts-toggle"]')
+    expect(panel.getAttribute('data-inserts')).toBe('closed')
+    expect(panel.style.getPropertyValue('--mx-ins-rows')).toBe('0')
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+
+    await act(async () => { toggle.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+    expect(panel.getAttribute('data-inserts')).toBe('open')
+    expect(panel.style.getPropertyValue('--mx-ins-rows')).toBe('1')
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    expect(useMixerUiStore.getState().insertsOpen).toBe(true)
+    expect(localStorage.getItem('xleth.mixer.insertsOpen')).toBe('1')
+
+    await act(async () => { toggle.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+    expect(panel.getAttribute('data-inserts')).toBe('closed')
+    expect(localStorage.getItem('xleth.mixer.insertsOpen')).toBe('0')
     await act(async () => root.unmount())
   })
 

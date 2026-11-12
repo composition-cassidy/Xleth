@@ -92,6 +92,13 @@ export function useSandboxEditShortcuts() {
     return true
   })
 
+  // SELECT ALL — the whole active layer. Not an edit (no op, no undo entry),
+  // but it is the first half of most of them, so it lives with the edit keys.
+  useEditAction('sandbox.selectAll', (state) => {
+    state.selectAll()
+    return true
+  })
+
   // DUPLICATE — the whole layer with its op-stack and mix params, not the
   // selection. Ctrl+C / Ctrl+V is how you duplicate a range.
   useEditAction('sandbox.duplicateLayer', (state, layer) => {

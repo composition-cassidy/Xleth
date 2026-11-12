@@ -1,10 +1,15 @@
 import { useState } from 'react'
-import { Volume1, Volume2, VolumeX, Layers } from 'lucide-react'
 import useSandboxStore, {
   SPECTRAL_PAINT_AMOUNT_DB_MIN, SPECTRAL_PAINT_AMOUNT_DB_MAX,
 } from '../../stores/sandboxStore.js'
 import { Button, NumberBox } from '../../ui-kit'
 import styles from './Sandbox.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcSpeakerSimpleHigh = iconComponent('speaker-simple-high')
+const IcSpeakerSimpleLow = iconComponent('speaker-simple-low')
+const IcSpeakerSimpleX = iconComponent('speaker-simple-x')
+const IcStackPlus = iconComponent('stack-plus')
 
 // SPC selection action bar — mounted ONLY over the spectrogram view once a
 // rect/freehand t×f selection exists (see SandboxPanelContent). Every button
@@ -53,7 +58,7 @@ export default function SandboxSpcSelectionActionBar() {
         label="Attenuation" width={72} min={0} max={-SPECTRAL_PAINT_AMOUNT_DB_MIN} step={1} unit="dB"
         quantize={Math.round} defaultValue={24} value={attenuateDb} onChange={setAttenuateDb}
       />
-      <Button glyph={<Volume1 />} onClick={() => attenuateSpcSelection(activeLayerId, attenuateDb)}
+      <Button glyph={<IcSpeakerSimpleLow />} onClick={() => attenuateSpcSelection(activeLayerId, attenuateDb)}
         hint="Attenuate" hintMods="Attenuate the selected time by frequency region">
         Attenuate
       </Button>
@@ -62,19 +67,19 @@ export default function SandboxSpcSelectionActionBar() {
         label="Boost" width={72} min={0} max={SPECTRAL_PAINT_AMOUNT_DB_MAX} step={1} unit="dB"
         quantize={Math.round} defaultValue={12} value={boostDb} onChange={setBoostDb}
       />
-      <Button glyph={<Volume2 />} onClick={() => boostSpcSelection(activeLayerId, boostDb)}
+      <Button glyph={<IcSpeakerSimpleHigh />} onClick={() => boostSpcSelection(activeLayerId, boostDb)}
         hint="Boost" hintMods="Boost the selected time by frequency region">
         Boost
       </Button>
 
-      <Button glyph={<VolumeX />} onClick={() => muteSpcSelection(activeLayerId)}
+      <Button glyph={<IcSpeakerSimpleX />} onClick={() => muteSpcSelection(activeLayerId)}
         hint="Mute" hintMods="Silence the selected time by frequency region">
         Mute
       </Button>
 
       <div className={styles.divider} />
 
-      <Button glyph={<Layers />} onClick={() => copySpcSelectionToNewLayer(activeLayerId)}
+      <Button glyph={<IcStackPlus />} onClick={() => copySpcSelectionToNewLayer(activeLayerId)}
         hint="Copy to new layer" hintMods="Extract the selected region into a new layer, leaving this layer untouched">
         Copy to new layer
       </Button>

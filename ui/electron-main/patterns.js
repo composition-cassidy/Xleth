@@ -29,6 +29,10 @@ function init(deps) {
   ipcMain.handle('xleth:timeline:addNotesBatch',
     safeHandler((_, patternId, notes) => callWorker('timeline_addNotesBatch', [patternId, notes])));
 
+  // Whole-list note edit, one undo entry (piano roll compound edits).
+  ipcMain.handle('xleth:timeline:editPatternNotes',
+    safeHandler((_, patternId, notes) => callWorker('timeline_editPatternNotes', [patternId, notes])));
+
   ipcMain.handle('xleth:timeline:quantizeClipsBatch',
     safeHandler((_, specs) => callWorker('timeline_quantizeClipsBatch', [specs])));
 

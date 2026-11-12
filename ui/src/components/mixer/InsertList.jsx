@@ -1,7 +1,7 @@
 import { useCallback, useId, useMemo, useState } from 'react'
 import useVstStore from '../../stores/vstStore.js'
-import { deviceName } from '../devices/deviceNames.js'
-import { insertLabel, insertRows } from './mixerMath.js'
+import { deviceName, deviceShortName } from '../devices/deviceNames.js'
+import { closedLabel, insertLabel, insertRows } from './mixerMath.js'
 import styles from './MixerStrip.module.css'
 
 /**
@@ -12,10 +12,14 @@ import styles from './MixerStrip.module.css'
  * the chain itself. Names come from the chain cache the strip already fills
  * (`useEffectChainStore.chains`), through the device title bar's own name map.
  */
-export default function InsertList({ name, chain, fxMode, rows = 5, onOpen }) {
+export default function InsertList({ name, chain, fxMode, rows = 5, expanded = false, onOpen }) {
   const vstPlugins = useVstStore((s) => s.plugins)
   const list = useMemo(
-    () => insertRows(chain, fxMode, rows, (effect) => deviceName(effect, vstPlugins)),
+    () => insertRows(
+      chain, fxMode, rows,
+      (effect) => deviceShortName(effect, vstPlugins),
+      (effect) => deviceName(effect, vstPlugins),
+    ),
     [chain, fxMode, rows, vstPlugins],
   )
   const filled = useMemo(() => list.map((row, i) => (row ? i : -1)).filter((i) => i >= 0), [list])
@@ -55,6 +59,35 @@ export default function InsertList({ name, chain, fxMode, rows = 5, onOpen }) {
   }, [filled, activeRow, open])
 
   const summary = insertLabel(chain, fxMode)
+
+  // Closed: one summary cell, "3 FX" (the gutter's FX button opens every strip's list). It
+  // still opens the chain, so a strip never loses its way into the Devices tab.
+  if (!expanded) {
+    return (
+      <div
+        className={styles.insertsClosed}
+        role="button"
+        tabIndex={0}
+        aria-label={`${name} inserts: ${summary}. Open the chain`}
+        data-testid="mixer-inserts"
+        data-closed="true"
+        data-empty={chain.length === 0 && fxMode !== 'graph' ? 'true' : undefined}
+        data-hint={`${name} has ${summary === 'No FX' ? 'no inserts' : summary}. Click to open its chain in the Devices tab.`}
+        data-hint-mods="Click or Enter: open the chain · The FX button at the left of the mixer lists every strip's inserts"
+        onClick={(e) => { e.stopPropagation(); open(-1) }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            e.stopPropagation()
+            open(-1)
+          }
+        }}
+      >
+        {closedLabel(chain, fxMode)}
+      </div>
+    )
+  }
+
   return (
     <div
       className={styles.inserts}
@@ -79,7 +112,7 @@ export default function InsertList({ name, chain, fxMode, rows = 5, onOpen }) {
           data-insert-row={i}
           data-off={row.off || undefined}
           data-more={row.more || undefined}
-          title={row.off ? `${row.text} (bypassed)` : row.text}
+          title={row.off ? `${row.full} (bypassed)` : row.full}
         >
           {row.text}
         </div>

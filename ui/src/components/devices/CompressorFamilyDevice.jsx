@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef } from 'react'
 import { DeviceSection, DisplayWell, Meter, SegmentedControl, Toggle, formatValue } from '../../ui-kit'
 import { useEffectMeterPolling, useMeterBus } from '../../plugin-ui/runtime/useEffectMeterPolling.js'
 import AutomatableKnob from './AutomatableKnob.jsx'
+import AutomationTarget from './AutomationTarget.jsx'
 import useDeviceParams from './useDeviceParams.js'
 import { MODELS, varimuReadout } from './compressorFamilyModels.js'
 import styles from './CompressorFamilyDevice.module.css'
@@ -107,30 +108,34 @@ export default function CompressorFamilyDevice({ model: modelId, target, registe
         {item.label}
         {item.unit ? <span className={styles.unit}> {item.unit}</span> : null}
       </span>
-      <SegmentedControl
-        size={item.hero ? 'lg' : 'sm'}
-        label={item.label}
-        value={index(item.id)}
-        options={item.options}
-        hint={item.hint}
-        data-param={item.id}
-        onChange={(v) => commit(item.id, v)}
-      />
+      <AutomationTarget paramId={item.id} target={target}>
+        <SegmentedControl
+          size={item.hero ? 'lg' : 'sm'}
+          label={item.label}
+          value={index(item.id)}
+          options={item.options}
+          hint={item.hint}
+          data-param={item.id}
+          onChange={(v) => commit(item.id, v)}
+        />
+      </AutomationTarget>
       {item.readout === 'varimu' ? <VariMuReadout position={index(item.id)} /> : null}
     </div>
   )
 
   const renderToggle = (item) => (
-    <Toggle
-      key={item.id}
-      size="sm"
-      on={value(item.id) >= 0.5}
-      hint={item.hint}
-      data-param={item.id}
-      onChange={(on) => commit(item.id, on ? 1 : 0)}
-    >
-      {item.label}
-    </Toggle>
+    <AutomationTarget paramId={item.id} target={target}>
+      <Toggle
+        key={item.id}
+        size="sm"
+        on={value(item.id) >= 0.5}
+        hint={item.hint}
+        data-param={item.id}
+        onChange={(on) => commit(item.id, on ? 1 : 0)}
+      >
+        {item.label}
+      </Toggle>
+    </AutomationTarget>
   )
 
   const renderItem = (item) => (item.type === 'knob' ? renderKnob(item) : item.type === 'seg' ? renderSeg(item) : renderToggle(item))

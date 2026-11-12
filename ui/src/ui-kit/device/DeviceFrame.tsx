@@ -1,11 +1,21 @@
 import type { CSSProperties, HTMLAttributes, ReactNode } from 'react';
-import { ChevronLeft, ChevronRight, CornerDownLeft, ExternalLink, MoreHorizontal, Power, X } from 'lucide-react';
 import { IconButton } from '../Button';
 import SegmentedControl from '../SegmentedControl';
 import Toggle from '../Toggle';
 import type { DataAttrs } from '../valueProps';
 import DeviceMenu, { type DeviceMenuItem } from './DeviceMenu';
+import MotionDiv from '../MotionDiv';
+import { useAfterMount } from '../motion';
 import styles from './DeviceFrame.module.css';
+import { iconComponent } from '../icons';
+
+const IcArrowLineDown = iconComponent('arrow-line-down');
+const IcCaretLeft = iconComponent('caret-left');
+const IcCaretRight = iconComponent('caret-right');
+const IcDotsThree = iconComponent('dots-three');
+const IcPictureInPicture = iconComponent('picture-in-picture');
+const IcPower = iconComponent('power');
+const IcX = iconComponent('x');
 
 export type DeviceSide = 'a' | 'b';
 
@@ -67,6 +77,8 @@ export default function DeviceFrame(props: DeviceFrameProps) {
   } = props;
 
   const strip = folded || poppedOut;
+  // A body that appears after the device first drew was unfolded by the user: it may enter.
+  const afterMount = useAfterMount();
   const frameStyle = {
     ...style,
     ...(width ? { '--device-w': `${width}px` } : null),
@@ -80,7 +92,7 @@ export default function DeviceFrame(props: DeviceFrameProps) {
       on={!bypassed}
       onChange={onBypassChange ? (on) => onBypassChange(!on) : undefined}
       disabled={!onBypassChange}
-      glyph={<Power aria-hidden="true" />}
+      glyph={<IcPower aria-hidden="true" />}
       aria-label={`${name} on`}
       hint={bypassHint ?? (bypassed ? `${name} is off (bypassed). Click to turn it on.` : `${name} is on. Click to bypass it.`)}
     />
@@ -101,7 +113,7 @@ export default function DeviceFrame(props: DeviceFrameProps) {
         {activator}
         {poppedOut ? (
           <IconButton size="sm" label={`Return ${name} to the chain`} hint="Close the window and show this device here again" onClick={onReturn}>
-            <CornerDownLeft aria-hidden="true" />
+            <IcArrowLineDown aria-hidden="true" />
           </IconButton>
         ) : onFoldChange ? (
           <IconButton
@@ -110,7 +122,7 @@ export default function DeviceFrame(props: DeviceFrameProps) {
             aria-expanded={!folded}
             onClick={() => onFoldChange(!folded)}
           >
-            {folded ? <ChevronRight aria-hidden="true" /> : <ChevronLeft aria-hidden="true" />}
+            {folded ? <IcCaretRight aria-hidden="true" /> : <IcCaretLeft aria-hidden="true" />}
           </IconButton>
         ) : null}
         <div
@@ -139,27 +151,27 @@ export default function DeviceFrame(props: DeviceFrameProps) {
             ) : null}
             {moreItems && moreItems.length ? (
               <DeviceMenu label={`More for ${name}`} items={moreItems}>
-                <MoreHorizontal aria-hidden="true" />
+                <IcDotsThree aria-hidden="true" />
               </DeviceMenu>
             ) : null}
             {presentation === 'docked' && onPopOut ? (
               <IconButton size="sm" label={`Open ${name} in a window`} onClick={onPopOut}>
-                <ExternalLink aria-hidden="true" />
+                <IcPictureInPicture aria-hidden="true" />
               </IconButton>
             ) : null}
             {presentation === 'floating' && onClose ? (
               <IconButton size="sm" label={`Close ${name}`} onClick={onClose}>
-                <X aria-hidden="true" />
+                <IcX aria-hidden="true" />
               </IconButton>
             ) : null}
           </div>
         )}
       </header>
       {strip ? null : (
-        <div className={styles.body}>
+        <MotionDiv recipe="reveal" data-mo-from="none" enter={afterMount} className={styles.body}>
           {display}
           {children}
-        </div>
+        </MotionDiv>
       )}
     </section>
   );

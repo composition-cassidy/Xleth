@@ -22,15 +22,29 @@ const base = {
 const render = (props = {}) => renderToStaticMarkup(<PreviewHeader {...base} {...props} />)
 
 describe('Preview header', () => {
-  it('at rest shows the timecode, View, FX, Edit grid and Import, and no state chips', () => {
+  it('at rest shows View, FX, Edit grid and Import, and no timecode or state chips', () => {
     const html = render()
-    expect(html).toContain('data-testid="preview-timecode"')
+    expect(html).not.toContain('data-testid="preview-timecode"')
     expect(html).toContain('>View<')
     expect(html).toContain('>FX<')
     expect(html).toContain('Edit grid')
     expect(html).toContain('Import')
     expect(html).not.toContain('Poster')
     expect(html).not.toMatch(/FPS/)
+  })
+
+  it('labels the grid toggle "Edit" with the grid glyph after it, so it reads "Edit grid"', () => {
+    const html = render()
+    const toggle = html.slice(html.indexOf('aria-label="Edit grid"'))
+    const label = toggle.indexOf('>Edit<')
+    const glyph = toggle.indexOf('<svg')
+    expect(label).toBeGreaterThan(-1)
+    expect(glyph).toBeGreaterThan(label)
+  })
+
+  it('drops its own row chrome when it sits in a floating titlebar', () => {
+    expect(render({ inTitlebar: true })).toContain('data-in-titlebar="true"')
+    expect(render()).not.toContain('data-in-titlebar')
   })
 
   it('shows the Poster state as a neutral chip with its explanation, only while Poster is on', () => {

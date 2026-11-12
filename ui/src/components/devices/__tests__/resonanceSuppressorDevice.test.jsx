@@ -39,6 +39,15 @@ const q = (sel) => container.querySelector(sel)
 const slider = (label) => q(`[role="slider"][aria-label="${label}"]`)
 const aria = (label) => slider(label)?.getAttribute('aria-valuetext')
 const radios = (label) => Array.from(q(`[role="radiogroup"][aria-label="${label}"]`)?.querySelectorAll('[role="radio"]') ?? [])
+// A Select: open the trigger, then click the option in the portalled listbox.
+const pick = (label, optionLabel) => {
+  const trigger = q(`button[aria-haspopup="listbox"][aria-label="${label}"]`)
+  expect(trigger, `select "${label}"`).toBeTruthy()
+  act(() => trigger.click())
+  const option = Array.from(document.querySelectorAll('[role="option"]')).find((o) => o.textContent.trim() === optionLabel)
+  expect(option, `option "${optionLabel}"`).toBeTruthy()
+  act(() => option.click())
+}
 const sent = (id) => audio.setEffectParameter.mock.calls.filter((c) => c[2] === id)
 const titles = () => Array.from(container.querySelectorAll('[role="heading"][aria-level="3"]')).map((h) => h.textContent)
 const button = (label) => q(`button[aria-label="${label}"]`)
@@ -89,7 +98,7 @@ function selectBand(n) {
   act(() => { window.dispatchEvent(new MouseEvent('pointerup')) })
 }
 
-describe('Resonance suppressor device in the chain', () => {
+describe('Resonance Suppressor device in the chain', () => {
   it('mirrors the engine ranges and hydrates; values print through formatValue', async () => {
     await mount()
     for (const [id, label, min, max] of ENGINE) {
@@ -100,7 +109,7 @@ describe('Resonance suppressor device in the chain', () => {
     expect(aria('Depth')).toBe('Depth, 60 %')
     expect(aria('Release')).toBe('Release, 300 ms')
     expect(aria('Trim')).toBe('Trim, −1.5 dB')
-    expect(radios('Quality').map((r) => r.getAttribute('aria-checked'))).toEqual(['false', 'true', 'false'])
+    expect(q('button[aria-label="Quality"]').textContent).toBe('Normal')
   })
 
   it('the hero is the spectrum with the focus-curve handles on top; sections run in signal order', async () => {
@@ -116,9 +125,9 @@ describe('Resonance suppressor device in the chain', () => {
   it('switches and Delta commit one engine write each', async () => {
     await mount()
     act(() => radios('Suppression mode')[1].click())
-    act(() => radios('Stereo mode')[2].click())
-    act(() => radios('Latency mode')[1].click())
-    act(() => radios('Quality')[0].click())
+    pick('Stereo mode', 'Side')
+    pick('Latency mode', 'High quality')
+    pick('Quality', 'Fast')
     act(() => Array.from(container.querySelectorAll('button[aria-pressed]')).find((b) => b.textContent === 'Delta').click())
     expect(sent('mode')).toEqual([[3, 7, 'mode', 1]])
     expect(sent('stereo_mode')).toEqual([[3, 7, 'stereo_mode', 2]])
@@ -158,7 +167,7 @@ describe('Resonance suppressor device in the chain', () => {
     await mount()
     expect(audio.getAudioPerformanceTelemetry).not.toHaveBeenCalled()
     expect(q('[data-device-plugin] p[role="alert"]')).toBeNull()
-    act(() => radios('Latency mode')[1].click())
+    pick('Latency mode', 'High quality')
     await flush()
     expect(audio.getAudioPerformanceTelemetry).toHaveBeenCalled()
     expect(q('[data-device-plugin] p[role="alert"]').textContent).toMatch(/high quality can overrun/i)
@@ -196,12 +205,12 @@ describe('Resonance suppressor device in the chain', () => {
     expect(label()).toMatch(/^42[.,]7.*ms.*latency$/)
     const afterEngine = audio.getEffectLatency.mock.calls.length
     Object.assign(reported, { latencySamples: 512, latencyMs: 10.667 })
-    act(() => radios('Quality')[0].click())
+    pick('Quality', 'Fast')
     await flush()
     expect(audio.getEffectLatency.mock.calls.length).toBeGreaterThan(afterEngine)
     expect(label()).toMatch(/^10[.,]7.*ms.*latency$/)
     Object.assign(reported, { latencySamples: 0, latencyMs: 0 })
-    act(() => radios('Latency mode')[0].click())
+    pick('Latency mode', 'Low latency')
     await flush()
     expect(label()).toBe('No latency')
   })
@@ -215,7 +224,7 @@ describe('Resonance suppressor device in the chain', () => {
     act(() => radios('Engine')[1].click())
     expect(hint('Sharpness')).toBe('Narrows the cut around each resonance')
     expect(hint('Selectivity')).toBe("How far a peak must stand above the spectrum's baseline to be cut. Higher = fewer, more targeted cuts")
-    act(() => radios('Latency mode')[0].click())
+    pick('Latency mode', 'Low latency')
     expect(hint('Sharpness')).toBe('How narrow a peak must be to count as a resonance')
   })
 
@@ -236,7 +245,7 @@ describe('Resonance suppressor device in the chain', () => {
 
   it('pop-out opens the same device in a window; the legacy panel, its layout and its CSS are gone', async () => {
     await mount(<ResonanceSuppressorPanel />)
-    act(() => button('Open Resonance suppressor in a window').click())
+    act(() => button('Open Resonance Suppressor in a window').click())
     await flush()
     expect(useResonanceSuppressorStore.getState().target).toEqual({ trackId: 3, nodeId: 7, storeKey: '3' })
     expect(q('[data-testid="resonancesuppressor-window"] section').getAttribute('data-presentation')).toBe('floating')

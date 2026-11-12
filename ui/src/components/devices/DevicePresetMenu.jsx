@@ -1,7 +1,10 @@
 import React, { useMemo } from 'react'
-import { Check, X } from 'lucide-react'
 import { IconButton, Select } from '../../ui-kit'
 import styles from './DevicePresetMenu.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcCheck = iconComponent('check')
+const IcX = iconComponent('x')
 
 // The device title bar's preset menu. Driven by useEffectPresets (the same
 // state the legacy EffectPresetBar uses). Save / delete / undo-load live in the
@@ -37,7 +40,7 @@ export default function DevicePresetMenu({ presets, deviceName }) {
       <div className={styles.row} role="alert">
         <span className={styles.error} title={errorText}>{errorText}</span>
         <IconButton size="sm" label="Dismiss the preset error" onClick={() => setErrorText(null)}>
-          <X aria-hidden="true" />
+          <IcX aria-hidden="true" />
         </IconButton>
       </div>
     )
@@ -65,10 +68,10 @@ export default function DevicePresetMenu({ presets, deviceName }) {
           onClick={commitSave}
           disabled={busy}
         >
-          <Check aria-hidden="true" />
+          <IcCheck aria-hidden="true" />
         </IconButton>
         <IconButton size="sm" label="Cancel saving" onClick={cancelSave}>
-          <X aria-hidden="true" />
+          <IcX aria-hidden="true" />
         </IconButton>
       </div>
     )

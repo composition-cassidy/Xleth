@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { EmptyState } from '../../ui-kit'
+import { EmptyState, MotionDiv } from '../../ui-kit'
 import useEffectChainStore, { resolveFxMode } from '../../stores/effectChainStore.js'
 import useMixerStore from '../../stores/mixerStore.js'
 import useVstStore from '../../stores/vstStore.js'
@@ -82,6 +82,12 @@ export default function DeviceChain() {
   const chainName = master ? 'Master' : (mixerTracks[Number(key)]?.name || `Track ${key}`)
 
   const displayChain = dragOrder ?? chain
+
+  // Motion: a device enters only when it is ADDED to the chain on screen (the chain grew by one
+  // for the same track). A track switch or a project load draws its chain complete.
+  const shownRef = useRef({ key, length: chain.length })
+  const insertEnter = shownRef.current.key === key && chain.length === shownRef.current.length + 1
+  useEffect(() => { shownRef.current = { key, length: chain.length } }, [key, chain.length])
 
   // A mixer strip's insert row asks for one device of a chain (deviceRevealStore): once that
   // chain is the one shown and the device exists, scroll it into view and outline it. The
@@ -175,7 +181,9 @@ export default function DeviceChain() {
             { label: 'Move right', disabled: index === displayChain.length - 1, onSelect: () => moveEffect(key, effect.nodeId, index + 1) },
           ] : []
           return (
-            <div
+            <MotionDiv
+              recipe="insert"
+              enter={insertEnter}
               key={getEffectChainRowKey(effect, index)}
               role="listitem"
               className={styles.slot}
@@ -191,7 +199,7 @@ export default function DeviceChain() {
                 dragHandleProps={live ? { onPointerDown: startDrag(effect, index) } : undefined}
                 moveItems={moveItems}
               />
-            </div>
+            </MotionDiv>
           )
         })}
         <button

@@ -90,6 +90,11 @@ export interface PanelCatalogEntry {
   // Sampler, FX Graph). Present = this panel is a detail-dock tab: it opens
   // docked at the bottom, its tab is always shown, and it pops out on demand.
   dockTabOrder?: number;
+  // A detail-dock tab that opens in its own window until the user docks it. Its
+  // tab stays in the strip (it launches the window and brings it forward, and its
+  // return control docks it), but the panel's content is taller than the dock's
+  // short row and would be squeezed there by default.
+  opensFloating?: boolean;
   // The region a popped-out window returns to from its "Return to dock"
   // control. Detail-dock tabs return to the dock without declaring it.
   dockHome?: 'left' | 'right' | 'top';
@@ -216,21 +221,18 @@ export const PANEL_CATALOG = {
     typeColorToken: '--theme-panel-mixer',
     icon: SamplerIcon,
     fKey: 'F12',
-    // Fixed size per the mockup — see resizable:false below. Sized to the main
-    // tab's actual content rather than guessed: 820 wide because the mockup's
-    // two-column work row needs ~200px for the prep/process/minis column and
-    // the waveform should not end up narrower than it was before the rework;
-    // 870 tall because the measured content is ~797px plus 62px of chrome (tab
-    // bar + audition bar), and the whole point of the rework was that the main
-    // tab stops scrolling. A 3- or 4-instance MANGLE chain still overflows, as
-    // it always will — that is the unusual case, not the default one.
-    defaultFloating: { x: 340, y: 100, width: 820, height: 870 },
+    // A window of its own by default (opensFloating): the Sampler is a tall
+    // instrument page (slot strip, waveform, section rows), and the detail dock's
+    // short row squeezed it. 800x640 holds the Sample view with a ~200px waveform
+    // and no scrolling, and still fits a 1366x768 work area. Resizable and
+    // maximizable; below the minimum the section rows wrap and the body scrolls.
+    defaultFloating: { x: 400, y: 96, width: 800, height: 640 },
     keepAliveWhenHidden: false,
-    resizable: false,
-    minWidth: 280,
-    minHeight: 120,
+    minWidth: 560,
+    minHeight: 440,
     minDockedSize: 220,
     presentation: 'window',
+    opensFloating: true,
     dockTabOrder: 3,
   },
   quickNotation: {
@@ -333,6 +335,11 @@ export const DETAIL_DOCK_TAB_IDS: PanelId[] = ACTIVE_PANEL_IDS
 
 export function isDetailDockTab(id: PanelId): boolean {
   return (PANEL_CATALOG[id] as PanelCatalogEntry).dockTabOrder !== undefined;
+}
+
+/** A detail-dock tab that starts, and reopens, as its own window. */
+export function opensFloating(id: PanelId): boolean {
+  return (PANEL_CATALOG[id] as PanelCatalogEntry).opensFloating === true;
 }
 
 /** Where a popped-out panel goes home to, or null when it has no home region. */

@@ -251,6 +251,29 @@ public:
     // The route currently published for a region, without re-resolving.
     int getPreviewRouteTrack(int regionId) const;
 
+    // ── Pattern audition (main thread control; piano roll "solo" play) ──────
+    // Plays ONE pattern on its own, ignoring the arrangement, from a private
+    // sample clock that runs only while the transport is stopped. Notes go
+    // through the region's preview sampler, which is routed through the track
+    // the pattern lives on (its effect chain, fader, then the master chain) —
+    // the same path a piano-roll key audition takes. Starting normal playback
+    // cancels it (the track chains belong to the arrangement then).
+    //
+    // loop=true repeats the pattern until stopped; loop=false plays it once and
+    // ends. setPatternAuditionLoop() is live: switching loop off mid-run lets
+    // the current pass finish, switching it on keeps it going.
+    struct PatternAuditionState
+    {
+        bool    active        = false;  // audio thread is currently sequencing
+        int     patternId     = -1;
+        bool    loop          = false;
+        int64_t positionTicks = 0;      // within the pattern (wraps when looping)
+    };
+    bool startPatternAudition(int patternId, bool loop);
+    void stopPatternAudition();
+    void setPatternAuditionLoop(bool loop);
+    PatternAuditionState getPatternAuditionState() const;
+
     // ── Audio thread ─────────────────────────────────────────────────────────
     // Mix timeline audio into outputBuffer (additive). Caller must clear first
     // if exclusive output is desired.
@@ -1968,6 +1991,27 @@ private:
     // bleed into playback, but must not be wiped mid-audition either, so the
     // reset is requested on the next play start. Audio thread only.
     bool auditionDirtiedChains_ = false;
+
+    // ── Pattern audition state ──────────────────────────────────────────────
+    // Main thread publishes (patternId, loop, then bumps the start sequence);
+    // the audio thread owns everything below the line.
+    std::atomic<int>      auditionPatternId_ { -1 };    // -1 = none requested
+    std::atomic<bool>     auditionLoop_ { false };
+    std::atomic<uint32_t> auditionStartSeq_ { 0 };      // bumped on every start
+    std::atomic<bool>     auditionActive_ { false };    // audio-thread truth
+    std::atomic<int64_t>  auditionPosTicks_ { 0 };
+    // ---- audio thread only ----
+    uint32_t     auditionSeenSeq_ = 0;
+    int          auditionRunningPatternId_ = -1;
+    int          auditionRunningRegionId_ = -1;
+    bool         auditionSeenLoop_ = false;
+    int64_t      auditionPosSamples_ = 0;
+    int64_t      auditionEndTick_ = 0;       // pass boundary (huge while looping)
+    int64_t      auditionEndSample_ = 0;
+    PatternBlock auditionBlock_;             // synthetic block: lets the audition
+                                             // reuse triggerPatternNotes verbatim
+    void runPatternAudition(int numSamples, double bpm, double sampleRate);
+    void haltPatternAudition();              // audio thread: release + go idle
 
     // Active pattern-block info — pre-allocated, reused each block
     struct ActivePatternBlock

@@ -322,6 +322,8 @@ add_library(XlethEngineCore STATIC
     src/model/ClipVideoModulationTiming.cpp
     src/audio/TrackMixer.cpp
     src/audio/SourcePlayer.cpp
+    src/audio/Metronome.cpp
+    src/audio/MetronomeSamples.cpp
     src/audio/Sampler.cpp
     src/audio/Arpeggiator.cpp
     src/audio/SampleProcessor.cpp
@@ -389,12 +391,14 @@ add_library(XlethEngineCore STATIC
     src/render/VisualEchoTypes.cpp
     src/render/VideoFlipApplier.cpp
     src/render/RenderVideoDecoder.cpp
+    src/render/Nv12Converter.cpp
     src/render/GridCompositor.cpp
     src/render/SnapshotTransitionRenderer.cpp
     src/render/VisualFrameDiagnostics.cpp
     src/render/HwEncoderDetector.cpp
     src/render/OfflineRenderer.cpp
     src/render/ArpVideoExpander.cpp
+    src/render/VideoEventBuilder.cpp
     src/render/AnimationManager.cpp
 )
 
@@ -587,6 +591,18 @@ target_link_libraries(test_loop_region PRIVATE
 # loop bounds and the pattern-note dispatch share one tick->sample domain).
 target_include_directories(test_loop_region PRIVATE
     ${FFMPEG_INCLUDE_DIRS}
+)
+
+# ── test_metronome ────────────────────────────────────────────────────────────
+# Click-track beat grid / bar accent / +3 st resampling. Pure std — no JUCE.
+add_executable(test_metronome
+    test/test_metronome.cpp
+    src/audio/Metronome.cpp
+    src/audio/MetronomeSamples.cpp
+)
+
+target_include_directories(test_metronome PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
 # ── test_render_scope ─────────────────────────────────────────────────────────
@@ -832,6 +848,36 @@ target_link_libraries(test_flip_determinism PRIVATE
 )
 
 target_compile_definitions(test_flip_determinism PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_video_event_builder ─────────────────────────────────────────────────
+# The one timeline -> VideoEvent builder shared by live preview and export:
+# note clamp at the block end, no loop wrap with looping off, slide events,
+# clip anchoring, and export == preview.
+add_executable(test_video_event_builder
+    test/test_video_event_builder.cpp
+)
+
+target_link_libraries(test_video_event_builder PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_video_event_builder PRIVATE
     JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
     JUCE_USE_CURL=0
     JUCE_WEB_BROWSER=0
@@ -2199,6 +2245,7 @@ target_link_libraries(test_plugin_binary_inspector PRIVATE
     XlethPluginInspect
 )
 add_test(NAME test_plugin_binary_inspector COMMAND test_plugin_binary_inspector)
+add_test(NAME test_metronome COMMAND test_metronome)
 
 # ── test_effect_audio_thread_reset ──────────────────────────────────────────
 # A live transport jump resets effect chains ON THE AUDIO THREAD, in the block
@@ -3516,6 +3563,7 @@ set(XLETH_ENGINE_TESTS
     test_autotune_render
     test_video_flip_applier
     test_flip_determinism
+    test_video_event_builder
     test_flip_orientation_golden
     test_project
     test_regenerable_files

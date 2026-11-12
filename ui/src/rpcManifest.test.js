@@ -265,6 +265,7 @@ describe('rpc-manifest invariants', () => {
                             'timeline_autoTrimClip',
                             'timeline_moveNotesBatch',
                             'timeline_addNotesBatch',
+                            'timeline_editPatternNotes',
                             'timeline_quantizeClipsBatch',
                             'timeline_resizeNotesBatch',
                             'timeline_previewNote',

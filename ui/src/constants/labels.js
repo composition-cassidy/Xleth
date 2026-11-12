@@ -36,6 +36,21 @@ export function labelHexColor(label) {
   return tokenValue(token)
 }
 
+// Every label colour in one pass, keyed by lower-case label name (plus
+// `custom`, the fallback). labelHexColor() is a getComputedStyle read per call,
+// so anything that colours many items per frame (the timeline canvas) resolves
+// this once per theme and looks labels up with pickLabelHexColor() instead.
+export function resolveLabelHexColors() {
+  const out = Object.create(null)
+  for (const key of Object.keys(LABEL_TOKEN_MAP)) out[key] = tokenValue(LABEL_TOKEN_MAP[key])
+  return out
+}
+
+export function pickLabelHexColor(colors, label) {
+  const key = typeof label === 'string' ? label.toLowerCase() : ''
+  return colors[key] ?? colors.custom
+}
+
 export function loadCustomLabels() {
   try {
     return JSON.parse(localStorage.getItem(CUSTOM_LABELS_KEY) || '[]')

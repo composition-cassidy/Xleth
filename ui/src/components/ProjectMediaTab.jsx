@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useMemo, useRef, useSyncExternalStore } from 'react'
-import { Plus, Trash2, RefreshCw, FolderSearch, Play, Square } from 'lucide-react'
 import { timelineEvents } from '../timelineEvents.js'
 import ImportDropZone from './ImportDropZone.jsx'
 import { useXlethRootContext } from '../windowing/contexts/XlethRootContext.jsx'
@@ -19,6 +18,14 @@ import {
   togglePreview,
 } from './samplePreview.js'
 import styles from './browser/Browser.module.css'
+import { iconComponent } from '../ui-kit/icons'
+
+const IcArrowsClockwise = iconComponent('arrows-clockwise')
+const IcFolderOpen = iconComponent('folder-open')
+const IcPlay = iconComponent('play')
+const IcPlus = iconComponent('plus')
+const IcStopFill = iconComponent('stop', 'fill')
+const IcTrash = iconComponent('trash')
 
 const SOURCE_IMPORT_FILTERS = [
   { name: 'All Supported', extensions: ['mp4', 'avi', 'mov', 'mkv', 'wav', 'mp3', 'flac', 'ogg', 'aac', 'm4a'] },
@@ -221,7 +228,7 @@ export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
   const contextMenuItems = contextMenu ? [
     {
       label: 'Reveal in Explorer',
-      icon: FolderSearch,
+      icon: IcFolderOpen,
       onClick: () => {
         window.xleth?.shell?.showItemInFolder(contextMenu.source.filePath)
       },
@@ -236,7 +243,7 @@ export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
     },
     {
       label: 'Re-transcode Proxy',
-      icon: RefreshCw,
+      icon: IcArrowsClockwise,
       onClick: () => {
         // Future: dedicated re-transcode endpoint
       },
@@ -244,7 +251,7 @@ export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
     { type: 'separator' },
     {
       label: 'Remove',
-      icon: Trash2,
+      icon: IcTrash,
       danger: true,
       onClick: async () => {
         const id = contextMenu.source.id
@@ -326,8 +333,9 @@ export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
           <span className={styles.spacer} />
           <IconButton
             size="sm"
-            label="Import MIDI"
-            hint="Import a MIDI file into a pattern"
+            label="Import MIDI or FL Studio project"
+            hint="Import a MIDI file or an FL Studio project (.flp) into patterns"
+            hintMods="or drop a .mid / .flp on the list"
             onClick={() => onOpenMidiImport?.()}
           >
             <PianoRollIcon size={14} aria-hidden="true" />
@@ -340,7 +348,7 @@ export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
             onClick={handleImportDialog}
             disabled={importing}
           >
-            <Plus size={14} aria-hidden="true" />
+            <IcPlus size={14} aria-hidden="true" />
           </IconButton>
         </div>
 
@@ -447,7 +455,7 @@ function SelectionStrip({ source, thumbnail }) {
         hint="Play this source's audio"
         onClick={toggle}
       >
-        {playing ? <Square size={10} aria-hidden="true" /> : <Play size={10} aria-hidden="true" />}
+        {playing ? <IcStopFill size={14} aria-hidden="true" /> : <IcPlay size={14} aria-hidden="true" />}
       </IconButton>
     </div>
   )

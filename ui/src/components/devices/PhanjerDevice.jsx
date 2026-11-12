@@ -3,11 +3,13 @@ import {
   DeviceSection, DisplayWell, NumberBox, SegmentedControl, Select, Toggle, logScale, skewScale,
 } from '../../ui-kit'
 import AutomatableKnob from './AutomatableKnob.jsx'
+import AutomationTarget from './AutomationTarget.jsx'
 import PhanjerResponseCanvas from './PhanjerResponseCanvas.jsx'
 import { bandVar } from './bandPalette.js'
 import useDeviceParams from './useDeviceParams.js'
 import deviceStyles from './deviceBody.module.css'
 import styles from './PhanjerDevice.module.css'
+import { Icon } from '../../ui-kit/icons'
 
 // Every id, range and default is PhanjerEffect::createLayout(). All 23 parameters
 // are AudioParameterFloat, so the discrete ones (mode, syncs, divisions, feels,
@@ -29,13 +31,8 @@ const MODES = [
   { value: 1, label: 'Smart', hint: 'Independent LFOs per side with the lookahead leveling guard on: the combined path ducks up to 6 dB before a peak-peak or notch-notch collision.' },
   { value: 2, label: 'Wild', hint: 'Independent LFOs with the guard off. A tanh saturator glues the crossings instead of leveling them.' },
 ]
-const SHAPE_PATHS = [
-  'M1 7 C 4 0, 6 0, 10 7 C 14 14, 16 14, 19 7', // sine
-  'M1 11 L 6 3 L 11 11 L 16 3 L 19 7', // triangle
-  'M1 11 L 7 3 L 7 11 L 13 3 L 13 11 L 19 3', // saw
-  'M1 11 L 1 3 L 6 3 L 6 11 L 12 11 L 12 3 L 18 3 L 18 11 L 19 11', // square
-  'M1 8 L 4 4 L 6 11 L 9 6 L 12 12 L 15 3 L 17 9 L 19 6', // random
-]
+// Phosphor wave glyphs, plus XLETH's own smooth-random-walk glyph (Phosphor has none).
+const SHAPE_ICONS = ['wave-sine', 'wave-triangle', 'wave-sawtooth', 'wave-square', 'xleth-lfo-random']
 const SHAPE_NAMES = ['Sine', 'Triangle', 'Saw', 'Square', 'Random']
 const SHAPE_HINTS = [
   'Sine LFO shape, shared by both sides',
@@ -49,24 +46,14 @@ const DIV_OPTIONS = ['1/1', '1/2', '1/4', '1/8', '1/16', '1/32'].map((label, val
 const FEEL_OPTIONS = ['Straight', 'Triplet', 'Dotted'].map((label, value) => ({ value, label }))
 
 function ShapeIcon({ shape }) {
-  return (
-    <svg viewBox="0 0 20 14" width="20" height="14" aria-hidden="true">
-      <path d={SHAPE_PATHS[shape]} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
-    </svg>
-  )
+  return <Icon name={SHAPE_ICONS[shape]} size={16} />
 }
 
 function NoteIcon() {
-  return (
-    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-      <path d="M6 3 L13 1.5 L13 10.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-      <circle cx="4" cy="11.5" r="2.3" fill="currentColor" />
-      <circle cx="11" cy="11" r="2.3" fill="currentColor" />
-    </svg>
-  )
+  return <Icon name="music-note" />
 }
 
-const SHAPE_OPTIONS = SHAPE_PATHS.map((_, value) => ({
+const SHAPE_OPTIONS = SHAPE_ICONS.map((_, value) => ({
   value, label: <ShapeIcon shape={value} />, ariaLabel: SHAPE_NAMES[value], hint: SHAPE_HINTS[value],
 }))
 
@@ -97,7 +84,7 @@ export default function PhanjerDevice({ target, registerApplied }) {
   }, [registerApplied, syncParamsFromPreset])
 
   const modeIdx = idx(params.mode, MODES.length)
-  const shapeIdx = idx(params.lfo_shape, SHAPE_PATHS.length)
+  const shapeIdx = idx(params.lfo_shape, SHAPE_ICONS.length)
   const linked = modeIdx === 0
   const fSyncOn = params.f_sync >= 0.5
   const pSyncOn = params.p_sync >= 0.5
@@ -135,52 +122,60 @@ export default function PhanjerDevice({ target, registerApplied }) {
     hint: 'Feedback. Positive rings, negative swaps the comb’s peaks and notches.',
   })
   const box = (id, label, scale, min, max, unit, extra = {}) => (
-    <NumberBox
-      key={id}
-      label={label}
-      value={params[id]}
-      min={min}
-      max={max}
-      scale={scale}
-      defaultValue={DEFAULTS[id]}
-      unit={unit}
-      formatOptions={unit === 'ms' ? { decimals: 2 } : undefined}
-      width={112}
-      onChange={(v) => preview(id, v)}
-      onCommit={(v) => commit(id, v)}
-      data-param={id}
-      {...extra}
-    />
+    <AutomationTarget paramId={id} target={target}>
+      <NumberBox
+        key={id}
+        label={label}
+        value={params[id]}
+        min={min}
+        max={max}
+        scale={scale}
+        defaultValue={DEFAULTS[id]}
+        unit={unit}
+        formatOptions={unit === 'ms' ? { decimals: 2 } : undefined}
+        width={112}
+        onChange={(v) => preview(id, v)}
+        onCommit={(v) => commit(id, v)}
+        data-param={id}
+        {...extra}
+      />
+    </AutomationTarget>
   )
   const syncRow = (side, disabled) => {
     const name = side === 'f' ? 'Flanger' : 'Phaser'
     return (
       <div className={styles.sync}>
-        <Toggle
-          size="sm"
-          on={params[`${side}_sync`] >= 0.5}
-          disabled={disabled}
-          onChange={(on) => commit(`${side}_sync`, on ? 1 : 0)}
-          glyph={<NoteIcon />}
-          aria-label={`${name} tempo sync`}
-          hint={`Lock the ${name.toLowerCase()} LFO to the tempo: one cycle per note division. Turns off its Rate.`}
-        />
-        <Select
-          size="sm"
-          ariaLabel={`${name} division`}
-          value={idx(params[`${side}_sync_div`], DIV_OPTIONS.length)}
-          options={DIV_OPTIONS}
-          disabled={disabled}
-          onChange={(v) => commit(`${side}_sync_div`, Number(v))}
-        />
-        <Select
-          size="sm"
-          ariaLabel={`${name} feel`}
-          value={idx(params[`${side}_sync_feel`], FEEL_OPTIONS.length)}
-          options={FEEL_OPTIONS}
-          disabled={disabled}
-          onChange={(v) => commit(`${side}_sync_feel`, Number(v))}
-        />
+        <AutomationTarget paramId={`${side}_sync`} target={target}>
+          <Toggle
+            size="sm"
+            on={params[`${side}_sync`] >= 0.5}
+            disabled={disabled}
+            onChange={(on) => commit(`${side}_sync`, on ? 1 : 0)}
+            glyph={<NoteIcon />}
+            aria-label={`${name} tempo sync`}
+            hint={`Lock the ${name.toLowerCase()} LFO to the tempo: one cycle per note division. Turns off its Rate.`}
+          />
+        </AutomationTarget>
+        <AutomationTarget paramId={`${side}_sync_div`} target={target}>
+          <Select
+            size="sm"
+            ariaLabel={`${name} division`}
+            value={idx(params[`${side}_sync_div`], DIV_OPTIONS.length)}
+            options={DIV_OPTIONS}
+            disabled={disabled}
+            onChange={(v) => commit(`${side}_sync_div`, Number(v))}
+          />
+        </AutomationTarget>
+        <AutomationTarget paramId={`${side}_sync_feel`} target={target}>
+          <Select
+            size="sm"
+            ariaLabel={`${name} feel`}
+            value={idx(params[`${side}_sync_feel`], FEEL_OPTIONS.length)}
+            options={FEEL_OPTIONS}
+            disabled={disabled}
+            onChange={(v) => commit(`${side}_sync_feel`, Number(v))}
+          />
+        </AutomationTarget>
       </div>
     )
   }
@@ -211,13 +206,15 @@ export default function PhanjerDevice({ target, registerApplied }) {
 
       <DeviceSection title="Global" width={236}>
         <div className={styles.global}>
-          <SegmentedControl
-            size="md"
-            label="Mode"
-            value={modeIdx}
-            options={MODES}
-            onChange={(v) => commit('mode', v)}
-          />
+          <AutomationTarget paramId="mode" target={target}>
+            <SegmentedControl
+              size="md"
+              label="Mode"
+              value={modeIdx}
+              options={MODES}
+              onChange={(v) => commit('mode', v)}
+            />
+          </AutomationTarget>
           <div className={styles.heroRow}>
             {knob('global_mix', 'Global mix', {
               min: 0, max: 100, unit: '%', size: 56, width: 92,
@@ -228,13 +225,15 @@ export default function PhanjerDevice({ target, registerApplied }) {
               hint: 'Layers two faster random sources on top of the sweep. Only with the Random shape.',
             })}
           </div>
-          <SegmentedControl
-            size="sm"
-            label="LFO shape"
-            value={shapeIdx}
-            options={SHAPE_OPTIONS}
-            onChange={(v) => commit('lfo_shape', v)}
-          />
+          <AutomationTarget paramId="lfo_shape" target={target}>
+            <SegmentedControl
+              size="sm"
+              label="LFO shape"
+              value={shapeIdx}
+              options={SHAPE_OPTIONS}
+              onChange={(v) => commit('lfo_shape', v)}
+            />
+          </AutomationTarget>
         </div>
       </DeviceSection>
 
@@ -251,14 +250,16 @@ export default function PhanjerDevice({ target, registerApplied }) {
             {box('p_freq_max', 'Freq max', FMAX_SCALE, 200, 16000, 'Hz', { hint: 'Highest frequency of the phaser sweep' })}
           </div>
           <div className={styles.sync}>
-            <SegmentedControl
-              size="sm"
-              label="Stages"
-              value={Math.max(1, Math.min(6, Math.round(Number(params.p_stages))))}
-              options={STAGE_OPTIONS}
-              onChange={(v) => commit('p_stages', v)}
-              hint="Allpass stages. Each stage makes one notch."
-            />
+            <AutomationTarget paramId="p_stages" target={target}>
+              <SegmentedControl
+                size="sm"
+                label="Stages"
+                value={Math.max(1, Math.min(6, Math.round(Number(params.p_stages))))}
+                options={STAGE_OPTIONS}
+                onChange={(v) => commit('p_stages', v)}
+                hint="Allpass stages. Each stage makes one notch."
+              />
+            </AutomationTarget>
           </div>
           {syncRow('p', phaserSyncDisabled)}
         </div>

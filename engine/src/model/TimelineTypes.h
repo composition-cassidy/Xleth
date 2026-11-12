@@ -412,6 +412,10 @@ struct SampleRegion {
         double      endTime   = 0.0;
         int         number    = 0;
         std::string text;
+        // Quick Notation: where inside THIS syllable the 32nd-note symbols
+        // (' # x) start, as a percentage of the syllable's own length. Saved
+        // with the project so later sessions reuse what was tuned by ear.
+        double      quickOffsetPercent = 50.0;
     };
     std::vector<Syllable> syllables;
 

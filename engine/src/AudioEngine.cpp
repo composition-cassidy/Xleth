@@ -964,6 +964,7 @@ void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device)
     bufferSize_ = device->getCurrentBufferSizeSamples();
     transport_.setSampleRate(sampleRate_);
     mixEngine_.prepare(sampleRate_, bufferSize_);
+    metronome_.prepare(sampleRate_);
     cacheCurrentDeviceOutputLatency();
     refreshLivePresentationLatency();
 
@@ -1063,6 +1064,23 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
                 juce::AudioBuffer<float> seamView(outBuf.getArrayOfWritePointers(),
                                                   numOutputChannels, offset, chunk);
                 mixEngine_.processBlock(seamView, chunk, transport_);
+            }
+
+            // Metronome: post-mix, outside the master bus. The grid is read at
+            // (position - PDC) so each click lands with the audio it counts
+            // against, which the mix delays by the track + master insert latency
+            // (device latency is common to both and is deliberately not applied).
+            // Runs on this sub-block's own position, so loop wraps stay in step.
+            if (metronome_.isEnabled() || metronome_.activeVoices() > 0)
+            {
+                const int64_t pdc =
+                    livePresentationMaxTrackLatencySamples_.load(std::memory_order_relaxed)
+                  + livePresentationMasterLatencySamples_.load(std::memory_order_relaxed);
+                juce::AudioBuffer<float> metroView(outBuf.getArrayOfWritePointers(),
+                                                   numOutputChannels, offset, chunk);
+                metronome_.process(metroView.getArrayOfWritePointers(), numOutputChannels, chunk,
+                                   transport_.getPositionSamples() - pdc,
+                                   transport_.getBPM(), transport_.isPlaying());
             }
 
             // The master clock advances per sub-block because the advance IS

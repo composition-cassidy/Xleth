@@ -26,7 +26,7 @@
   },
   "src/components/TimelineView.jsx": {
     "no-restricted-syntax": {
-      "count": 16
+      "count": 14
     }
   },
   "src/components/VideoExportDialog.jsx": {
@@ -84,11 +84,6 @@
       "count": 3
     }
   },
-  "src/components/timeline/TimelineCanvas.jsx": {
-    "no-restricted-syntax": {
-      "count": 5
-    }
-  },
   "src/components/timeline/__tests__/hiResFetchIntegration.test.js": {
     "no-restricted-syntax": {
       "count": 4
@@ -102,11 +97,6 @@
   "src/components/timeline/automationLaneGeometry.test.js": {
     "no-restricted-syntax": {
       "count": 11
-    }
-  },
-  "src/components/timeline/clipGeometry.js": {
-    "no-restricted-syntax": {
-      "count": 2
     }
   },
   "src/components/timeline/clipSourceDomain.test.js": {
@@ -136,27 +126,17 @@
   },
   "src/components/timeline/timelineDrawing.js": {
     "no-restricted-syntax": {
-      "count": 14
-    }
-  },
-  "src/components/timeline/tools/deleteTool.js": {
-    "no-restricted-syntax": {
-      "count": 8
+      "count": 6
     }
   },
   "src/components/timeline/tools/pencilTool.js": {
     "no-restricted-syntax": {
-      "count": 8
+      "count": 3
     }
   },
   "src/components/timeline/tools/selectTool.js": {
     "no-restricted-syntax": {
-      "count": 60
-    }
-  },
-  "src/components/timeline/tools/splitTool.js": {
-    "no-restricted-syntax": {
-      "count": 4
+      "count": 39
     }
   },
   "src/stores/loopRegionStore.js": {

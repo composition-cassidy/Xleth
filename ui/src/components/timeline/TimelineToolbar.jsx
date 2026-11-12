@@ -1,5 +1,4 @@
 import { useState, useRef } from 'react'
-import { Plus, AlignJustify, FolderPlus, Layers } from 'lucide-react'
 import {
   IconButton, SegmentedControl, Select, Toolbar, ToolbarSeparator, THIN_SPACE,
   DeleteToolIcon, DrawToolIcon, SelectToolIcon, SliceToolIcon, QuickNotationIcon,
@@ -9,6 +8,12 @@ import { getSelectableSyllables } from '../SyllableSplitter/syllableModel.js'
 import useTimelineDisplayStore from '../../stores/timelineDisplayStore.js'
 import TimelineDisplayPopover from './TimelineDisplayPopover.jsx'
 import styles from './TimelineToolbar.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcFolderPlus = iconComponent('folder-plus')
+const IcPlus = iconComponent('plus')
+const IcSlidersHorizontal = iconComponent('sliders-horizontal')
+const IcXQuantize = iconComponent('xleth-quantize')
 
 // The arrangement toolbar (DESIGN.md 22): one 32px row of kit controls, sentence
 // case, every tool with its one-letter key in the hint bar. The sample
@@ -105,6 +110,7 @@ export default function TimelineToolbar({
             size="sm"
             label={`${label} tool`}
             pressed={activeTool === id}
+            keyHint={shortcut}
             onClick={() => setActiveTool(id)}
             hint={`${label} tool (${shortcut})`}
             hintMods={mods}
@@ -190,7 +196,7 @@ export default function TimelineToolbar({
           ? 'Quantize: select clips first'
           : `Quantize ${quantizeSelectionCount} selected`}
       >
-        <AlignJustify size={16} />
+        <IcXQuantize size={16} />
       </IconButton>
 
       {/* A press on the button never counts as "outside" for the popover's menu, so the
@@ -204,7 +210,7 @@ export default function TimelineToolbar({
         onClick={() => setShowDisplayPopover(v => !v)}
         hint="Timeline display: clip bodies, names, waveforms and pitch chips"
       >
-        <Layers size={16} />
+        <IcSlidersHorizontal size={16} />
       </IconButton>
       {showDisplayPopover && (
         <TimelineDisplayPopover
@@ -231,10 +237,10 @@ export default function TimelineToolbar({
           ? `New folder with the ${selectedTrackCount} selected track${selectedTrackCount === 1 ? '' : 's'}`
           : 'New empty track folder'}
       >
-        <FolderPlus size={16} />
+        <IcFolderPlus size={16} />
       </IconButton>
       <IconButton size="sm" label="Add track" onClick={onAddTrack} hint="Add a track">
-        <Plus size={16} />
+        <IcPlus size={16} />
       </IconButton>
     </div>
   )

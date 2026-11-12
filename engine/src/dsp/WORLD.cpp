@@ -37,21 +37,29 @@ struct Matrix2D {
     double* const* data() const noexcept { return ptrs.data(); }
 };
 
-// Resample a 1-D array along the time axis. Linear interpolation between
-// source frames; matches the approach in WORLD's example/test.cpp.
+// Time-axis resampling for stretch. Output frame i sits at time i * frame
+// period; it reads the input at time (i * framePeriod) / stretchRatio, i.e.
+// input frame i * step with step = 1 / stretchRatio. That is the exact linear
+// time map — output sample n corresponds to input sample n / ratio — which the
+// clip cache relies on to crop a render made with context around a trim.
+//
+// (The old map stretched frame 0..inLen-1 onto 0..outLen-1, which made the
+// effective ratio (outLen-1)/(inLen-1): off by a whole frame's worth, and far
+// off on short inputs — 4.3x instead of 4x on a 50 ms clip.)
+//
+// Positions past the last analysed frame hold it; there is no input beyond it.
 static void resampleAxis1D(const double* in, int inLen,
-                           double* out, int outLen)
+                           double* out, int outLen, double step)
 {
     if (outLen <= 0) return;
     if (inLen <= 0) {
         std::fill(out, out + outLen, 0.0);
         return;
     }
-    if (outLen == 1) { out[0] = in[0]; return; }
 
-    const double step = static_cast<double>(inLen - 1) / static_cast<double>(outLen - 1);
     for (int i = 0; i < outLen; ++i) {
-        const double pos = static_cast<double>(i) * step;
+        const double pos = std::min(static_cast<double>(i) * step,
+                                    static_cast<double>(inLen - 1));
         const int    i0  = static_cast<int>(pos);
         const int    i1  = std::min(i0 + 1, inLen - 1);
         const double t   = pos - static_cast<double>(i0);
@@ -59,9 +67,9 @@ static void resampleAxis1D(const double* in, int inLen,
     }
 }
 
-// Resample a row-major 2-D array along its FIRST axis (rows = time frames).
+// Same map along the FIRST axis of a row-major 2-D array (rows = time frames).
 // Inner-axis (cols) length is preserved.
-static void resampleAxis2D(const Matrix2D& in, Matrix2D& out)
+static void resampleAxis2D(const Matrix2D& in, Matrix2D& out, double step)
 {
     const int inFrames  = static_cast<int>(in.rows.size());
     const int outFrames = static_cast<int>(out.rows.size());
@@ -71,14 +79,10 @@ static void resampleAxis2D(const Matrix2D& in, Matrix2D& out)
         return;
     }
     const int cols = static_cast<int>(in.rows.front().size());
-    if (outFrames == 1) {
-        std::copy(in.rows[0].begin(), in.rows[0].end(), out.rows[0].begin());
-        return;
-    }
 
-    const double step = static_cast<double>(inFrames - 1) / static_cast<double>(outFrames - 1);
     for (int i = 0; i < outFrames; ++i) {
-        const double pos = static_cast<double>(i) * step;
+        const double pos = std::min(static_cast<double>(i) * step,
+                                    static_cast<double>(inFrames - 1));
         const int    i0  = static_cast<int>(pos);
         const int    i1  = std::min(i0 + 1, inFrames - 1);
         const double t   = pos - static_cast<double>(i0);
@@ -152,11 +156,13 @@ static std::vector<float> processChannel(const float* inFloat,
     }
 
     // ── Time stretch: resample f0/sp/ap along time axis ─────────────────────
+    // outFrames covers outLen exactly the way Harvest would frame a signal of
+    // that length, so Synthesis has a frame for every output sample.
     const bool needsStretch = std::abs(stretchRatio - 1.0) > 1e-6;
     const int  outFrames    = needsStretch
-        ? std::max(1, static_cast<int>(std::llround(
-              static_cast<double>(f0Len) * stretchRatio)))
+        ? std::max(1, GetSamplesForHarvest(fs, outLen, kFramePeriod))
         : f0Len;
+    const double frameStep  = needsStretch ? 1.0 / stretchRatio : 1.0;
 
     std::vector<double> f0Out;
     Matrix2D            spOut(std::max(1, outFrames), specCols);
@@ -168,9 +174,9 @@ static std::vector<float> processChannel(const float* inFloat,
 
     if (needsStretch && f0Len > 0) {
         f0Out.assign(static_cast<size_t>(outFrames), 0.0);
-        resampleAxis1D(f0.data(), f0Len, f0Out.data(), outFrames);
-        resampleAxis2D(sp, spOut);
-        resampleAxis2D(ap, apOut);
+        resampleAxis1D(f0.data(), f0Len, f0Out.data(), outFrames, frameStep);
+        resampleAxis2D(sp, spOut, frameStep);
+        resampleAxis2D(ap, apOut, frameStep);
         f0SynPtr  = f0Out.data();
         spSynPtr  = spOut.data();
         apSynPtr  = apOut.data();

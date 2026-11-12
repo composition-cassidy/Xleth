@@ -1,18 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { CSSProperties, MouseEvent, ReactNode } from 'react';
-import {
-  ChevronDown,
-  ChevronLeft,
-  ChevronRight,
-  ChevronUp,
-  PanelBottom,
-  PanelLeft,
-  PanelRight,
-  PanelTop,
-} from 'lucide-react';
 import LeftPanel from '../../components/LeftPanel.jsx';
 import useBrowserStore from '../../stores/browserStore.js';
-import { MediaIcon, SamplerIcon } from '../../ui-kit';
+import { MediaIcon, MotionDiv, SamplerIcon, motionForcedFlat, useAfterMount } from '../../ui-kit';
 import { PanelVisibilityProvider } from '../contexts/PanelVisibilityContext';
 import { useXlethRootContext } from '../contexts/XlethRootContext.jsx';
 import { DockRegionResizer } from './DockRegionResizer';
@@ -25,6 +15,14 @@ import {
 import { panelTypeColorVar } from '../registry/panelCatalog';
 import './windowing.css';
 import styles from './SampleSelectorDrawer.module.css';
+import { iconComponent } from '../../ui-kit/icons';
+
+const IcCaretDown = iconComponent('caret-down');
+const IcCaretLeft = iconComponent('caret-left');
+const IcCaretRight = iconComponent('caret-right');
+const IcCaretUp = iconComponent('caret-up');
+const IcSidebarSimple = iconComponent('sidebar-simple');
+const IcSquareHalfBottom = iconComponent('square-half-bottom');
 
 const SAMPLE_SELECTOR_DRAWER_TWEEN_MS = 180;
 
@@ -33,11 +31,13 @@ type SampleSelectorRegistryActions = Pick<
   'focusPanel' | 'setSampleSelectorDockOpen'
 >;
 
-const DOCK_SIDE_OPTIONS: ReadonlyArray<{ side: DockRegionSide; label: string; Icon: typeof PanelLeft }> = [
-  { side: 'left', label: 'Left', Icon: PanelLeft },
-  { side: 'right', label: 'Right', Icon: PanelRight },
-  { side: 'top', label: 'Top', Icon: PanelTop },
-  { side: 'bottom', label: 'Bottom', Icon: PanelBottom },
+// Phosphor has one sidebar shape (bar on the left) and one half-square (bottom half); the other
+// two sides are the same glyphs mirrored / turned (docs/ICON_PROPOSAL.md Q6).
+const DOCK_SIDE_OPTIONS: ReadonlyArray<{ side: DockRegionSide; label: string; Icon: typeof IcSidebarSimple; turn?: string }> = [
+  { side: 'left', label: 'Left', Icon: IcSidebarSimple },
+  { side: 'right', label: 'Right', Icon: IcSidebarSimple, turn: 'scaleX(-1)' },
+  { side: 'top', label: 'Top', Icon: IcSquareHalfBottom, turn: 'rotate(180deg)' },
+  { side: 'bottom', label: 'Bottom', Icon: IcSquareHalfBottom },
 ];
 
 // The collapsed rail's shortcuts: one per Browser tab, same glyphs as the tabs.
@@ -46,23 +46,26 @@ const RAIL_TABS = [
   { id: 'samples', label: 'Samples', Icon: SamplerIcon },
 ] as const;
 
-function collapseIconForSide(side: DockRegionSide): typeof ChevronLeft {
-  if (side === 'right') return ChevronRight;
-  if (side === 'top') return ChevronUp;
-  if (side === 'bottom') return ChevronDown;
-  return ChevronLeft;
+function collapseIconForSide(side: DockRegionSide): typeof IcCaretLeft {
+  if (side === 'right') return IcCaretRight;
+  if (side === 'top') return IcCaretUp;
+  if (side === 'bottom') return IcCaretDown;
+  return IcCaretLeft;
 }
 
-function expandIconForSide(side: DockRegionSide): typeof ChevronLeft {
-  if (side === 'right') return ChevronLeft;
-  if (side === 'top') return ChevronDown;
-  if (side === 'bottom') return ChevronUp;
-  return ChevronRight;
+function expandIconForSide(side: DockRegionSide): typeof IcCaretLeft {
+  if (side === 'right') return IcCaretLeft;
+  if (side === 'top') return IcCaretDown;
+  if (side === 'bottom') return IcCaretUp;
+  return IcCaretRight;
 }
 
 type SampleSelectorDrawerPhase = 'expanded' | 'collapsing' | 'collapsed';
 
+// The collapse tween predates the motion tiers (ui/DESIGN.md section 27): it stands down for
+// the system's reduced-motion setting and for the flat tier.
 function prefersReducedDrawerMotion(): boolean {
+  if (motionForcedFlat()) return true;
   return typeof window !== 'undefined'
     && typeof window.matchMedia === 'function'
     && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -123,6 +126,7 @@ export function SampleSelectorDrawer({ stackedRegion = null }: SampleSelectorDra
   const currentDock = DOCK_SIDE_OPTIONS[dockIndex];
   const nextDock = DOCK_SIDE_OPTIONS[(dockIndex + 1) % DOCK_SIDE_OPTIONS.length];
   const reduceDrawerMotion = prefersReducedDrawerMotion();
+  const afterMount = useAfterMount();
   const [renderPhase, setRenderPhase] = useState<SampleSelectorDrawerPhase>(
     () => (expanded ? 'expanded' : 'collapsed'),
   );
@@ -231,7 +235,12 @@ export function SampleSelectorDrawer({ stackedRegion = null }: SampleSelectorDra
             aria-hidden={drawerState === 'collapsing' ? true : undefined}
             onMouseDown={() => registry.focusPanel('sampleSelector')}
           >
-            <div className="xleth-sample-selector-drawer__body">
+            <MotionDiv
+              recipe="reveal"
+              data-mo-from={side === 'right' ? 'right' : side === 'top' ? 'top' : side === 'bottom' ? undefined : 'left'}
+              enter={afterMount}
+              className="xleth-sample-selector-drawer__body"
+            >
               <LeftPanel
                 onOpenPicker={onOpenPicker}
                 activeSampleId={activeSampleId}
@@ -247,7 +256,7 @@ export function SampleSelectorDrawer({ stackedRegion = null }: SampleSelectorDra
                     onMouseDown={stopControlMouseDown}
                     onClick={() => usePanelRegistry.getState().dockPanel('sampleSelector', nextDock.side)}
                   >
-                    <currentDock.Icon aria-hidden="true" size={14} />
+                    <currentDock.Icon aria-hidden="true" size={14} style={currentDock.turn ? { transform: currentDock.turn } : undefined} />
                   </button>
                   <button
                     type="button"
@@ -263,7 +272,7 @@ export function SampleSelectorDrawer({ stackedRegion = null }: SampleSelectorDra
                 </div>
                 )}
               />
-            </div>
+            </MotionDiv>
             <DockRegionResizer region={side} currentSize={drawerSize} />
           </aside>
         )}

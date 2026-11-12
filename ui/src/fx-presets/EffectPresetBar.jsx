@@ -1,6 +1,12 @@
 import React from 'react'
-import { Save, Trash2, Undo2, Check, X } from 'lucide-react'
 import useEffectPresets from './useEffectPresets.js'
+import { iconComponent } from '../ui-kit/icons'
+
+const IcArrowUUpLeft = iconComponent('arrow-u-up-left')
+const IcCheck = iconComponent('check')
+const IcFloppyDisk = iconComponent('floppy-disk')
+const IcTrash = iconComponent('trash')
+const IcX = iconComponent('x')
 
 // Framework-level preset bar for stock effect windows.
 //
@@ -56,7 +62,7 @@ export default function EffectPresetBar({ effectType, target, onApplied, classNa
             disabled={busy}
             title={overwriteArmed ? 'Confirm overwrite' : 'Save preset'}
           >
-            <Check size={13} />
+            <IcCheck size={14} />
           </button>
           <button
             type="button"
@@ -64,7 +70,7 @@ export default function EffectPresetBar({ effectType, target, onApplied, classNa
             onClick={cancelSave}
             title="Cancel"
           >
-            <X size={13} />
+            <IcX size={14} />
           </button>
         </div>
       ) : (
@@ -100,7 +106,7 @@ export default function EffectPresetBar({ effectType, target, onApplied, classNa
             disabled={!hasTarget || busy}
             title="Save current settings as a preset"
           >
-            <Save size={13} />
+            <IcFloppyDisk size={14} />
           </button>
 
           <button
@@ -110,7 +116,7 @@ export default function EffectPresetBar({ effectType, target, onApplied, classNa
             disabled={!canDelete || busy}
             title={canDelete ? 'Delete this user preset' : 'Only user presets can be deleted'}
           >
-            <Trash2 size={13} />
+            <IcTrash size={14} />
           </button>
 
           {undoBlob && (
@@ -121,7 +127,7 @@ export default function EffectPresetBar({ effectType, target, onApplied, classNa
               disabled={busy}
               title="Undo preset load"
             >
-              <Undo2 size={13} />
+              <IcArrowUUpLeft size={14} />
             </button>
           )}
         </>
@@ -136,7 +142,7 @@ export default function EffectPresetBar({ effectType, target, onApplied, classNa
             onClick={() => setErrorText(null)}
             title="Dismiss"
           >
-            <X size={12} />
+            <IcX size={14} />
           </button>
         </div>
       )}

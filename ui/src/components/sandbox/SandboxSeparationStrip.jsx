@@ -1,10 +1,16 @@
 import { useEffect } from 'react'
-import { Waves, X, Info, ShieldAlert, Sliders } from 'lucide-react'
 
 import useSandboxStore from '../../stores/sandboxStore.js'
 import useSeparationStore, { SEPARATION_TERMINAL_STATES } from '../../stores/separationStore.js'
 import { Button, Checkbox, IconButton, Progress, Select } from '../../ui-kit'
 import styles from './Sandbox.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcInfo = iconComponent('info')
+const IcShieldWarning = iconComponent('shield-warning')
+const IcSliders = iconComponent('sliders')
+const IcWaveform = iconComponent('waveform')
+const IcX = iconComponent('x')
 
 // Bottom strip — tiered vocal separation (P4) progress/license/advanced UI.
 // The tier BUTTONS themselves (FAST/BALANCED/BEST) now live in
@@ -266,7 +272,7 @@ export default function SandboxSeparationStrip({ advancedOpen, onToggleAdvanced 
     <div className={styles.sep}>
       <div className={styles.sepRow}>
         <span className={styles.sepTitle}>
-          <Waves size={12} aria-hidden="true" />
+          <IcWaveform size={14} aria-hidden="true" />
           Separate{running && job?.tier ? `: ${sentence(job.tier)}` : ''}
         </span>
 
@@ -279,7 +285,7 @@ export default function SandboxSeparationStrip({ advancedOpen, onToggleAdvanced 
           hint="Advanced separation"
           hintMods="Ensemble (average two models) and de-bleed (reduce cross-talk between stems)"
         >
-          <Sliders />
+          <IcSliders />
         </IconButton>
 
         <div className={styles.divider} />
@@ -298,7 +304,7 @@ export default function SandboxSeparationStrip({ advancedOpen, onToggleAdvanced 
                 {job.etaMeasured ? '' : '~'}{formatDuration(job.etaSeconds)} left
               </span>
             )}
-            <Button size="sm" glyph={<X />} onClick={() => cancel()} hint="Cancel this separation">
+            <Button size="sm" glyph={<IcX />} onClick={() => cancel()} hint="Cancel this separation">
               Cancel separation
             </Button>
           </>
@@ -390,7 +396,7 @@ export default function SandboxSeparationStrip({ advancedOpen, onToggleAdvanced 
       */}
       {licensePrompt && (
         <div className={styles.sepRow} data-sep-license="">
-          <ShieldAlert size={12} aria-hidden="true" />
+          <IcShieldWarning size={14} aria-hidden="true" />
           <span className={styles.sepLicenseText}>{licensePrompt.message}</span>
           {licensePrompt.licenseUrl && (
             <a
@@ -411,7 +417,7 @@ export default function SandboxSeparationStrip({ advancedOpen, onToggleAdvanced 
 
       {(attributions.length > 0 || pythonMissing || runtimeBroken) && (
         <div className={styles.sepFootnote}>
-          <Info size={12} aria-hidden="true" />
+          <IcInfo size={14} aria-hidden="true" />
           {runtimeBroken && !pythonMissing ? (
             <span className={styles.sepError} data-sep-error="">
               {status.runtimeError

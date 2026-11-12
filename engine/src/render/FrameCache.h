@@ -112,12 +112,24 @@ struct FrameCacheKeyHash {
 // ---------------------------------------------------------------------------
 // FrameCacheEntry — a decoded frame living on the GPU
 // ---------------------------------------------------------------------------
+// How a cached frame's BGRA texture came to be. Diagnostics only — every
+// origin yields the same kind of entry (one BGRA texture + SRV), so no
+// consumer needs to care; tests and the preview diagnostic read it to prove
+// which decode path produced a frame.
+enum class FrameOrigin : uint8_t {
+    Unknown = 0,
+    Software,            // CPU decode → sws_scale → upload
+    HardwareGpu,         // D3D11VA decode → GPU copy + NV12→BGRA shader (never left the GPU)
+    HardwareTransfer,    // D3D11VA decode → av_hwframe_transfer_data → sws_scale → upload
+};
+
 struct FrameCacheEntry {
     Microsoft::WRL::ComPtr<ID3D11Texture2D>          texture;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
     int    width           = 0;
     int    height          = 0;
     size_t memorySizeBytes = 0;   // width * height * 4 for BGRA
+    FrameOrigin origin     = FrameOrigin::Unknown;
 };
 
 // ---------------------------------------------------------------------------

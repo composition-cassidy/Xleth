@@ -156,6 +156,25 @@ describe('FX Graph canvas add menu', () => {
     expect(document.querySelector('.xleth-graph-state-preview__add-menu')).toBeNull();
   });
 
+  // The menu is portaled to document.body but is a React CHILD of the canvas viewport, and React
+  // events bubble through portals along the React tree. A press on a menu item therefore reached
+  // the viewport's pan handler, which preventDefault()s and pointer-captures the viewport: in a
+  // real browser the item's click was retargeted to the canvas, so no item ever fired and the
+  // menu never closed. jsdom has no pointer capture, so lock the cause: the press must not start a pan.
+  it('a press on a menu item never reaches the canvas pan handler', async () => {
+    const container = await mountPreview(ALL_ADD_HANDLERS());
+    await openCanvasMenu(container);
+    const viewport = container.querySelector('.xleth-graph-state-preview__viewport')!;
+
+    for (const label of ['Dynamics', 'Macro']) {
+      const item = menuItem(label)!;
+      await act(async () => {
+        item.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0 }));
+      });
+      expect(viewport.getAttribute('data-panning'), `pressing "${label}" started a pan`).not.toBe('true');
+    }
+  });
+
   it('omits actions the panel did not wire (read-only / partially wired graphs)', async () => {
     const container = await mountPreview({ onAddMacroNode: vi.fn() });
     const menu = await openCanvasMenu(container);

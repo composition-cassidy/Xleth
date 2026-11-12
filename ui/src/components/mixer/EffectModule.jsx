@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { GripVertical, Power } from 'lucide-react'
 import useEffectChainStore from '../../stores/effectChainStore.js'
 import useMixerStore, {
   COMPRESSOR_EXTERNAL_SIDECHAIN_PARAM_ID,
@@ -9,6 +8,10 @@ import useMixerStore, {
 import useVstStore from '../../stores/vstStore.js'
 import ContextMenu from '../ContextMenu.jsx'
 import { EFFECT_EDITORS, PLUGIN_NAMES, resolveTrackId } from './effectEditorOpeners.js'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcDotsSixVertical = iconComponent('dots-six-vertical')
+const IcPower = iconComponent('power')
 import './EffectModule.sidechain.css'
 
 export function isSelectableEffectModule(effect) {
@@ -505,7 +508,7 @@ export default function EffectModule({
           title="Drag to reorder"
           aria-label="Drag to reorder effect"
         >
-          <GripVertical size={10} />
+          <IcDotsSixVertical size={14} />
         </div>
       </div>
 
@@ -548,7 +551,7 @@ export default function EffectModule({
         title={effect.bypassed ? 'Enable effect' : 'Bypass effect'}
         aria-label={effect.bypassed ? 'Enable effect' : 'Bypass effect'}
       >
-        <Power size={10} />
+        <IcPower size={14} />
       </button>
 
       {showSidechainControls && (

@@ -167,7 +167,7 @@
    * gutter is actually grabbable; the docked panel otherwise paints over it. */
   z-index: var(--xleth-z-window-dock-resizer);
   background: transparent;
-  transition: background 120ms ease;
+  transition: background var(--mo-hover-in, 0ms) var(--mo-ease-out, ease);
 }
 
 .xleth-dock-region-resizer--left   { top: 0; bottom: 0; right: 0; width:  8px; cursor: ew-resize; }
@@ -206,7 +206,7 @@
   z-index: var(--xleth-z-window-dock-splitter);
   flex: 0 0 10px;
   background: transparent;
-  transition: background 120ms ease;
+  transition: background var(--mo-hover-in, 0ms) var(--mo-ease-out, ease);
 }
 
 .xleth-dock-splitter::before {
@@ -215,9 +215,9 @@
   background: color-mix(in srgb, var(--theme-border-subtle) 72%, transparent);
   opacity: 0.72;
   transition:
-    background 120ms ease,
-    opacity 120ms ease,
-    box-shadow 120ms ease;
+    background var(--mo-hover-in, 0ms) var(--mo-ease-out, ease),
+    opacity var(--mo-hover-in, 0ms) var(--mo-ease-out, ease),
+    box-shadow var(--mo-hover-in, 0ms) var(--mo-ease-out, ease);
 }
 
 .xleth-dock-splitter--horizontal {
@@ -334,6 +334,16 @@
   flex: 0 1 auto;
   -webkit-app-region: no-drag;
   pointer-events: auto;
+}
+
+/* Content that owns the titlebar's free width (the Preview's controls). Its
+   own empty space is still the titlebar, so it still drags. */
+.xleth-windowing-titlebar-content.is-fill {
+  flex: 1 1 0;
+}
+
+.xleth-windowing-titlebar-content.is-fill ~ .xleth-windowing-drag-zone {
+  flex: 0 0 0;
 }
 
 .xleth-windowing-controls {
@@ -831,7 +841,7 @@
   background: var(--theme-bg-primary);
   border: none;
   border-top: 2px solid transparent;
-  transition: background 120ms ease, color 120ms ease;
+  transition: background var(--mo-hover-in, 0ms) var(--mo-ease-out, ease), color var(--mo-hover-in, 0ms) var(--mo-ease-out, ease);
 }
 
 .xleth-panel-tab:hover {

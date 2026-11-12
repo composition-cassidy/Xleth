@@ -26,7 +26,7 @@ export const VIBRATO_SHAPES = [
 // Short labels for the graph editor's chip row (space is tight there).
 export const VIBRATO_SHAPE_CHIPS = [
   ['sine', 'Sine'], ['triangle', 'Tri'],
-  ['sawUp', 'Saw ↑'], ['sawDown', 'Saw ↓'], ['square', 'Sqr'],
+  ['sawUp', 'Saw up'], ['sawDown', 'Saw down'], ['square', 'Sqr'],
   ['custom', 'Custom'],
 ]
 

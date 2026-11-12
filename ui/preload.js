@@ -217,6 +217,7 @@ window.xleth = ({
     // 4). Only the batch ops and previewNote (velocity=0.8 default) stay here.
     moveNotesBatch:         (patternId, moves)                  => invoke('xleth:timeline:moveNotesBatch', patternId, moves),
     addNotesBatch:          (patternId, notes)                  => invoke('xleth:timeline:addNotesBatch', patternId, notes),
+    editPatternNotes:       (patternId, notes)                  => invoke('xleth:timeline:editPatternNotes', patternId, notes),
     quantizeClipsBatch:     (specs)                             => invoke('xleth:timeline:quantizeClipsBatch', specs),
     resizeNotesBatch:       (patternId, resizes)                => invoke('xleth:timeline:resizeNotesBatch', patternId, resizes),
     previewNote:            (patternId, pitch, velocity=0.8)    => invoke('xleth:timeline:previewNote', patternId, pitch, velocity),
@@ -589,6 +590,15 @@ window.xleth = ({
           : noteData
       return invoke('xleth:midi:executeImport', buf, JSON.stringify(options || {}))
     },
+  },
+
+  // ── FL Studio project import ──────────────────────────────────────────────
+  // Converts a .flp to a temp MIDI file (main process); the import dialog then
+  // runs the midi.* calls above on the returned midiPath.
+  // options: { arrangementIndex?: number, includeMuted?: boolean }
+  // → { ok, midiPath?, reason?, info? }
+  flp: {
+    convert: (filePath, options) => invoke('xleth:flp:convert', filePath, options || {}),
   },
 
   // ── Dialogs ───────────────────────────────────────────────────────────────

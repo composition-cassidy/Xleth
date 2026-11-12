@@ -1,12 +1,23 @@
 import { useState, useEffect, useRef, useCallback, memo } from 'react'
-import { SkipBack, Play, Pause, Square, SkipForward, Lock, LockOpen, Crosshair } from 'lucide-react'
 import { subscribe } from '../transportStore.js'
 import { playheadClock } from '../services/PlayheadClock.js'
 import useMixerStore from '../stores/mixerStore.js'
 import useAutoScrollStore from '../stores/autoScrollStore.js'
+import useMetronomeStore from '../stores/metronomeStore.js'
 import { isSamplePickerKeyTarget } from '../stores/samplePickerGate.js'
-import { IconButton, NumberBox, THIN_SPACE, logScale } from '../ui-kit'
+import { IconButton, MotionDiv, NumberBox, THIN_SPACE, logScale, useAfterMount } from '../ui-kit'
 import styles from './TransportBar.module.css'
+import { iconComponent } from '../ui-kit/icons'
+
+const IcCrosshair = iconComponent('crosshair')
+const IcLockSimpleFill = iconComponent('lock-simple', 'fill')
+const IcLockSimpleOpenReg = iconComponent('lock-simple-open', 'regular')
+const IcMetronome = iconComponent('metronome')
+const IcPauseFill = iconComponent('pause', 'fill')
+const IcPlay = iconComponent('play')
+const IcSkipBack = iconComponent('skip-back')
+const IcSkipForward = iconComponent('skip-forward')
+const IcStop = iconComponent('stop')
 
 const BPM_SCALE = logScale(20, 999)
 const BPM_DEFAULT = 140
@@ -77,6 +88,11 @@ export default function TransportBar() {
   const [bpm, setBpm] = useState(140)
   const autoScrollEnabled = useAutoScrollStore(s => s.enabled)
   const toggleAutoScroll = useAutoScrollStore(s => s.toggle)
+  const metronomeOn = useMetronomeStore(s => s.enabled)
+  const toggleMetronome = useMetronomeStore(s => s.toggle)
+
+  // Push the saved click-track preference to the engine once on mount.
+  useEffect(() => { useMetronomeStore.getState().hydrate() }, [])
 
   const [tempoLocked, setTempoLocked] = useState(true)
   const [spacebarMode, setSpacebarMode] = useState('play-pause')
@@ -133,7 +149,8 @@ export default function TransportBar() {
         e.preventDefault()
         window.xleth?.stop()
         console.log('[UI] Transport: rewind (Home)')
-      } else if (e.code === 'KeyM') {
+      } else if (e.code === 'KeyM' && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
+        // Bare M only: Ctrl+M, Alt+M, Shift+M… belong to whatever panel has focus.
         e.preventDefault()
         useMixerStore.getState().toggleMixer()
       }
@@ -157,6 +174,7 @@ export default function TransportBar() {
   }, [])
 
   const playLabel = isPlaying ? 'Pause' : 'Play'
+  const afterMount = useAfterMount()
   const tempoLockLabel = tempoLocked
     ? 'Tempo lock on: clips keep their speed when the BPM changes'
     : 'Tempo lock off: clips keep a fixed stretch ratio'
@@ -173,24 +191,29 @@ export default function TransportBar() {
           hint="Rewind to the start"
           hintMods="Home"
         >
-          <SkipBack aria-hidden="true" />
+          <IcSkipBack aria-hidden="true" />
         </IconButton>
         <IconButton
           label="Stop"
           onClick={() => window.xleth?.stop()}
           hint="Stop"
         >
-          <Square aria-hidden="true" />
+          <IcStop aria-hidden="true" />
         </IconButton>
         <IconButton
           className={styles.play}
           label={playLabel}
           data-playing={isPlaying ? 'true' : 'false'}
+          data-mo-live=""
           onClick={() => (isPlaying ? window.xleth?.pause() : window.xleth?.play())}
           hint={playLabel}
           hintMods={spacebarMode === 'play-stop' ? 'Space: play / stop and return' : 'Space: play / pause'}
         >
-          {isPlaying ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}
+          {/* key: the glyph is a new element each time it swaps, so the `glyph` recipe replays
+              (state channel: lively only). It is a picture of the transport state, not of time. */}
+          <MotionDiv as="span" key={isPlaying ? 'pause' : 'play'} recipe="glyph" enter={afterMount} className={styles.playGlyph}>
+            {isPlaying ? <IcPauseFill aria-hidden="true" /> : <IcPlay aria-hidden="true" />}
+          </MotionDiv>
         </IconButton>
         {/* Forward has never been wired to the engine. It stays visible so the
             transport reads as a set, but it is disabled rather than a button
@@ -200,7 +223,7 @@ export default function TransportBar() {
           disabled
           hint="Forward: not available yet"
         >
-          <SkipForward aria-hidden="true" />
+          <IcSkipForward aria-hidden="true" />
         </IconButton>
       </div>
 
@@ -237,11 +260,23 @@ export default function TransportBar() {
           }}
           hint={tempoLockLabel}
         >
-          {tempoLocked ? <Lock aria-hidden="true" /> : <LockOpen aria-hidden="true" />}
+          {tempoLocked ? <IcLockSimpleFill aria-hidden="true" /> : <IcLockSimpleOpenReg aria-hidden="true" />}
         </IconButton>
       </div>
 
       <span className={styles.sep} aria-hidden="true" />
+
+      <IconButton
+        label="Metronome"
+        pressed={metronomeOn}
+        onClick={toggleMetronome}
+        hint={metronomeOn
+          ? 'Metronome on: a click on every beat, the first beat of each bar pitched up 3 semitones'
+          : 'Metronome off'}
+        hintMods="Plays during playback only"
+      >
+        <IcMetronome aria-hidden="true" />
+      </IconButton>
 
       <IconButton
         label="Auto scroll"
@@ -249,7 +284,7 @@ export default function TransportBar() {
         onClick={toggleAutoScroll}
         hint={autoScrollLabel}
       >
-        <Crosshair aria-hidden="true" />
+        <IcCrosshair aria-hidden="true" />
       </IconButton>
     </div>
   )

@@ -69,11 +69,11 @@ function click(el) {
 
 afterEach(() => { document.body.innerHTML = '' })
 
-const importWorkspace = () => import('../SandboxLayerWorkspace.jsx')
+const importLayerList = () => import('../SandboxLayerList.jsx')
 const importStackPanel = () => import('../SandboxStackPanel.jsx')
 
 // The layer list is a compact RAIL of one-line rows now, not a stack of cards
-// (see SandboxLayerWorkspace.jsx) — the buttons moved, what they must do did
+// in the sidebar (see SandboxLayerList.jsx) — the buttons moved, what they must do did
 // not. Duplicate is asserted by its title rather than a bespoke class: the row
 // buttons deliberately share one class, and a selector keyed on the tooltip is
 // the one that actually says "the Duplicate button" rather than "the third
@@ -86,7 +86,7 @@ function rowButton(host, pattern, index = 0) {
 describe('layer row Duplicate button', () => {
   it('renders on every row and calls duplicateLayer for that row', async () => {
     const duplicateLayer = vi.fn()
-    const { host } = await mount(importWorkspace, {
+    const { host } = await mount(importLayerList, {
       layers: [layer(), layer({ id: 2, name: 'DRUMS' })],
       activeLayerId: null,
       duplicateLayer,
@@ -106,7 +106,7 @@ describe('layer row Duplicate button', () => {
   it('does not also activate the row it sits on', async () => {
     const duplicateLayer = vi.fn()
     const setActiveLayer = vi.fn()
-    const { host } = await mount(importWorkspace, {
+    const { host } = await mount(importLayerList, {
       layers: [layer()], activeLayerId: null, duplicateLayer, setActiveLayer,
     })
 
@@ -120,7 +120,7 @@ describe('layer row Duplicate button', () => {
   // there is no PCM to play before then.
   it('auditions the row layer through toggleLayerPreview', async () => {
     const toggleLayerPreview = vi.fn()
-    const { host } = await mount(importWorkspace, {
+    const { host } = await mount(importLayerList, {
       layers: [layer(), layer({ id: 2, name: 'DRUMS' })],
       activeLayerId: null,
       toggleLayerPreview,
@@ -128,6 +128,132 @@ describe('layer row Duplicate button', () => {
 
     await click(rowButton(host, /Audition this layer alone/, 1))
     expect(toggleLayerPreview).toHaveBeenCalledWith(2)
+  })
+})
+
+describe('layer row mix controls', () => {
+  // The mix values (gain, pan, offset) are the ACTIVE row's second line, with
+  // visible labels — not five unlabelled boxes on every row.
+  it('shows labelled mix boxes on the active layer only', async () => {
+    const { host } = await mount(importLayerList, {
+      layers: [layer(), layer({ id: 2, name: 'DRUMS' })],
+      activeLayerId: 2,
+    })
+
+    const groups = [...host.querySelectorAll('[role="group"]')]
+    expect(groups).toHaveLength(1)
+    expect(groups[0].getAttribute('aria-label')).toBe('DRUMS mix')
+    const sliders = [...groups[0].querySelectorAll('[role="slider"]')]
+    expect(sliders.map((s) => s.getAttribute('aria-label'))).toEqual(['Layer gain', 'Layer pan', 'Layer offset'])
+    expect(groups[0].textContent).toMatch(/Gain.*Pan.*Offset/)
+  })
+
+  it('keeps the output pearl on every row, where the state has to be visible at rest', async () => {
+    const pearlLayer = vi.fn()
+    const { host } = await mount(importLayerList, {
+      layers: [layer(), layer({ id: 2, name: 'DRUMS', muted: true })],
+      activeLayerId: 1,
+      pearlLayer,
+    })
+    const pearls = [...host.querySelectorAll('[data-layer-row] button[aria-label$=" output"]')]
+    // Lit = heard: the muted DRUMS layer's pearl is dark.
+    expect(pearls.map((b) => b.getAttribute('aria-pressed'))).toEqual(['true', 'false'])
+    await click(pearls[0])
+    expect(pearlLayer).toHaveBeenCalledWith(1, 'toggle')
+  })
+})
+
+describe('action bar', () => {
+  const importActionBar = () => import('../SandboxMenuBar.jsx')
+  const action = (host, id) => host.querySelector(`button[data-action="${id}"]`)
+
+  // The edits an audio editor is used for most are one click, on the bar,
+  // rather than inside a menu in the far corner from the selection.
+  it('offers the common edits as buttons that run the registry entry', async () => {
+    const fadeSelection = vi.fn()
+    const { host } = await mount(importActionBar, {
+      layers: [layer()], activeLayerId: 1,
+      selection: { startSample: 12000, endSample: 36000 },
+      fadeSelection,
+    })
+    for (const id of ['trim', 'silence', 'fadeIn', 'fadeOut', 'gain', 'normalize', 'reverse']) {
+      expect(action(host, id), id).toBeTruthy()
+    }
+    await click(action(host, 'fadeOut'))
+    expect(fadeSelection).toHaveBeenCalledWith(1, false, 'equalPower')
+  })
+
+  it('disables an edit that needs a range, and says why in the hint bar', async () => {
+    const { host } = await mount(importActionBar, {
+      layers: [layer()], activeLayerId: 1,
+      selection: { startSample: 24000, endSample: 24000 }, // a bare cursor
+    })
+    expect(action(host, 'trim').disabled).toBe(true)
+    expect(action(host, 'trim').getAttribute('data-hint-mods')).toBe('Select a range first')
+  })
+
+  it('keeps the whole-layer edits live with only a cursor, and says what they will act on', async () => {
+    const { host } = await mount(importActionBar, {
+      layers: [layer()], activeLayerId: 1,
+      selection: { startSample: 24000, endSample: 24000 },
+    })
+    expect(action(host, 'reverse').disabled).toBe(false)
+    expect(action(host, 'reverse').getAttribute('data-hint-mods')).toMatch(/whole layer/)
+    expect(action(host, 'fadeOut').disabled).toBe(false)
+    expect(action(host, 'fadeOut').getAttribute('data-hint-mods')).toMatch(/from the cursor to the end/)
+    expect(action(host, 'fadeIn').getAttribute('data-hint-mods')).toMatch(/from the start of the layer to the cursor/)
+  })
+
+  it('says a singleton is already in the stack instead of adding a second one', async () => {
+    const { host } = await mount(importActionBar, {
+      layers: [layer({ ops: [{ id: 5, type: 'gain', enabled: true, params: { normalize: true } }] })],
+      activeLayerId: 1,
+    })
+    expect(action(host, 'normalize').disabled).toBe(true)
+    expect(action(host, 'normalize').getAttribute('data-hint-mods')).toMatch(/Already in the edit stack/)
+  })
+
+  // The Effects menu lists what the bar does NOT have a button for. Repeating
+  // all ten bar edits made it taller than the panel it opens in.
+  it('does not repeat the bar buttons inside the Effects menu', async () => {
+    const { host } = await mount(importActionBar, { layers: [layer()], activeLayerId: 1 })
+    const effects = [...host.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith('Effects'))
+    await click(effects)
+    const items = [...document.body.querySelectorAll('[role="menuitem"]')].map((el) => el.textContent.trim())
+    expect(items).toEqual(expect.arrayContaining(['Splice', 'Crossfade', 'Insert silence', 'Pitch shift', 'Autotune']))
+    for (const onBar of ['Trim', 'Cut', 'Fade in', 'Normalize', 'Reverse']) expect(items).not.toContain(onBar)
+  })
+})
+
+describe('transport selection boxes', () => {
+  const importTransport = () => import('../SandboxTransport.jsx')
+  const box = (host, name) => host.querySelector(`[role="slider"][aria-label="${name}"]`)
+
+  // The selection is three numbers you can read, drag and type — not a line of
+  // read-only text. 96000 samples at 48 kHz: 0.25 s to 0.75 s.
+  it('shows the selection start, end and length in seconds', async () => {
+    const { host } = await mount(importTransport, {
+      layers: [layer()], activeLayerId: 1,
+      selection: { startSample: 12000, endSample: 36000 },
+    })
+    expect(box(host, 'Selection start').getAttribute('aria-valuetext')).toContain('0.250 s')
+    expect(box(host, 'Selection end').getAttribute('aria-valuetext')).toContain('0.750 s')
+    expect(box(host, 'Selection length').getAttribute('aria-valuetext')).toContain('0.500 s')
+  })
+
+  it('shows a bare cursor as a zero-length selection at the cursor, and the clock reads it', async () => {
+    const { host } = await mount(importTransport, {
+      layers: [layer()], activeLayerId: 1,
+      selection: { startSample: 24000, endSample: 24000 },
+    })
+    expect(box(host, 'Selection start').getAttribute('aria-valuetext')).toContain('0.500 s')
+    expect(box(host, 'Selection length').getAttribute('aria-valuetext')).toContain('0.000 s')
+    expect(host.textContent).toContain('0:00.500')
+  })
+
+  it('disables the boxes until there is rendered audio to place a selection in', async () => {
+    const { host } = await mount(importTransport, { layers: [], activeLayerId: null })
+    expect(box(host, 'Selection start').getAttribute('aria-disabled')).toBe('true')
   })
 })
 

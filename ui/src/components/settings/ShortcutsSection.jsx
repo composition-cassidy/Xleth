@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, RotateCcw } from 'lucide-react'
 import {
   SHORTCUT_COMMANDS,
   SHORTCUT_GROUPS,
@@ -20,6 +19,10 @@ import {
 import { Button, IconButton, TextField } from '../../ui-kit'
 import { SettingsHint, SettingsSection } from './settingsKit.jsx'
 import styles from './Shortcuts.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcArrowCounterClockwise = iconComponent('arrow-counter-clockwise')
+const IcWarning = iconComponent('warning')
 
 // ─── Settings → Application → Shortcuts ──────────────────────────────────────
 //
@@ -97,14 +100,14 @@ function ShortcutRow({ command, listening, onStartCapture, onCancelCapture, onRe
             onClick={() => onReset(command.id)}
             disabled={!overridden}
           >
-            <RotateCcw aria-hidden="true" />
+            <IcArrowCounterClockwise aria-hidden="true" />
           </IconButton>
         </div>
       </td>
       <td className={styles.conflicts}>
         {conflicts.length > 0 ? (
           <span className={styles.conflict}>
-            <AlertTriangle size={12} aria-hidden="true" />
+            <IcWarning size={14} aria-hidden="true" />
             Also assigned to {conflicts.map(c => c.label).join(', ')}
           </span>
         ) : null}

@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Save, Trash2 } from 'lucide-react'
 import { IconButton, Select } from '../../ui-kit'
 import { listSamplerPatches, deleteSamplerPatch } from './samplerPatch.js'
 import styles from './Sampler.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcFloppyDisk = iconComponent('floppy-disk')
+const IcTrash = iconComponent('trash')
 
 // ── PatchBar ────────────────────────────────────────────────────────────────
 // Save / load named sampler patches from the panel header. A patch is settings
@@ -119,7 +122,7 @@ export default function PatchBar({ onSave, onLoad, disabled }) {
         disabled={disabled || naming}
         hint="Save these settings as a named patch: tuning, trim, loop, prep, mangle, voicing, arpeggiator and modulation (not the audio)"
       >
-        <Save aria-hidden="true" />
+        <IcFloppyDisk aria-hidden="true" />
       </IconButton>
       <IconButton
         size="sm"
@@ -128,7 +131,7 @@ export default function PatchBar({ onSave, onLoad, disabled }) {
         disabled={disabled || !isUser}
         hint={isUser ? 'Delete this patch file' : 'Select one of your own patches to delete it'}
       >
-        <Trash2 aria-hidden="true" />
+        <IcTrash aria-hidden="true" />
       </IconButton>
       {status ? <span className={styles.patchStatus} role="status">{status}</span> : null}
     </div>

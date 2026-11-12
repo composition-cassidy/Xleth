@@ -33,7 +33,6 @@ import {
   type LfoNodeData,
   type LfoNodePatch,
 } from './LfoEditor';
-import { Check, Maximize, Power, Spline, X as CloseGlyph } from 'lucide-react';
 import {
   EmptyState,
   Icon,
@@ -54,6 +53,14 @@ import { SheetFrame, clampSheetPoint } from './ModulatorSheet';
 import modStyles from './ModulatorEditors.module.css';
 import GraphAddMenu, { buildGraphAddMenuItems, type GraphEffectSelection } from './GraphAddMenu';
 import canvasStyles from './GraphCanvas.module.css';
+import { iconComponent } from '../../../ui-kit/icons';
+
+const IcBezierCurve = iconComponent('bezier-curve');
+const IcCheck = iconComponent('check');
+const IcCheckFill = iconComponent('check', 'fill');
+const IcFrameCorners = iconComponent('frame-corners');
+const IcPower = iconComponent('power');
+const IcX = iconComponent('x');
 
 // FXG.4-g — Bezier mapping editor types.
 type BezierPoint = { x: number; y: number };
@@ -1609,7 +1616,7 @@ export function GraphStatePreviewNode({
             hint={node.bypassed
               ? `${displayName} is off (bypassed). Click to turn it on.`
               : `${displayName} is on. Click to bypass it.`}
-            glyph={<Power aria-hidden="true" />}
+            glyph={<IcPower aria-hidden="true" />}
             // The node body is a drag handle and a double-click editor target; neither
             // should fire when the activator is what was hit.
             onPointerDown={stop}
@@ -1934,7 +1941,7 @@ export function ParameterEdgeMappingEditor({
           <Toggle
             size="sm"
             on={mapping.enabled}
-            glyph={<Check aria-hidden="true" />}
+            glyph={<IcCheckFill aria-hidden="true" />}
             onChange={(next) => onUpdate(edgeId, { enabled: next })}
           >
             Enabled
@@ -2179,7 +2186,7 @@ export function GraphParameterContextMenu({
             onClick={laneVisible ? onHideAutomationLane : onShowAutomationLane}
           >
             <span className={`xleth-graph-state-preview__parameter-check ${menuStyles.check}`} aria-hidden="true">
-              {laneVisible ? <Check size={12} /> : null}
+              {laneVisible ? <IcCheck size={14} /> : null}
             </span>
             <span className={`xleth-graph-state-preview__parameter-name ${menuStyles.name}`}>
               {laneVisible ? 'Hide automation lane' : 'Show automation lane'}
@@ -2358,7 +2365,7 @@ export function GraphParameterContextMenu({
                       onClick={() => onToggleParameter?.(parameter)}
                     >
                       <span className={`xleth-graph-state-preview__parameter-check ${menuStyles.check}`} aria-hidden="true">
-                        {exposed ? <Check size={12} /> : null}
+                        {exposed ? <IcCheck size={14} /> : null}
                       </span>
                       <span className={`xleth-graph-state-preview__parameter-name ${menuStyles.name}`}>
                         {item.label}
@@ -3517,7 +3524,7 @@ export default function GraphStatePreview({
                               onDisconnectEdge?.(edge.id);
                             }}
                           >
-                            <CloseGlyph size={12} strokeWidth={1.5} aria-hidden="true" />
+                            <IcX size={14} aria-hidden="true" />
                           </button>
                         )}
                         {edge.type === 'parameter' && canEditMappings && (
@@ -3551,7 +3558,7 @@ export default function GraphStatePreview({
                               );
                             }}
                           >
-                            <Spline size={12} strokeWidth={1.5} aria-hidden="true" />
+                            <IcBezierCurve size={14} aria-hidden="true" />
                           </button>
                         )}
                       </React.Fragment>
@@ -3677,7 +3684,7 @@ export default function GraphStatePreview({
             onDoubleClick={(event) => event.stopPropagation()}
           >
             <IconButton label="Fit graph to view" size="sm" onClick={handleFitView}>
-              <Maximize size={14} strokeWidth={1.5} aria-hidden="true" />
+              <IcFrameCorners size={14} aria-hidden="true" />
             </IconButton>
             <span className={canvasStyles.zoomReadout} aria-label="Zoom">
               {formatValue(viewport.zoom * 100, '%')}

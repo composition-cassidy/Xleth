@@ -1,6 +1,5 @@
 import React, { useEffect, useRef } from 'react';
 import type { CSSProperties, KeyboardEvent, ReactNode } from 'react';
-import { ArrowDownToLine, Maximize2, Minimize2, PictureInPicture2 } from 'lucide-react';
 import { useShellLayoutStore } from '../layout/shellLayoutStore';
 import { toggleDockFocus } from '../layout/dockFocus';
 import { formatCombo } from '../managers/shortcutCatalog';
@@ -13,18 +12,27 @@ import {
   PANEL_CATALOG,
   WINDOW_PANEL_IDS,
   isPanelId,
+  opensFloating,
   type PanelId,
 } from '../registry/panelCatalog';
 import { usePanelRegistry, type PanelState, type PanelStateMap } from '../registry/PanelRegistry';
 import { DockRegionResizer } from './DockRegionResizer';
+import { MotionDiv, useAfterMount } from '../../ui-kit';
 import styles from './DetailDock.module.css';
+import { iconComponent } from '../../ui-kit/icons';
+
+const IcArrowLineDown = iconComponent('arrow-line-down');
+const IcCornersIn = iconComponent('corners-in');
+const IcCornersOut = iconComponent('corners-out');
+const IcPictureInPicture = iconComponent('picture-in-picture');
 
 /**
  * Where a tab's panel is right now.
  * - open:    docked here and showing; the dock is expanded on it.
  * - docked:  lives in the dock, currently closed back to its tab.
  * - popped:  in its own floating (or maximized) window.
- * - stowed:  its pop-out window was closed; the tab brings it home.
+ * - stowed:  its pop-out window was closed; the tab brings it home. A tab that
+ *            opens floating (the Sampler) reopens its window instead.
  */
 export type DetailTabState = 'open' | 'docked' | 'popped' | 'stowed';
 
@@ -72,6 +80,10 @@ export function activateDetailTab(id: PanelId): void {
     registry.openPanel(id);
   } else if (state === 'popped') {
     registry.focusPanel(id);
+  } else if (opensFloating(id)) {
+    // Its window was closed (or never opened): the tab reopens the window. Docking
+    // is the user's choice, made from the tab's own dock control.
+    registry.openPanel(id);
   } else {
     registry.dockPanel(id, 'bottom');
   }
@@ -108,6 +120,8 @@ export function DetailDock({ renderPanel, sizeOverride }: DetailDockProps) {
   const committedSize = isSSR ? usePanelRegistry.getState().dockRegionSizes.bottom : reactiveSize;
   const preview = useDockRegionResizePreview('bottom');
   const stripRef = useRef<HTMLDivElement>(null);
+  // A panel that appears after the dock first drew was chosen by the user: it may enter.
+  const afterMount = useAfterMount();
   const focus = useShellLayoutStore((s) => s.focus);
   const collapseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (collapseTimer.current) clearTimeout(collapseTimer.current); }, []);
@@ -168,13 +182,18 @@ export function DetailDock({ renderPanel, sizeOverride }: DetailDockProps) {
           {tabs.map((tab, index) => {
             const entry = PANEL_CATALOG[tab.id];
             const away = tab.state === 'popped' || tab.state === 'stowed';
-            const popLabel = away ? `Return ${entry.title} to the dock` : `Pop out ${entry.title}`;
+            const floatsFirst = opensFloating(tab.id);
+            const popLabel = away
+              ? (floatsFirst ? `Dock ${entry.title} here` : `Return ${entry.title} to the dock`)
+              : `Pop out ${entry.title}`;
             const fKey = 'fKey' in entry && entry.fKey ? entry.fKey : null;
             const tabHint = tab.state === 'open'
               ? `${entry.title}: click to collapse the dock, double-click to ${focused ? 'restore the layout' : 'give it the whole centre column'}`
               : tab.state === 'popped'
                 ? `${entry.title} is in its own window: click to bring it forward`
-                : `${entry.title}: click to open in the dock`;
+                : tab.state === 'stowed' && floatsFirst
+                  ? `${entry.title}: click to open it in its own window`
+                  : `${entry.title}: click to open in the dock`;
             return (
               <div key={tab.id} className={styles.tab} data-state={tab.state} role="presentation">
                 <button
@@ -202,8 +221,8 @@ export function DetailDock({ renderPanel, sizeOverride }: DetailDockProps) {
                   onClick={() => togglePopOutDetailTab(tab.id)}
                 >
                   {away
-                    ? <ArrowDownToLine aria-hidden="true" strokeWidth={2} />
-                    : <PictureInPicture2 aria-hidden="true" strokeWidth={2} />}
+                    ? <IcArrowLineDown aria-hidden="true" />
+                    : <IcPictureInPicture aria-hidden="true" />}
                 </button>
               </div>
             );
@@ -222,17 +241,27 @@ export function DetailDock({ renderPanel, sizeOverride }: DetailDockProps) {
             onClick={toggleDockFocus}
           >
             {focused
-              ? <Minimize2 aria-hidden="true" strokeWidth={2} />
-              : <Maximize2 aria-hidden="true" strokeWidth={2} />}
+              ? <IcCornersIn aria-hidden="true" />
+              : <IcCornersOut aria-hidden="true" />}
           </button>
         ) : null}
       </div>
       {openTab ? (
-        <div className={styles.body} id="xleth-detail-dock-body" role="tabpanel" aria-label={PANEL_CATALOG[openTab.id].title}>
+        <MotionDiv
+          // key: a different tab is a different panel, so the reveal replays (edit-loop channel:
+          // it only moves in the lively tier, and never when the dock first draws).
+          key={openTab.id}
+          recipe="reveal"
+          enter={afterMount}
+          className={styles.body}
+          id="xleth-detail-dock-body"
+          role="tabpanel"
+          aria-label={PANEL_CATALOG[openTab.id].title}
+        >
           <DockSlotProvider region="bottom" tabIds={[openTab.id]} activeId={openTab.id}>
             {renderPanel(openTab.id)}
           </DockSlotProvider>
-        </div>
+        </MotionDiv>
       ) : null}
     </section>
   );

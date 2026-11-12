@@ -3,9 +3,11 @@ import {
   MIN_DURATION_TICKS_FREE,
 } from '../../../constants/timeline.js'
 import { labelHexColor } from '../../../constants/labels.js'
-import { tokenValue } from '../../../theming/tokenValue.ts'
 import { uiCanvasFont } from '../../../styles/typography.js'
-import { drawRubberBand, drawMovePreview, hexToRgba } from '../timelineDrawing.js'
+import { drawRubberBand, drawMovePreview, hexToRgba, resolveTimelinePalette } from '../timelineDrawing.js'
+import {
+  blockRect, blockEdgeAt, blocksInPixelRect, hitTestBlockAt, trackIndexAtY, trackTopOf,
+} from '../blockGeometry.js'
 import { resolveGroupTranslation, splitPlacementsByKind } from '../groupTransform.js'
 import { getRegionPlaybackDurationSec } from '../regionDuration.js'
 import {
@@ -16,6 +18,7 @@ import {
   AUTOMATION_MIN_DURATION_TICKS,
   AUTOMATION_RESIZE_HIT_WIDTH_PX,
   automationClipBodyRect,
+  automationClipIdsInPixelRect,
   canvasPosToEnvelopePoint,
   hitTestAutomationPoint,
   isOnAutomationClipLeftEdge,
@@ -23,7 +26,6 @@ import {
   sortedEnvelopePoints,
 } from '../automationLaneGeometry.js'
 
-const HANDLE_W = 6   // Resize handle hit-test width (slightly wider than visual 4px)
 const MIN_DURATION_TICKS = 120  // 1/32 note
 const DRAG_THRESHOLD = 3  // px before drag starts
 
@@ -46,6 +48,9 @@ export function createSelectTool(deps) {
     // avoids an O(tracks) tracks.findIndex() scan inside per-clip/per-block
     // loops during mousedown, rubber-band selection, and drag-preview redraw.
     trackIdToIndexRef,
+    // (trackId) => the colour that track's blocks are painted in, so a drag
+    // preview is the colour of the thing being dragged. Optional.
+    trackColorOf,
     onMoveClips, onDuplicateClips, onResizeClip, onResizeClipLeft,
     onStretchClip, onStretchClipLeft,
     setSelectedClipIds, setStickyNoteLength,
@@ -81,14 +86,35 @@ export function createSelectTool(deps) {
   // Resolve a Y coordinate to a track index (lane bands map to their parent
   // track) and a track index back to its Y top, via the row layout when present.
   function idxAtY(y) {
-    const layout = trackLayoutRef?.current
-    if (layout && typeof layout.trackIndexAtY === 'function') return layout.trackIndexAtY(y)
-    return Math.floor(y / TRACK_HEIGHT)
+    return trackIndexAtY(y, trackLayoutRef?.current)
   }
   function topOf(trackIndex) {
-    const layout = trackLayoutRef?.current
-    if (layout && typeof layout.trackTop === 'function') return layout.trackTop(trackIndex)
-    return trackIndex * TRACK_HEIGHT
+    return trackTopOf(trackIndex, trackLayoutRef?.current)
+  }
+
+  // Pointer geometry for the current viewport (see blockGeometry.js).
+  function currentView() {
+    return {
+      scrollOffset: scrollOffsetRef.current,
+      ppb: pixelsPerBeatRef.current,
+      trackIdToIndex: trackIdToIndexRef.current,
+      trackLayout: trackLayoutRef?.current ?? null,
+    }
+  }
+
+  // Drag-preview colours for a clip / pattern block: the colour it is painted
+  // in (its track's), falling back to its region's label colour.
+  function clipGhostColors(clip) {
+    return ghostColors(
+      trackColorOf?.(clip.trackId) || labelHexColor(regionsRef.current?.[clip.regionId]?.label),
+    )
+  }
+  function blockGhostColors(block) {
+    return ghostColors(
+      trackColorOf?.(block.trackId) || labelHexColor(
+        regionsRef.current?.[patternsRef?.current?.[block.patternId]?.regionId]?.label,
+      ),
+    )
   }
 
   // Helper: toggle cursor-state classes on the container (CSS does the rest)
@@ -352,32 +378,16 @@ export function createSelectTool(deps) {
     return Math.round(durSec * (bpm / 60) * PPQ)
   }
 
-  function hitTestClip(beat, trackIndex) {
-    const clips = clipsRef.current
-    const tracks = tracksRef.current
-    if (!clips || !tracks) return null
-    for (let i = 0; i < clips.length; i++) {
-      const clip = clips[i]
-      const clipBeat = clip.positionTicks / PPQ
-      const clipEnd = clipBeat + clip.durationTicks / PPQ
-      const clipTrackIdx = trackIdToIndexRef.current[clip.trackId] ?? -1
-      if (beat >= clipBeat && beat < clipEnd && trackIndex === clipTrackIdx) return clip
-    }
-    return null
+  // The block under the pointer: the one PAINTED there (same rectangle, same
+  // stacking order as the draw path), so what you click is what you get.
+  function hitTestClip(localX, trackIndex) {
+    if (!tracksRef.current) return null
+    return hitTestBlockAt(clipsRef.current, localX, trackIndex, currentView())
   }
 
-  function hitTestPatternBlock(beat, trackIndex) {
-    const blocks = patternBlocksRef?.current
-    const tracks = tracksRef.current
-    if (!blocks || !tracks) return null
-    for (let i = 0; i < blocks.length; i++) {
-      const b = blocks[i]
-      const bBeat = b.positionTicks / PPQ
-      const bEnd = bBeat + b.durationTicks / PPQ
-      const bTrackIdx = trackIdToIndexRef.current[b.trackId] ?? -1
-      if (beat >= bBeat && beat < bEnd && trackIndex === bTrackIdx) return b
-    }
-    return null
+  function hitTestPatternBlock(localX, trackIndex) {
+    if (!tracksRef.current) return null
+    return hitTestBlockAt(patternBlocksRef?.current, localX, trackIndex, currentView())
   }
 
   function hitTestAutomationClip(tick, laneId) {
@@ -418,45 +428,27 @@ export function createSelectTool(deps) {
     return null
   }
 
-  function isOnRightEdgeOf(localX, startTicks, durTicks) {
-    const ppb = pixelsPerBeatRef.current
-    const scrollOffset = scrollOffsetRef.current
-    const endBeat = (startTicks + durTicks) / PPQ
-    const rightEdgePx = beatToPixel(endBeat, scrollOffset, ppb)
-    return Math.abs(localX - rightEdgePx) <= HANDLE_W
-  }
-  function isOnLeftEdgeOf(localX, startTicks) {
-    const ppb = pixelsPerBeatRef.current
-    const scrollOffset = scrollOffsetRef.current
-    const startBeat = startTicks / PPQ
-    const leftEdgePx = beatToPixel(startBeat, scrollOffset, ppb)
-    return Math.abs(localX - leftEdgePx) <= HANDLE_W
+  // Which resize edge of a hit block the pointer is on: 'left', 'right' or
+  // null (the body, which moves it). The zones shrink on narrow blocks so the
+  // body never disappears.
+  function edgeOf(item, trackIndex, localX) {
+    const rect = blockRect(item, trackIndex, scrollOffsetRef.current, pixelsPerBeatRef.current)
+    return blockEdgeAt(rect, localX)
   }
 
   function updateEdgeHover(localX, localY) {
-    const beat = pixelToBeat(localX, scrollOffsetRef.current, pixelsPerBeatRef.current)
     const trackIndex = idxAtY(localY)
     const tracks = tracksRef.current
     const track = tracks?.[trackIndex]
     if (track?.type === 'Pattern') {
-      const hitBlock = hitTestPatternBlock(beat, trackIndex)
-      if (hitBlock && (allowUnselectedEdgeResize || selectedBlockIdsRef?.current?.has(hitBlock.id))) {
-        if (isOnRightEdgeOf(localX, hitBlock.positionTicks, hitBlock.durationTicks)) {
-          setHoverEdge('right'); return
-        }
-        if (isOnLeftEdgeOf(localX, hitBlock.positionTicks)) {
-          setHoverEdge('left'); return
-        }
-      }
-      setHoverEdge(null)
+      const hitBlock = hitTestPatternBlock(localX, trackIndex)
+      const canResize = hitBlock && (allowUnselectedEdgeResize || selectedBlockIdsRef?.current?.has(hitBlock.id))
+      setHoverEdge(canResize ? edgeOf(hitBlock, trackIndex, localX) : null)
       return
     }
-    const hitClip = hitTestClip(beat, trackIndex)
-    if (hitClip && (allowUnselectedEdgeResize || selectedRef.current.has(hitClip.id))) {
-      if (isOnRightEdgeOf(localX, hitClip.positionTicks, hitClip.durationTicks)) { setHoverEdge('right'); return }
-      if (isOnLeftEdgeOf(localX, hitClip.positionTicks))  { setHoverEdge('left');  return }
-    }
-    setHoverEdge(null)
+    const hitClip = hitTestClip(localX, trackIndex)
+    const canResize = hitClip && (allowUnselectedEdgeResize || selectedRef.current.has(hitClip.id))
+    setHoverEdge(canResize ? edgeOf(hitClip, trackIndex, localX) : null)
   }
 
   // Track+time extent of a clicked clip/block, or of a bare click point when
@@ -586,13 +578,12 @@ export function createSelectTool(deps) {
 
       // Pattern-track branch: hit-test pattern blocks first
       if (track?.type === 'Pattern') {
-        const hitBlock = hitTestPatternBlock(beat, trackIndex)
+        const hitBlock = hitTestPatternBlock(localX, trackIndex)
         if (hitBlock) {
           const canResizeEdge = allowUnselectedEdgeResize || selectedBlockIdsRef?.current?.has(hitBlock.id)
-          const isRightEdge = canResizeEdge
-            && isOnRightEdgeOf(localX, hitBlock.positionTicks, hitBlock.durationTicks)
-          const isLeftEdge = !isRightEdge && canResizeEdge
-            && isOnLeftEdgeOf(localX, hitBlock.positionTicks)
+          const edge = canResizeEdge ? edgeOf(hitBlock, trackIndex, localX) : null
+          const isRightEdge = edge === 'right'
+          const isLeftEdge = edge === 'left'
           pendingHit = { block: hitBlock, isRightEdge, isLeftEdge, e }
           dragKind = 'block'
           dragBlock = hitBlock
@@ -600,9 +591,7 @@ export function createSelectTool(deps) {
           dragBlockOrigTrackIdx = trackIndex
           dragBlockOrigDuration = hitBlock.durationTicks
           dragBlockOrigOffset = hitBlock.offsetTicks ?? 0
-          dragBlockOrigColors = ghostColors(labelHexColor(
-            regionsRef.current?.[patternsRef.current?.[hitBlock.patternId]?.regionId]?.label
-          ))
+          dragBlockOrigColors = blockGhostColors(hitBlock)
           // Capture multi-selection if this block is already selected
           if (selectedBlockIdsRef?.current?.has(hitBlock.id) && selectedBlockIdsRef.current.size > 1) {
             const tidx = trackIdToIndexRef.current
@@ -612,9 +601,7 @@ export function createSelectTool(deps) {
                 block: b,
                 origTicks: b.positionTicks,
                 origTrackIdx: tidx[b.trackId] ?? -1,
-                colors: ghostColors(labelHexColor(
-                  regionsRef.current?.[patternsRef.current?.[b.patternId]?.regionId]?.label
-                )),
+                colors: blockGhostColors(b),
               }))
           } else {
             dragSelectedBlocks = []
@@ -627,7 +614,7 @@ export function createSelectTool(deps) {
                 clip: c,
                 origTicks: c.positionTicks,
                 origTrackIdx: tidx[c.trackId] ?? -1,
-                colors: ghostColors(labelHexColor(regionsRef.current?.[c.regionId]?.label)),
+                colors: clipGhostColors(c),
               }))
           } else {
             dragSelectedClips = []
@@ -642,14 +629,13 @@ export function createSelectTool(deps) {
         return
       }
 
-      const hitClip = hitTestClip(beat, trackIndex)
+      const hitClip = hitTestClip(localX, trackIndex)
 
       if (hitClip) {
         const canResizeEdge = allowUnselectedEdgeResize || selectedRef.current.has(hitClip.id)
-        const isRightEdge = canResizeEdge
-          && isOnRightEdgeOf(localX, hitClip.positionTicks, hitClip.durationTicks)
-        const isLeftEdge = !isRightEdge && canResizeEdge
-          && isOnLeftEdgeOf(localX, hitClip.positionTicks)
+        const edge = canResizeEdge ? edgeOf(hitClip, trackIndex, localX) : null
+        const isRightEdge = edge === 'right'
+        const isLeftEdge = edge === 'left'
         pendingHit = { clip: hitClip, isRightEdge, isLeftEdge, e }
         dragKind = 'clip'
         dragClip = hitClip
@@ -658,7 +644,7 @@ export function createSelectTool(deps) {
         dragClipOrigDuration = hitClip.durationTicks
         dragClipOrigOffset = hitClip.regionOffsetTicks ?? 0
         dragClipOrigStretchRatio = hitClip.stretchRatio ?? 1.0
-        dragClipOrigColors = ghostColors(labelHexColor(regionsRef.current?.[hitClip.regionId]?.label))
+        dragClipOrigColors = clipGhostColors(hitClip)
         {
           // regionDurTicks and regionOffset are SOURCE ticks; the resize clamp is
           // a TIMELINE duration, so convert the remaining source budget through
@@ -679,7 +665,7 @@ export function createSelectTool(deps) {
               clip: c,
               origTicks: c.positionTicks,
               origTrackIdx: tidx[c.trackId] ?? -1,
-              colors: ghostColors(labelHexColor(regionsRef.current?.[c.regionId]?.label)),
+              colors: clipGhostColors(c),
             }))
         } else {
           dragSelectedClips = []
@@ -692,9 +678,7 @@ export function createSelectTool(deps) {
               block: b,
               origTicks: b.positionTicks,
               origTrackIdx: tidx[b.trackId] ?? -1,
-              colors: ghostColors(labelHexColor(
-                regionsRef.current?.[patternsRef.current?.[b.patternId]?.regionId]?.label
-              )),
+              colors: blockGhostColors(b),
             }))
         } else {
           dragSelectedBlocks = []
@@ -1193,41 +1177,29 @@ export function createSelectTool(deps) {
         const x2 = Math.max(dragOriginX, dragCurrentX)
         const y1 = Math.min(dragOriginY, dragCurrentY)
         const y2 = Math.max(dragOriginY, dragCurrentY)
-        const ppb = pixelsPerBeatRef.current
-        const scrollOffset = scrollOffsetRef.current
-        const clips = clipsRef.current
-        const tidx = trackIdToIndexRef.current
-        const clipIds = new Set()
-        const blockIds = new Set()
-
-        for (const clip of clips) {
-          const clipBeat = clip.positionTicks / PPQ
-          const clipEnd = clipBeat + clip.durationTicks / PPQ
-          const clipX1 = beatToPixel(clipBeat, scrollOffset, ppb)
-          const clipX2 = beatToPixel(clipEnd, scrollOffset, ppb)
-          const trackIdx = tidx[clip.trackId] ?? -1
-          const clipY1 = topOf(trackIdx)
-          const clipY2 = clipY1 + TRACK_HEIGHT
-          if (clipX2 >= x1 && clipX1 <= x2 && clipY2 >= y1 && clipY1 <= y2) {
-            clipIds.add(clip.id)
-          }
-        }
-        const blocks = patternBlocksRef?.current || []
-        for (const b of blocks) {
-          const bBeat = b.positionTicks / PPQ
-          const bEnd = bBeat + b.durationTicks / PPQ
-          const bX1 = beatToPixel(bBeat, scrollOffset, ppb)
-          const bX2 = beatToPixel(bEnd, scrollOffset, ppb)
-          const trackIdx = tidx[b.trackId] ?? -1
-          const bY1 = topOf(trackIdx)
-          const bY2 = bY1 + TRACK_HEIGHT
-          if (bX2 >= x1 && bX1 <= x2 && bY2 >= y1 && bY1 <= y2) {
-            blockIds.add(b.id)
-          }
-        }
+        // Everything whose painted rectangle the band touches.
+        const view = currentView()
+        const clipIds = new Set(
+          blocksInPixelRect(clipsRef.current, x1, y1, x2, y2, view).map((c) => c.id),
+        )
+        const blockIds = new Set(
+          blocksInPixelRect(patternBlocksRef?.current, x1, y1, x2, y2, view).map((b) => b.id),
+        )
+        // Automation clips live on lane rows, not tracks, so blocksInPixelRect
+        // can't see them — test their painted rects against the band directly.
+        // Without this a band dragged over automation lanes selected nothing,
+        // and Ctrl+C had no way to copy more than one automation clip.
+        const automationIds = automationClipIdsInPixelRect(
+          automationClipsRef?.current,
+          trackLayoutRef?.current?.getAutomationLaneRows?.(),
+          x1, y1, x2, y2, pixelsPerBeatRef.current, scrollOffsetRef.current,
+        )
         setSelectedClipIds(clipIds)
         setSelectedBlockIds?.(blockIds)
-        console.log(`[SelectTool] Rubberband selected ${clipIds.size} clip(s), ${blockIds.size} block(s)`)
+        if (setSelectedAutomationClipIds && (automationIds.size > 0 || selectedAutomationClipIdsRef?.current?.size > 0)) {
+          setSelectedAutomationClipIds(automationIds)
+        }
+        console.log(`[SelectTool] Rubberband selected ${clipIds.size} clip(s), ${blockIds.size} block(s), ${automationIds.size} automation clip(s)`)
       }
 
       dragMode = null
@@ -1306,7 +1278,7 @@ export function createSelectTool(deps) {
       const tracks = tracksRef.current
       const track = tracks?.[trackIndex]
       if (track?.type === 'Pattern') {
-        const hitBlock = hitTestPatternBlock(beat, trackIndex)
+        const hitBlock = hitTestPatternBlock(localX, trackIndex)
         if (hitBlock && onRequestPatternBlockContextMenu) {
           if (!selectedBlockIdsRef?.current?.has(hitBlock.id)) {
             setSelectedBlockIds(new Set([hitBlock.id]))
@@ -1315,7 +1287,7 @@ export function createSelectTool(deps) {
         }
         return
       }
-      const hitClip = hitTestClip(beat, trackIndex)
+      const hitClip = hitTestClip(localX, trackIndex)
       if (hitClip && onRequestClipContextMenu) {
         if (!selectedRef.current.has(hitClip.id)) {
           setSelectedClipIds(new Set([hitClip.id]))
@@ -1347,12 +1319,10 @@ export function createSelectTool(deps) {
       // ── Automation clip drag previews (local-only, per the no-IPC-during-
       // drag constraint) ──────────────────────────────────────────────────
       if ((dragMode === 'move' || dragMode === 'duplicate' || dragMode === 'resize' || dragMode === 'resize-left') && dragAutomationClip) {
-        const accent = tokenValue('--theme-border-focus')
+        const accent = resolveTimelinePalette().selectionHighlight
         ctx.save()
         ctx.fillStyle = accent
-        ctx.globalAlpha = 0.22
         ctx.strokeStyle = accent
-        ctx.globalAlpha = 1
         ctx.lineWidth = 1.5
 
         if (dragMode === 'move' || dragMode === 'duplicate') {
@@ -1494,7 +1464,7 @@ export function createSelectTool(deps) {
           const edgePx = beatToPixel(clipStartBeat + newDurationBeats, scrollOffset, ppb)
           ctx.save()
           ctx.font = uiCanvasFont('11px')
-          ctx.fillStyle = tokenValue('--theme-fg-inverse')
+          ctx.fillStyle = resolveTimelinePalette().fgInverse
           ctx.textAlign = 'right'
           ctx.fillText(ratioText, edgePx - 4, topOf(trackIdx) + TRACK_HEIGHT * 0.5 - 2)
           ctx.restore()
@@ -1534,7 +1504,7 @@ export function createSelectTool(deps) {
           const edgePx = beatToPixel(newStartBeat, scrollOffset, ppb)
           ctx.save()
           ctx.font = uiCanvasFont('11px')
-          ctx.fillStyle = tokenValue('--theme-fg-inverse')
+          ctx.fillStyle = resolveTimelinePalette().fgInverse
           ctx.textAlign = 'left'
           ctx.fillText(ratioText, edgePx + 4, topOf(trackIdx) + TRACK_HEIGHT * 0.5 - 2)
           ctx.restore()

@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useState } from 'react'
-import { Pipette } from 'lucide-react'
 import { DeviceFrame, DeviceSection, IconButton, Knob, Select, Toggle } from '../../../ui-kit'
 import { beginPick } from '../../grid/chromaKeyEyedropper.js'
 import useDeviceUiStore from '../deviceUiStore.js'
@@ -13,6 +12,9 @@ import {
 } from './videoFxWrites.js'
 import useVideoDeviceStore, { isInWindow } from './videoDeviceStore.js'
 import styles from './videoDevices.module.css'
+import { iconComponent } from '../../../ui-kit/icons'
+
+const IcEyedropper = iconComponent('eyedropper')
 
 export const chainDeviceKey = (trackId, index) => `video:${trackId}:chain:${index}`
 
@@ -177,7 +179,7 @@ function ChromaKeyBody({ fx, trackId, draft, write, writeColour }) {
             disabled={picking}
             onClick={pick}
           >
-            <Pipette aria-hidden="true" />
+            <IcEyedropper aria-hidden="true" />
           </IconButton>
         </div>
       </DeviceSection>

@@ -304,7 +304,12 @@ export function buildPlacementMenuItems(track, layout) {
 }
 
 /** Human-readable badge label for a placement (for the list row + Track Detail). */
-export function placementBadgeLabel(placement) {
+export function placementBadgeLabel(placement, { short = false } = {}) {
+  // `short` is for the narrow rail beside the Preview picture.
+  if (short) {
+    if (placement?.kind === 'behind') return 'Behind'
+    if (placement?.kind === 'front') return 'Front'
+  }
   if (placement?.kind === 'behind' || placement?.kind === 'front') return 'Fullscreen'
   switch (placement?.kind) {
     case 'grid':  return `Grid ${placement.cell?.col ?? 0},${placement.cell?.row ?? 0}`

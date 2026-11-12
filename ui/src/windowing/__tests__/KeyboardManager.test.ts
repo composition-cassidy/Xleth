@@ -1,8 +1,9 @@
 /* @vitest-environment jsdom */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   destroy,
   handleKeyEvent,
+  init,
   rebind,
   register,
   registerBinding,
@@ -168,6 +169,227 @@ describe('KeyboardManager', () => {
     handleKeyEvent(mixerEvent);
     expect(action).toHaveBeenCalledTimes(1);
     expect(mixerEvent.defaultPrevented).toBe(false);
+  });
+
+  describe('the panel under the mouse', () => {
+    // Real DOM panels, so pointerover resolves through [data-panel-id].
+    function mountPanel(id: string): HTMLElement {
+      const frame = document.createElement('section');
+      frame.setAttribute('data-panel-id', id);
+      frame.tabIndex = -1;
+      const inner = document.createElement('div');
+      frame.appendChild(inner);
+      document.body.appendChild(frame);
+      return inner;
+    }
+    function hover(el: Element) {
+      el.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));
+    }
+
+    beforeEach(() => {
+      document.body.innerHTML = '';
+      init();
+    });
+
+    it('gets Ctrl+C even when a control in another panel still holds focus', () => {
+      // Repro: click an Inspector toggle (the Inspector becomes the focused
+      // panel and the button keeps DOM focus), move back over the timeline,
+      // press Ctrl+C. The Inspector has no Ctrl+C, so the copy went nowhere.
+      const copy = vi.fn((event: KeyboardEvent) => { event.preventDefault(); return 'handled' as const; });
+      register({ scope: 'panel:timeline', combo: 'Ctrl+c', handler: copy });
+      usePanelRegistry.getState().openPanel('inspector');
+      const inspectorButton = document.createElement('button');
+      mountPanel('inspector').appendChild(inspectorButton);
+      inspectorButton.focus();
+      const timelineBody = mountPanel('timeline');
+
+      hover(timelineBody);
+      const event = shortcutEvent('c', { ctrlKey: true });
+      handleKeyEvent(event);
+
+      expect(copy).toHaveBeenCalledTimes(1);
+      // ...and the timeline now owns the keyboard, so the stale button no
+      // longer catches Space/Enter.
+      expect(usePanelRegistry.getState().panels.timeline.focused).toBe(true);
+      expect(document.activeElement).toBe(timelineBody.parentElement);
+    });
+
+    it('outranks the focused panel when both bind the key', () => {
+      const pianoCopy = vi.fn((event: KeyboardEvent) => { event.preventDefault(); return 'handled' as const; });
+      const timelineCopy = vi.fn((event: KeyboardEvent) => { event.preventDefault(); return 'handled' as const; });
+      register({ scope: 'panel:pianoRoll', combo: 'Ctrl+c', handler: pianoCopy });
+      register({ scope: 'panel:timeline', combo: 'Ctrl+c', handler: timelineCopy });
+      usePanelRegistry.getState().openPanel('pianoRoll');
+      mountPanel('pianoRoll');
+      hover(mountPanel('timeline'));
+
+      handleKeyEvent(shortcutEvent('c', { ctrlKey: true }));
+
+      expect(timelineCopy).toHaveBeenCalledTimes(1);
+      expect(pianoCopy).not.toHaveBeenCalled();
+    });
+
+    it('falls through to the focused panel when it has no binding for the key', () => {
+      // Hovering the Preview to watch it must not swallow the timeline's Delete.
+      const del = vi.fn((event: KeyboardEvent) => { event.preventDefault(); return 'handled' as const; });
+      register({ scope: 'panel:timeline', combo: 'Delete', handler: del });
+      usePanelRegistry.getState().focusPanel('timeline');
+      mountPanel('timeline');
+      hover(mountPanel('preview'));
+
+      handleKeyEvent(shortcutEvent('Delete'));
+
+      expect(del).toHaveBeenCalledTimes(1);
+      expect(usePanelRegistry.getState().panels.timeline.focused).toBe(true);
+    });
+
+    it('does not override a text field that has focus', () => {
+      const copy = vi.fn((event: KeyboardEvent) => { event.preventDefault(); return 'handled' as const; });
+      register({ scope: 'panel:timeline', combo: 'Ctrl+c', handler: copy });
+      const input = document.createElement('input');
+      mountPanel('inspector').appendChild(input);
+      input.focus();
+      hover(mountPanel('timeline'));
+
+      handleKeyEvent(shortcutEvent('c', { ctrlKey: true }));
+
+      expect(copy).not.toHaveBeenCalled();
+    });
+
+    it('forgets the panel once the pointer leaves the window', () => {
+      const copy = vi.fn((event: KeyboardEvent) => { event.preventDefault(); return 'handled' as const; });
+      register({ scope: 'panel:timeline', combo: 'Ctrl+c', handler: copy });
+      usePanelRegistry.getState().openPanel('inspector');
+      const timelineBody = mountPanel('timeline');
+      hover(timelineBody);
+      timelineBody.dispatchEvent(new MouseEvent('pointerout', { bubbles: true, relatedTarget: null }));
+
+      handleKeyEvent(shortcutEvent('c', { ctrlKey: true }));
+
+      expect(copy).not.toHaveBeenCalled();
+    });
+
+    it('picks the panel up again on the next move inside the same element', () => {
+      // The arrangement canvas is one large element. After anything reset the
+      // tracker, moving around inside it crosses no boundary, so a tracker fed
+      // by pointerover alone stayed blind until the mouse left and came back.
+      const copy = vi.fn((event: KeyboardEvent) => { event.preventDefault(); return 'handled' as const; });
+      register({ scope: 'panel:timeline', combo: 'Ctrl+c', handler: copy });
+      usePanelRegistry.getState().openPanel('inspector');
+      const timelineBody = mountPanel('timeline');
+      hover(timelineBody);
+      timelineBody.dispatchEvent(new MouseEvent('pointerout', { bubbles: true, relatedTarget: null }));
+      timelineBody.dispatchEvent(new MouseEvent('pointermove', { bubbles: true }));
+
+      handleKeyEvent(shortcutEvent('c', { ctrlKey: true }));
+
+      expect(copy).toHaveBeenCalledTimes(1);
+    });
+
+    it('hit-tests where the pointer is when the key arrives, not where it last entered', () => {
+      // A menu closes (or a tab switches) under a still pointer: no pointer
+      // event fires, but what is under the mouse has changed.
+      const copy = vi.fn((event: KeyboardEvent) => { event.preventDefault(); return 'handled' as const; });
+      register({ scope: 'panel:timeline', combo: 'Ctrl+c', handler: copy });
+      usePanelRegistry.getState().openPanel('inspector');
+      const menu = document.createElement('div');
+      document.body.appendChild(menu);
+      const timelineBody = mountPanel('timeline');
+      menu.dispatchEvent(new MouseEvent('pointerover', { bubbles: true, clientX: 40, clientY: 50 }));
+      const hitTest = vi.fn(() => timelineBody as Element | null);
+      Object.defineProperty(document, 'elementFromPoint', { value: hitTest, configurable: true });
+      try {
+        handleKeyEvent(shortcutEvent('c', { ctrlKey: true }));
+      } finally {
+        delete (document as unknown as Record<string, unknown>).elementFromPoint;
+      }
+
+      expect(hitTest).toHaveBeenCalledWith(40, 50);
+      expect(copy).toHaveBeenCalledTimes(1);
+    });
+
+    it('forgets a hovered element that has left the page', () => {
+      const copy = vi.fn((event: KeyboardEvent) => { event.preventDefault(); return 'handled' as const; });
+      register({ scope: 'panel:timeline', combo: 'Ctrl+c', handler: copy });
+      usePanelRegistry.getState().openPanel('inspector');
+      const timelineBody = mountPanel('timeline');
+      hover(timelineBody);
+      timelineBody.parentElement!.remove();
+
+      handleKeyEvent(shortcutEvent('c', { ctrlKey: true }));
+
+      expect(copy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('controls that hold focus without being text entry', () => {
+    beforeEach(() => { document.body.innerHTML = ''; });
+    // A text field left focused would swallow every later test's key.
+    afterEach(() => { document.body.innerHTML = ''; });
+
+    function focusInput(type: string): HTMLInputElement {
+      const input = document.createElement('input');
+      input.type = type;
+      document.body.appendChild(input);
+      input.focus();
+      return input;
+    }
+
+    it.each(['checkbox', 'radio', 'range', 'color'])('a focused %s input does not switch shortcuts off', (type) => {
+      // They are <input> elements, so the text-entry guard used to treat a
+      // ticked checkbox like a text field and drop every key until a click
+      // moved focus somewhere else.
+      const undo = vi.fn(() => 'handled' as const);
+      register({ scope: 'panel:timeline', combo: 'Ctrl+z', handler: undo });
+      usePanelRegistry.getState().focusPanel('timeline');
+      focusInput(type);
+
+      handleKeyEvent(shortcutEvent('z', { ctrlKey: true }));
+
+      expect(undo).toHaveBeenCalledTimes(1);
+    });
+
+    it('a focused checkbox still owns Space', () => {
+      const play = vi.fn(() => 'handled' as const);
+      register({ scope: 'panel:timeline', combo: ' ', handler: play });
+      usePanelRegistry.getState().focusPanel('timeline');
+      focusInput('checkbox');
+
+      handleKeyEvent(shortcutEvent(' '));
+
+      expect(play).not.toHaveBeenCalled();
+    });
+
+    it.each(['text', 'search', 'number'])('a focused %s input still takes every key', (type) => {
+      const undo = vi.fn(() => 'handled' as const);
+      register({ scope: 'panel:timeline', combo: 'Ctrl+z', handler: undo });
+      usePanelRegistry.getState().focusPanel('timeline');
+      focusInput(type);
+
+      handleKeyEvent(shortcutEvent('z', { ctrlKey: true }));
+
+      expect(undo).not.toHaveBeenCalled();
+    });
+  });
+
+  it('a global binding answers when neither the hovered nor the focused panel binds the key', () => {
+    // Ctrl+Z with the mouse and the last click both on the Inspector: the
+    // project undo is registered globally so it is not lost.
+    const undo = vi.fn(() => 'handled' as const);
+    const graphUndo = vi.fn(() => 'handled' as const);
+    register({ scope: 'global', combo: 'Ctrl+z', handler: undo });
+    register({ scope: 'panel:fxGraph', combo: 'Ctrl+z', handler: graphUndo });
+    usePanelRegistry.getState().openPanel('inspector');
+
+    handleKeyEvent(shortcutEvent('z', { ctrlKey: true }));
+    expect(undo).toHaveBeenCalledTimes(1);
+    expect(graphUndo).not.toHaveBeenCalled();
+
+    // A panel with an undo of its own keeps the key while it is focused.
+    usePanelRegistry.getState().openPanel('fxGraph');
+    handleKeyEvent(shortcutEvent('z', { ctrlKey: true }));
+    expect(graphUndo).toHaveBeenCalledTimes(1);
+    expect(undo).toHaveBeenCalledTimes(1);
   });
 
   it('rebind moves a binding', () => {

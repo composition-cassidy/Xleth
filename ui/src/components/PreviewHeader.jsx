@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
-import { ChevronDown, Grid3x3, Import, Info } from 'lucide-react'
 import { Button, Menu, MenuCustom, MenuItem, Toggle } from '../ui-kit'
 import { playheadClock } from '../services/PlayheadClock.js'
-import PreviewTimecode from './PreviewTimecode.jsx'
 import styles from './PreviewHeader.module.css'
+import { iconComponent } from '../ui-kit/icons'
+
+const IcCaretDown = iconComponent('caret-down')
+const IcGridNine = iconComponent('grid-nine')
+const IcInfo = iconComponent('info')
+const IcTrayArrowDown = iconComponent('tray-arrow-down')
 
 export const RESOLUTION_CHOICES = [
   { value: 'auto', label: 'Auto' },
@@ -44,7 +48,7 @@ function usePlaying() {
 function StateChip({ label, hint }) {
   return (
     <span className={styles.chip} data-hint={hint}>
-      <Info className={styles.chipGlyph} aria-hidden="true" />
+      <IcInfo className={styles.chipGlyph} aria-hidden="true" />
       <span className={styles.chipText}>{label}</span>
       <span className={styles.srOnly}>{`. ${hint}`}</span>
     </span>
@@ -52,9 +56,13 @@ function StateChip({ label, hint }) {
 }
 
 /**
- * The Preview's header. Left: timecode and frame number. Right: FPS (only while
- * playing), state chips (only when a state differs from the default), the View
- * menu (renderer, resolution, quality), then FX, Edit grid and Import.
+ * The Preview's header. Right: FPS (only while playing), state chips (only when a
+ * state differs from the default), the View menu (renderer, resolution, quality),
+ * then FX, Edit (grid) and Import.
+ *
+ * inTitlebar: a floating or maximized Preview has a window titlebar, so the
+ * controls are portaled into it (PreviewPanel owns the slot) instead of taking
+ * a second 28px row. The slot is the size container there, not this element.
  */
 export default function PreviewHeader({
   fps,
@@ -72,6 +80,7 @@ export default function PreviewHeader({
   importing,
   onImport,
   headerActions = null,
+  inTitlebar = false,
 }) {
   const playing = usePlaying()
   const [menu, setMenu] = useState(null)
@@ -88,10 +97,11 @@ export default function PreviewHeader({
   const fault = mode !== 'webgl' && mode !== 'init' ? rendererLabel(mode) : null
 
   return (
-    <div className={styles.header} data-testid="preview-header">
-      <div className={styles.left}>
-        <PreviewTimecode />
-      </div>
+    <div
+      className={inTitlebar ? `${styles.header} ${styles.inTitlebar}` : styles.header}
+      data-testid="preview-header"
+      data-in-titlebar={inTitlebar ? 'true' : undefined}
+    >
       <div className={styles.right}>
         {playing ? (
           <span className={styles.fps} data-hint="Frames drawn per second in the Preview while playing">{fps} FPS</span>
@@ -108,7 +118,7 @@ export default function PreviewHeader({
 
         <Button
           size="sm"
-          glyph={<ChevronDown />}
+          glyph={<IcCaretDown />}
           aria-haspopup="menu"
           aria-expanded={menu !== null}
           aria-label="View"
@@ -128,19 +138,21 @@ export default function PreviewHeader({
         >
           FX
         </Toggle>
+        {/* "Edit" then the grid glyph: it reads as "Edit grid" in five letters. */}
         <Toggle
           size="sm"
           on={gridEditMode}
           onChange={onGridEditChange}
-          glyph={<Grid3x3 aria-hidden="true" />}
+          glyph={<IcGridNine aria-hidden="true" />}
+          glyphEnd
           aria-label="Edit grid"
           hint="Edit the grid layout on the picture"
         >
-          <span className={styles.label}>Edit grid</span>
+          <span className={styles.label}>Edit</span>
         </Toggle>
         <Button
           size="sm"
-          glyph={<Import />}
+          glyph={<IcTrayArrowDown />}
           aria-label="Import"
           disabled={importing}
           hint="Import a video source for the preview timeline"

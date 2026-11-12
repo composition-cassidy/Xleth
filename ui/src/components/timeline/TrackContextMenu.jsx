@@ -1,6 +1,8 @@
 import { useState } from 'react'
-import { ChevronRight } from 'lucide-react'
 import { Menu, MenuItem, MenuSeparator } from '../../ui-kit'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcCaretRight = iconComponent('caret-right')
 
 function joinClassNames(...classNames) {
   return classNames.filter(Boolean).join(' ')
@@ -26,11 +28,13 @@ export default function TrackContextMenu({
   submenuClassName = '',
 }) {
   const [openSubIdx, setOpenSubIdx] = useState(-1)
-  const [subPos, setSubPos] = useState({ x: 0, y: 0 })
+  const [subPos, setSubPos] = useState({ x: 0, y: 0, flipX: undefined })
 
   const openSub = (i, e) => {
     const row = e.currentTarget.getBoundingClientRect()
-    setSubPos({ x: row.right - 2, y: row.top })
+    // The parent menu's left edge: a submenu with no room on the right opens beside it on the left.
+    const parent = e.currentTarget.closest('[role="menu"]')?.getBoundingClientRect()
+    setSubPos({ x: row.right - 2, y: row.top, flipX: parent ? parent.left : row.left })
     setOpenSubIdx(i)
   }
 
@@ -55,6 +59,7 @@ export default function TrackContextMenu({
         <Menu
           x={subPos.x}
           y={subPos.y}
+          flipX={subPos.flipX}
           onClose={onClose}
           label={`${items[openSubIdx].label} submenu`}
           className={joinClassNames('track-context-submenu', submenuClassName || menuClassName)}
@@ -79,7 +84,7 @@ function MenuItems({ items, onOpenSub, onLeaveSub }) {
         danger={item.danger}
         disabled={item.disabled}
         checked={anyChecked ? !!item.checked : undefined}
-        trailing={hasSub ? <ChevronRight size={12} /> : undefined}
+        trailing={hasSub ? <IcCaretRight size={14} /> : undefined}
         onMouseEnter={onOpenSub ? (e) => (hasSub ? onOpenSub(i, e) : onLeaveSub?.()) : undefined}
         onSelect={(e) => {
           if (hasSub) { onOpenSub?.(i, e); return }

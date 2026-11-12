@@ -14,9 +14,15 @@ import styles from './SandboxCanvas.module.css'
 //
 // Three gestures, all on the same surface: click to centre the window there,
 // drag the window to scroll, drag its edges to resize (which IS zooming).
-// Hidden entirely while the view is fitted — with nothing to navigate, a
-// full-width bracket around the full-width waveform is noise.
-const STRIP_H = 30
+//
+// Always mounted while there is audio. It used to hide itself whenever the
+// view was fitted, which made the ruler and the waveform jump down by its
+// height on the first zoom step and back up on the last, and took away the
+// one zoom handle that is always in the same place: dragging an edge of the
+// window inward is the quickest way from "everything" to "this part". The
+// selection is drawn on it too, so a selection made while zoomed in can still
+// be found after scrolling away from it.
+const STRIP_H = 26
 const EDGE_PX = 5
 
 // Peaks for the strip are computed once per buffer and cached on the buffer's
@@ -56,13 +62,15 @@ export default function SandboxOverviewStrip() {
   const activeLayerId = useSandboxStore((s) => s.activeLayerId)
   const view = useSandboxStore((s) => s.view)
   const setView = useSandboxStore((s) => s.setView)
+  const selection = useSandboxStore((s) => s.selection)
   const canvasRef = useRef(null)
   const dragRef = useRef(null)
 
   const layer = layers.find((l) => l.id === activeLayerId) ?? null
   const buf = layer?.renderedBuffer ?? null
   const numSamples = buf?.numSamples ?? 0
-  const hidden = !buf || isFitted(view, numSamples)
+  const hidden = !buf
+  const fitted = isFitted(view, numSamples)
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current
@@ -91,6 +99,22 @@ export default function SandboxOverviewStrip() {
     ctx.fill()
     ctx.globalAlpha = 1
 
+    // The selection, as a band (or the cursor, as a line) in the selection
+    // colour. Under the window frame, so the frame stays readable over it.
+    if (selection && numSamples) {
+      const sx0 = (selection.startSample / numSamples) * w
+      const sx1 = (selection.endSample / numSamples) * w
+      ctx.fillStyle = tokenValue('--theme-accent') || '#fe589a'
+      if (sx1 - sx0 >= 1) {
+        ctx.globalAlpha = 0.28
+        ctx.fillRect(sx0, 0, sx1 - sx0, STRIP_H)
+      } else {
+        ctx.globalAlpha = 0.9
+        ctx.fillRect(Math.round(sx0), 0, 1, STRIP_H)
+      }
+      ctx.globalAlpha = 1
+    }
+
     // The visible window. Everything OUTSIDE it is dimmed rather than the
     // window being highlighted — the shape being navigated is the whole
     // buffer, and a bright rectangle over a dim one reads as a selection.
@@ -102,10 +126,21 @@ export default function SandboxOverviewStrip() {
     ctx.fillRect(0, 0, x0, STRIP_H)
     ctx.fillRect(x1, 0, w - x1, STRIP_H)
     ctx.globalAlpha = 1
-    ctx.strokeStyle = tokenValue('--theme-accent') || '#fe589a'
+    // Fitted, the window IS the strip: a frame around all of it says nothing,
+    // so only the two edge grips are drawn — they are what there is to grab.
+    ctx.strokeStyle = tokenValue('--theme-text-muted') || '#999'
     ctx.lineWidth = 1
-    ctx.strokeRect(Math.round(x0) + 0.5, 0.5, Math.max(1, x1 - x0), STRIP_H - 1)
-  }, [buf, view, numSamples, dprEpoch])
+    if (fitted) {
+      ctx.beginPath()
+      ctx.moveTo(0.5, 0)
+      ctx.lineTo(0.5, STRIP_H)
+      ctx.moveTo(w - 0.5, 0)
+      ctx.lineTo(w - 0.5, STRIP_H)
+      ctx.stroke()
+    } else {
+      ctx.strokeRect(Math.round(x0) + 0.5, 0.5, Math.max(1, Math.round(x1 - x0) - 1), STRIP_H - 1)
+    }
+  }, [buf, view, numSamples, dprEpoch, selection, fitted])
 
   useEffect(() => {
     draw()
@@ -194,7 +229,8 @@ export default function SandboxOverviewStrip() {
       style={{ height: STRIP_H }}
       onMouseDown={handleDown}
       onMouseMove={handleHover}
-      title="Overview — drag to scroll, drag an edge to zoom, click to jump"
+      data-hint="Overview of the whole layer"
+      data-hint-mods="Drag an edge: zoom · Drag the window: scroll · Click outside it: jump there"
     />
   )
 }

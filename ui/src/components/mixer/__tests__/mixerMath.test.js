@@ -78,10 +78,11 @@ describe('mixerMath', () => {
     })
 
     it('grows past five for a longer chain while a 64px fader still fits, up to ten', () => {
-      // 360px for strips (a 409px dock in the app): 172 fixed + 64 fader leaves 124px = 7 rows.
+      // 360px for strips (a 409px dock in the app): 146 fixed + 64 fader leaves 150px = 9 rows.
       expect(insertRowsFor(6, 360).rows).toBe(6)
-      expect(insertRowsFor(9, 360).rows).toBe(7)
-      expect(insertRowsFor(9, 600).rows).toBe(9)
+      expect(insertRowsFor(9, 360).rows).toBe(9)
+      expect(insertRowsFor(12, 360).rows).toBe(9)
+      expect(insertRowsFor(12, 600).rows).toBe(10)
       expect(insertRowsFor(30, 2000).rows).toBe(10)
       for (const h of [300, 360, 420, 600]) {
         for (const longest of [1, 4, 8, 12]) {
@@ -92,12 +93,14 @@ describe('mixerMath', () => {
     })
 
     it('on a short dock it shows at most three rows over the shorter fader floor', () => {
-      // 271px for strips (a 320px dock at 1366x768).
-      expect(insertRowsFor(6, 271)).toEqual({ rows: 3, short: true })
-      expect(insertRowsFor(2, 271)).toEqual({ rows: 2, short: false })
-      expect(insertRowsFor(1, 271)).toEqual({ rows: 1, short: false })
+      // A 320px dock at 1366x768 (271px for strips) now fits three rows over a full 64px fader.
+      expect(insertRowsFor(6, 271)).toEqual({ rows: 3, short: false })
+      // 246px: two rows would fit a 64px fader, three only over the 48px floor.
+      expect(insertRowsFor(6, 246)).toEqual({ rows: 3, short: true })
+      expect(insertRowsFor(2, 246)).toEqual({ rows: 2, short: false })
+      expect(insertRowsFor(1, 246)).toEqual({ rows: 1, short: false })
       // Far too short for anything: still one row.
-      expect(insertRowsFor(6, 200).rows).toBe(1)
+      expect(insertRowsFor(6, 180).rows).toBe(1)
     })
 
     it('before the panel is measured it shows the chain up to five rows', () => {

@@ -31,6 +31,10 @@ export function zoomTrackHeight(height, deltaY) {
   return clampTrackHeight(Math.round(clampTrackHeight(height) * factor))
 }
 export const RULER_HEIGHT = 26
+// Height of the horizontal timeline scrollbar under the canvas. The header column ends with an
+// empty footer of the same height so both vertical scroll viewports are equally tall; otherwise
+// the header's max scrollTop is smaller and the headers lag the lanes when scrolled to the bottom.
+export const TIMELINE_HSCROLL_HEIGHT = 18
 // 232: the name gets 120px or more beside the 24px colour chip and three 24px state
 // toggles (M / S / V), which are hit-area floors and cannot shrink. It was 212 until round 3
 // (a 62px name: "Grow..."), and 188 with 17px buttons before that. The column is still
@@ -113,6 +117,16 @@ export function snapTickToGrid(tick, modifiers = {}, granularity = '1/16') {
 
 export function ticksToBeats(ticks) { return ticks / PPQ }
 export function beatsToTicks(beats) { return Math.round(beats * PPQ) }
+
+// Tick <-> canvas pixel, unrounded. For GEOMETRY only (where is this tick on
+// screen, which ticks does the viewport cover). Anything that writes a
+// position back to the model must snap or round it: use beatsToTicks().
+export function tickToPixel(tick, scrollOffset, ppb) {
+  return (tick / PPQ - scrollOffset) * ppb
+}
+export function pixelToTickExact(px, scrollOffset, ppb) {
+  return (px / ppb + scrollOffset) * PPQ
+}
 
 export function regionDurationToTicks(startTime, endTime, bpm) {
   const durationBeats = Math.abs(endTime - startTime) * (bpm / 60)

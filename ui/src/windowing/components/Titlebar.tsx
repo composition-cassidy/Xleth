@@ -1,6 +1,5 @@
 import React from 'react';
 import type { CSSProperties, KeyboardEvent, MouseEvent, PointerEvent, ReactNode } from 'react';
-import { ArrowDownToLine, ChevronDown, ChevronUp, Maximize2, Square, X } from 'lucide-react';
 import { armPanelDrag, useIsTabDropTarget } from '../managers/DragManager';
 import { dockHomeOf, PANEL_CATALOG, panelTypeColorVar, type PanelId } from '../registry/panelCatalog';
 import { isEdgeRegion, usePanelRegistry } from '../registry/PanelRegistry';
@@ -8,11 +7,21 @@ import { usePanelValue } from '../registry/usePanelValue';
 import { XlethIconButton } from '../../components/common/XlethButton.jsx';
 import './windowing.css';
 import chrome from './PanelChrome.module.css';
+import { iconComponent } from '../../ui-kit/icons';
+
+const IcArrowLineDown = iconComponent('arrow-line-down');
+const IcCaretDown = iconComponent('caret-down');
+const IcCaretUp = iconComponent('caret-up');
+const IcCornersIn = iconComponent('corners-in');
+const IcCornersOut = iconComponent('corners-out');
+const IcX = iconComponent('x');
 
 export interface TitlebarProps {
   id: PanelId;
   focused: boolean;
   children?: ReactNode;
+  /** The content takes the free width instead of sizing to itself. */
+  contentFill?: boolean;
 }
 
 /** Keyboard nudge per arrow press; Shift multiplies it. */
@@ -25,7 +34,7 @@ export function isTitlebarControlTarget(target: EventTarget | null): boolean {
     && Boolean(target.closest('button'));
 }
 
-export function Titlebar({ id, focused, children }: TitlebarProps) {
+export function Titlebar({ id, focused, children, contentFill = false }: TitlebarProps) {
   const entry = PANEL_CATALOG[id];
   const mode = usePanelValue(id, (p) => p.mode);
   const collapsed = usePanelValue(id, (p) => p.collapsed);
@@ -148,7 +157,7 @@ export function Titlebar({ id, focused, children }: TitlebarProps) {
       {/* Only floating and maximized panels have a titlebar now, so it names
           the window. Focus shows as an outline on the frame. */}
       <span className={chrome.title}>{entry.title}</span>
-      {children ? <div className="xleth-windowing-titlebar-content">{children}</div> : null}
+      {children ? <div className={`xleth-windowing-titlebar-content${contentFill ? ' is-fill' : ''}`}>{children}</div> : null}
       <span className="xleth-windowing-drag-zone" aria-hidden="true" />
       <div className={`xleth-windowing-controls ${chrome.controls}`} aria-label={`${entry.title} panel controls`}>
         {canReturnToDock ? (
@@ -161,7 +170,7 @@ export function Titlebar({ id, focused, children }: TitlebarProps) {
             onPointerDown={stopControlPointerDown}
             onClick={returnToDock}
           >
-            <ArrowDownToLine aria-hidden="true" strokeWidth={2} />
+            <IcArrowLineDown aria-hidden="true" />
           </XlethIconButton>
         ) : null}
         <XlethIconButton
@@ -175,8 +184,8 @@ export function Titlebar({ id, focused, children }: TitlebarProps) {
           onClick={toggleCollapse}
         >
           {collapsed
-            ? <ChevronDown aria-hidden="true" strokeWidth={2} />
-            : <ChevronUp aria-hidden="true" strokeWidth={2} />}
+            ? <IcCaretDown aria-hidden="true" />
+            : <IcCaretUp aria-hidden="true" />}
         </XlethIconButton>
         {canMaximize ? (
           <XlethIconButton
@@ -190,8 +199,8 @@ export function Titlebar({ id, focused, children }: TitlebarProps) {
             onClick={toggleMaximize}
           >
             {mode === 'maximized'
-              ? <Square aria-hidden="true" strokeWidth={2} />
-              : <Maximize2 aria-hidden="true" strokeWidth={2} />}
+              ? <IcCornersIn aria-hidden="true" />
+              : <IcCornersOut aria-hidden="true" />}
           </XlethIconButton>
         ) : null}
         <XlethIconButton
@@ -204,7 +213,7 @@ export function Titlebar({ id, focused, children }: TitlebarProps) {
           onPointerDown={stopControlPointerDown}
           onClick={hidePanel}
         >
-          <X aria-hidden="true" strokeWidth={2} />
+          <IcX aria-hidden="true" />
         </XlethIconButton>
       </div>
     </div>

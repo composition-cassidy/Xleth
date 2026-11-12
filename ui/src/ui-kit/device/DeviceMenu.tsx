@@ -2,7 +2,9 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { IconButton } from '../Button';
+import MotionDiv from '../MotionDiv';
 import styles from './DeviceMenu.module.css';
+import { Icon } from '../icons';
 
 export interface DeviceMenuItem {
   label: string;
@@ -108,7 +110,10 @@ export default function DeviceMenu({ label, children, items, hint }: DeviceMenuP
       </IconButton>
       {open && pos && typeof document !== 'undefined'
         ? createPortal(
-          <div
+          <MotionDiv
+            recipe="pop"
+            exit
+            data-placement={pos.bottom !== undefined ? 'top' : 'bottom'}
             ref={popupRef}
             id={menuId}
             role="menu"
@@ -127,11 +132,11 @@ export default function DeviceMenu({ label, children, items, hint }: DeviceMenuP
                 disabled={item.disabled}
                 onClick={() => { close(); item.onSelect(); }}
               >
-                {item.danger ? <span className={styles.dangerGlyph} aria-hidden="true">×</span> : null}
+                {item.danger ? <span className={styles.dangerGlyph} aria-hidden="true"><Icon name="x" size={14} /></span> : null}
                 <span className={styles.itemLabel}>{item.label}</span>
               </button>
             ))}
-          </div>,
+          </MotionDiv>,
           document.body,
         )
         : null}

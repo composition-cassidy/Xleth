@@ -72,7 +72,7 @@ async function mount(extra = null) {
   await flush()
 }
 
-describe('Transient processor device in the chain', () => {
+describe('Transient Processor device in the chain', () => {
   it('mirrors the engine ranges and hydrates; values print through formatValue', async () => {
     await mount()
     for (const [id, label, min, max] of ENGINE) {
@@ -122,7 +122,7 @@ describe('Transient processor device in the chain', () => {
 
   it('pop-out opens the same device in a window; the legacy panel, its layout and its CSS are gone', async () => {
     await mount(<TransientProcPanel />)
-    act(() => q('button[aria-label="Open Transient processor in a window"]').click())
+    act(() => q('button[aria-label="Open Transient Processor in a window"]').click())
     await flush()
     expect(useTransientProcStore.getState().target).toEqual({ trackId: 3, nodeId: 7, storeKey: '3' })
     expect(q('[data-testid="transientproc-window"] section').getAttribute('data-presentation')).toBe('floating')

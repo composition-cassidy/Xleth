@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Columns2, Columns3 } from 'lucide-react'
 import useMixerStore, { peaksSnapshot } from '../../stores/mixerStore.js'
 import useEffectChainStore from '../../stores/effectChainStore.js'
 import useTimelineFocusStore from '../../stores/timelineFocusStore.js'
@@ -18,27 +17,44 @@ import useMixerIdentity from './useMixerIdentity.js'
 import useMixerUiStore, { STRIP_WIDTHS } from './mixerUiStore.js'
 import styles from './MixerPanel.module.css'
 import strip from './MixerStrip.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcCaretDown = iconComponent('caret-down')
+const IcCaretRight = iconComponent('caret-right')
+const IcColumnsFill = iconComponent('columns', 'fill')
+const IcColumnsReg = iconComponent('columns', 'regular')
 
 const ADD_TRACK_HINT = 'Adds an empty clip track to the project'
 
 
 /**
  * What every strip shares, printed once at the left of the scroller: the dB numerals of the
- * meters (same rows as a strip, so each numeral sits at the strips' tick), the words Pan
- * and Width for the two knobs, and the strip-width switch.
+ * meters (same rows as a strip, so each numeral sits at the strips' tick), the FX button that
+ * opens every strip's insert list, and the strip-width switch. The pan and width knobs print
+ * no words anywhere: their pointers are the reading.
  */
-export function MixerGutter({ stripMode, onStripMode }) {
+export function MixerGutter({ stripMode, onStripMode, insertsOpen = false, onInsertsOpen }) {
   const compact = stripMode === 'compact'
   return (
     <div className={strip.gutter} data-testid="mixer-gutter" role="group" aria-label="Mixer legend">
       <div className={strip.gutterHead} />
-      <div className={strip.gutterCell} aria-hidden="true">FX</div>
-      <div className={strip.gutterCell} />
-      {/* The legend for the row of knobs beside it: the left knob is pan, the right one width. */}
-      <div className={`${strip.gutterCell} ${strip.gutterKnobs}`} aria-hidden="true">
-        <span>Pan</span>
-        <span>Width</span>
+      <div className={`${strip.gutterCell} ${strip.gutterFx}`}>
+        <button
+          type="button"
+          className={strip.gutterFxButton}
+          aria-expanded={insertsOpen}
+          aria-label={insertsOpen ? 'Insert names: shown. Hide them' : 'Insert names: hidden. Show them'}
+          data-testid="mixer-inserts-toggle"
+          data-hint={insertsOpen ? 'Every strip lists its inserts by name. Click to fold them to a count.' : 'Every strip shows its insert count. Click to list the inserts by name.'}
+          onClick={() => onInsertsOpen?.(!insertsOpen)}
+        >
+          {insertsOpen ? <IcCaretDown size={14} aria-hidden="true" /> : <IcCaretRight size={14} aria-hidden="true" />}
+          <span>FX</span>
+        </button>
       </div>
+      <div className={strip.gutterCell} />
+      {/* The pan + width knob row and the volume row: nothing to print (the knobs carry no words). */}
+      <div className={strip.gutterCell} />
       <div className={strip.gutterCell} />
       <div className={`${strip.gutterCell} ${strip.gutterScale}`}>
         <span className={strip.gutterUnit} aria-hidden="true">dB</span>
@@ -52,7 +68,7 @@ export function MixerGutter({ stripMode, onStripMode }) {
           hint={compact ? 'Strips are compact (72 px). Click for normal (84 px).' : 'Strips are normal (84 px). Click for compact (72 px), which fits more across.'}
           onClick={() => onStripMode(compact ? 'normal' : 'compact')}
         >
-          {compact ? <Columns3 aria-hidden="true" /> : <Columns2 aria-hidden="true" />}
+          {compact ? <IcColumnsFill aria-hidden="true" /> : <IcColumnsReg aria-hidden="true" />}
         </IconButton>
       </div>
     </div>
@@ -88,6 +104,8 @@ export default function MixerPanel() {
   const focusedTrackId = useTimelineFocusStore(s => s.focusedTrackId)
   const stripMode = useMixerUiStore(s => s.stripWidthMode)
   const setStripMode = useMixerUiStore(s => s.setStripWidthMode)
+  const insertsOpen = useMixerUiStore(s => s.insertsOpen)
+  const setInsertsOpen = useMixerUiStore(s => s.setInsertsOpen)
   const stripW = STRIP_WIDTHS[stripMode]
   const panelRef = useRef(null)
   const scrollRef = useRef(null)
@@ -204,11 +222,20 @@ export default function MixerPanel() {
   // many rows as the longest chain on any strip (or the Master) needs, and no more. A number,
   // so this only re-renders when the longest chain changes, not on every chain edit.
   const trackKeys = useMemo(() => orderedIds.map(String), [orderedIds])
+
+  // Motion: a strip enters only when it is ADDED (the mixer grew by one track). A project load
+  // or a layout change draws every strip at once, complete.
+  const shownStripsRef = useRef(orderedIds.length)
+  const stripEnter = orderedIds.length === shownStripsRef.current + 1
+  useEffect(() => { shownStripsRef.current = orderedIds.length }, [orderedIds.length])
   const longestChain = useEffectChainStore((s) => Math.max(
     longestInsertList(s.chains, s.fxModes, trackKeys),
     longestInsertList(s.chains, s.fxModes, ['master']),
   ))
   const { rows: insertRowCount, short: shortDock } = insertRowsFor(longestChain, stripAreaH)
+  // Closed, the insert area is one 24 px summary cell whatever the chains hold, so the row
+  // count the CSS sees is 0 and the short-dock fader floor is not needed.
+  const shortFloor = insertsOpen && shortDock
 
   // One observer on the panel: a short dock shows three insert rows instead of five.
   useEffect(() => {
@@ -234,13 +261,14 @@ export default function MixerPanel() {
       className={styles.panel}
       data-testid="mixer-panel"
       data-strip-width={stripMode}
-      data-short={shortDock ? 'true' : undefined}
+      data-short={shortFloor ? 'true' : undefined}
+      data-inserts={insertsOpen ? 'open' : 'closed'}
       data-insert-rows={insertRowCount}
-      style={{ '--mx-ins-rows': insertRowCount, '--mx-bar-h': `${barH}px` }}
+      style={{ '--mx-ins-rows': insertsOpen ? insertRowCount : 0, '--mx-bar-h': `${barH}px` }}
     >
       {orderedIds.length > 0 ? (
         <div className={styles.gutterDock} data-folders={mixerLayout.hasFolderHeaders || undefined}>
-          <MixerGutter stripMode={stripMode} onStripMode={setStripMode} />
+          <MixerGutter stripMode={stripMode} onStripMode={setStripMode} insertsOpen={insertsOpen} onInsertsOpen={setInsertsOpen} />
         </div>
       ) : null}
       <div className={styles.scroll} ref={scrollRef}>
@@ -272,14 +300,14 @@ export default function MixerPanel() {
               hint={ADD_TRACK_HINT}
             />
           ) : orderedIds.map(id => (
-            <MixerStrip key={id} trackId={id} index={indexOf[id]} color={identity[id]} stripW={stripW} insertRowCount={insertRowCount} />
+            <MixerStrip key={id} trackId={id} index={indexOf[id]} color={identity[id]} stripW={stripW} insertRowCount={insertRowCount} insertsOpen={insertsOpen} enter={stripEnter} />
           ))}
           {orderedIds.length > 0 ? <RoutingBand orderedIds={orderedIds} stripW={stripW} idColors={identity} /> : null}
         </div>
       </div>
 
       <div className={styles.dock} data-folders={mixerLayout.hasFolderHeaders && orderedIds.length > 0 ? true : undefined}>
-        <MasterStrip stripW={stripW} insertRowCount={insertRowCount} />
+        <MasterStrip stripW={stripW} insertRowCount={insertRowCount} insertsOpen={insertsOpen} />
         <MasterLoudnessMeter />
       </div>
 

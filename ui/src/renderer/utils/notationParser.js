@@ -8,7 +8,9 @@ const TICKS_PER_32ND = 120
  * @param {string} str           Notation string (e.g. "11_1*2_")
  * @param {number} syllableCount Number of valid syllables (1-based max index)
  * @param {number} cursorTick    Absolute tick to begin counting from
- * @param {number} offsetPercent audioOffsetPercent for modifier tokens (', #, x)
+ * @param {number|((syllableIndex: number) => number)} offsetPercent
+ *                               audioOffsetPercent for modifier tokens (', #, x). A function gives
+ *                               each syllable its own offset (0-based syllable index in).
  * @returns {{ placements: Array, errors: Array, totalTicks: number }}
  *
  * Each placement carries a `lengthTicks` — the clip's true duration, so a 32nd
@@ -26,6 +28,7 @@ const TICKS_PER_32ND = 120
  *   unknown    push to errors, advance 0 ticks, continue
  */
 export function parseNotation(str, syllableCount, cursorTick, offsetPercent) {
+  const offsetFor = typeof offsetPercent === 'function' ? offsetPercent : () => offsetPercent
   const placements = []
   const errors = []
   let tick = cursorTick
@@ -75,7 +78,7 @@ export function parseNotation(str, syllableCount, cursorTick, offsetPercent) {
       if (i < str.length && (str[i] === "'" || str[i] === '#')) {
         i++
         if (syllableIndex < syllableCount) {
-          placements.push({ syllableIndex, startTick: tick, lengthTicks: TICKS_PER_32ND, audioOffsetPercent: offsetPercent })
+          placements.push({ syllableIndex, startTick: tick, lengthTicks: TICKS_PER_32ND, audioOffsetPercent: offsetFor(syllableIndex) })
         } else {
           errors.push({ char, position, reason: `Syllable ${syllableIndex + 1} out of range` })
         }
@@ -87,8 +90,8 @@ export function parseNotation(str, syllableCount, cursorTick, offsetPercent) {
       if (i < str.length && str[i] === 'x') {
         i++
         if (syllableIndex < syllableCount) {
-          placements.push({ syllableIndex, startTick: tick, lengthTicks: TICKS_PER_32ND, audioOffsetPercent: offsetPercent })
-          placements.push({ syllableIndex, startTick: tick + TICKS_PER_32ND, lengthTicks: TICKS_PER_32ND, audioOffsetPercent: offsetPercent })
+          placements.push({ syllableIndex, startTick: tick, lengthTicks: TICKS_PER_32ND, audioOffsetPercent: offsetFor(syllableIndex) })
+          placements.push({ syllableIndex, startTick: tick + TICKS_PER_32ND, lengthTicks: TICKS_PER_32ND, audioOffsetPercent: offsetFor(syllableIndex) })
         } else {
           errors.push({ char, position, reason: `Syllable ${syllableIndex + 1} out of range` })
         }

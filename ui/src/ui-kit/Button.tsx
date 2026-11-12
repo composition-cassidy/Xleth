@@ -1,6 +1,7 @@
 import { forwardRef } from 'react';
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
 import { hintAttrs, type HintProps } from './hint';
+import { IconActive } from './icons';
 import styles from './Button.module.css';
 import type { DataAttrs } from './valueProps';
 
@@ -55,11 +56,13 @@ export interface IconButtonProps extends BaseProps {
   pressed?: boolean;
   /** `quiet`: an always-on housekeeping toggle (see OnTone). Only meaningful with `pressed`. */
   tone?: OnTone;
+  /** Tool pickers: the one-letter shortcut, shown beside the icon at rest (not only in the hint bar). */
+  keyHint?: string;
 }
 
 /** Square icon button, hit area at least 24x24. `pressed` makes it a toggle. */
 export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(function IconButton(
-  { size = 'md', variant = 'ghost', label, pressed, tone, hint, hintMods, className, type = 'button', children, ...rest },
+  { size = 'md', variant = 'ghost', label, pressed, tone, keyHint, hint, hintMods, className, type = 'button', children, ...rest },
   ref,
 ) {
   return (
@@ -73,9 +76,13 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
       aria-label={label}
       aria-pressed={pressed}
       data-tone={tone === 'quiet' ? 'quiet' : undefined}
+      data-key={keyHint || undefined}
+      aria-keyshortcuts={keyHint || undefined}
       {...hintAttrs({ hint, hintMods })}
     >
-      {children}
+      {/* A pressed IconButton renders its icon in Fill (active = Fill, never colour alone). */}
+      <IconActive.Provider value={!!pressed}>{children}</IconActive.Provider>
+      {keyHint ? <span className={styles.key} aria-hidden="true">{keyHint}</span> : null}
     </button>
   );
 });

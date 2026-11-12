@@ -18,8 +18,8 @@
     border-bottom: 1px solid var(--ui-g4);
   }
 
-  /* Only mounted while the view is zoomed in (see SandboxOverviewStrip), so it costs no vertical space in
-     the common fitted case. */
+  /* Always mounted while there is audio (see SandboxOverviewStrip): the ruler and waveform under it never
+     shift when the view zooms. */
   .overview {
     flex: 0 0 auto;
     display: block;

@@ -70,6 +70,12 @@
     min-height: 6px;
   }
 
+  .footer {
+    box-sizing: border-box;
+    flex-shrink: 0;
+    background: var(--ui-g1);
+  }
+
   .addTrack {
     box-sizing: border-box;
     display: flex;
@@ -186,12 +192,15 @@
   }
 
   /* An action rather than a state: it appears on hover or focus, but stays reachable by keyboard. */
-  .folderDelete {
+  .folderDelete,
+  .laneDelete {
     opacity: 0;
   }
 
   .folder:hover .folderDelete,
-  .folder:focus-within .folderDelete {
+  .folder:focus-within .folderDelete,
+  .autoLane:hover .laneDelete,
+  .autoLane:focus-within .laneDelete {
     opacity: 1;
   }
 

@@ -1,6 +1,9 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, ChevronDown } from 'lucide-react'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcCaretDown = iconComponent('caret-down')
+const IcCheck = iconComponent('check')
 
 function clamp(value, min, max) {
   if (max < min) return min
@@ -253,7 +256,7 @@ export default function XlethSelect({
                   onClick={() => selectIndex(index)}
                 >
                   <span className="xleth-select-option-label">{option.label}</span>
-                  {selected && <Check size={14} aria-hidden="true" />}
+                  {selected && <IcCheck size={14} aria-hidden="true" />}
                 </button>
               </React.Fragment>
             )
@@ -285,7 +288,7 @@ export default function XlethSelect({
         <span className="xleth-select-trigger-label">
           {selectedOption?.label ?? placeholder}
         </span>
-        <ChevronDown
+        <IcCaretDown
           className="xleth-select-chevron"
           size={15}
           aria-hidden="true"

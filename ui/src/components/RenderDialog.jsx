@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Music2, PlaySquare, MessageCircle, SlidersHorizontal } from 'lucide-react'
 import { useToast } from './Toast.jsx'
 import AudioTab from './exportPresets/AudioTab.jsx'
 import YouTubeTab from './exportPresets/YouTubeTab.jsx'
@@ -28,15 +27,21 @@ import {
   FIT_MODES,
   DEFAULT_PROJECT_CANVAS,
 } from './exportPresets/presets.js'
+import { iconComponent } from '../ui-kit/icons'
+
+const IcDiscordLogo = iconComponent('discord-logo')
+const IcMusicNotes = iconComponent('music-notes')
+const IcSlidersHorizontal = iconComponent('sliders-horizontal')
+const IcYoutubeLogo = iconComponent('youtube-logo')
 
 const NO_MEASUREMENT_SENTINEL = -200.0
 const VIDEO_DESTINATIONS = ['youtube', 'discord', 'custom']
 
 const DESTINATIONS = [
-  { id: 'audio',   label: 'Audio',   glyph: <Music2 size={14} />, hint: 'WAV, MP3 or FLAC' },
-  { id: 'youtube', label: 'YouTube', glyph: <PlaySquare size={14} />, hint: 'MP4, up to 4K' },
-  { id: 'discord', label: 'Discord', glyph: <MessageCircle size={14} />, hint: 'Fits the upload limit' },
-  { id: 'custom',  label: 'Custom',  glyph: <SlidersHorizontal size={14} />, hint: 'Full control' },
+  { id: 'audio',   label: 'Audio',   glyph: <IcMusicNotes size={14} />, hint: 'WAV, MP3 or FLAC' },
+  { id: 'youtube', label: 'YouTube', glyph: <IcYoutubeLogo size={14} />, hint: 'MP4, up to 4K' },
+  { id: 'discord', label: 'Discord', glyph: <IcDiscordLogo size={14} />, hint: 'Fits the upload limit' },
+  { id: 'custom',  label: 'Custom',  glyph: <IcSlidersHorizontal size={14} />, hint: 'Full control' },
 ]
 
 function formatLufs(v) { return v <= NO_MEASUREMENT_SENTINEL ? '—' : formatValue(v, 'LUFS') }

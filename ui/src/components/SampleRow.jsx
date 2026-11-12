@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useSyncExternalStore } from 'react'
-import { Play, Square, ArrowLeftRight } from 'lucide-react'
 import { labelColor, midiToNoteName } from '../constants/labels.js'
 import { tokenValue } from '../theming/tokenValue.ts'
 import { formatSampleDuration } from './browser/browserFormat.js'
@@ -10,6 +9,11 @@ import {
   togglePreview,
 } from './samplePreview.js'
 import styles from './browser/Browser.module.css'
+import { iconComponent } from '../ui-kit/icons'
+
+const IcArrowsLeftRightFill = iconComponent('arrows-left-right', 'fill')
+const IcPlay = iconComponent('play')
+const IcStopFill = iconComponent('stop', 'fill')
 
 /**
  * One sample in the Browser list: a 24px row, the label's identity colour as a
@@ -149,7 +153,7 @@ export default function SampleRow({
         aria-pressed={isPlaying}
         data-hint={isPlaying ? 'Stop preview' : 'Preview this sample'}
       >
-        {isPlaying ? <Square size={10} aria-hidden="true" /> : <Play size={10} aria-hidden="true" />}
+        {isPlaying ? <IcStopFill size={14} aria-hidden="true" /> : <IcPlay size={14} aria-hidden="true" />}
       </button>
 
       {/* Name or rename input */}
@@ -170,7 +174,7 @@ export default function SampleRow({
       {/* Swap indicator */}
       {region.hasSwappedAudio && !isEditing && (
         <span className={styles.rowGlyph} title={swapTitle} aria-label={swapTitle} role="img">
-          <ArrowLeftRight size={10} aria-hidden="true" />
+          <IcArrowsLeftRightFill size={14} aria-hidden="true" />
         </span>
       )}
 
