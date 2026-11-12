@@ -2,26 +2,42 @@
 /* These are layout/timing primitives. Not user-theme tokens.                 */
 
 @font-face {
-  font-family: "Neuzeit Grotesk";
-  src: url("../../../Neuzeit-Grotesk-Light.otf") format("opentype");
+  font-family: "Barlow";
+  src: url("../../assets/fonts/Barlow/Barlow-Light.ttf") format("truetype");
   font-style: normal;
   font-weight: 300;
   font-display: swap;
 }
 
 @font-face {
-  font-family: "Neuzeit Grotesk";
-  src: url("../../../Neuzeit-Grotesk.otf") format("opentype");
+  font-family: "Barlow";
+  src: url("../../assets/fonts/Barlow/Barlow-Regular.ttf") format("truetype");
   font-style: normal;
-  font-weight: 400 500;
+  font-weight: 400;
   font-display: swap;
 }
 
 @font-face {
-  font-family: "Neuzeit Grotesk";
-  src: url("../../../Neuzeit-Grotesk-Bold.otf") format("opentype");
+  font-family: "Barlow";
+  src: url("../../assets/fonts/Barlow/Barlow-Medium.ttf") format("truetype");
   font-style: normal;
-  font-weight: 600 800;
+  font-weight: 500;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Barlow";
+  src: url("../../assets/fonts/Barlow/Barlow-SemiBold.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Barlow";
+  src: url("../../assets/fonts/Barlow/Barlow-Bold.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 700 800;
   font-display: swap;
 }
 
@@ -78,7 +94,7 @@
 
   /* These are layout/timing primitives. Not user-theme tokens. */
   /* Typography */
-  --xleth-global-font-family: "Neuzeit Grotesk", "Inter", "Noto Sans", "Segoe UI", system-ui, sans-serif;
+  --xleth-global-font-family: "Barlow", "Inter", "Noto Sans", "Segoe UI", system-ui, sans-serif;
 
   /* Radius */
   --radius-sm: 4px;

@@ -359,12 +359,15 @@ main renderer has no start-screen surface to host one (Welcome is its own window
 
 ## 4. Typography
 
-- **Face:** `--xleth-global-font-family`, unchanged:
-  `"Neuzeit Grotesk", "Inter", "Noto Sans", "Segoe UI", system-ui, sans-serif`.
-- **Licensing:** Neuzeit Grotesk is a commercial face and Xleth is a public repo. The `.otf`
-  files are **not committed and must never be**. Public builds fall back to Inter, then the
-  rest of the stack. **That fallback is intentional**, not a bug to fix. (The legacy
-  `@font-face` rules point at `../../../*.otf`, which does not exist in a clean checkout.)
+- **Face:** `--xleth-global-font-family`:
+  `"Barlow", "Inter", "Noto Sans", "Segoe UI", system-ui, sans-serif`. Barlow is the brand font.
+- **Licensing:** Barlow is licensed under the SIL Open Font License 1.1 (copyright 2017 The Barlow
+  Project Authors, https://github.com/jpt/barlow) and is vendored in `ui/assets/fonts/Barlow/` with its
+  `OFL.txt`: Light 300, Regular 400, Medium 500, SemiBold 600, Bold 700 (static TTFs from
+  `google/fonts` `ofl/barlow/`). The former brand face, Neuzeit Grotesk, is a commercial typeface and was
+  replaced for licensing reasons because Xleth is a public repo under AGPL-3.0-or-later. Its `.otf` files
+  are untracked and gitignored, must never be committed or packaged, and no `@font-face` or `local()` source
+  may refer to them. Inter, Noto Sans and the rest of the stack remain the fallbacks.
 - **Scale (px at 100% UI scale):** `--type-10` meter ticks and units only · `--type-11` label ·
   `--type-12` default control text · `--type-13` section header · `--type-16` panel and dialog
   title. The tokens are plain px. The global UI scale (DAW Floor) is the Electron window zoom

@@ -2,8 +2,11 @@
 
 **Date:** 2026-11-12
 **Decision (owner):** XLETH's outbound license is **AGPL-3.0-or-later**. This audit does not revisit that.
-**Gate result: BLOCKED.** One CONFLICT and four UNCLEAR items (section 1). No license changes were made:
-no `LICENSE`, no `THIRD_PARTY_NOTICES.md`, no `ui/package.json` edit, no README, no installer change.
+**Gate result (first pass, 2026-11-12): BLOCKED** by one CONFLICT and four UNCLEAR items (section 1).
+**Resolution pass (2026-11-12, later): 4 of 5 resolved; 1 still BLOCKED (B3, FLP importer provenance).**
+Per the owner's rule, a BLOCKED item means the license itself is not applied yet: no `LICENSE`,
+`THIRD_PARTY_NOTICES.md`, README, `ui/package.json` license field or installer change until B3 is cleared.
+See section 1a for how each item was resolved.
 
 Scope: everything that ships in, or links into, the distributed app (the NSIS and portable builds produced by
 `ui/electron-builder.json`, plus the engine/bridge/scanner/editor-host binaries they bundle).
@@ -27,7 +30,29 @@ as unresolved.
 | B4 | Separation model **BALANCED** weight: `becruily_deux.ckpt`, **CC BY-NC 4.0** | **UNCLEAR** | Not bundled; downloaded to the user's machine at first use, gated by an acknowledgement. The project's own `NOTICE-separation-models.md` still lists NC as an "Open question for the project owner". Under this task's rule (non-commercial = CONFLICT or UNCLEAR) it is flagged. It does not conflict with licensing XLETH's code as AGPL; it constrains how the feature can be offered. |
 | B5 | Separation model **BEST** weight: `bs_roformer_ft1_anvuew_sdr_12.55.ckpt`, declared `gpl-3.0` | **UNCLEAR** | Not bundled; downloaded at first use. The only license evidence is a Hugging Face metadata tag, with no grant statement from the author. The sidecar audit marks it CLEARED by owner resolution (2026-08-28), conditional on XLETH staying open source (it will, under AGPL). GPL-3.0 is compatible with AGPL-3.0, so this is low risk, but the weights' license is not independently confirmed. |
 
-### Options per blocking item
+### 1a. Resolutions (owner decisions, applied 2026-11-12)
+
+| # | Result | How it was resolved |
+|---|--------|---------------------|
+| B1 Neuzeit | **RESOLVED** | Replaced by **Barlow** (SIL OFL 1.1, Copyright 2017 The Barlow Project Authors, https://github.com/jpt/barlow). Neuzeit was referenced in `ui/src/styles/app.css` (3 `@font-face`: 300, 400-500, 600-800 and the `--xleth-global-font-family` stack), `ui/welcome.html` (3 `@font-face`: 300, 400-500, 600-700 and `--font`), `ui/splash.html` (`--font` only, no `@font-face`), `ui/src/styles/typography.js` and its test, and `ui/DESIGN.md`. Weights in use across the UI: 300, 400, 500, 600, 700. Barlow has no variable font, so five static TTFs are vendored in `ui/assets/fonts/Barlow/`: Light 300, Regular 400, Medium 500, SemiBold 600, Bold 700, with `OFL.txt`, taken from `google/fonts` `ofl/barlow/` at commit `c30b221beb0c1da59d563feb91ec8656a1fa972a` (upstream: jpt/barlow v1.408). SHA-256: Light `20b1375c…`, Regular `95aa02c7…`, Medium `f8906f76…`, SemiBold `86577cb3…`, Bold `84e6a4d6…`, OFL.txt `186d750e…`. Stacks now read `"Barlow", "Inter", "Noto Sans", "Segoe UI", system-ui, sans-serif`; no `local("Neuzeit Grotesk")` source. The three `.otf` files were `git rm --cached` and `Neuzeit-Grotesk*.otf` was added to `.gitignore`; the files remain on disk. `electron-builder.json` `files` no longer lists `assets/fonts/*.otf` and now lists `assets/fonts/Barlow/*.ttf` and `OFL.txt`. History was **not** rewritten: `a76e4d8` (which added the files, 2026-09-12) is not an ancestor of any of the 29 refs on `origin` (checked with a live `git ls-remote`), so the fonts have not been pushed. |
+| B2 Metronome | **RESOLVED** | Owner confirmed the three click samples were synthesized by the repo owner (Krasen). Header added to `MetronomeSamples.cpp` and to the generator that writes it: "Click samples: original work by Krasen, licensed under the project license (AGPL-3.0-or-later)." Both files are still untracked work in progress, so the header is on disk but not in the license commit. |
+| B3 FLP importer | **BLOCKED (provenance)** | The header of `flp-import.js` names the "FLP to Video" script, which is https://github.com/composition-cassidy/FLP-to-Video (`source/flp2json.py`). Its repository has **no license file** (GitHub reports none). The script header says it uses **PyFLP** (https://github.com/demberto/PyFLP, **GPL-3.0**, compatible with AGPL-3.0 through GPLv3 section 13) for channels, patterns and automation. The GitHub owner of FLP-to-Video is the same account as the git user and `origin` owner of this repo, so it looks like the owner's own work, which the owner can license as AGPL-3.0-or-later. By the stated rule (no license = BLOCKED) it stays BLOCKED until the owner confirms in writing that the FLP-to-Video script is theirs and may be relicensed under AGPL-3.0-or-later (ideally by adding a license to that repository too). An attribution comment crediting both has already been added to `flp-import.js` (untracked file). |
+| B4 BALANCED weight | **ACCEPTED** | See "Optional models downloaded by the user" below. |
+| B5 BEST weight | **ACCEPTED** | See "Optional models downloaded by the user" below. |
+
+### Optional models downloaded by the user (not distributed with XLETH)
+
+Neither file is in the repo, the installer or any build output. The sidecar downloads each one on the user's
+machine from the author's own repository, pinned to a commit and checked against a SHA-256, and only after the
+user accepts the acknowledgement text in `models.json`.
+
+| Model | Source URL | License | Evidence |
+|---|---|---|---|
+| BALANCED: Mel-Band RoFormer "deux", `becruily_deux.ckpt` | https://huggingface.co/becruily/mel-band-roformer-deux (commit `2da74427d682a3df47a774378fc24d7a1a0cdaad`) | **CC BY-NC 4.0** (non-commercial) | Model card front matter `license: cc-by-nc-4.0`, no additional grant; recorded in `NOTICE-separation-models.md` and `models.json` (`spdx: CC-BY-NC-4.0`, `commercial_use: false`). Owner decision (2026-11-12): accepted as a user-downloaded optional model. **Gate text checked:** the acknowledgement reads "The BALANCED model … is licensed CC BY-NC 4.0: you may use it for non-commercial purposes only, and you must credit becruily. XLETH does not redistribute it … If your work with these stems is commercial, use the FAST tier instead, or obtain permission from the author." It says non-commercial only explicitly, so no copy change was needed. `separationStore.js` shows `license.acknowledgement` before the first run. |
+| BEST: BS-Roformer FT1, `bs_roformer_ft1_anvuew_sdr_12.55.ckpt` | https://huggingface.co/anvuew/BS-RoFormer (commit `24988f47270cb3529b62c4f3bbb8234f4586de9b`) | Declared **GPL-3.0** (Hugging Face tag only) | The only license evidence is the metadata tag `license: gpl-3.0`; no grant statement from the author. GPL-3.0 is compatible with AGPL-3.0. Owner decision (2026-11-12): accepted. `models.json` carries `requires_acknowledgement: true` with text quoting GPL-3.0. |
+| Fast: MDX-Net Kim Vocal 2, `Kim_Vocal_2.onnx` (for completeness) | https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/Kim_Vocal_2.onnx | MIT, attribution required | UVR README grants third-party use; attribution string shown in the UI. |
+
+### Options that were offered per blocking item
 
 - **B1 Neuzeit:** (a) remove the three `.otf` files from git and from `electron-builder.json` `files`; the CSS
   stack already falls back to Inter, which is what `DESIGN.md` says public builds should do. Run
@@ -140,13 +165,14 @@ not ship.
 
 | Asset | Origin | Verdict |
 |---|---|---|
-| Neuzeit Grotesk fonts | see B1 | **CONFLICT** |
+| Neuzeit Grotesk fonts | see B1 | **RESOLVED**: replaced by Barlow (OFL-1.1, vendored in `ui/assets/fonts/Barlow/`); Neuzeit untracked, gitignored, not packaged |
+| Barlow Light/Regular/Medium/SemiBold/Bold + `OFL.txt` | google/fonts `ofl/barlow/`, Copyright 2017 The Barlow Project Authors | OK (OFL-1.1, separate font data files, shipped with its license text) |
 | Inter / IBM Plex Mono / Noto Sans | `@fontsource` packages, OFL-1.1 | OK |
 | `ui/assets/icon.ico`, `ui/xleth.svg` | project's own artwork (owner to confirm) | OK |
-| `art/*.png|jpg|jpeg|webp` (electron-builder `extraResources`) | **Untracked**: `git ls-files art` is empty, so a clean checkout ships nothing from here. A local build, however, would pick up the owner's mockups, screenshots and backdrop images. Provenance of the backdrop images is not recorded. | OK for clean builds. Recommend narrowing or removing that `extraResources` entry, since the Backdrop feature was removed. |
+| `art/*.png|jpg|jpeg|webp` (electron-builder `extraResources`) | **Untracked**: `git ls-files art` is empty, so a clean checkout ships nothing from here. A local build, however, would pick up the owner's mockups, screenshots and backdrop images. Provenance of the backdrop images is not recorded. | OK for clean builds. Planned: remove the `art/` `extraResources` entry in the apply step (owner decision), since the Backdrop feature was removed. |
 | `media/` (extraResources) | directory does not exist | n/a |
 | Factory FX presets and plugin layouts (`src/fx-presets/factory`, `src/plugin-ui/layouts`) | project's own | OK |
-| Metronome clicks | see B2 | **UNCLEAR** |
+| Metronome clicks | see B2 | **RESOLVED**: owner-authored, licensed under the project license |
 
 ## 8. Installer and packaging state
 

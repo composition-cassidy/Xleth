@@ -30,25 +30,35 @@
     --shadow-hard-sm: 3px 3px 0 rgba(0, 0, 0, 0.5);
     --shadow-press: 1px 1px 0 rgba(0, 0, 0, 0.5);
     --ease-spring: cubic-bezier(0.16, 1, 0.3, 1);
-    --font: "Neuzeit Grotesk", "Segoe UI", "Segoe UI Variable", system-ui, sans-serif;
+    --font: "Barlow", "Segoe UI", "Segoe UI Variable", system-ui, sans-serif;
   }
 
   /* assets/fonts/ sits beside this file (ui/) — self-contained, same
      packaging tier as splash.html's xleth.svg. */
   @font-face {
-    font-family: "Neuzeit Grotesk";
-    src: url("assets/fonts/Neuzeit-Grotesk-Light.otf") format("opentype");
+    font-family: "Barlow";
+    src: url("assets/fonts/Barlow/Barlow-Light.ttf") format("truetype");
     font-weight: 300;
   }
   @font-face {
-    font-family: "Neuzeit Grotesk";
-    src: url("assets/fonts/Neuzeit-Grotesk.otf") format("opentype");
+    font-family: "Barlow";
+    src: url("assets/fonts/Barlow/Barlow-Regular.ttf") format("truetype");
     font-weight: 400;
   }
   @font-face {
-    font-family: "Neuzeit Grotesk";
-    src: url("assets/fonts/Neuzeit-Grotesk-Bold.otf") format("opentype");
-    font-weight: 600 700;
+    font-family: "Barlow";
+    src: url("assets/fonts/Barlow/Barlow-Medium.ttf") format("truetype");
+    font-weight: 500;
+  }
+  @font-face {
+    font-family: "Barlow";
+    src: url("assets/fonts/Barlow/Barlow-SemiBold.ttf") format("truetype");
+    font-weight: 600;
+  }
+  @font-face {
+    font-family: "Barlow";
+    src: url("assets/fonts/Barlow/Barlow-Bold.ttf") format("truetype");
+    font-weight: 700;
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
