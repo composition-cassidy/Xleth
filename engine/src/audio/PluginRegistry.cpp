@@ -1,4 +1,6 @@
 #include "audio/PluginRegistry.h"
+#include "audio/PluginBinaryInspector.h"
+#include "audio/PluginLoadBreadcrumb.h"
 
 #include <juce_core/juce_core.h>
 
@@ -13,9 +15,13 @@
 // Log prefixes (docs/PLUGIN_HOSTING_LOG.md):
 //   [PluginScan]  coordinator + scan loop (scan thread)
 //   [PluginReg]   registry, cache, settings, failure list, dedupe
+//   [PluginPreflight]  PE preflight in the scan loop (P2)
+//   [PluginHost]  load-crash recovery + quarantine (P2)
 // Never called on the audio thread.
 #define PSCAN_LOG(...) do { std::fprintf(stderr, "[PluginScan] " __VA_ARGS__); std::fflush(stderr); } while (0)
 #define PREG_LOG(...)  do { std::fprintf(stderr, "[PluginReg] "  __VA_ARGS__); std::fflush(stderr); } while (0)
+#define PFLIGHT_LOG(...) do { std::fprintf(stderr, "[PluginPreflight] " __VA_ARGS__); std::fflush(stderr); } while (0)
+#define PHOST_LOG(...)   do { std::fprintf(stderr, "[PluginHost] " __VA_ARGS__); std::fflush(stderr); } while (0)
 
 namespace {
 
@@ -150,6 +156,8 @@ void PluginRegistry::initialise(const juce::File& dataDir)
     knownPlugins_ = std::make_shared<juce::KnownPluginList>();
     loadSettings();
     loadFailures();
+    loadQuarantine();
+    recoverLoadCrash();
     PREG_LOG("%d format(s) registered; data dir %s\n",
              (int)formatManager_.getNumFormats(), dataDir_.getFullPathName().toRawUTF8());
 }
@@ -535,6 +543,194 @@ juce::String PluginRegistry::getFailuresAsJSON() const
     }
     json << "]";
     return json;
+}
+
+// ── Load-crash quarantine (P2) ───────────────────────────────────────────────
+
+namespace {
+
+constexpr int kQuarantineSchema = 1;
+
+juce::String quarantineKey(const juce::String& format, const juce::String& uid,
+                           const juce::String& depUid)
+{
+    return format + "|" + PluginRegistry::normaliseUidHex(uid) + "|"
+         + PluginRegistry::normaliseUidHex(depUid);
+}
+
+} // namespace
+
+juce::String PluginRegistry::normaliseUidHex(const juce::String& s)
+{
+    auto t = s.trim().toLowerCase();
+    if (t.startsWith("0x"))
+        t = t.substring(2);
+    return t;
+}
+
+void PluginRegistry::loadQuarantine()
+{
+    const auto file = dataDir_.getChildFile("plugin-quarantine.json");
+    std::lock_guard<std::mutex> lock(quarantineMutex_);
+    quarantine_.clear();
+    if (!file.existsAsFile())
+        return;
+
+    const auto root = juce::JSON::parse(file.loadFileAsString());
+    if (!root.isObject())
+    {
+        PHOST_LOG("plugin-quarantine.json is not valid JSON - starting empty\n");
+        return;
+    }
+    if (auto* arr = root.getProperty("entries", {}).getArray())
+    {
+        for (const auto& e : *arr)
+        {
+            QuarantineEntry q;
+            q.format           = e.getProperty("format", "").toString();
+            q.uniqueId         = normaliseUidHex(e.getProperty("uniqueId", "").toString());
+            q.deprecatedUid    = normaliseUidHex(e.getProperty("deprecatedUid", "").toString());
+            q.name             = e.getProperty("name", "").toString();
+            q.vendor           = e.getProperty("vendor", "").toString();
+            q.fileOrIdentifier = e.getProperty("fileOrIdentifier", "").toString();
+            q.phase            = e.getProperty("phase", "").toString();
+            q.context          = e.getProperty("context", "").toString();
+            q.crashedAt        = e.getProperty("crashedAt", "").toString();
+            q.crashes          = (int)e.getProperty("crashes", 1);
+            if (q.format.isNotEmpty())
+                quarantine_.push_back(q);
+        }
+    }
+    if (!quarantine_.empty())
+        PHOST_LOG("%d plugin(s) quarantined (crashed the engine while loading)\n",
+                  (int)quarantine_.size());
+}
+
+bool PluginRegistry::saveQuarantineLocked() const
+{
+    juce::Array<juce::var> entries;
+    for (const auto& q : quarantine_)
+    {
+        auto* o = new juce::DynamicObject();
+        o->setProperty("format",           q.format);
+        o->setProperty("uniqueId",         q.uniqueId);
+        o->setProperty("deprecatedUid",    q.deprecatedUid);
+        o->setProperty("name",             q.name);
+        o->setProperty("vendor",           q.vendor);
+        o->setProperty("fileOrIdentifier", q.fileOrIdentifier);
+        o->setProperty("phase",            q.phase);
+        o->setProperty("context",          q.context);
+        o->setProperty("crashedAt",        q.crashedAt);
+        o->setProperty("crashes",          q.crashes);
+        entries.add(juce::var(o));
+    }
+    auto* root = new juce::DynamicObject();
+    root->setProperty("version", kQuarantineSchema);
+    root->setProperty("entries", entries);
+    return atomicWrite(dataDir_.getChildFile("plugin-quarantine.json"),
+                       juce::JSON::toString(juce::var(root)));
+}
+
+void PluginRegistry::recoverLoadCrash()
+{
+    const auto crumb = PluginLoadBreadcrumb::takeOrphan(dataDir_);
+    if (!crumb.isObject())
+        return;
+
+    QuarantineEntry q;
+    q.format           = crumb.getProperty("format", "").toString();
+    q.uniqueId         = normaliseUidHex(crumb.getProperty("uniqueId", "").toString());
+    q.deprecatedUid    = normaliseUidHex(crumb.getProperty("deprecatedUid", "").toString());
+    q.name             = crumb.getProperty("name", "").toString();
+    q.vendor           = crumb.getProperty("vendor", "").toString();
+    q.fileOrIdentifier = crumb.getProperty("fileOrIdentifier", "").toString();
+    q.phase            = crumb.getProperty("phase", "").toString();
+    q.context          = crumb.getProperty("context", "").toString();
+    q.crashedAt        = crumb.getProperty("ts", "").toString();
+
+    PHOST_LOG("previous engine (pid %d) died while loading %s \"%s\" by %s (phase %s, context %s) - quarantined\n",
+              (int)crumb.getProperty("pid", 0), q.format.toRawUTF8(), q.name.toRawUTF8(),
+              q.vendor.toRawUTF8(), q.phase.toRawUTF8(), q.context.toRawUTF8());
+
+    {
+        std::lock_guard<std::mutex> lock(quarantineMutex_);
+        const auto key = quarantineKey(q.format, q.uniqueId, q.deprecatedUid);
+        bool merged = false;
+        for (auto& e : quarantine_)
+        {
+            if (quarantineKey(e.format, e.uniqueId, e.deprecatedUid) == key)
+            {
+                e.crashes  += 1;
+                e.phase     = q.phase;
+                e.context   = q.context;
+                e.crashedAt = q.crashedAt;
+                e.fileOrIdentifier = q.fileOrIdentifier;
+                merged = true;
+                break;
+            }
+        }
+        if (!merged)
+            quarantine_.push_back(q);
+        if (!saveQuarantineLocked())
+            PHOST_LOG("failed to write plugin-quarantine.json\n");
+    }
+
+    // Keep the breadcrumb for the UI's one-time notice until it is consumed.
+    if (auto* obj = crumb.getDynamicObject())
+        obj->setProperty("quarantined", true);
+    if (!atomicWrite(dataDir_.getChildFile("plugin-load-crash.json"), juce::JSON::toString(crumb)))
+        PHOST_LOG("failed to write plugin-load-crash.json\n");
+}
+
+bool PluginRegistry::isQuarantined(const juce::String& format, const juce::String& uniqueIdHex,
+                                   const juce::String& deprecatedUidHex) const
+{
+    const auto key = quarantineKey(format, uniqueIdHex, deprecatedUidHex);
+    std::lock_guard<std::mutex> lock(quarantineMutex_);
+    for (const auto& q : quarantine_)
+        if (quarantineKey(q.format, q.uniqueId, q.deprecatedUid) == key)
+            return true;
+    return false;
+}
+
+bool PluginRegistry::isQuarantined(const juce::PluginDescription& desc) const
+{
+    return isQuarantined(desc.pluginFormatName, PluginLoadBreadcrumb::uidHex(desc.uniqueId),
+                         PluginLoadBreadcrumb::uidHex(desc.deprecatedUid));
+}
+
+bool PluginRegistry::unquarantine(const juce::String& format, const juce::String& uniqueIdHex,
+                                  const juce::String& deprecatedUidHex)
+{
+    const auto key = quarantineKey(format, uniqueIdHex, deprecatedUidHex);
+    std::lock_guard<std::mutex> lock(quarantineMutex_);
+    const auto before = quarantine_.size();
+    quarantine_.erase(std::remove_if(quarantine_.begin(), quarantine_.end(),
+        [&](const QuarantineEntry& q) {
+            return quarantineKey(q.format, q.uniqueId, q.deprecatedUid) == key;
+        }), quarantine_.end());
+    if (quarantine_.size() == before)
+        return false;
+    if (!saveQuarantineLocked())
+        PHOST_LOG("failed to write plugin-quarantine.json\n");
+    PHOST_LOG("unquarantined %s\n", key.toRawUTF8());
+    return true;
+}
+
+std::vector<PluginRegistry::QuarantineEntry> PluginRegistry::getQuarantine() const
+{
+    std::lock_guard<std::mutex> lock(quarantineMutex_);
+    return quarantine_;
+}
+
+juce::var PluginRegistry::takeLastLoadCrash()
+{
+    const auto file = dataDir_.getChildFile("plugin-load-crash.json");
+    if (!file.existsAsFile())
+        return {};
+    const auto parsed = juce::JSON::parse(file.loadFileAsString());
+    file.deleteFile();
+    return parsed.isObject() ? parsed : juce::var();
 }
 
 // ── Cache persistence ────────────────────────────────────────────────────────
@@ -955,6 +1151,7 @@ void PluginRegistry::runScan(juce::File exeFile, ScanOptions options,
             }), failures_.end());
     };
 
+    int preflightFailed = 0;
     for (const ScanItem* item : work)
     {
         if (cancelFlag_.load())
@@ -963,6 +1160,29 @@ void PluginRegistry::runScan(juce::File exeFile, ScanOptions options,
         {
             std::lock_guard<std::mutex> pl(progressMutex_);
             current_ = item->path;
+        }
+
+        // ── Preflight (P2): parse the PE file, never load it ────────────────
+        // A binary we could never load (32-bit, ARM64, no entry point, not a
+        // PE, unreadable) is recorded straight into the failure list and the
+        // scanner is never spawned for it. These reasons stay distinct from
+        // crash/timeout: "can't load" vs "misbehaved".
+        {
+            const auto pre = PluginBinaryInspector::inspect(
+                std::wstring(item->path.toWideCharPointer()), item->formatName.toStdString());
+            if (pre.status != PluginBinaryInfo::Status::Ok)
+            {
+                const juce::String reason(PluginBinaryInspector::failureReason(pre.status));
+                PFLIGHT_LOG("%s %s: %s (machine=%s, %d export(s), binary %s) - not sent to the scanner\n",
+                            item->formatName.toRawUTF8(), item->path.toRawUTF8(),
+                            reason.toRawUTF8(), pre.machine.empty() ? "?" : pre.machine.c_str(),
+                            (int)pre.exports.size(), pre.binaryPath.c_str());
+                attempted.push_back(item);
+                recordFailure(*item, reason);
+                ++preflightFailed;
+                done_.store(++done);
+                continue;
+            }
         }
 
         // Launch lazily: a scan with nothing to load never spawns the scanner.
@@ -1153,10 +1373,10 @@ void PluginRegistry::runScan(juce::File exeFile, ScanOptions options,
 
     const double elapsed = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - scanStart).count();
-    PSCAN_LOG("%s: %d scanned ok, %d failed, %d unchanged, %d known failure(s) skipped; "
+    PSCAN_LOG("%s: %d scanned ok, %d failed (%d by preflight), %d unchanged, %d known failure(s) skipped; "
               "list %d -> %d (kept %d, replaced %d, stale %d, new %d) in %.1fs\n",
               cancelled ? (aborted ? "ABORTED" : "CANCELLED") : "complete",
-              succeeded, failedNew_.load(), skippedUnchanged_.load(), skippedFailed_.load(),
+              succeeded, failedNew_.load(), preflightFailed, skippedUnchanged_.load(), skippedFailed_.load(),
               prevTypes.size(), list->getNumTypes(), kept, replaced, stale,
               (int)results.size(), elapsed);
 

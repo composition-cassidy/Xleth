@@ -32,6 +32,13 @@
 //   plugin-settings.json        { version:1, searchPaths:{ <format>:{ user[], useDefaults } } }
 //   plugin-scan-failures.json   { version:1, entries:[{ format, path, reason, fileTime,
 //                                                       firstSeen, lastAttempt, attempts }] }
+//   plugin-quarantine.json      { version:1, entries:[{ format, uniqueId, deprecatedUid, name,
+//                                                       vendor, fileOrIdentifier, phase, context,
+//                                                       crashedAt, crashes }] }   (P2)
+//   plugin-load-crash.json      the breadcrumb of the last load crash, until the
+//                               UI consumes it (audio_getLastLoadCrash)        (P2)
+//   plugin-load-inflight.json   written by PluginLoadBreadcrumb around every
+//                               third-party load; recovered by initialise()   (P2)
 //
 // Non-copyable, non-movable.
 
@@ -50,7 +57,10 @@ public:
     {
         juce::String format;
         juce::String path;
-        juce::String reason;      // crash | timeout | no-types-found | exception | unknown-format | ...
+        // Scanner: crash | timeout | no-types-found | exception | unknown-format.
+        // Preflight (P2, never spawns the scanner): not-64bit | arm64 |
+        // no-entry-point | not-a-binary | unreadable.
+        juce::String reason;
         juce::int64  fileTime = 0; // ms since epoch (see computeFileTime)
         juce::String firstSeen;    // ISO-8601
         juce::String lastAttempt;  // ISO-8601
@@ -154,6 +164,42 @@ public:
     bool         isScanning() const;
     ScanProgress getScanProgress() const;
 
+    // ── Load-crash quarantine (P2) ───────────────────────────────────────────
+    // A plugin whose load killed the engine (breadcrumb left by a dead pid) is
+    // quarantined, keyed by format + uniqueId + deprecatedUid (NOT by path, so a
+    // moved plugin stays quarantined). Project load gives it a placeholder
+    // (reason "quarantined"); tryResolvePlugin refuses it until unquarantined.
+    struct QuarantineEntry
+    {
+        juce::String format;
+        juce::String uniqueId;        // lower-case hex
+        juce::String deprecatedUid;   // lower-case hex
+        juce::String name;
+        juce::String vendor;
+        juce::String fileOrIdentifier;
+        juce::String phase;           // instantiate | prepare | setState
+        juce::String context;         // insert | projectLoad | resolveMissing
+        juce::String crashedAt;       // ISO-8601 (breadcrumb ts)
+        int          crashes = 1;
+    };
+
+    juce::File getDataDir() const { return dataDir_; }
+
+    bool isQuarantined(const juce::PluginDescription& desc) const;
+    bool isQuarantined(const juce::String& format, const juce::String& uniqueIdHex,
+                       const juce::String& deprecatedUidHex) const;
+    // Removes the entry. True if one was removed.
+    bool unquarantine(const juce::String& format, const juce::String& uniqueIdHex,
+                      const juce::String& deprecatedUidHex);
+    std::vector<QuarantineEntry> getQuarantine() const;
+
+    // The breadcrumb of the load crash recovered at startup that the UI has not
+    // been told about yet, or void. Consuming it deletes plugin-load-crash.json.
+    juce::var takeLastLoadCrash();
+
+    // Trims, strips a "0x" prefix, lower-cases. Uids are always hex strings.
+    static juce::String normaliseUidHex(const juce::String& s);
+
     // ── Helpers (public for tests) ───────────────────────────────────────────
     // Full JSON string-body escaping (\" \\ \b \f \n \r \t, \u00XX for others < 0x20).
     static juce::String escapeJsonString(const juce::String& s);
@@ -176,6 +222,9 @@ private:
     bool         saveSettingsLocked() const;            // settingsMutex_ held
     void         loadFailures();
     bool         saveFailuresLocked() const;            // failuresMutex_ held
+    void         loadQuarantine();
+    bool         saveQuarantineLocked() const;          // quarantineMutex_ held
+    void         recoverLoadCrash();                    // initialise(): breadcrumb → quarantine
     juce::File   cacheFile() const;
     void         publish(std::shared_ptr<const juce::KnownPluginList> list);
     void         runScan(juce::File scannerExe, ScanOptions options,
@@ -196,6 +245,9 @@ private:
 
     mutable std::mutex        failuresMutex_;
     std::vector<FailureEntry> failures_;
+
+    mutable std::mutex           quarantineMutex_;
+    std::vector<QuarantineEntry> quarantine_;
 
     // Progress (counters atomic; strings under progressMutex_).
     std::atomic<bool> scanning_{false};

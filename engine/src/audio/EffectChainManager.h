@@ -269,6 +269,8 @@ public:
     // Returns the plugin file path (PluginDescription::fileOrIdentifier) for a
     // VST node.  Returns empty string for stock effects or if nodeId not found.
     juce::String getPluginFilePath(int nodeId) const;
+    // Full PluginDescription of a VST node (editor host INIT v2). False for stock.
+    bool getPluginDescription(int nodeId, juce::PluginDescription& out) const;
 
     // ── Missing-plugin support ──────────────────────────────────────────
     bool isNodeMissing(int nodeId) const;

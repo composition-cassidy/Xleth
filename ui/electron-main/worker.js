@@ -43,6 +43,29 @@ let worker = null;
 let nextMsgId = 1;
 const pending = new Map();
 
+// P2 (docs/PLUGIN_HOSTING_LOG.md): the engine keeps
+// %APPDATA%\Xleth\plugin-load-inflight.json on disk around every third-party
+// plugin load. If the worker dies while that file names its pid, the plugin it
+// was loading is what killed it.
+let lastExitPlugin = null; // { plugin, vendor, phase } of the last engine death, or null
+
+function readPluginLoadInflight(workerPid) {
+  try {
+    const file = path.join(app.getPath('appData'), 'Xleth', 'plugin-load-inflight.json');
+    if (!fs.existsSync(file)) return null;
+    const crumb = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (!crumb || typeof crumb.name !== 'string') return null;
+    if (workerPid && crumb.pid && crumb.pid !== workerPid) {
+      log(`[PluginHost] load breadcrumb belongs to pid ${crumb.pid}, not the worker (${workerPid}) - ignored`);
+      return null;
+    }
+    return crumb;
+  } catch (err) {
+    log(`[PluginHost] could not read plugin-load-inflight.json: ${err.message}`);
+    return null;
+  }
+}
+
 function resolveSystemNodeExe() {
   if (process.env.XLETH_NODE_EXE) return process.env.XLETH_NODE_EXE;
   if (app.isPackaged) {
@@ -233,10 +256,25 @@ async function startWorker() {
     worker.on('exit', (code) => {
       log(`[Worker] exited code=${code}`);
       workerReady = false;
-      addonError = `worker exited (code ${code})`;
-      for (const p of pending.values()) p.reject(new Error(addonError));
+      const crumb = readPluginLoadInflight(worker?.pid);
+      if (crumb) {
+        lastExitPlugin = { plugin: crumb.name, vendor: crumb.vendor || '', phase: crumb.phase || '' };
+        const by = lastExitPlugin.vendor ? ` by ${lastExitPlugin.vendor}` : '';
+        addonError = `XLETH's engine stopped while loading ${crumb.name}${by} ` +
+          `(${lastExitPlugin.phase || 'load'}, exit code ${code})`;
+        log(`[PluginHost] ${addonError}`);
+      } else {
+        lastExitPlugin = null;
+        addonError = `worker exited (code ${code})`;
+      }
+      const makeExitError = () => {
+        const err = new Error(addonError);
+        if (lastExitPlugin) Object.assign(err, lastExitPlugin);
+        return err;
+      };
+      for (const p of pending.values()) p.reject(makeExitError());
       pending.clear();
-      if (!resolved) { resolved = true; clearTimeout(readyTimer); reject(new Error(addonError)); }
+      if (!resolved) { resolved = true; clearTimeout(readyTimer); reject(makeExitError()); }
     });
     worker.on('error', (err) => {
       log(`[Worker] spawn error: ${err.message}`);
@@ -293,6 +331,8 @@ function isWorkerReady() { return workerReady; }
 function getAddonError() { return addonError; }
 function setAddonError(msg) { addonError = msg; }
 function killWorker() { worker?.kill(); }
+// { plugin, vendor, phase } when the last worker exit happened mid plugin load.
+function getLastExitPlugin() { return lastExitPlugin; }
 
 module.exports = {
   init,
@@ -302,4 +342,5 @@ module.exports = {
   getAddonError,
   setAddonError,
   killWorker,
+  getLastExitPlugin,
 };

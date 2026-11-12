@@ -34,6 +34,7 @@
 #include "audio/SidechainSourceProcessor.h"
 #include "audio/GuardedPluginWrapper.h"
 #include "audio/PluginCrashGuard.h"
+#include "audio/PluginLoadBreadcrumb.h"
 #include "audio/GraphEffectParameters.h"
 
 #include <algorithm>
@@ -302,9 +303,16 @@ int AudioGraph::addNode(const std::string& pluginId)
     if (!graph_) return -1;
     if (static_cast<int>(nodes_.size()) >= kMaxNodes) return -1;
 
-    auto effect = createEffect(pluginId);
+    // P2 load breadcrumb: createEffect opens it for a third-party plugin
+    // (phase "instantiate"); it stays open through prepare and is deleted when
+    // this scope ends — success or clean failure. Inactive for stock effects.
+    PluginLoadBreadcrumb crumb;
+    auto effect = createEffect(pluginId, &crumb);
     if (!effect) return -1;
 
+    // The plugin's prepareToPlay runs inside addProcessorToGraph: the APG
+    // rebuilds synchronously when nodes are added on the message thread.
+    crumb.setPhase("prepare");
     const int uid = addProcessorToGraph(pluginId, std::move(effect));
     if (uid < 0) return -1;
 
@@ -952,6 +960,24 @@ nlohmann::json AudioGraph::getChainState() const
         obj["bypassed"] = false;
         obj["missing"]  = (missingNodes_.count(uid) > 0);
         obj["crashed"]  = false;
+        if (missingNodes_.count(uid) > 0)
+        {
+            // P2: why the placeholder exists, plus the quarantine key so the UI
+            // can call audio_unquarantinePlugin. Additive fields.
+            // Computed live from the quarantine list, so it is right again
+            // the moment the plugin is unquarantined.
+            obj["missingReason"] = "missing";
+            auto dit = vstDescriptions_.find(uid);
+            if (dit != vstDescriptions_.end())
+            {
+                if (pluginRegistry_ && pluginRegistry_->isQuarantined(dit->second))
+                    obj["missingReason"] = "quarantined";
+                obj["pluginFormat"]  = dit->second.pluginFormatName.toStdString();
+                obj["pluginVendor"]  = dit->second.manufacturerName.toStdString();
+                obj["uniqueId"]      = PluginLoadBreadcrumb::uidHex(dit->second.uniqueId).toStdString();
+                obj["deprecatedUid"] = PluginLoadBreadcrumb::uidHex(dit->second.deprecatedUid).toStdString();
+            }
+        }
         obj["effectInstanceId"] = it->second.effectInstanceId;
 
         // Additive, session-only sidechain capability (VST-SC.2). `enabled` is
@@ -1304,8 +1330,21 @@ bool AudioGraph::fromJSON(const nlohmann::json& j,
                 const bool descOk = (xmlElem != nullptr && desc.loadFromXml(*xmlElem));
 
                 bool instantiated = false;
-                if (descOk && pluginRegistry_)
+                // P2: a plugin that crashed the engine while loading is never
+                // instantiated blindly on load — it takes the placeholder path
+                // (state preserved) until audio_unquarantinePlugin.
+                const bool quarantined =
+                    descOk && pluginRegistry_ && pluginRegistry_->isQuarantined(desc);
+                if (quarantined)
+                    std::fprintf(stderr,
+                                 "[PluginHost] \"%s\" is quarantined (crashed the engine while loading) - "
+                                 "placeholder kept, state preserved (%zu bytes)\n",
+                                 desc.name.toRawUTF8(), storedState.getSize());
+                if (descOk && pluginRegistry_ && !quarantined)
                 {
+                    // Breadcrumb for this one load: instantiate -> prepare -> setState.
+                    PluginLoadBreadcrumb crumb;
+                    crumb.begin(pluginRegistry_->getDataDir(), desc, "projectLoad");
                     juce::String errorMsg;
                     std::unique_ptr<juce::AudioPluginInstance> instance;
                     auto& fmtMgr = pluginRegistry_->getFormatManager();
@@ -1330,6 +1369,7 @@ bool AudioGraph::fromJSON(const nlohmann::json& j,
                     else if (instance)
                     {
                         auto wrapped = std::make_unique<GuardedPluginWrapper>(std::move(instance));
+                        crumb.setPhase("prepare");
                         newId = addProcessorToGraph(plugId, std::move(wrapped));
                         if (newId >= 0)
                         {
@@ -1339,6 +1379,7 @@ bool AudioGraph::fromJSON(const nlohmann::json& j,
                             // mark the node crashed and skip state restore.
                             if (storedState.getSize() > 0)
                             {
+                                crumb.setPhase("setState");
                                 auto* apgNode = graph_->getNodeForId(nodes_[newId].apgNodeId);
                                 if (apgNode)
                                 {
@@ -1550,6 +1591,21 @@ bool AudioGraph::tryResolvePlugin(int nodeId, PluginRegistry& registry)
     const float                   savedX       = nit->second.x;
     const float                   savedY       = nit->second.y;
 
+    // P2: a quarantined plugin is only retried through audio_unquarantinePlugin,
+    // which removes it from the list first.
+    if (registry.isQuarantined(desc))
+    {
+        std::fprintf(stderr,
+                     "[PluginHost] \"%s\" is quarantined - not resolved (unquarantine it first)\n",
+                     desc.name.toRawUTF8());
+        return false;
+    }
+
+    // Breadcrumb for this load: instantiate -> prepare -> setState. Deleted when
+    // this function returns (success or clean failure).
+    PluginLoadBreadcrumb crumb;
+    crumb.begin(registry.getDataDir(), desc, "resolveMissing");
+
     // Try to instantiate the real plugin.  createPluginInstance is guarded:
     // a faulty plugin DLL must not take down the host while the user is merely
     // attempting resolution.
@@ -1602,6 +1658,7 @@ bool AudioGraph::tryResolvePlugin(int nodeId, PluginRegistry& registry)
     removeNode(nodeId);  // also erases missingNodes_[nodeId]
 
     // Add the real plugin (wrapped for crash containment).
+    crumb.setPhase("prepare");
     const int newId = addProcessorToGraph(pluginId, std::move(wrapped));
     if (newId < 0) return false;
 
@@ -1611,6 +1668,7 @@ bool AudioGraph::tryResolvePlugin(int nodeId, PluginRegistry& registry)
     // Restore state.
     if (storedState.getSize() > 0)
     {
+        crumb.setPhase("setState");
         auto* newApgNode = graph_->getNodeForId(nodes_[newId].apgNodeId);
         if (newApgNode)
             newApgNode->getProcessor()->setStateInformation(
@@ -2873,6 +2931,14 @@ juce::String AudioGraph::getPluginFilePath(int nodeId) const
     return it->second.fileOrIdentifier;
 }
 
+bool AudioGraph::getPluginDescription(int nodeId, juce::PluginDescription& out) const
+{
+    auto it = vstDescriptions_.find(nodeId);
+    if (it == vstDescriptions_.end()) return false;
+    out = it->second;
+    return true;
+}
+
 // ─── FXG.4-a graph-owned parameter descriptor + normalized read/write ───────
 //
 // One unified path for stock effects (APVTS, the single source of truth) and
@@ -3063,7 +3129,8 @@ nlohmann::json AudioGraph::setGraphEffectParameterNormalized(int nodeId,
 
 // ─── Factory ────────────────────────────────────────────────────────────────
 
-std::unique_ptr<juce::AudioProcessor> AudioGraph::createEffect(const std::string& pluginId)
+std::unique_ptr<juce::AudioProcessor> AudioGraph::createEffect(const std::string& pluginId,
+                                                               PluginLoadBreadcrumb* crumb)
 {
     if (pluginId == "testgain")      return std::make_unique<TestGainEffect>();
     if (pluginId == "compressor")    return std::make_unique<XlethCompressorEffect>();
@@ -3101,6 +3168,20 @@ std::unique_ptr<juce::AudioProcessor> AudioGraph::createEffect(const std::string
         const auto desc = pluginRegistry_->findPluginByIdentifier(juce::String(pluginId));
         if (!desc.name.isEmpty())
         {
+            // P2: an explicit insert of a quarantined plugin is allowed (the
+            // user asked for it; a repeat crash re-quarantines it). Only blind
+            // loads (project load, resolve) are refused.
+            if (pluginRegistry_->isQuarantined(desc))
+                std::fprintf(stderr,
+                             "[PluginHost] inserting quarantined plugin \"%s\" on explicit request\n",
+                             desc.name.toRawUTF8());
+
+            // Breadcrumb: the caller's scope when given (kept open through
+            // prepare), else one that covers instantiation only.
+            PluginLoadBreadcrumb localCrumb;
+            PluginLoadBreadcrumb& bc = crumb ? *crumb : localCrumb;
+            bc.begin(pluginRegistry_->getDataDir(), desc, "insert");
+
             juce::String errorMsg;
             std::unique_ptr<juce::AudioPluginInstance> instance;
             auto& fmtMgr = pluginRegistry_->getFormatManager();

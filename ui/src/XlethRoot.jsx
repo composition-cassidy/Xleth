@@ -372,6 +372,35 @@ export async function handleXlethRootMenuAction(label, {
   }
 }
 
+// P2 (docs/PLUGIN_HOSTING_LOG.md): if the previous engine died while loading a
+// third-party plugin, the engine recovered its breadcrumb at start and
+// quarantined that plugin. Show ONE notice for it. Reading the record consumes
+// it, so the module-level promise keeps a StrictMode double-mount from
+// swallowing it on the first (discarded) mount.
+let lastLoadCrashNotice = null
+
+export function reportLastPluginLoadCrash({ xl, showToast }) {
+  if (!lastLoadCrashNotice) {
+    lastLoadCrashNotice = Promise.resolve()
+      .then(() => xl?.audio?.getLastLoadCrash?.())
+      .then((crash) => {
+        if (!crash || typeof crash.name !== 'string') return false
+        const by = crash.vendor ? ` by ${crash.vendor}` : ''
+        showToast?.(
+          `XLETH's engine stopped while loading ${crash.name}${by} last session. ` +
+          'It is quarantined: projects keep it as a placeholder until you retry it.',
+          'error',
+        )
+        return true
+      })
+      .catch((e) => {
+        console.warn('[PluginHost] getLastLoadCrash failed:', e)
+        return false
+      })
+  }
+  return lastLoadCrashNotice
+}
+
 export default function XlethRoot() {
   return (
     <ToastProvider>
@@ -414,6 +443,11 @@ function XlethRootInner() {
   useEffect(() => {
     useUiScaleStore.getState().hydrate()
   }, [])
+
+  // One notice for a plugin whose load killed the previous engine (P2).
+  useEffect(() => {
+    void reportLastPluginLoadCrash({ xl: window.xleth, showToast })
+  }, [showToast])
 
   useEffect(() => {
     const offStart = window.xleth?.audio?.onWorldProcessingStart?.(({ clipId }) =>

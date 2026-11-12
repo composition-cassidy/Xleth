@@ -154,6 +154,8 @@ function ExternalPluginDevice({
   let action = null
   if (!common.live) {
     status = 'Adding…'
+  } else if (effect.missing && effect.missingReason === 'quarantined') {
+    status = "Plugin quarantined. It crashed XLETH's engine while loading; its settings are kept."
   } else if (effect.missing) {
     status = 'Plugin missing. It is not installed on this computer.'
   } else if (effect.crashed) {

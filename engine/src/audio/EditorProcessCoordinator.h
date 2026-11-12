@@ -3,7 +3,8 @@
 // EditorProcessCoordinator — coordinator side of the out-of-process VST editor IPC.
 //
 // Spawns xleth-editor-host.exe as a JUCE ChildProcessWorker, sends it an INIT
-// message with the plugin path and state, and handles REDY / CLSD / ERR_.
+// message with the full PluginDescription and state, and handles VERS / REDY /
+// CLSD / ERR_.
 //
 // EDIT-03 additions: bidirectional parameter sync.
 //   worker plugin → PARM/STAT → editor process's plugin instance
@@ -37,6 +38,10 @@ class GuardedPluginWrapper;
 // MUST match kEditorHostUID in EditorHostMain.cpp.
 static constexpr const char* kEditorHostUID = "XlethEditorHost";
 
+// INIT protocol version (P2). MUST match kEditorProtocolVersion in
+// EditorHostMain.cpp. Bump on any INIT payload change.
+static constexpr int kEditorProtocolVersion = 2;
+
 // ─── Close-path profiling ─────────────────────────────────────────────────────
 // g_closeProfile_t0 is set the instant CLSD/ERR_ arrives from the editor-host.
 // All [CloseProfile] stages in any TU are relative to this timestamp.
@@ -57,7 +62,13 @@ extern bool                                            g_closeProfileActive;
 // ─── Message protocol (all tags are 4 chars) ──────────────────────────────────
 //
 // Coordinator → Worker:
-//   INIT\n<pluginPath>\n<stateBase64>\n<parentHwndHex>
+//   INIT (protocol v2, P2) — one "key=value" per line, `desc` LAST (its value
+//   runs to the end of the message):
+//     INIT\nprotocolVersion=2\nsampleRate=<double>\nblockSize=<int>
+//         \nparentHwnd=<hex or empty>\nstate=<base64 or empty>
+//         \ndesc=<PluginDescription::createXml(), single line>
+//   (v1 was INIT\n<pluginPath>\n<stateBase64>\n<parentHwndHex>. A v1 host reads
+//   "protocolVersion=2" as a plugin path and fails fast with ERR_.)
 //   CLOS      (no payload)
 //   PARM\n<paramIndex>\n<normalizedValue>
 //   STAT\n<stateBase64>
@@ -65,10 +76,15 @@ extern bool                                            g_closeProfileActive;
 //   STOP      (no payload)   — stop audio streaming, release editor-side plugin
 //
 // Worker → Coordinator:
+//   VERS\n<protocolVersion>   (v2+: sent as soon as a valid INIT is accepted)
 //   REDY\n<W>x<H>
 //   CLSD      (editor closed by user)
-//   ERR_\n<message>
+//   ERR_\n<message>          ("protocol-mismatch": INIT version missing/different)
 //   PARM\n<paramIndex>\n<normalizedValue>
+//
+// Version guard: an ERR_ before any VERS, or ERR_ "protocol-mismatch", means the
+// exe and the engine disagree on INIT — a stale xleth-editor-host.exe next to a
+// fresh .node (or the reverse). isProtocolMismatch() reports it.
 
 class EditorProcessCoordinator : public juce::ChildProcessCoordinator
 {
@@ -81,15 +97,25 @@ public:
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
-    // Launches xleth-editor-host.exe and sends the INIT message.
+    // Launches xleth-editor-host.exe and sends the INIT (v2) message.
     //   editorHostExe  : path to xleth-editor-host.exe
-    //   pluginPath     : absolute path to the .vst3 file to open
+    //   desc           : the EXACT description of the hosted plugin (multi-class
+    //                    VST3 bundles / shells: the right class, not descriptions[0])
+    //   sampleRate/blockSize : the engine's current values
     //   stateBase64    : base64-encoded plugin state (empty = no state restore)
     //   parentHwndHex  : uppercase hex HWND of the main Xleth window; empty = no parenting
-    bool start(const juce::File&   editorHostExe,
-               const juce::String& pluginPath,
-               const juce::String& stateBase64,
-               const juce::String& parentHwndHex = juce::String());
+    bool start(const juce::File&              editorHostExe,
+               const juce::PluginDescription& desc,
+               double                         sampleRate,
+               int                            blockSize,
+               const juce::String&            stateBase64,
+               const juce::String&            parentHwndHex = juce::String());
+
+    // Builds the INIT v2 payload (public for tests).
+    static juce::String buildInitMessage(const juce::PluginDescription& desc,
+                                         double sampleRate, int blockSize,
+                                         const juce::String& stateBase64,
+                                         const juce::String& parentHwndHex);
 
     // Sends CLOS. Non-blocking — worker sends CLSD back → onClosed_ fires.
     void close();
@@ -130,6 +156,8 @@ public:
     int         getEditorWidth()  const { return editorWidth_;         }
     int         getEditorHeight() const { return editorHeight_;        }
     std::string getErrorMessage() const { return errorMessage_;        }
+    // True when the editor host rejected (or could not parse) our INIT version.
+    bool        isProtocolMismatch() const { return protocolMismatch_.load(); }
 
     // ── Callbacks (set before calling start()) ───────────────────────────────
     std::function<void(int w, int h)> onReady_;
@@ -155,6 +183,8 @@ private:
 
     std::atomic<bool> editorReady_  {false};
     std::atomic<bool> editorClosed_ {false};
+    std::atomic<bool> protocolAcked_    {false};   // VERS received
+    std::atomic<bool> protocolMismatch_ {false};
 
     // Set at the top of start() so handleMessageFromWorker can report elapsed
     // time from INIT-sent to REDY-received in [OpenProfile] lines.

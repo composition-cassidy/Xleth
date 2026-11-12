@@ -8,6 +8,15 @@
 # Neither has Contents\Resources\moduleinfo.json, so JUCE takes the slow path
 # and actually loads the DLL. No JUCE / VST3 SDK dependency.
 #
+# P2 (host safety) adds:
+#   XlethTestNoEntry.vst3        x64 DLL WITHOUT GetPluginFactory → PE preflight
+#                                records `no-entry-point`, scanner never spawned
+#   XlethTestCrashOnCreate.vst3  ships moduleinfo.json (scan = fast path, no DLL
+#                                load); IPluginFactory::createInstance writes
+#                                through null → crashes on INSERT, not on scan.
+#                                XLETH_TEST_CRASH_HARD=1 → __fastfail instead
+#                                (uncatchable: the engine process dies)
+#
 # Enabled from the root CMakeLists.txt with -DXLETH_BUILD_TEST_PLUGINS=ON (default
 # OFF, not part of build.bat), or built standalone:
 #   cmake -S tools/test-plugins -B build-test-plugins
@@ -45,3 +54,11 @@ endfunction()
 
 xleth_add_test_vst3(XlethTestCrash src/XlethTestCrash.cpp)
 xleth_add_test_vst3(XlethTestHang  src/XlethTestHang.cpp)
+xleth_add_test_vst3(XlethTestNoEntry       src/XlethTestNoEntry.cpp)
+xleth_add_test_vst3(XlethTestCrashOnCreate src/XlethTestCrashOnCreate.cpp)
+
+# moduleinfo.json makes JUCE describe the bundle without loading the DLL.
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/XlethTestCrashOnCreate.moduleinfo.json"
+    "${XLETH_TEST_PLUGINS_OUT}/XlethTestCrashOnCreate.vst3/Contents/Resources/moduleinfo.json"
+    COPYONLY)

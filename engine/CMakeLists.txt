@@ -313,6 +313,7 @@ add_library(XlethEngineCore STATIC
     src/audio/MixEngine.cpp
     src/audio/AudioPerformanceTelemetry.cpp
     src/audio/PluginRegistry.cpp
+    src/audio/PluginLoadBreadcrumb.cpp
     src/audio/PluginEditorHost.cpp
     src/audio/EditorProcessCoordinator.cpp
     src/audio/ClipRenderCache.cpp
@@ -456,6 +457,20 @@ target_link_libraries(XlethEngineCore PRIVATE
 # PUBLIC so consumers of XlethEngineCore (e.g. bridge addon) get the symbols.
 target_link_libraries(XlethEngineCore PUBLIC
     XlethEngineModel
+)
+
+# ── XlethPluginInspect ────────────────────────────────────────────────────────
+# PE preflight for plugin binaries (P2, docs/PLUGIN_HOSTING_LOG.md): machine
+# type + export names, parsed from bytes — never LoadLibrary. Pure std, no JUCE,
+# so any target (scanner, tests) can link it without XlethEngineCore.
+add_library(XlethPluginInspect STATIC
+    src/audio/PluginBinaryInspector.cpp
+)
+target_include_directories(XlethPluginInspect PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_link_libraries(XlethEngineCore PUBLIC
+    XlethPluginInspect
 )
 
 # ── XlethEngineHeaders ────────────────────────────────────────────────────────
@@ -2173,6 +2188,17 @@ target_compile_definitions(test_chain_snapshot_lockfree PRIVATE
 )
 
 add_test(NAME test_chain_snapshot_lockfree COMMAND test_chain_snapshot_lockfree)
+
+# ── test_plugin_binary_inspector ─────────────────────────────────────────────
+# PE preflight parser: System32 x64 DLL, SysWOW64 x86 DLL, text renamed .dll,
+# truncated DLL, VST3 bundle resolution. Pure std — no JUCE, no FFmpeg.
+add_executable(test_plugin_binary_inspector
+    test/test_plugin_binary_inspector.cpp
+)
+target_link_libraries(test_plugin_binary_inspector PRIVATE
+    XlethPluginInspect
+)
+add_test(NAME test_plugin_binary_inspector COMMAND test_plugin_binary_inspector)
 
 # ── test_effect_audio_thread_reset ──────────────────────────────────────────
 # A live transport jump resets effect chains ON THE AUDIO THREAD, in the block

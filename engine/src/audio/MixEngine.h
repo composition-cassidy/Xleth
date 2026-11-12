@@ -797,6 +797,12 @@ public:
     // Must be called before any openPluginEditor() on a VST node.
     void setEditorHostExe(const std::string& exePath);
 
+    // Why the last openPluginEditor() returned false ("" after a success):
+    //   "protocol-mismatch"   stale xleth-editor-host.exe (rebuild: bridge-clean)
+    //   "editor-host-missing" | "editor-host-error" | "timeout" | "no-description"
+    // Message thread only. Surfaced additively by audio_openPluginEditor (P2).
+    std::string getLastEditorOpenError() const { return lastEditorOpenError_; }
+
     // Store the main Xleth window HWND so VST editor-host windows can be
     // parented to it (minimize together, no separate taskbar button, etc.).
     // Called from Audio_SetMainWindowHandle in XlethAddon.cpp after the
@@ -1597,6 +1603,7 @@ private:
 
     // ── Plugin registry ──────────────────────────────────────────────────────
     std::unique_ptr<PluginRegistry> pluginRegistry_;
+    std::string                     lastEditorOpenError_;   // see getLastEditorOpenError()
 
     // ── Plugin editor host (stock effects — in-process DocumentWindow) ──────────
     std::unique_ptr<PluginEditorHost> editorHost_;

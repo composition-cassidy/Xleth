@@ -2410,6 +2410,25 @@ const METHODS = [
     returns: 'value',
     binary: null,
   },
+  // P2 host safety (docs/PLUGIN_HOSTING_LOG.md): the load-crash breadcrumb the
+  // previous engine left behind (consumed on read), and the way back out of
+  // quarantine.
+  {
+    method: 'audio_getLastLoadCrash',
+    channels: ['xleth:audio:getLastLoadCrash'],
+    api: { 'audio.getLastLoadCrash': 'xleth:audio:getLastLoadCrash' },
+    handler: 'Audio_GetLastLoadCrash',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_unquarantinePlugin',
+    channels: ['xleth:audio:unquarantinePlugin'],
+    api: { 'audio.unquarantinePlugin': 'xleth:audio:unquarantinePlugin' },
+    handler: 'Audio_UnquarantinePlugin',
+    returns: 'value',
+    binary: null,
+  },
 
   // ── Export progress/cancel + HW encoders + GPU (AUDIT.md S1) ───────────────
   // Pure engine pass-throughs from ui/electron-main/export.js. audio_exportStart

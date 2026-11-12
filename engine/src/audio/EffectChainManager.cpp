@@ -865,6 +865,11 @@ juce::String EffectChainManager::getPluginFilePath(int nodeId) const
     return graph_->getPluginFilePath(nodeId);
 }
 
+bool EffectChainManager::getPluginDescription(int nodeId, juce::PluginDescription& out) const
+{
+    return graph_->getPluginDescription(nodeId, out);
+}
+
 // ─── Missing-plugin support ─────────────────────────────────────────────────
 
 bool EffectChainManager::isNodeMissing(int nodeId) const

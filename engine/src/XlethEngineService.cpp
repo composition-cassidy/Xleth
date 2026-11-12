@@ -20020,6 +20020,13 @@ JsonApi::Value Audio_OpenPluginEditor(const JsonApi::CallbackInfo& info)
 
     JsonApi::Object result = JsonApi::Object::New(env);
     result.Set("hasEditor", JsonApi::Boolean::New(env, opened));
+    // P2: additive error code on failure — 'protocol-mismatch' means a stale
+    // xleth-editor-host.exe next to a fresh .node (rebuild: bridge-clean).
+    if (!opened) {
+        const std::string err = audioEngine->getMixEngine().getLastEditorOpenError();
+        if (!err.empty())
+            result.Set("error", JsonApi::String::New(env, err));
+    }
     log.done(std::to_string(trackId) + " node=" + std::to_string(nodeId)
              + " hasEditor=" + (opened ? "true" : "false"));
     return result;
@@ -20167,6 +20174,98 @@ JsonApi::Value Audio_ResetCrashedPlugin(const JsonApi::CallbackInfo& info)
     log.done("trackId=" + std::to_string(trackId) + " nodeId=" + std::to_string(nodeId)
              + " success=" + (ok ? "true" : "false"));
     return JsonApi::Boolean::New(env, ok);
+}
+
+// ── Load-crash breadcrumb + quarantine (P2, docs/PLUGIN_HOSTING_LOG.md) ──────
+// Both manifest-dispatched (ui/rpc-manifest.js).
+
+// audio_getLastLoadCrash() → { version, pid, format, name, vendor,
+//   fileOrIdentifier, uniqueId, deprecatedUid, phase, context, ts,
+//   quarantined: true } | null
+// The breadcrumb of the third-party load that killed the previous engine,
+// recovered (and quarantined) at engine start. Consuming it clears it, so the
+// UI shows one notice per crash.
+JsonApi::Value Audio_GetLastLoadCrash(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !audioEngine) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    auto& registry = audioEngine->getMixEngine().getPluginRegistry();
+    const auto crash = registry.takeLastLoadCrash();
+    if (!crash.isObject())
+        return env.Null();
+    const auto parsed = nlohmann::json::parse(juce::JSON::toString(crash).toStdString(),
+                                              nullptr, /*allow_exceptions=*/false);
+    if (parsed.is_discarded() || !parsed.is_object())
+        return env.Null();
+    std::fprintf(stderr, "[PluginHost] load-crash notice consumed: \"%s\" (%s)\n",
+                 parsed.value("name", std::string()).c_str(),
+                 parsed.value("phase", std::string()).c_str());
+    return jsonToValue(env, parsed);
+}
+
+// audio_unquarantinePlugin(format: string, uniqueId: string|number,
+//                          deprecatedUid: string|number)
+//   → { ok: true, removed: boolean, resolved: number, failed: number }
+//   | { ok: false, error: 'bad-args' }
+// uniqueId/deprecatedUid: lower-case hex strings as reported by
+// audio_getMissingPlugins / audio_getLastLoadCrash (a number is converted).
+// Removes the quarantine entry, then retries every placeholder of that plugin
+// through the existing tryResolvePlugin path (breadcrumb context
+// "resolveMissing" — a repeat crash re-quarantines it).
+JsonApi::Value Audio_UnquarantinePlugin(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !audioEngine) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    auto uidArg = [&](size_t i, juce::String& out) -> bool {
+        if (info.Length() <= i) return false;
+        if (info[i].IsString()) {
+            out = PluginRegistry::normaliseUidHex(juce::String(info[i].As<JsonApi::String>().Utf8Value()));
+            return out.isNotEmpty();
+        }
+        if (info[i].IsNumber()) {
+            out = juce::String::toHexString(info[i].As<JsonApi::Number>().Int32Value()).toLowerCase();
+            return true;
+        }
+        return false;
+    };
+    juce::String uid, depUid;
+    if (info.Length() < 3 || !info[0].IsString() || !uidArg(1, uid) || !uidArg(2, depUid))
+        return pluginOk(env, "bad-args");
+    const juce::String format(info[0].As<JsonApi::String>().Utf8Value());
+    BridgeCallLog log("audio.unquarantinePlugin");
+
+    auto& mix      = audioEngine->getMixEngine();
+    auto& registry = mix.getPluginRegistry();
+    const bool removed = registry.unquarantine(format, uid, depUid);
+
+    int resolved = 0, failed = 0;
+    const auto missing = nlohmann::json::parse(mix.getMissingPluginsJSON(), nullptr, false);
+    if (missing.is_array()) {
+        for (const auto& m : missing) {
+            if (m.value("pluginFormat", std::string()) != format.toStdString()) continue;
+            if (PluginRegistry::normaliseUidHex(juce::String(m.value("uniqueId", std::string()))) != uid) continue;
+            if (PluginRegistry::normaliseUidHex(juce::String(m.value("deprecatedUid", std::string()))) != depUid) continue;
+            const int trackId = m.value("trackId", -2);
+            const int nodeId  = m.value("nodeId", -1);
+            if (trackId < -1 || nodeId < 0) continue;
+            if (mix.tryResolvePlugin(trackId, nodeId)) ++resolved; else ++failed;
+        }
+    }
+
+    auto obj = pluginOk(env, {});
+    obj.Set("removed",  JsonApi::Boolean::New(env, removed));
+    obj.Set("resolved", JsonApi::Number::New(env, resolved));
+    obj.Set("failed",   JsonApi::Number::New(env, failed));
+    log.done((format + " " + uid + "/" + depUid).toStdString()
+             + " removed=" + (removed ? "true" : "false")
+             + " resolved=" + std::to_string(resolved) + " failed=" + std::to_string(failed));
+    return obj;
 }
 
 // ── Phase 2 render scoping helpers ───────────────────────────────────────────

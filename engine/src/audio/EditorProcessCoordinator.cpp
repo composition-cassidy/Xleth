@@ -204,14 +204,36 @@ void EditorProcessCoordinator::setWorkerPlugin(juce::AudioPluginInstance* plugin
 
 // ─── start ───────────────────────────────────────────────────────────────────
 
-bool EditorProcessCoordinator::start(const juce::File&   editorHostExe,
-                                     const juce::String& pluginPath,
-                                     const juce::String& stateBase64,
-                                     const juce::String& parentHwndHex)
+juce::String EditorProcessCoordinator::buildInitMessage(const juce::PluginDescription& desc,
+                                                      double sampleRate, int blockSize,
+                                                      const juce::String& stateBase64,
+                                                      const juce::String& parentHwndHex)
+{
+    juce::String descXml;
+    if (auto xml = desc.createXml())
+        descXml = xml->toString(juce::XmlElement::TextFormat().singleLine().withoutHeader());
+
+    // `desc` is LAST: its value is everything after "desc=" (robust even if a
+    // future writer emits multi-line XML).
+    return "INIT\nprotocolVersion=" + juce::String(kEditorProtocolVersion)
+         + "\nsampleRate=" + juce::String(sampleRate, 3)
+         + "\nblockSize=" + juce::String(blockSize)
+         + "\nparentHwnd=" + parentHwndHex
+         + "\nstate=" + stateBase64
+         + "\ndesc=" + descXml;
+}
+
+bool EditorProcessCoordinator::start(const juce::File&              editorHostExe,
+                                     const juce::PluginDescription& desc,
+                                     double                         sampleRate,
+                                     int                            blockSize,
+                                     const juce::String&            stateBase64,
+                                     const juce::String&            parentHwndHex)
 {
     openStart_ = std::chrono::high_resolution_clock::now();
-    std::fprintf(stderr, "[EditorCoord] start: plugin=%s parent=0x%s\n",
-                 pluginPath.toRawUTF8(),
+    std::fprintf(stderr, "[EditorCoord] start: plugin=\"%s\" (%s uid=%x) file=%s sr=%.0f bs=%d parent=0x%s\n",
+                 desc.name.toRawUTF8(), desc.pluginFormatName.toRawUTF8(), (unsigned)desc.uniqueId,
+                 desc.fileOrIdentifier.toRawUTF8(), sampleRate, blockSize,
                  parentHwndHex.isEmpty() ? "0" : parentHwndHex.toRawUTF8());
 
     if (!editorHostExe.existsAsFile())
@@ -229,10 +251,10 @@ bool EditorProcessCoordinator::start(const juce::File&   editorHostExe,
 
     std::fprintf(stderr, "[EditorCoord] Worker process launched. Sending INIT.\n");
 
-    // INIT\n<pluginPath>\n<stateBase64>\n<parentHwndHex>
-    // parentHwndHex is empty if the main window HWND was not yet set.
+    // INIT v2 (see header). parentHwndHex is empty if the main window HWND was
+    // not yet set.
     const juce::String initPayload =
-        "INIT\n" + pluginPath + "\n" + stateBase64 + "\n" + parentHwndHex;
+        buildInitMessage(desc, sampleRate, blockSize, stateBase64, parentHwndHex);
     const juce::MemoryBlock msgBlock(initPayload.toRawUTF8(),
                                      (size_t)initPayload.getNumBytesAsUTF8());
 
@@ -414,11 +436,27 @@ void EditorProcessCoordinator::handleMessageFromWorker(const juce::MemoryBlock& 
             std::fflush(stderr);
         }
     }
+    else if (msg.startsWith("VERS"))
+    {
+        const int v = msg.fromFirstOccurrenceOf("\n", false, false).trim().getIntValue();
+        protocolAcked_.store(v == kEditorProtocolVersion);
+        std::fprintf(stderr, "[EditorHost] editor host speaks INIT protocol v%d (engine v%d)\n",
+                     v, kEditorProtocolVersion);
+    }
     else if (msg.startsWith("ERR_"))
     {
         errorMessage_ = msg.fromFirstOccurrenceOf("\n", false, false)
                             .trim().toStdString();
         std::fprintf(stderr, "[EditorCoord] ERR_ received: %s\n", errorMessage_.c_str());
+        // Version guard: an explicit mismatch, or any error before the host
+        // acknowledged our protocol (a pre-v2 exe misreads the INIT and fails).
+        if (errorMessage_ == "protocol-mismatch" || !protocolAcked_.load())
+        {
+            protocolMismatch_.store(true);
+            std::fprintf(stderr,
+                "[EditorHost] stale editor-host exe — rebuild (bridge-clean) (host said: %s)\n",
+                errorMessage_.c_str());
+        }
         editorClosed_.store(true);
 
         if (onClosed_)

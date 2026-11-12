@@ -1503,8 +1503,11 @@ bool MixEngine::openPluginEditor(int trackId, int nodeId)
 
     // Fetch the processor and plugin file path under lock, then release before
     // touching the GUI. Holding chainsMutex_ while creating a window is forbidden.
-    juce::AudioProcessor* proc = nullptr;
-    juce::String          pluginFilePath;
+    lastEditorOpenError_.clear();
+    juce::AudioProcessor*   proc = nullptr;
+    juce::String            pluginFilePath;
+    juce::PluginDescription pluginDesc;          // INIT v2: the exact plugin to open
+    bool                    haveDesc = false;
     {
         std::lock_guard<std::mutex> lock(chainsMutex_);
         ChainSnapshotPublisher chainSnapshotPublisher{this};
@@ -1522,6 +1525,7 @@ bool MixEngine::openPluginEditor(int trackId, int nodeId)
         {
             proc           = chain->getProcessor(nodeId);
             pluginFilePath = chain->getPluginFilePath(nodeId);
+            haveDesc       = chain->getPluginDescription(nodeId, pluginDesc);
         }
     }
 
@@ -1554,6 +1558,15 @@ bool MixEngine::openPluginEditor(int trackId, int nodeId)
             std::fprintf(stderr,
                 "[EditorFlow] xleth-editor-host.exe not found at: %s\n",
                 editorHostExe.getFullPathName().toRawUTF8());
+            lastEditorOpenError_ = "editor-host-missing";
+            return false;
+        }
+        if (!haveDesc)
+        {
+            std::fprintf(stderr,
+                "[EditorFlow] no PluginDescription for track=%d node=%d - cannot open editor\n",
+                trackId, nodeId);
+            lastEditorOpenError_ = "no-description";
             return false;
         }
 
@@ -1645,11 +1658,16 @@ bool MixEngine::openPluginEditor(int trackId, int nodeId)
             trackId, nodeId, pluginFilePath.toRawUTF8(),
             parentHwndHex.isEmpty() ? "0" : parentHwndHex.toRawUTF8());
 
-        if (!coord->start(editorHostExe, pluginFilePath, stateBase64, parentHwndHex))
+        // INIT v2 carries the engine's current rate/block so the editor-side
+        // instance is created exactly like the worker's (no fixed 48000/480).
+        const double initSr = preparedSampleRate_ > 0 ? (double)preparedSampleRate_ : 44100.0;
+        const int    initBs = preparedBlockSize_ > 0 ? (int)preparedBlockSize_ : 512;
+        if (!coord->start(editorHostExe, pluginDesc, initSr, initBs, stateBase64, parentHwndHex))
         {
             std::fprintf(stderr,
                 "[EditorFlow] Failed to start editor process: track=%d node=%d\n",
                 trackId, nodeId);
+            lastEditorOpenError_ = "editor-host-error";
             return false;
         }
 
@@ -1670,6 +1688,23 @@ bool MixEngine::openPluginEditor(int trackId, int nodeId)
                 "[EditorFlow] Timed out waiting for editor ready: track=%d node=%d"
                 " error='%s'\n",
                 trackId, nodeId, coord->getErrorMessage().c_str());
+            if (coord->isProtocolMismatch())
+            {
+                std::fprintf(stderr,
+                    "[EditorHost] stale editor-host exe — rebuild (bridge-clean): %s\n",
+                    editorHostExe.getFullPathName().toRawUTF8());
+                lastEditorOpenError_ = "protocol-mismatch";
+            }
+            else
+            {
+                lastEditorOpenError_ = coord->isEditorClosed() ? "editor-host-error" : "timeout";
+            }
+            // Destroying a coordinator blocks for JUCE's IPC teardown (8 s
+            // measured, P2 smoke 5). Detach it from the plugin here, on the
+            // message thread, and let the reaper thread pay for the teardown
+            // so a failed open returns at once.
+            coord->setWorkerPlugin(nullptr);
+            reapCoordinator(std::move(coord));
             return false;
         }
 
@@ -3357,7 +3392,9 @@ std::string MixEngine::getMissingPluginsJSON() const
                     displayName = raw;
             }
             entry["pluginName"]   = displayName;
-            entry["pluginVendor"] = "";
+            // The graph reports the vendor of VST placeholders (P2); keep it.
+            if (!entry.contains("pluginVendor"))
+                entry["pluginVendor"] = "";
             entry["filePath"]     = "";
 
             arr.push_back(entry);

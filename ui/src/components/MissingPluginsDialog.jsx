@@ -6,9 +6,21 @@ import { Button, Dialog, DialogList, DialogListItem, DialogText } from '../ui-ki
 // Each row has a Retry button (re-scan + resolve) and a Remove button.
 // Footer has "Ignore All" (close) and "Remove All Missing" actions.
 //
+// A row whose missingReason is 'quarantined' (P2: the plugin crashed XLETH's
+// engine while loading) is not missing at all — Retry first takes it out of
+// quarantine (audio.unquarantinePlugin), which retries every placeholder of it.
+//
 // Props:
-//   plugins  – array of { trackId, nodeId, pluginId, pluginName, pluginVendor, filePath }
+//   plugins  – array of { trackId, nodeId, pluginId, pluginName, pluginVendor, filePath,
+//                         missingReason?, pluginFormat?, uniqueId?, deprecatedUid? }
 //   onClose  – called when the dialog should be dismissed (no more missing plugins or user ignores)
+
+function isSamePlugin(a, b) {
+  return a.missingReason === 'quarantined'
+    && a.pluginFormat === b.pluginFormat
+    && a.uniqueId === b.uniqueId
+    && a.deprecatedUid === b.deprecatedUid
+}
 
 export default function MissingPluginsDialog({ plugins: initialPlugins, onClose }) {
   const [plugins, setPlugins] = useState(initialPlugins ?? [])
@@ -18,9 +30,23 @@ export default function MissingPluginsDialog({ plugins: initialPlugins, onClose 
   const trackLabel = (trackId) =>
     trackId === -1 ? 'Master' : `Track ${trackId + 1}`
 
-  const handleRetry = useCallback(async (trackId, nodeId) => {
+  const handleRetry = useCallback(async (trackId, nodeId, plugin) => {
     setRetrying(prev => ({ ...prev, [nodeId]: true }))
     try {
+      if (plugin?.missingReason === 'quarantined') {
+        const result = await window.xleth?.audio?.unquarantinePlugin?.(
+          plugin.pluginFormat, plugin.uniqueId, plugin.deprecatedUid)
+        if (result?.ok) {
+          // Every placeholder of this plugin was retried; drop the resolved ones
+          // and mark the rest as plain missing (no longer quarantined).
+          const raw = await window.xleth?.audio?.getMissingPlugins?.()
+          const still = new Set((raw ? JSON.parse(raw) : []).map((m) => `${m.trackId}:${m.nodeId}`))
+          setPlugins(prev => prev
+            .filter(p => !(isSamePlugin(p, plugin) && !still.has(`${p.trackId}:${p.nodeId}`)))
+            .map(p => (isSamePlugin(p, plugin) ? { ...p, missingReason: 'missing' } : p)))
+        }
+        return
+      }
       const result = await window.xleth?.audio?.retryMissingPlugin?.(trackId, nodeId)
       if (result?.success) {
         setPlugins(prev => prev.filter(p => p.nodeId !== nodeId))
@@ -92,11 +118,15 @@ export default function MissingPluginsDialog({ plugins: initialPlugins, onClose 
           <DialogListItem
             key={`${p.trackId}-${p.nodeId}`}
             label={p.pluginName || p.pluginId}
-            detail={[p.pluginVendor, trackLabel(p.trackId)].filter(Boolean).join(' · ')}
+            detail={[
+              p.missingReason === 'quarantined' ? "Quarantined: it crashed XLETH's engine while loading" : null,
+              p.pluginVendor,
+              trackLabel(p.trackId),
+            ].filter(Boolean).join(' · ')}
           >
             <Button
               size="sm"
-              onClick={() => handleRetry(p.trackId, p.nodeId)}
+              onClick={() => handleRetry(p.trackId, p.nodeId, p)}
               disabled={retrying[p.nodeId]}
               title="Try to load plugin again"
             >

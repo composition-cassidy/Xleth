@@ -22,6 +22,7 @@ class WireGainProcessor;
 class DelayCompensationProcessor;
 class SidechainSourceProcessor;
 class PluginRegistry;
+class PluginLoadBreadcrumb;
 
 // ─── AudioGraph ─────────────────────────────────────────────────────────────
 // Owns a juce::AudioProcessorGraph and a topology data model (nodes,
@@ -277,6 +278,11 @@ public:
     // Returns the plugin file path (PluginDescription::fileOrIdentifier) for a
     // VST node.  Returns empty string for stock effects or missing nodeId.
     juce::String getPluginFilePath(int nodeId) const;
+
+    // Copies the full PluginDescription of a VST node (live or missing) into
+    // `out`. False for stock effects or an unknown nodeId. Used by the editor
+    // host INIT v2 so the exact plugin (not descriptions[0]) is opened.
+    bool getPluginDescription(int nodeId, juce::PluginDescription& out) const;
 
     // Returns JSON param descriptor array ("[]" if nodeId invalid).
     std::string getEffectParameters(int nodeId) const;
@@ -647,7 +653,10 @@ private:
 
     // Returns a stock XlethEffectBase or a VST3 AudioPluginInstance.
     // Falls back to VST registry when pluginId is not a known stock effect.
-    std::unique_ptr<juce::AudioProcessor> createEffect(const std::string& pluginId);
+    // A third-party load is wrapped in `crumb` (P2 load breadcrumb, context
+    // "insert"); the caller keeps the scope open through prepare and finishes it.
+    std::unique_ptr<juce::AudioProcessor> createEffect(const std::string& pluginId,
+                                                       PluginLoadBreadcrumb* crumb = nullptr);
 
     // Add a pre-created processor to the APG and node tables.
     // Does NOT store vstDescriptions_ — caller must do that if needed.
