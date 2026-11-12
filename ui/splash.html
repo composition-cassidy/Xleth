@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy"
-  content="default-src 'none'; img-src 'self' file: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+  content="default-src 'none'; img-src 'self' file: data:; style-src 'unsafe-inline'; font-src 'self' file:; script-src 'unsafe-inline';">
 <title>XLETH — Splash Screen</title>
 <!--
   XLETH SPLASH SCREEN
@@ -15,8 +15,9 @@
 
   This window renders before ThemeProvider exists, so the tokens below are a
   frozen copy of the workspace dark defaults. Components only reference
-  var(--*); no colour literal appears outside :root. Offline-safe: system
-  fonts only, no external requests; xleth.svg must sit beside this file.
+  var(--*); no colour literal appears outside :root. Offline-safe: bundled
+  Barlow (assets/fonts/Barlow) with system fallbacks, no external requests;
+  xleth.svg must sit beside this file.
 
   [INTEGRATE] points are marked in the script.
 -->
@@ -35,6 +36,19 @@
     --splash-w: 640px;
     --splash-h: 400px;
     --pad: 40px;
+  }
+
+  /* assets/fonts/ sits beside this file (ui/), same packaging tier as welcome.html.
+     Only the weights this window uses: 400 (body) and 500 (.tagline). */
+  @font-face {
+    font-family: "Barlow";
+    src: url("assets/fonts/Barlow/Barlow-Regular.ttf") format("truetype");
+    font-weight: 400;
+  }
+  @font-face {
+    font-family: "Barlow";
+    src: url("assets/fonts/Barlow/Barlow-Medium.ttf") format("truetype");
+    font-weight: 500;
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }

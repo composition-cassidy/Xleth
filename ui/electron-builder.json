@@ -30,9 +30,12 @@
       "filter": ["**/*"]
     },
     {
-      "from": "../art",
-      "to": "art",
-      "filter": ["*.png", "*.jpg", "*.jpeg", "*.webp"]
+      "from": "../LICENSE",
+      "to": "LICENSE"
+    },
+    {
+      "from": "../THIRD_PARTY_NOTICES.md",
+      "to": "THIRD_PARTY_NOTICES.md"
     },
     {
       "from": "../build/engine/XlethEngine_artefacts/Release",

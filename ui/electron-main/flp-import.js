@@ -10,13 +10,11 @@
 // Port of the FLP reader in the "FLP to Video" VEGAS script (source/flp2json.py,
 // which uses PyFLP with FL 25/26 fixes). Same rules:
 //
-// Attribution:
-//   - "FLP to Video" (source/flp2json.py): https://github.com/composition-cassidy/FLP-to-Video,
-//     by composition-cassidy, the author of XLETH. This port is contributed to XLETH under the
-//     project license (AGPL-3.0-or-later).
-//   - PyFLP, the FL Studio project parser that flp2json.py is built on and whose FLP event
-//     decoding this reader follows: https://github.com/demberto/PyFLP, GPL-3.0
-//     (compatible with AGPL-3.0 under GPLv3 section 13), Copyright (c) demberto and PyFLP contributors.
+// Ported from FLP-to-Video by Krasen (composition-cassidy), contributed under AGPL-3.0-or-later.
+// Parsing approach based on PyFLP (GPL-3.0, github.com/demberto/PyFLP).
+//   - FLP-to-Video (source/flp2json.py): https://github.com/composition-cassidy/FLP-to-Video
+//   - PyFLP: https://github.com/demberto/PyFLP, Copyright (c) demberto and PyFLP contributors
+//     (GPL-3.0, compatible with AGPL-3.0 under GPLv3 section 13).
 //
 // Reading rules:
 //   • the playlist is the source of truth: each pattern clip places its notes,

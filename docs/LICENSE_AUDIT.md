@@ -2,11 +2,10 @@
 
 **Date:** 2026-11-12
 **Decision (owner):** XLETH's outbound license is **AGPL-3.0-or-later**. This audit does not revisit that.
-**Gate result (first pass, 2026-11-12): BLOCKED** by one CONFLICT and four UNCLEAR items (section 1).
-**Resolution pass (2026-11-12, later): 4 of 5 resolved; 1 still BLOCKED (B3, FLP importer provenance).**
-Per the owner's rule, a BLOCKED item means the license itself is not applied yet: no `LICENSE`,
-`THIRD_PARTY_NOTICES.md`, README, `ui/package.json` license field or installer change until B3 is cleared.
-See section 1a for how each item was resolved.
+**Gate result: PASSED (2026-11-12).** First pass was BLOCKED by one CONFLICT and four UNCLEAR items
+(section 1). All five are now resolved or accepted (section 1a), and AGPL-3.0-or-later has been applied:
+`LICENSE`, `THIRD_PARTY_NOTICES.md`, `README.md`, the `ui/package.json` license field, and `electron-builder.json`
+shipping both license files. See section 1a for how each item was resolved.
 
 Scope: everything that ships in, or links into, the distributed app (the NSIS and portable builds produced by
 `ui/electron-builder.json`, plus the engine/bridge/scanner/editor-host binaries they bundle).
@@ -36,9 +35,9 @@ as unresolved.
 |---|--------|---------------------|
 | B1 Neuzeit | **RESOLVED** | Replaced by **Barlow** (SIL OFL 1.1, Copyright 2017 The Barlow Project Authors, https://github.com/jpt/barlow). Neuzeit was referenced in `ui/src/styles/app.css` (3 `@font-face`: 300, 400-500, 600-800 and the `--xleth-global-font-family` stack), `ui/welcome.html` (3 `@font-face`: 300, 400-500, 600-700 and `--font`), `ui/splash.html` (`--font` only, no `@font-face`), `ui/src/styles/typography.js` and its test, and `ui/DESIGN.md`. Weights in use across the UI: 300, 400, 500, 600, 700. Barlow has no variable font, so five static TTFs are vendored in `ui/assets/fonts/Barlow/`: Light 300, Regular 400, Medium 500, SemiBold 600, Bold 700, with `OFL.txt`, taken from `google/fonts` `ofl/barlow/` at commit `c30b221beb0c1da59d563feb91ec8656a1fa972a` (upstream: jpt/barlow v1.408). SHA-256: Light `20b1375c…`, Regular `95aa02c7…`, Medium `f8906f76…`, SemiBold `86577cb3…`, Bold `84e6a4d6…`, OFL.txt `186d750e…`. Stacks now read `"Barlow", "Inter", "Noto Sans", "Segoe UI", system-ui, sans-serif`; no `local("Neuzeit Grotesk")` source. The three `.otf` files were `git rm --cached` and `Neuzeit-Grotesk*.otf` was added to `.gitignore`; the files remain on disk. `electron-builder.json` `files` no longer lists `assets/fonts/*.otf` and now lists `assets/fonts/Barlow/*.ttf` and `OFL.txt`. History was **not** rewritten: `a76e4d8` (which added the files, 2026-09-12) is not an ancestor of any of the 29 refs on `origin` (checked with a live `git ls-remote`), so the fonts have not been pushed. |
 | B2 Metronome | **RESOLVED** | Owner confirmed the three click samples were synthesized by the repo owner (Krasen). Header added to `MetronomeSamples.cpp` and to the generator that writes it: "Click samples: original work by Krasen, licensed under the project license (AGPL-3.0-or-later)." Both files are still untracked work in progress, so the header is on disk but not in the license commit. |
-| B3 FLP importer | **BLOCKED (provenance)** | The header of `flp-import.js` names the "FLP to Video" script, which is https://github.com/composition-cassidy/FLP-to-Video (`source/flp2json.py`). Its repository has **no license file** (GitHub reports none). The script header says it uses **PyFLP** (https://github.com/demberto/PyFLP, **GPL-3.0**, compatible with AGPL-3.0 through GPLv3 section 13) for channels, patterns and automation. The GitHub owner of FLP-to-Video is the same account as the git user and `origin` owner of this repo, so it looks like the owner's own work, which the owner can license as AGPL-3.0-or-later. By the stated rule (no license = BLOCKED) it stays BLOCKED until the owner confirms in writing that the FLP-to-Video script is theirs and may be relicensed under AGPL-3.0-or-later (ideally by adding a license to that repository too). An attribution comment crediting both has already been added to `flp-import.js` (untracked file). |
-| B4 BALANCED weight | **ACCEPTED** | See "Optional models downloaded by the user" below. |
-| B5 BEST weight | **ACCEPTED** | See "Optional models downloaded by the user" below. |
+| B3 FLP importer | **RESOLVED** | The header of `flp-import.js` names the "FLP to Video" script, which is https://github.com/composition-cassidy/FLP-to-Video (`source/flp2json.py`). That repository has no license file, and it uses **PyFLP** (https://github.com/demberto/PyFLP, **GPL-3.0**, compatible with AGPL-3.0 through GPLv3 section 13). **Evidence:** the owner confirmed in writing (2026-11-12) that FLP-to-Video is his own work, that he is the author of both FLP-to-Video and XLETH, and that he contributes the ported code to XLETH under AGPL-3.0-or-later. As the sole copyright holder he can license it that way. The `flp-import.js` header now reads "Ported from FLP-to-Video by Krasen (composition-cassidy), contributed under AGPL-3.0-or-later. Parsing approach based on PyFLP (GPL-3.0, github.com/demberto/PyFLP)", replacing the earlier inferred wording. PyFLP is credited in `THIRD_PARTY_NOTICES.md` section 5. Open point for the owner (not a blocker): add a license file to the FLP-to-Video repository itself so its published state matches. |
+| B4 BALANCED weight | **ACCEPTED** (resolved) | See "Optional models downloaded by the user" below. |
+| B5 BEST weight | **ACCEPTED** (resolved) | See "Optional models downloaded by the user" below. |
 
 ### Optional models downloaded by the user (not distributed with XLETH)
 
@@ -169,26 +168,28 @@ not ship.
 | Barlow Light/Regular/Medium/SemiBold/Bold + `OFL.txt` | google/fonts `ofl/barlow/`, Copyright 2017 The Barlow Project Authors | OK (OFL-1.1, separate font data files, shipped with its license text) |
 | Inter / IBM Plex Mono / Noto Sans | `@fontsource` packages, OFL-1.1 | OK |
 | `ui/assets/icon.ico`, `ui/xleth.svg` | project's own artwork (owner to confirm) | OK |
-| `art/*.png|jpg|jpeg|webp` (electron-builder `extraResources`) | **Untracked**: `git ls-files art` is empty, so a clean checkout ships nothing from here. A local build, however, would pick up the owner's mockups, screenshots and backdrop images. Provenance of the backdrop images is not recorded. | OK for clean builds. Planned: remove the `art/` `extraResources` entry in the apply step (owner decision), since the Backdrop feature was removed. |
+| `art/*.png|jpg|jpeg|webp` (electron-builder `extraResources`) | **Untracked**: `git ls-files art` is empty, so a clean checkout ships nothing from here. A local build, however, would pick up the owner's mockups, screenshots and backdrop images. Provenance of the backdrop images is not recorded. | OK for clean builds. **RESOLVED:** the `art/` `extraResources` entry was removed from `electron-builder.json`. |
 | `media/` (extraResources) | directory does not exist | n/a |
 | Factory FX presets and plugin layouts (`src/fx-presets/factory`, `src/plugin-ui/layouts`) | project's own | OK |
 | Metronome clicks | see B2 | **RESOLVED**: owner-authored, licensed under the project license |
 
-## 8. Installer and packaging state
+## 8. Installer and packaging state (after adoption)
 
-- `build.bat` copies nothing into a distributable; it only builds. Distribution goes through
-  `build-portable.bat` → `electron-builder` using `ui/electron-builder.json` (NSIS + portable).
-- Existing `extraResources` already ship `vendor/ffmpeg/LICENSE` and `README.txt`, and the sidecar's
-  `NOTICE-separation-models.md` and `VENDOR-NOTICE.md`.
-- When the gate clears, `LICENSE` and `THIRD_PARTY_NOTICES.md` need to be added to `electron-builder.json`
-  `extraResources` (for example `{from: "..", to: ".", filter: ["LICENSE", "THIRD_PARTY_NOTICES.md"]}`).
-- There is no root `README.md` in the repo; the License section would need a new README.
-- Source offer: AGPL section 13 asks network-interacting versions to offer source. XLETH is a desktop app and
-  this is mostly a courtesy, but the notices should link the public repository and, for the GPL/LGPL binaries
-  (ffmpeg.exe, libsndfile, soxr, Rubber Band, FFmpeg DLLs), the upstream source locations above.
+- `build.bat` only builds. Distribution goes through `build-portable.bat` → `electron-builder` using
+  `ui/electron-builder.json` (NSIS + portable).
+- `extraResources` now ship `LICENSE` and `THIRD_PARTY_NOTICES.md` (as `resources/LICENSE` and
+  `resources/THIRD_PARTY_NOTICES.md`), alongside `vendor/ffmpeg/LICENSE` + `README.txt` and the sidecar's
+  `NOTICE-separation-models.md` and `VENDOR-NOTICE.md`. The `art/` entry was removed. Barlow TTFs and `OFL.txt`
+  ship via `files` (`assets/fonts/Barlow/`).
+- A root `README.md` was added with a License section.
+- Source offer: the notices link the public repository and, for the GPL/LGPL binaries (ffmpeg.exe, libsndfile,
+  soxr, Rubber Band, FFmpeg DLLs), the upstream source locations.
+- Not verified: an actual `electron-builder` package run (the portable/NSIS build) was not performed, so the
+  presence of both files in a packaged build is configured but not observed.
 
-## 9. Working-tree notes (not license issues)
+## 9. Notes
 
-- `ui/package.json`, `ui/main.js`, `ui/preload.js` and many engine files already carry uncommitted changes
-  from other work. When the apply step runs it must commit only the license hunks and avoid sweeping those in.
-- `ui/DESIGN.md`'s Neuzeit note is correct as policy; B1 is the repo drifting from it.
+- Splash window: `ui/splash.html` now declares Barlow 400 and 500 `@font-face` rules (the weights it uses) and its
+  CSP gained `font-src 'self' file:`; without that directive `default-src 'none'` would have blocked the fonts.
+- The copyright holders named for Inter, Noto Sans and IBM Plex Mono in `THIRD_PARTY_NOTICES.md` are the upstream
+  projects' standard ones; the OFL texts ship inside the `@fontsource` packages.
