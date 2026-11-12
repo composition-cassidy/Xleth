@@ -20,6 +20,11 @@
 namespace {
 
 constexpr int kScanTimeoutMs        = 10000;
+// JUCE IPC timeout for the coordinator side. JUCE's default (8000 ms) is both
+// how long it takes to notice a dead scanner and how long tearing the pipe down
+// blocks — measured 8 s + 8 s per crashed plugin. The scanner's ping thread keeps
+// pinging while a plugin loads, so a short value does not misread a slow load.
+constexpr int kCoordinatorIpcTimeoutMs = 2000;
 constexpr int kSettingsSchema       = 1;
 constexpr int kFailuresSchema       = 1;
 const char* const kScannerUID       = "XlethPluginScan";   // must match ScannerMain.cpp
@@ -975,8 +980,9 @@ void PluginRegistry::runScan(juce::File exeFile, ScanOptions options,
                     scannerLog.moveFileTo(prevLog);
                 }
             }
+            const auto tl = juce::Time::getMillisecondCounterHiRes();
             auto c = std::make_unique<ScanCoordinator>();
-            if (!c->launchWorkerProcess(exeFile, kScannerUID, 0))
+            if (!c->launchWorkerProcess(exeFile, kScannerUID, kCoordinatorIpcTimeoutMs))
             {
                 PSCAN_LOG("failed to launch %s — aborting scan\n",
                           exeFile.getFullPathName().toRawUTF8());
@@ -984,6 +990,7 @@ void PluginRegistry::runScan(juce::File exeFile, ScanOptions options,
                 break;
             }
             coord = std::move(c);
+            PSCAN_LOG("scanner launched in %.0f ms\n", juce::Time::getMillisecondCounterHiRes() - tl);
         }
 
         PSCAN_LOG("scanning %s %s\n", item->formatName.toRawUTF8(), item->path.toRawUTF8());
@@ -991,7 +998,9 @@ void PluginRegistry::runScan(juce::File exeFile, ScanOptions options,
         juce::MemoryBlock msgBlock(msgStr.toRawUTF8(), (size_t)msgStr.getNumBytesAsUTF8());
         juce::MemoryBlock response;
 
+        const auto t0 = juce::Time::getMillisecondCounterHiRes();
         const bool ok = coord->sendAndWait(msgBlock, response, kScanTimeoutMs);
+        const auto waitedMs = juce::Time::getMillisecondCounterHiRes() - t0;
         attempted.push_back(item);
 
         if (!ok || !coord->isWorkerConnected())
@@ -1001,9 +1010,12 @@ void PluginRegistry::runScan(juce::File exeFile, ScanOptions options,
             // the coordinator disconnects the pipe and the scanner exits itself.
             const bool crashed = !coord->isWorkerConnected();
             const juce::String reason = crashed ? "crash" : "timeout";
-            PSCAN_LOG("FAILED %s: %s\n", item->path.toRawUTF8(), reason.toRawUTF8());
             recordFailure(*item, reason);
+            const auto t1 = juce::Time::getMillisecondCounterHiRes();
             coord.reset(); // respawn for the next item
+            PSCAN_LOG("FAILED %s: %s (detected after %.0f ms, scanner teardown %.0f ms)\n",
+                      item->path.toRawUTF8(), reason.toRawUTF8(), waitedMs,
+                      juce::Time::getMillisecondCounterHiRes() - t1);
         }
         else
         {

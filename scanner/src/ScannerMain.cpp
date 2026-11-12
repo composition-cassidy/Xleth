@@ -282,7 +282,12 @@ int main(int argc, char* argv[])
     juce::StringArray argArray(argv + 1, argc - 1);
     const juce::String commandLine = argArray.joinIntoString(" ");
 
-    if (!scanner.initialiseFromCommandLine(commandLine, kScannerUID, 0))
+    // Long worker-side timeout: the worker's ping countdown only resets when the
+    // IPC thread reads a message, and that thread is the one inside the plugin
+    // during a scan. With JUCE's 8 s default a slow (not hung) plugin made the
+    // scanner give up on itself. The coordinator owns the per-file deadline; a
+    // closed pipe still ends this process at once (ping send fails).
+    if (!scanner.initialiseFromCommandLine(commandLine, kScannerUID, 120000))
     {
         SLOG("IPC init failed (command line: %s)\n", commandLine.toRawUTF8());
         if (g_log) std::fclose(g_log);
