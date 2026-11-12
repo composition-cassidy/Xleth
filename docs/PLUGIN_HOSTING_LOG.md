@@ -283,3 +283,370 @@ Also run:
 - No changes to the editor host, `MixEngine::addEffect` locking or undo.
 - Scanning never moved in-process, and JUCE's dead-man's-pedal is not used.
 - Nothing was pushed.
+
+---
+
+## P2 — Host safety & editor host
+
+Branch `ui-rebuild/phase-0`, on top of `87d06c1` (P1 close-out). Code commit `52998b3`, then
+the commit that adds this section. VST3 is still the only
+registered format: no `JUCE_PLUGINHOST_*` define changed, and nothing in the engine process
+loads a DLL to inspect it.
+
+### What changed, in one paragraph
+
+Before the scanner is ever spawned, the engine now parses each plugin binary's PE headers
+(machine type and export names, read as bytes) and records a binary it could never load as a
+"can't load" failure. Every third-party load in the engine — insert, project load, resolve —
+is wrapped in a breadcrumb file that names the plugin and the phase. It is written before the
+plugin code runs and deleted when the load finishes or fails cleanly. If the engine dies
+mid-load, Electron names the plugin in the error the UI gets. The next engine start turns the
+breadcrumb into a quarantine entry and a one-time notice. A quarantined plugin is never
+instantiated by a project load: it becomes the usual missing-plugin placeholder (state kept)
+with reason `quarantined` until it is unquarantined. The editor host now receives the exact
+`PluginDescription` plus the engine's sample rate and block size (INIT protocol v2), so it
+opens the right class instead of `descriptions[0]` at 48000/480. A stale exe is reported as
+`protocol-mismatch` instead of opening the wrong plugin or hanging.
+
+### Files
+
+**Added**
+
+| file | role |
+|---|---|
+| `engine/src/audio/PluginBinaryInspector.{h,cpp}` | PE preflight: machine, export names, VST3 bundle resolution, per-format required-export table. Pure std, no JUCE. Built as the `XlethPluginInspect` static lib. |
+| `engine/src/audio/PluginLoadBreadcrumb.{h,cpp}` | RAII breadcrumb scope (`begin` / `setPhase` / `finish`), startup `takeOrphan`, pid liveness |
+| `engine/test/test_plugin_binary_inspector.cpp` | ctest: System32 x64 DLL, SysWOW64 x86 DLL, text renamed `.dll`, 512-byte truncation, prefix sweep, VST3 bundles, missing path |
+| `tools/test-plugins/src/XlethTestNoEntry.cpp` | x64 bundle whose DLL exports `XlethTestNotTheFactory` only |
+| `tools/test-plugins/src/XlethTestCrashOnCreate.cpp` | SDK-free `IPluginFactory`; `createInstance` writes through null (`XLETH_TEST_CRASH_HARD=1` → `__fastfail`) |
+| `tools/test-plugins/src/XlethTestCrashOnCreate.moduleinfo.json` | copied into the bundle's `Contents\Resources\`, so the scan takes JUCE's fast path and never calls `createInstance` |
+| `ui/src/components/__tests__/pluginQuarantine.test.jsx` | notice fires once; quarantined dialog row → `unquarantinePlugin` |
+
+**Changed**
+
+| file | change |
+|---|---|
+| `engine/CMakeLists.txt` | `XlethPluginInspect` lib (linked PUBLIC into `XlethEngineCore`), `PluginLoadBreadcrumb.cpp`, `test_plugin_binary_inspector` + `add_test` |
+| `engine/src/audio/PluginRegistry.{h,cpp}` | preflight in the scan loop; quarantine list (load/save/query/unquarantine); startup breadcrumb recovery; `takeLastLoadCrash`; `getDataDir` |
+| `engine/src/audio/AudioGraph.{h,cpp}` | breadcrumb at `addNode`/`createEffect` (insert), `fromJSON` (projectLoad) and `tryResolvePlugin` (resolveMissing); quarantine → placeholder; `tryResolvePlugin` refuses quarantined; `missingReason` + quarantine key on missing nodes; `getPluginDescription` |
+| `engine/src/audio/EffectChainManager.{h,cpp}` | `getPluginDescription` pass-through |
+| `engine/src/audio/EditorProcessCoordinator.{h,cpp}` | INIT v2 (`buildInitMessage`), `VERS` ack, version guard, `isProtocolMismatch` |
+| `engine/src/audio/MixEngine.{h,cpp}` | `openPluginEditor` sends the description + current rate/block, records `getLastEditorOpenError()`, reaps a failed coordinator off-thread; `getMissingPluginsJSON` keeps the graph's `pluginVendor` |
+| `editor-host/src/EditorHostMain.cpp` | parses INIT v2, replies `VERS` or `ERR_ protocol-mismatch`, instantiates exactly the given description at the given rate/block (the argv test fallback keeps `findAllTypesForFile`) |
+| `engine/src/XlethEngineService.cpp` | `Audio_GetLastLoadCrash`, `Audio_UnquarantinePlugin`; additive `error` on `audio_openPluginEditor` |
+| `ui/rpc-manifest.js` | 2 entries |
+| `bridge/src/XlethRpcExports.inc`, `engine/src/XlethRpcDispatch.inc` | regenerated (`scripts/generate-rpc-registries.js`) |
+| `ui/electron-main/worker.js` | `worker.on('exit')` reads the breadcrumb (pid-checked) and names the plugin; `getLastExitPlugin()` |
+| `ui/src/XlethRoot.jsx` | one startup toast for `audio.getLastLoadCrash()` through the existing `ToastProvider` |
+| `ui/src/components/MissingPluginsDialog.jsx` | quarantined row says so; its Retry calls `audio.unquarantinePlugin` |
+| `ui/src/components/devices/EffectDevice.jsx` | status line for a quarantined placeholder |
+| `tools/test-plugins/CMakeLists.txt` | the two fixtures + moduleinfo copy |
+
+### RPCs
+
+Both new methods are manifest pass-throughs (`returns: 'value'`) in `window.xleth.audio.*`.
+
+| method | args | returns |
+|---|---|---|
+| `audio_getLastLoadCrash` *(new)* | — | `null`, or the breadcrumb of the load that killed the previous engine: `{ version: 1, pid, format, name, vendor, fileOrIdentifier, uniqueId, deprecatedUid, phase, context, ts, quarantined: true }`. **Consuming it clears it**, so the second call returns `null`. |
+| `audio_unquarantinePlugin` *(new)* | `(format: string, uniqueId: string \| number, deprecatedUid: string \| number)`. Uids are the lower-case hex strings reported by `getMissingPlugins` / `getLastLoadCrash`; a number is converted to hex. | `{ ok: true, removed: boolean, resolved: number, failed: number }` or `{ ok: false, error: 'bad-args' }`. It removes the entry, then retries every placeholder of that plugin through `MixEngine::tryResolvePlugin` (breadcrumb context `resolveMissing`, so a repeat crash re-quarantines it). |
+| `audio_openPluginEditor` *(additive)* | unchanged | `{ hasEditor }`, plus on failure `error: 'protocol-mismatch' \| 'editor-host-missing' \| 'editor-host-error' \| 'timeout' \| 'no-description'` |
+| `audio_getMissingPlugins`, `audio_getEffectChain`, `audio_getMasterEffectChain` *(additive)* | unchanged | A missing node also carries `missingReason: 'quarantined' \| 'missing'`. A missing VST node also carries `pluginFormat`, `pluginVendor`, `uniqueId` and `deprecatedUid` (hex). `missingReason` is computed live from the quarantine list, so it flips to `missing` the moment the plugin is unquarantined. |
+
+### Quarantine storage: a separate `plugin-quarantine.json`
+
+It is **not** a new reason in `plugin-scan-failures.json`. That list is keyed by path and
+driven by scans: prune-on-complete, `fileTime` skips, and `audio_retryFailedPlugins` removing
+entries. A load crash is keyed by **format + uniqueId + deprecatedUid**, so a moved or
+reinstalled plugin stays quarantined. Mixing the two would let a scan silently un-quarantine
+it. All three files below live in `%APPDATA%\Xleth\` and are written temp-file + rename.
+
+- **`plugin-load-inflight.json`** (the breadcrumb):
+  `{ version: 1, pid, format, name, vendor, fileOrIdentifier, uniqueId, deprecatedUid, phase: "instantiate"|"prepare"|"setState", context: "insert"|"projectLoad"|"resolveMissing", ts }`.
+- **`plugin-quarantine.json`**, schema 1:
+  ```json
+  { "version": 1, "entries": [ { "format": "VST3", "uniqueId": "e783521a", "deprecatedUid": "5923c135",
+      "name": "XlethTestCrashOnCreate", "vendor": "Xleth Test", "fileOrIdentifier": "…\\XlethTestCrashOnCreate.vst3",
+      "phase": "instantiate", "context": "insert", "crashedAt": "2026-11-12T13:18:24.951+10:00", "crashes": 1 } ] }
+  ```
+  A second crash of the same key increments `crashes` instead of adding a row.
+- **`plugin-load-crash.json`**: the recovered breadcrumb plus `quarantined: true`. It is kept
+  until `audio_getLastLoadCrash` consumes it, so the notice survives an engine start that
+  never reached the UI.
+
+### Breadcrumb rules as implemented
+
+- **Where.** One RAII type, `PluginLoadBreadcrumb`, at three choke points:
+  - `AudioGraph::addNode` → `createEffect` (context `insert`). `createEffect` opens it before
+    `createPluginInstance`. If no scope is passed, it uses a local one.
+  - `AudioGraph::fromJSON` (`projectLoad`).
+  - `AudioGraph::tryResolvePlugin` (`resolveMissing`).
+- **Phases.** `instantiate` covers `createPluginInstance` and the `GuardedPluginWrapper`
+  constructor, which negotiates buses. It changes to `prepare` before `addProcessorToGraph`:
+  the APG rebuilds synchronously on the message thread, so the plugin's `prepareToPlay` runs
+  there. It changes to `setState` before `setStateInformation`.
+- **Clearing.** The scope's destructor deletes the file. This covers success, clean failure,
+  a `nullptr` instance, and an SEH-caught fault.
+- **Thread.** Always the JUCE message thread (the worker's Node main thread). Never the
+  audio thread.
+- **Write cost.** One small temp-file write and rename per phase. No `FlushFileBuffers`: a
+  process crash does not lose data already handed to the OS.
+- **Startup.** `PluginRegistry::initialise` runs `recoverLoadCrash()`. If the file exists and
+  its pid is not a live process, it is moved into the quarantine and `plugin-load-crash.json`.
+  If the pid is live (another engine is mid-load), the file is left alone.
+- **Blind vs explicit loads.**
+  - **Blind loads are refused for a quarantined plugin:** `fromJSON` (projects, FX-chain
+    loads) and `tryResolvePlugin` (`audio_retryMissingPlugin`).
+  - **An explicit insert is allowed** and logged
+    (`[PluginHost] inserting quarantined plugin … on explicit request`). See deviation 3.
+
+### Preflight rules as implemented
+
+- **When it runs.** In `PluginRegistry::runScan`, for every item in the work list, before the
+  lazy scanner launch and before `SCAN:`. Items skipped as unchanged or as known failures are
+  not re-inspected.
+- **Non-`Ok` result.** The item is recorded in `plugin-scan-failures.json` (`attempts`,
+  `fileTime`, as in P1) and counted as attempted, so stale cache entries for it are dropped.
+  The scanner is never spawned for it.
+- **Reasons**, distinct from the scanner's `crash` / `timeout` / `no-types-found` /
+  `exception` / `unknown-format`:
+
+  | status | reason | meaning |
+  |---|---|---|
+  | `WrongArch32` | `not-64bit` | `IMAGE_FILE_MACHINE_I386`, or a bundle with only `Contents\x86-win\` |
+  | `WrongArchArm64` | `arm64` | `IMAGE_FILE_MACHINE_ARM64`, or a bundle with only `arm64*-win` |
+  | `NoEntryPoint` | `no-entry-point` | none of the format's required exports (VST3 `GetPluginFactory`; VST `VSTPluginMain`/`main`; CLAP `clap_entry`) |
+  | `NotPE` | `not-a-binary` | no MZ/PE, an unknown machine, any out-of-bounds header/section/export offset (truncation), or a bundle with no Windows binary |
+  | `Unreadable` | `unreadable` | missing or cannot be opened |
+
+- **Parser.** Reads only the DOS header, COFF header, optional header data directories,
+  section table, export directory and name strings, each with a bounds check against the file
+  size. It caps sections at 96, names at 65 536, and name length at 1 KiB. The RVA → file
+  offset map goes through the section table; a zero-filled tail counts as not on disk.
+- **Logging.** `[PluginPreflight] VST3 <path>: <reason> (machine=…, N export(s), binary …) - not sent to the scanner`.
+  The completion line now reads `N failed (M by preflight)`.
+
+### INIT protocol v2
+
+Coordinator → editor host. One `key=value` per line; `desc` is **last**, and its value runs to
+the end of the message:
+
+```
+INIT
+protocolVersion=2
+sampleRate=<double, e.g. 48000.000>
+blockSize=<int>
+parentHwnd=<uppercase hex HWND, or empty>
+state=<base64 plugin state, or empty>
+desc=<PluginDescription::createXml(), TextFormat().singleLine().withoutHeader()>
+```
+
+- **New host reply.** `VERS\n2` as soon as it accepts a valid INIT. If `protocolVersion` is
+  missing or different, it replies `ERR_\nprotocol-mismatch` and quits. A malformed v2 INIT
+  gets `ERR_\nbad-init: description|rate/block`.
+- **Engine.** An `ERR_` that arrives **before** `VERS`, or `ERR_ protocol-mismatch`, sets
+  `isProtocolMismatch()`. The engine then logs
+  `[EditorHost] stale editor-host exe — rebuild (bridge-clean)`. A pre-v2 exe reads
+  `protocolVersion=2` as a plugin path and fails fast with `ERR_ no plugins found in: …`, so
+  this catches a stale exe next to a fresh `.node`.
+- **Instantiation.** The host calls `createPluginInstance(desc, sampleRate, blockSize, error)`
+  with exactly that description. It never calls `findAllTypesForFile` on this path; only the
+  manual `xleth-editor-host.exe <path>` fallback still does.
+- **Unchanged.** PARM, STAT, STRM, STOP, CLOS, REDY and CLSD.
+
+### Electron side
+
+- **`worker.on('exit')`.** It reads `plugin-load-inflight.json` and checks that `crumb.pid`
+  equals the worker's pid. If so, `addonError` and every pending rejection become
+  `XLETH's engine stopped while loading <name> by <vendor> (<phase>, exit code N)`. The Error
+  objects also carry `{ plugin, vendor, phase }`. `getLastExitPlugin()` returns the same
+  triple. There is no respawn.
+- **Startup notice.** `XlethRootInner` calls `reportLastPluginLoadCrash` on mount, which shows
+  an `error`-level toast through the existing `ToastProvider`/`showToast`. The engine read and
+  the toast sit inside one module-level promise, so a StrictMode double mount neither loses
+  the consumed record nor shows it twice.
+
+### Smoke results
+
+**How they were run.** A standalone Node harness drives the **real**
+`ui/electron-main/worker.js`, which forks the real `ui/addon-worker.js` and the freshly built
+`bridge/build/Release/xleth_native.node`. Only `require('electron')` is stubbed. One worker
+process stands for one "app start". `XLETH_STRICT_IPC=1`, against the real `%APPDATA%\Xleth`;
+`%APPDATA%\Xleth` was backed up first and restored afterwards (cache byte-identical).
+Fixtures were built standalone (`cmake -S tools/test-plugins`) and copied into two scratch
+folders: A = NoEntry plus two extra preflight inputs, B = CrashOnCreate. Search paths were
+`[…\VST3\XLETH, A, B]` with `useDefaults:false`.
+
+1. **PASS. Preflight unit tests.** `ctest -R test_plugin_binary_inspector`: `ALL TESTS PASSED (32 checks)`.
+   - System32 `kernel32.dll` → `Ok`, `AMD64`, more than 500 exports including `CreateFileW`;
+     with `VST3` → `NoEntryPoint`.
+   - SysWOW64 `kernel32.dll` → `WrongArch32` / `I386`.
+   - Text renamed `.dll` → `NotPE`; `MZ` + garbage → `NotPE`.
+   - The first 512 bytes of the x64 DLL → `NotPE`, with or without a format.
+   - Prefix sweep, 0–4096 bytes in steps of 16 → no crash, never `Ok`.
+   - VST3 bundles: `x86_64-win` → parses the inner binary; `x86-win` only → `WrongArch32`;
+     no binary → `NotPE`. A missing path → `Unreadable`.
+   - Installed `UniFlange.vst3` → `Ok`.
+2. **PASS. `XlethTestNoEntry` → `no-entry-point`, scanner never spawned.**
+   - The scan of folder A ended `done 11, failedNew 3, skippedUnchanged 8`, with
+     `[PluginPreflight] … XlethTestNoEntry.vst3: no-entry-point (machine=AMD64, 1 export(s), …) - not sent to the scanner`.
+   - The extra inputs gave `XlethTestOld32.vst3: not-64bit (machine=I386)` and
+     `XlethTestNotABinary.vst3: not-a-binary`. All three are in `plugin-scan-failures.json`
+     with those reasons.
+   - `scanner-log.txt` was byte-identical before and after (`1759B md5=4c1399a9…`, same
+     mtime). `scanner-log.prev.txt` was also unchanged, so no rotation happened, and there
+     were **0** `scanner launched` lines during that scan. Neither log mentions any of the
+     three.
+   - The following scan of B launched the scanner once, and CrashOnCreate scanned OK through
+     the moduleinfo fast path: `VST3-XlethTestCrashOnCreate-71540c43-e783521a`.
+3. **PASS — both branches exercised.**
+   - **SEH branch (the fixture as specified: null write in `createInstance`).**
+     `audio_addMasterEffect` rejected after 7 ms with `Failed to add master effect…`. The log
+     shows `[PluginHost] CRASH: "XlethTestCrashOnCreate" during createPluginInstance — not loaded`.
+     **The breadcrumb file was gone, and the engine was alive:** the next
+     `getMasterEffectChain` answered with the chain intact.
+   - **Engine-death branch.** This used the same fixture with `XLETH_TEST_CRASH_HARD=1`
+     (`__fastfail`, which SEH cannot catch).
+     - The worker exited with code `3221226505` (0xC0000409).
+     - The pending call rejected with
+       **`XLETH's engine stopped while loading XlethTestCrashOnCreate by Xleth Test (instantiate, exit code 3221226505)`**,
+       and the error carried `plugin/vendor/phase`. `getLastExitPlugin()` returned
+       `{plugin:"XlethTestCrashOnCreate",vendor:"Xleth Test",phase:"instantiate"}`.
+     - The breadcrumb stayed on disk with the dead worker's pid, `phase:"instantiate"`,
+       `context:"insert"`.
+   - **Next start.**
+     - The log shows `[PluginHost] previous engine (pid 11236) died while loading VST3 "XlethTestCrashOnCreate" by Xleth Test (phase instantiate, context insert) - quarantined`.
+     - `plugin-quarantine.json` has 1 entry.
+     - `audio_getLastLoadCrash` #1 returned the object (**one notice**); #2 returned `null`.
+   - **Project load.** A project whose master chain holds CrashOnCreate with state
+     `UDItU1RB…` (29 bytes) loaded with
+     `[PluginHost] "XlethTestCrashOnCreate" is quarantined … placeholder kept, state preserved (29 bytes)`.
+     - `getMissingPlugins` returned `missingReason:"quarantined"`, `pluginFormat:"VST3"`,
+       `uniqueId:"e783521a"`, `deprecatedUid:"5923c135"`, `pluginVendor:"Xleth Test"`.
+     - `audio_retryMissingPlugin` returned `{success:false}`
+       (`… is quarantined - not resolved`).
+     - `project_save` wrote the node back with `missing:true`, the description, and
+       **`state` identical to the original**.
+   - **Retry.** `audio_unquarantinePlugin("VST3","e783521a","5923c135")` returned
+     `{ok:true, removed:true, resolved:0, failed:1}`.
+     - The retry really ran: `CRASH … (retry) — placeholder kept`. With the soft fixture it
+       is SEH-caught, the breadcrumb is gone, and the engine is alive.
+     - Afterwards the quarantine list was empty and the row's `missingReason` was `missing`.
+     - A second unquarantine returned `removed:false`; bad arguments returned
+       `{ok:false, error:'bad-args'}`.
+   - Re-run on the final binary: same results.
+4. **PASS (single class). UniFlange editor.** `audio_openPluginEditor` returned
+   `{hasEditor:true}` in 592 ms.
+   - `editor-host.log`: `Sending VERS 2`;
+     `init v2 received plugin="UniFlange" format=VST3 uid=ad82305 … sr=48000.0 bs=480 stateLen=3684`;
+     `loading exact description "UniFlange" (VST3 uid=ad82305) at 48000.0 Hz / 480`;
+     `REDY 900x390`.
+   - No `findAllTypesForFile` and no argv fallback. `isPluginEditorOpen` was true and
+     `closePluginEditor` succeeded.
+   - **Multi-class: not tested.** No multi-class VST3 is installed here: the cache has no two
+     entries sharing a file.
+5. **PASS. Pre-change `xleth-editor-host.exe`** (the Nov 9 build, saved before any rebuild)
+   swapped into `bridge/build/Release`.
+   - `audio_openPluginEditor` returned **`{hasEditor:false, error:"protocol-mismatch"}` in 94 ms**.
+   - The engine log: `ERR_ received: no plugins found in: protocolVersion=2` →
+     `[EditorHost] stale editor-host exe — rebuild (bridge-clean)`.
+   - The first run took **8097 ms**. The failed coordinator was destroyed inline and blocked
+     for JUCE's 8 s IPC teardown, which is why it is now reaped off-thread (deviation 8).
+   - After restoring the v2 exe, the editor opened again in 641 ms.
+
+Also run:
+
+- `build.bat engine` → `[build.bat] engine OK`: root engine, all engine test exes, the
+  scanner and the editor host.
+- `cmake --build bridge/build --config Release` (addon + scanner + editor host): exit 0. No
+  new warnings in the touched files; `EditorHostMain.cpp(113)` C4996 `fopen` is pre-existing.
+- Full `ctest --test-dir build -C Release`: **97/101 pass**. The 4 failures are all on the known-failing baseline (`test_flip_orientation_golden`, `test_xlethfilter_analog`, `test_frame_collector`, `test_real_render`); none is plugin-related.
+- `bridge/test_rpc_manifest.js`: **356/356**. `generate-rpc-registries.js --check`: clean.
+- vitest over `components/__tests__`, `components/mixer`, `components/devices`,
+  `stores/__tests__` and `src/__tests__`: **78 files, 1031 tests, all passed**. That includes
+  the new `pluginQuarantine.test.jsx` (3/3). Its first version caught a real double-toast bug
+  under concurrent mounts, fixed before commit.
+- eslint on the touched UI files: clean.
+
+### Deviations from the P2 prompt
+
+1. **`build.bat bridge` was not run.** Its `npx cmake-js` misdetects VS2026 on this machine
+   ("no VC++ compiler"), independent of this change. The bridge was built with
+   `cmake --build bridge/build --config Release`, as in P1. `build.bat engine` was run and
+   passed.
+2. **Commits.** The three parts share `MixEngine`, `XlethEngineService.cpp`, the manifest and
+   the registries, and those files carry another session's uncommitted WIP. So the code went
+   in as **one** commit, with each mixed file staged as HEAD + only the P2 hunks
+   (blob reconstruction), followed by a docs commit. It was not one commit per build.
+3. **An explicit insert of a quarantined plugin is allowed** (logged); only blind loads are
+   refused (project/FX-chain `fromJSON`, `tryResolvePlugin`). Refusing inserts would leave no
+   UI way out of quarantine for a plugin that crashed on insert: it is in no project, so there
+   is no placeholder row to retry.
+4. **Minimal UI wiring beyond the notice.**
+   - `MissingPluginsDialog`: a quarantined row's detail reads "Quarantined: it crashed XLETH's
+     engine while loading", and its existing **Retry** button calls `audio.unquarantinePlugin`.
+   - `EffectDevice`: the status line for a quarantined placeholder.
+   - Without these, the new state could not be seen or left from the UI. There is no new
+     surface and no redesign.
+5. **`ERR_` framing.** The host sends `ERR_\nprotocol-mismatch` (the existing `ERR_\n<message>`
+   framing), not `ERR_:protocol-mismatch`. The engine also treats any `ERR_` before `VERS` as
+   a mismatch, because a pre-v2 exe cannot know to say "protocol-mismatch".
+6. **New `VERS` message** (host → engine), needed for 5.
+7. **The INIT `desc` is single-line XML** (`singleLine().withoutHeader()`) and the last field,
+   so line framing stays unambiguous. The host also accepts multi-line XML there.
+8. **A failed editor open hands its coordinator to the existing reaper thread** after
+   detaching it from the plugin (`setWorkerPlugin(nullptr)`). Smoke 5 measured 8.1 s → 94 ms.
+9. **`getMissingPluginsJSON` keeps `pluginVendor`** from the graph instead of overwriting it
+   with `""`.
+10. **Fixture extras.** `XLETH_TEST_CRASH_HARD=1` makes `XlethTestCrashOnCreate` uncatchable,
+    so the engine-death path can be tested on demand; SEH catches the null write. Smoke 2 also
+    used a 32-bit bundle (a SysWOW64 DLL under `x86-win`) and a text `.vst3`.
+11. **Unit tests use the existing ctest harness** (`add_executable` + `add_test`), not a new
+    `XLETH_BUILD_TESTS` option. The prefix sweep steps 16 bytes: step 1 took 50 s because
+    every PE-looking write is AV-scanned.
+12. **`XlethPluginInspect` is a standalone static lib** the scanner could link, but **the
+    scanner does not call it**. The engine never sends it a binary that fails preflight.
+13. **`missingReason` is not persisted.** It is recomputed on load from the quarantine list,
+    so the project format is unchanged.
+
+### Found, not fixed
+
+- **UI callers ignore `audio_openPluginEditor`'s result.** `EffectDevice.jsx`,
+  `effectEditorOpeners.js` and `EffectModule.jsx` drop `{hasEditor:false, error}`. The
+  protocol-mismatch error therefore reaches the RPC result and the engine log, but no toast.
+- **New exe + v1 INIT is not exercised end-to-end** (old `.node` with a fresh exe → host
+  `ERR_ protocol-mismatch`). It needs a pre-change engine build. The code path is the same
+  version check smoke 5 hit from the other side.
+- **No multi-class VST3 is installed**, so the per-class editor check (smoke 4, part 2) was not
+  run.
+- **Concurrent engines share one breadcrumb file.** With the dev app and a test harness both
+  loading plugins, one engine's `finish()` can delete the other's breadcrumb. The pid checks
+  prevent misattribution, but a crash in that window would go unrecorded.
+- **Not every load ends in a plugin crash.** Killing the engine (closing the app, Task Manager)
+  during a long plugin load is blamed on that plugin and quarantines it. The notice tells the
+  user, and Retry undoes it.
+- **A reused pid after reboot.** If the dead engine's pid now belongs to a live process, the
+  breadcrumb is left alone until that pid dies.
+- **Third-party calls outside the three choke points are not breadcrumbed:**
+  `resetCrashedPlugin` (re-prepare + state restore), `AudioGraph::reprepare` on device
+  changes, and state saves.
+- **An SEH-caught `createInstance` fault unwinds without C++ destructors**, so JUCE's module
+  handle may leak. The engine stayed responsive afterwards (smoke 3), but long-term heap
+  integrity after such a fault is not proven.
+- **`getChainState` takes the quarantine mutex once per missing node** on each chain poll. It
+  is cheap and runs on the message thread, but it is new work on a hot UI path.
+- **The exit code in the crash message is printed in decimal** (`3221226505`). Hex
+  (`0xC0000409`) would be more recognisable.
+- **Pre-existing:** `EditorHostMain.cpp(113)` C4996 `fopen`.
+
+### Not done (out of scope by instruction)
+
+- No new plugin format, and no `JUCE_PLUGINHOST_*` change.
+- No DLL is loaded in the engine for inspection: preflight is a PE parse only.
+- `MixEngine::addEffect`'s `chainsMutex_` scope is unchanged.
+- No engine auto-respawn and no project auto-reload.
+- No UI redesign: the notice goes through the existing toast. See deviation 4 for the two
+  status-text and Retry wirings.
+- The project file format is unchanged.
+- Nothing was hand-dispatched: both RPCs are in `ui/rpc-manifest.js`.
+- Nothing was pushed.
