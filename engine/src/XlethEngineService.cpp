@@ -19748,9 +19748,27 @@ static juce::File getThisModuleDir()
 #endif
 }
 
-// audio_scanPlugins(paths: string[]) → void
-// Replaces the search path list and starts an async background scan.
-// If paths is empty or omitted, the scan is skipped.
+// ── Plugin scan pipeline (P1, docs/PLUGIN_HOSTING_LOG.md) ────────────────────
+// All manifest-dispatched (ui/rpc-manifest.js). Search paths are engine-owned
+// (%APPDATA%\Xleth\plugin-settings.json); the scan never takes paths.
+
+static juce::File pluginScannerExe()
+{
+    return getThisModuleDir().getChildFile("xleth-plugin-scanner.exe");
+}
+
+static JsonApi::Object pluginOk(JsonApi::Env env, const juce::String& error)
+{
+    auto obj = JsonApi::Object::New(env);
+    obj.Set("ok", JsonApi::Boolean::New(env, error.isEmpty()));
+    if (error.isNotEmpty())
+        obj.Set("error", JsonApi::String::New(env, error.toStdString()));
+    return obj;
+}
+
+// audio_scanPlugins(opts?: { mode?: 'incremental'|'full', retryFailed?: bool })
+//   → { ok: bool, error?: 'scan-in-progress'|'scanner-missing'|'bad-mode' }
+// Starts an async scan of the persisted search paths. Default mode: incremental.
 JsonApi::Value Audio_ScanPlugins(const JsonApi::CallbackInfo& info)
 {
     JsonApi::Env env = info.Env();
@@ -19759,31 +19777,45 @@ JsonApi::Value Audio_ScanPlugins(const JsonApi::CallbackInfo& info)
         return env.Undefined();
     }
 
-    auto& registry = audioEngine->getMixEngine().getPluginRegistry();
-
-    // Replace (not append) the search path list with the caller-supplied paths.
-    registry.clearSearchPaths();
-    if (info.Length() >= 1 && info[0].IsArray()) {
-        const auto arr = info[0].As<JsonApi::Array>();
-        for (uint32_t i = 0; i < arr.Length(); ++i) {
-            if (arr.Get(i).IsString())
-                registry.addSearchPath(
-                    juce::String(arr.Get(i).As<JsonApi::String>().Utf8Value()));
+    PluginRegistry::ScanOptions opts;
+    if (info.Length() >= 1 && info[0].IsObject()) {
+        const auto o = info[0].As<JsonApi::Object>();
+        const auto mode = o.Get("mode");
+        if (mode.IsString()) {
+            const auto m = mode.As<JsonApi::String>().Utf8Value();
+            if (m == "full")             opts.mode = PluginRegistry::ScanMode::Full;
+            else if (m == "incremental") opts.mode = PluginRegistry::ScanMode::Incremental;
+            else                         return pluginOk(env, "bad-mode");
         }
+        const auto retry = o.Get("retryFailed");
+        if (retry.IsBoolean())
+            opts.retryFailed = retry.As<JsonApi::Boolean>().Value();
     }
 
-    // No paths → no-op. scanPlugins() has the same guard internally,
-    // but returning early here avoids launching the scanner exe at all.
-    if (registry.getSearchPaths().isEmpty())
-        return env.Undefined();
-
-    const juce::File scannerExe =
-        getThisModuleDir().getChildFile("xleth-plugin-scanner.exe");
-    registry.scanPlugins(scannerExe);
-    return env.Undefined();
+    auto& registry = audioEngine->getMixEngine().getPluginRegistry();
+    return pluginOk(env, registry.scanPlugins(pluginScannerExe(), opts));
 }
 
-// audio_getScanProgress() → { scanning: bool, scanned: number, total: number, failedCount: number }
+// audio_cancelPluginScan() → { ok: true, wasScanning: bool }
+// The partial results are merged into the previous list (never a wipe).
+JsonApi::Value Audio_CancelPluginScan(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !audioEngine) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    auto& registry = audioEngine->getMixEngine().getPluginRegistry();
+    const bool was = registry.isScanning();
+    registry.cancelScan();
+    auto obj = pluginOk(env, {});
+    obj.Set("wasScanning", JsonApi::Boolean::New(env, was));
+    return obj;
+}
+
+// audio_getScanProgress() → { scanning, done, scanned (= done, legacy), total,
+//   current, skippedUnchanged, skippedFailed, failedNew, failedCount,
+//   cancelled, mode }
 JsonApi::Value Audio_GetScanProgress(const JsonApi::CallbackInfo& info)
 {
     IPC_TIME_START;
@@ -19793,13 +19825,104 @@ JsonApi::Value Audio_GetScanProgress(const JsonApi::CallbackInfo& info)
         JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
         return env.Undefined();
     }
-    const auto& reg = audioEngine->getMixEngine().getPluginRegistry();
+    const auto p = audioEngine->getMixEngine().getPluginRegistry().getScanProgress();
     auto obj = JsonApi::Object::New(env);
-    obj.Set("scanning",    JsonApi::Boolean::New(env, reg.isScanning()));
-    obj.Set("scanned",     JsonApi::Number::New(env,  reg.getScannedCount()));
-    obj.Set("total",       JsonApi::Number::New(env,  reg.getTotalCount()));
-    obj.Set("failedCount", JsonApi::Number::New(env,  (int)reg.getFailedPlugins().size()));
+    obj.Set("scanning",         JsonApi::Boolean::New(env, p.scanning));
+    obj.Set("done",             JsonApi::Number::New(env,  p.done));
+    obj.Set("scanned",          JsonApi::Number::New(env,  p.done));
+    obj.Set("total",            JsonApi::Number::New(env,  p.total));
+    obj.Set("current",          JsonApi::String::New(env,  p.current.toStdString()));
+    obj.Set("skippedUnchanged", JsonApi::Number::New(env,  p.skippedUnchanged));
+    obj.Set("skippedFailed",    JsonApi::Number::New(env,  p.skippedFailed));
+    obj.Set("failedNew",        JsonApi::Number::New(env,  p.failedNew));
+    obj.Set("failedCount",      JsonApi::Number::New(env,  p.failedCount));
+    obj.Set("cancelled",        JsonApi::Boolean::New(env, p.cancelled));
+    obj.Set("mode",             JsonApi::String::New(env,  p.mode.toStdString()));
     IPC_TIME_END("audio_getScanProgress");
+    return obj;
+}
+
+// audio_getPluginSearchPaths()
+//   → { [format]: { defaults: string[], user: string[], useDefaults: bool } }
+JsonApi::Value Audio_GetPluginSearchPaths(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !audioEngine) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const auto& registry = audioEngine->getMixEngine().getPluginRegistry();
+    auto toArray = [&](const juce::StringArray& a) {
+        auto arr = JsonApi::Array::New(env, (size_t)a.size());
+        for (int i = 0; i < a.size(); ++i)
+            arr.Set((uint32_t)i, JsonApi::String::New(env, a[i].toStdString()));
+        return arr;
+    };
+    auto out = JsonApi::Object::New(env);
+    for (const auto& fmt : registry.getFormatNames()) {
+        const auto fp = registry.getSearchPaths(fmt);
+        auto f = JsonApi::Object::New(env);
+        f.Set("defaults",    toArray(registry.getDefaultSearchPaths(fmt)));
+        f.Set("user",        toArray(fp.user));
+        f.Set("useDefaults", JsonApi::Boolean::New(env, fp.useDefaults));
+        out.Set(fmt.toStdString(), f);
+    }
+    return out;
+}
+
+// audio_setPluginSearchPaths(format: string, user: string[], useDefaults: bool)
+//   → { ok, error?: 'scan-in-progress'|'unknown-format'|'bad-args'|'write-failed' }
+JsonApi::Value Audio_SetPluginSearchPaths(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !audioEngine) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsString() || !info[1].IsArray())
+        return pluginOk(env, "bad-args");
+
+    const juce::String format(info[0].As<JsonApi::String>().Utf8Value());
+    juce::StringArray user;
+    const auto arr = info[1].As<JsonApi::Array>();
+    for (uint32_t i = 0; i < arr.Length(); ++i)
+        if (arr.Get(i).IsString())
+            user.add(juce::String(arr.Get(i).As<JsonApi::String>().Utf8Value()));
+    const bool useDefaults = info.Length() >= 3 && info[2].IsBoolean()
+                               ? info[2].As<JsonApi::Boolean>().Value() : true;
+
+    auto& registry = audioEngine->getMixEngine().getPluginRegistry();
+    return pluginOk(env, registry.setSearchPaths(format, user, useDefaults));
+}
+
+// audio_retryFailedPlugins(paths: string[] | 'all')
+//   → { ok, removed: number, error?: 'scan-in-progress'|'scanner-missing'|'nothing-to-retry'|'bad-args' }
+// Removes those failure entries and runs an incremental scan limited to them.
+JsonApi::Value Audio_RetryFailedPlugins(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !audioEngine) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    bool all = false;
+    juce::StringArray paths;
+    if (info.Length() >= 1 && info[0].IsString()
+        && info[0].As<JsonApi::String>().Utf8Value() == "all") {
+        all = true;
+    } else if (info.Length() >= 1 && info[0].IsArray()) {
+        const auto arr = info[0].As<JsonApi::Array>();
+        for (uint32_t i = 0; i < arr.Length(); ++i)
+            if (arr.Get(i).IsString())
+                paths.add(juce::String(arr.Get(i).As<JsonApi::String>().Utf8Value()));
+    } else {
+        return pluginOk(env, "bad-args");
+    }
+
+    int removed = 0;
+    auto& registry = audioEngine->getMixEngine().getPluginRegistry();
+    auto obj = pluginOk(env, registry.retryFailed(pluginScannerExe(), paths, all, removed));
+    obj.Set("removed", JsonApi::Number::New(env, removed));
     return obj;
 }
 
@@ -19816,7 +19939,10 @@ JsonApi::Value Audio_GetScannedPlugins(const JsonApi::CallbackInfo& info)
     return JsonApi::String::New(env, json.toStdString());
 }
 
-// audio_getFailedPlugins() → JSON string (array of { filePath: string })
+// audio_getFailedPlugins() → JSON string: the PERSISTED failure list
+// (%APPDATA%\Xleth\plugin-scan-failures.json), each entry
+// { filePath (legacy, = path), path, format, reason, fileTime, firstSeen,
+//   lastAttempt, attempts }.
 JsonApi::Value Audio_GetFailedPlugins(const JsonApi::CallbackInfo& info)
 {
     JsonApi::Env env = info.Env();
@@ -19824,14 +19950,8 @@ JsonApi::Value Audio_GetFailedPlugins(const JsonApi::CallbackInfo& info)
         JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
         return env.Undefined();
     }
-    const auto failed = audioEngine->getMixEngine().getPluginRegistry().getFailedPlugins();
-    juce::String json = "[";
-    for (int i = 0; i < failed.size(); ++i) {
-        if (i > 0) json += ",";
-        const auto esc = failed[i].replace("\\", "\\\\").replace("\"", "\\\"");
-        json += "{\"filePath\":\"" + esc + "\"}";
-    }
-    json += "]";
+    const juce::String json =
+        audioEngine->getMixEngine().getPluginRegistry().getFailuresAsJSON();
     return JsonApi::String::New(env, json.toStdString());
 }
 
@@ -24202,7 +24322,6 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     // Graph-mode routing (wires + graph-owned effects FXG.3-b / params FXG.4-a /
     // hydrate-sync-adopt FXG.3-d, track + master) dispatches from the generated
     // XlethRpcDispatch.inc at the top of this function (AUDIT.md S1 slice 7).
-    if (method == "audio_scanPlugins") return Audio_ScanPlugins(info).raw();
     if (method == "audio_setMainWindowHandle") return Audio_SetMainWindowHandle(info).raw();
     // DEPRECATED: use getSyncStats instead.
     if (method == "sync_getStats") return GetSyncStats(info).raw();

@@ -7,7 +7,7 @@ import { create } from 'zustand'
 
 const useVstStore = create((set) => ({
   plugins:      [],   // [{ id, name, vendor, category, format, filePath, numInputs, numOutputs }]
-  failedPlugins: [],  // [{ filePath }]
+  failedPlugins: [],  // persisted scan failures: [{ filePath, path, format, reason, fileTime, firstSeen, lastAttempt, attempts }]
   browserOpen:  false,
   browserStoreKey: null,  // storeKey ('master' | '0' | '1' | ...) for double-click add
 
@@ -17,7 +17,11 @@ const useVstStore = create((set) => ({
       if (!raw) return
       const list = JSON.parse(raw)
       set({ plugins: Array.isArray(list) ? list : [] })
-    } catch {}
+    } catch (err) {
+      // An invalid payload or a missing RPC used to vanish here as an empty
+      // menu. Keep the current list, but say why.
+      console.error('[PluginLib] getScannedPlugins failed', err)
+    }
   },
 
   fetchFailed: async () => {
@@ -26,7 +30,9 @@ const useVstStore = create((set) => ({
       if (!raw) return
       const list = JSON.parse(raw)
       set({ failedPlugins: Array.isArray(list) ? list : [] })
-    } catch {}
+    } catch (err) {
+      console.error('[PluginLib] getFailedPlugins failed', err)
+    }
   },
 
   openBrowser:  (storeKey = null) => set({ browserOpen: true, browserStoreKey: storeKey }),

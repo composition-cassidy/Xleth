@@ -348,9 +348,9 @@ window.xleth = ({
     // window methods (openPluginEditor / closePluginEditor / closeAllPluginEditors /
     // isPluginEditorOpen), the missing-plugin helpers (getMissingPlugins /
     // retryMissingPlugin / removeAllMissing), and resetCrashedPlugin all come
-    // from the RPC manifest (attachRpcWrappers below). scanPlugins stays here
-    // (its main handler reshapes the argument); addVstSearchPath owns a dialog.
-    scanPlugins:          (paths)            => invoke('xleth:audio:scanPlugins', paths),
+    // from the RPC manifest (attachRpcWrappers below), as do scanPlugins /
+    // cancelPluginScan / retryFailedPlugins / get+setPluginSearchPaths (P1).
+    // addVstSearchPath owns a dialog.
     addVstSearchPath:     ()                 => invoke('xleth:dialog:addVstSearchPath'),
   },
 

@@ -2276,10 +2276,52 @@ const METHODS = [
   // ── VST3 scanner / editor / missing-plugin / crash recovery (AUDIT.md S1) ──
   // Pure engine pass-throughs from ui/electron-main/vst3.js. All dispatch with
   // the value shape (engine returns Handler(info).raw() for every one, including
-  // the editor mutations). audio_scanPlugins is NOT here: its vst3.js handler
-  // reshapes the argument (paths && paths.length ? [paths] : []) before
-  // forwarding, so it stays hand-written. xleth:dialog:addVstSearchPath owns an
-  // Electron dialog, not an engine call, and stays hand-written too.
+  // the editor mutations). xleth:dialog:addVstSearchPath owns an Electron
+  // dialog, not an engine call, and stays hand-written.
+  //
+  // P1 scan pipeline (docs/PLUGIN_HOSTING_LOG.md): audio_scanPlugins now takes
+  // an options object ({ mode: 'incremental'|'full', retryFailed? }) and the
+  // engine owns the search paths, so it is a plain pass-through here too.
+  {
+    method: 'audio_scanPlugins',
+    channels: ['xleth:audio:scanPlugins'],
+    api: { 'audio.scanPlugins': 'xleth:audio:scanPlugins' },
+    handler: 'Audio_ScanPlugins',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_cancelPluginScan',
+    channels: ['xleth:audio:cancelPluginScan'],
+    api: { 'audio.cancelPluginScan': 'xleth:audio:cancelPluginScan' },
+    handler: 'Audio_CancelPluginScan',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getPluginSearchPaths',
+    channels: ['xleth:audio:getPluginSearchPaths'],
+    api: { 'audio.getPluginSearchPaths': 'xleth:audio:getPluginSearchPaths' },
+    handler: 'Audio_GetPluginSearchPaths',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_setPluginSearchPaths',
+    channels: ['xleth:audio:setPluginSearchPaths'],
+    api: { 'audio.setPluginSearchPaths': 'xleth:audio:setPluginSearchPaths' },
+    handler: 'Audio_SetPluginSearchPaths',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_retryFailedPlugins',
+    channels: ['xleth:audio:retryFailedPlugins'],
+    api: { 'audio.retryFailedPlugins': 'xleth:audio:retryFailedPlugins' },
+    handler: 'Audio_RetryFailedPlugins',
+    returns: 'value',
+    binary: null,
+  },
   {
     method: 'audio_getScanProgress',
     channels: ['xleth:audio:getScanProgress'],

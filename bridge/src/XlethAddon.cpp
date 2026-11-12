@@ -557,11 +557,6 @@ Napi::Value Audio_DrainEffectVizFrames(const Napi::CallbackInfo& info)
 // FXG.3-d, track + master) is manifest-generated now (XlethRpcExports.inc,
 // AUDIT.md S1 slice 7).
 
-Napi::Value Audio_ScanPlugins(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_scanPlugins");
-}
-
 Napi::Value Audio_SetMainWindowHandle(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "audio_setMainWindowHandle");
@@ -864,11 +859,11 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     //    (XlethRpcExports.inc, AUDIT.md S1 slice 7).
 
     // ── VST3 plugin scanner ─────────────────────────────────────────────────
-    // audio_scanPlugins stays hand-written (its vst3.js handler reshapes the
-    // argument before forwarding). The scan-progress/scanned/failed queries, the
-    // plugin-editor window methods, the missing-plugin helpers, and crash
-    // recovery all migrated to the RPC manifest (XlethRpcExports.inc).
-    exports.Set("audio_scanPlugins",      Napi::Function::New(env, Audio_ScanPlugins));
+    // The whole scan surface (scan / cancel / progress / scanned / failed /
+    // retry / search paths), the plugin-editor window methods, the
+    // missing-plugin helpers, and crash recovery are manifest-generated
+    // (XlethRpcExports.inc). audio_scanPlugins moved there in P1 once it took
+    // an options object instead of a reshaped path list.
 
     // ── Main window handle (for VST editor parenting) ───────────────────────
     exports.Set("audio_setMainWindowHandle", Napi::Function::New(env, Audio_SetMainWindowHandle));

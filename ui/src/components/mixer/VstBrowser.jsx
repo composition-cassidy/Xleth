@@ -7,16 +7,44 @@ import { getPickerPath, openFilePicker } from '../filePicker/filePickerService.j
 import { Button, IconButton, TextField } from '../../ui-kit'
 import styles from './VstBrowser.module.css'
 
-const PATHS_KEY = 'xleth.vstSearchPaths'
+// Search folders are engine-owned since P1 (%APPDATA%\Xleth\plugin-settings.json,
+// audio.get/setPluginSearchPaths). This key is the pre-P1 renderer copy: it is
+// pushed into the engine's VST3 user folders once, then deleted.
+const LEGACY_PATHS_KEY = 'xleth.vstSearchPaths'
+const FORMAT = 'VST3'
 
-function loadPaths() {
-  try { return JSON.parse(localStorage.getItem(PATHS_KEY) || '[]') } catch { return [] }
+async function loadEnginePaths() {
+  const audio = window.xleth?.audio
+  const all = await audio?.getPluginSearchPaths?.()
+  let vst3 = all?.[FORMAT] ?? { defaults: [], user: [], useDefaults: true }
+
+  let legacy = null
+  try { legacy = localStorage.getItem(LEGACY_PATHS_KEY) } catch { legacy = null }
+  if (legacy === null) return vst3
+
+  let list = []
+  try { list = JSON.parse(legacy) } catch { list = [] }
+  const merged = [...vst3.user]
+  for (const p of Array.isArray(list) ? list : []) {
+    if (typeof p === 'string' && p && !merged.includes(p)) merged.push(p)
+  }
+  const res = merged.length === vst3.user.length
+    ? { ok: true }
+    : await audio?.setPluginSearchPaths?.(FORMAT, merged, vst3.useDefaults)
+  if (res?.ok) {
+    try { localStorage.removeItem(LEGACY_PATHS_KEY) } catch { /* private mode */ }
+    vst3 = { ...vst3, user: merged }
+  } else {
+    console.error('[PluginLib] search-path migration failed', res?.error)
+  }
+  return vst3
 }
 
 export default function VstBrowser({ embedded = false }) {
   const [search,     setSearch]     = useState('')
   const [failedOpen, setFailedOpen] = useState(false)
-  const [paths,      setPaths]      = useState(loadPaths)
+  const [paths,      setPaths]      = useState([])
+  const [useDefaults, setUseDefaults] = useState(true)
 
   const plugins         = useVstStore(s => s.plugins)
   const failedPlugins   = useVstStore(s => s.failedPlugins)
@@ -35,7 +63,22 @@ export default function VstBrowser({ embedded = false }) {
     if (!isOpen) return
     fetchPlugins()
     fetchFailed()
+    let live = true
+    loadEnginePaths()
+      .then((v) => {
+        if (!live) return
+        setPaths(Array.isArray(v.user) ? v.user : [])
+        setUseDefaults(v.useDefaults !== false)
+      })
+      .catch((err) => console.error('[PluginLib] getPluginSearchPaths failed', err))
+    return () => { live = false }
   }, [isOpen, fetchPlugins, fetchFailed])
+
+  const savePaths = async (next) => {
+    const res = await window.xleth?.audio?.setPluginSearchPaths?.(FORMAT, next, useDefaults)
+    if (res?.ok) setPaths(next)
+    else console.error('[PluginLib] setPluginSearchPaths failed', res?.error)
+  }
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -47,7 +90,7 @@ export default function VstBrowser({ embedded = false }) {
   }, [plugins, search])
 
   const handleScan = async () => {
-    await window.xleth?.audio?.scanPlugins?.(paths)
+    await window.xleth?.audio?.scanPlugins?.({ mode: 'incremental' })
   }
 
   const handleAddPath = async () => {
@@ -60,15 +103,12 @@ export default function VstBrowser({ embedded = false }) {
     })
     const dir = getPickerPath(picked)
     if (!dir) return
-    const next = [...paths, dir]
-    setPaths(next)
-    localStorage.setItem(PATHS_KEY, JSON.stringify(next))
+    if (paths.includes(dir)) return
+    await savePaths([...paths, dir])
   }
 
   const handleRemovePath = (idx) => {
-    const next = paths.filter((_, i) => i !== idx)
-    setPaths(next)
-    localStorage.setItem(PATHS_KEY, JSON.stringify(next))
+    savePaths(paths.filter((_, i) => i !== idx))
   }
 
   const handleDoubleClick = (plugin) => {

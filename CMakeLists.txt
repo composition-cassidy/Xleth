@@ -29,3 +29,10 @@ enable_testing()
 add_subdirectory(engine)
 add_subdirectory(scanner)
 add_subdirectory(editor-host)
+
+# Crash/hang VST3 fixtures for smoke-testing the scanner failure path.
+# Test-only, never shipped, not part of build.bat's default flow.
+option(XLETH_BUILD_TEST_PLUGINS "Build the crash/hang VST3 scan fixtures (tools/test-plugins)" OFF)
+if(XLETH_BUILD_TEST_PLUGINS)
+    add_subdirectory(tools/test-plugins)
+endif()
