@@ -2763,6 +2763,8 @@ static ClipModulation jsToClipModulation(const JsonApi::Object& o,
     return m;
 }
 
+static JsonApi::Value opaqueJsonToValue(JsonApi::Env env, const nlohmann::json& value);
+
 static JsonApi::Object clipToJs(JsonApi::Env env, const Clip& c) {
     JsonApi::Object o = JsonApi::Object::New(env);
     o.Set("id",                JsonApi::Number::New(env, c.id));
@@ -2793,6 +2795,10 @@ static JsonApi::Object clipToJs(JsonApi::Env env, const Clip& c) {
     o.Set("fadeOutX2",         JsonApi::Number::New(env, c.fadeOutX2));
     o.Set("fadeOutY2",         JsonApi::Number::New(env, c.fadeOutY2));
     o.Set("modulation",        clipModulationToJs(env, c.modulation));
+    // Lens {base, keys}, so every JS rebuild of a clip (paste, split,
+    // duplicate: all go through jsToClip) keeps it. Without it a rebuilt clip
+    // is Clip{}, i.e. fit = Cover, and an old Stretch clip would change.
+    o.Set("lens",              opaqueJsonToValue(env, lensroam::lensTrackToJson(c.lens)));
     return o;
 }
 
@@ -9847,6 +9853,12 @@ static Clip jsToClip(const JsonApi::Object& o)
         clip.modulation = jsToClipModulation(
             o.Get("modulation").As<JsonApi::Object>(), ClipModulation{});
 
+    // Lens: absent = a NEW clip (Clip{} default, fit = Cover); present = a
+    // rebuilt clip (paste / split / duplicate) keeping the lens clipToJs
+    // emitted. Tolerant reader, the project-load one.
+    if (o.Has("lens") && o.Get("lens").IsObject())
+        clip.lens = lensroam::lensTrackFromJson(valueToJson(o.Get("lens")));
+
     return clip;
 }
 
@@ -16031,6 +16043,486 @@ void Timeline_SetTrackNoteFade(const JsonApi::CallbackInfo& info)
         *g_timeline);
     g_previewDirty = true;
     log.done();
+}
+
+// ─── Lens + Roam editing (docs/XLETH_LENS_ROAM_SPEC.md, phase P3) ─────────────
+//
+// Every setter is ONE UndoManager command, built only when the value really
+// changes (a mouseup that lands where the drag started leaves no undo entry).
+// The UI previews a drag locally and sends one call on mouseup: there is no
+// streaming path here, by design (spec "Threading").
+//
+// `params` is a PATCH over the current base: absent fields keep their value.
+// Parsing is STRICT, unlike the tolerant project-load reader: an unknown field,
+// a wrong type, a non-finite number or an unknown enum string throws, so a
+// typo in the renderer surfaces as a rejected call instead of a silent no-op.
+//
+// The post-mutation hook republishes the Lens/Roam snapshot the compositor
+// reads, so the next preview frame (and its undo/redo) shows the change.
+//
+// Return value of every setter/reset: the post-state, so the caller never
+// refetches: { ..ids, changed, lens|roam }.
+
+namespace {
+
+bool lensRoamReadFinite(const JsonApi::Object& o, const char* key, float& out, std::string& err)
+{
+    JsonApi::Value v = o.Get(key);
+    if (!v.IsNumber()) { err = std::string(key) + " must be a number"; return false; }
+    const double d = v.As<JsonApi::Number>().DoubleValue();
+    if (!std::isfinite(d)) { err = std::string(key) + " must be finite"; return false; }
+    out = static_cast<float>(d);
+    return true;
+}
+
+bool lensRoamReadString(const JsonApi::Object& o, const char* key, std::string& out, std::string& err)
+{
+    JsonApi::Value v = o.Get(key);
+    if (!v.IsString()) { err = std::string(key) + " must be a string"; return false; }
+    out = v.As<JsonApi::String>().Utf8Value();
+    return true;
+}
+
+// Applies a Lens patch onto `p`. False + err on the first bad field.
+bool applyLensPatch(const JsonApi::Object& o, LensParams& p, std::string& err)
+{
+    JsonApi::Array keys = o.GetPropertyNames();
+    for (uint32_t i = 0; i < keys.Length(); ++i) {
+        const std::string k = keys.Get(i).As<JsonApi::String>().Utf8Value();
+        if (k == "fit") {
+            std::string s;
+            if (!lensRoamReadString(o, "fit", s, err)) return false;
+            if      (s == "Stretch") p.fit = LensFit::Stretch;
+            else if (s == "Cover")   p.fit = LensFit::Cover;
+            else if (s == "Contain") p.fit = LensFit::Contain;
+            else { err = "fit must be Stretch | Cover | Contain, got '" + s + "'"; return false; }
+        } else if (k == "flip") {
+            std::string s;
+            if (!lensRoamReadString(o, "flip", s, err)) return false;
+            if      (s == "FollowTrack") p.flip = LensFlip::FollowTrack;
+            else if (s == "None")        p.flip = LensFlip::None;
+            else if (s == "Horizontal")  p.flip = LensFlip::Horizontal;
+            else if (s == "Vertical")    p.flip = LensFlip::Vertical;
+            else { err = "flip must be FollowTrack | None | Horizontal | Vertical, got '" + s + "'"; return false; }
+        } else if (k == "centerX" || k == "centerY") {
+            float v = 0.0f;
+            if (!lensRoamReadFinite(o, k.c_str(), v, err)) return false;
+            // Spec: 0..1, source-normalized.
+            (k == "centerX" ? p.centerX : p.centerY) = std::clamp(v, 0.0f, 1.0f);
+        } else if (k == "zoom") {
+            float v = 0.0f;
+            if (!lensRoamReadFinite(o, "zoom", v, err)) return false;
+            if (v <= 0.0f) { err = "zoom must be > 0"; return false; }
+            p.zoom = std::clamp(v, 1e-3f, 1e3f);   // the evaluator's own bounds
+        } else if (k == "rotationDeg") {
+            if (!lensRoamReadFinite(o, "rotationDeg", p.rotationDeg, err)) return false;
+        } else {
+            err = "unknown Lens field '" + k + "' (fit, centerX, centerY, zoom, rotationDeg, flip)";
+            return false;
+        }
+    }
+    return true;
+}
+
+bool applyRoamPatch(const JsonApi::Object& o, RoamParams& p, std::string& err)
+{
+    JsonApi::Array keys = o.GetPropertyNames();
+    for (uint32_t i = 0; i < keys.Length(); ++i) {
+        const std::string k = keys.Get(i).As<JsonApi::String>().Utf8Value();
+        if (k == "bounds") {
+            std::string s;
+            if (!lensRoamReadString(o, "bounds", s, err)) return false;
+            if      (s == "Clip")  p.bounds = RoamBounds::Clip;
+            else if (s == "Float") p.bounds = RoamBounds::Float;
+            else { err = "bounds must be Clip | Float, got '" + s + "'"; return false; }
+        } else if (k == "layer") {
+            std::string s;
+            if (!lensRoamReadString(o, "layer", s, err)) return false;
+            if      (s == "GridOrder")       p.layer = RoamLayer::GridOrder;
+            else if (s == "AboveNeighbours") p.layer = RoamLayer::AboveNeighbours;
+            else if (s == "Top")             p.layer = RoamLayer::Top;
+            else { err = "layer must be GridOrder | AboveNeighbours | Top, got '" + s + "'"; return false; }
+        } else if (k == "offsetX") {
+            if (!lensRoamReadFinite(o, "offsetX", p.offsetX, err)) return false;
+        } else if (k == "offsetY") {
+            if (!lensRoamReadFinite(o, "offsetY", p.offsetY, err)) return false;
+        } else if (k == "scale") {
+            float v = 0.0f;
+            if (!lensRoamReadFinite(o, "scale", v, err)) return false;
+            if (v <= 0.0f) { err = "scale must be > 0"; return false; }
+            p.scale = std::clamp(v, 1e-3f, 1e3f);  // the evaluator's own bounds
+        } else if (k == "rotationDeg") {
+            if (!lensRoamReadFinite(o, "rotationDeg", p.rotationDeg, err)) return false;
+        } else {
+            err = "unknown Roam field '" + k + "' (offsetX, offsetY, scale, rotationDeg, bounds, layer)";
+            return false;
+        }
+    }
+    return true;
+}
+
+std::string describeLens(const LensParams& p)
+{
+    char buf[192];
+    std::snprintf(buf, sizeof(buf), "fit=%s center=(%.4g,%.4g) zoom=%.4g rot=%.4g flip=%s",
+                  lensroam::lensFitToString(p.fit), p.centerX, p.centerY, p.zoom,
+                  p.rotationDeg, lensroam::lensFlipToString(p.flip));
+    return buf;
+}
+
+std::string describeRoam(const RoamParams& p)
+{
+    char buf[192];
+    std::snprintf(buf, sizeof(buf), "offset=(%.4g,%.4g) scale=%.4g rot=%.4g bounds=%s layer=%s",
+                  p.offsetX, p.offsetY, p.scale, p.rotationDeg,
+                  lensroam::roamBoundsToString(p.bounds), lensroam::roamLayerToString(p.layer));
+    return buf;
+}
+
+// Reset keeps the fit (Stretch stays Stretch, Cover stays Cover) and returns
+// everything else to neutral: a reset re-frames, it does not change how the
+// source is fitted, so an old Stretch clip does not suddenly crop.
+LensParams resetLens(const LensParams& current)
+{
+    LensParams p;
+    p.fit = current.fit;
+    return p;
+}
+
+bool lensRoamReady(JsonApi::Env env)
+{
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return false;
+    }
+    return true;
+}
+
+JsonApi::Value clipLensResult(JsonApi::Env env, int clipId, bool changed)
+{
+    JsonApi::Object r = JsonApi::Object::New(env);
+    r.Set("clipId",  JsonApi::Number::New(env, clipId));
+    r.Set("changed", JsonApi::Boolean::New(env, changed));
+    const Clip* c = g_timeline->getClip(clipId);
+    r.Set("lens", opaqueJsonToValue(env, lensroam::lensParamsToJson(c ? c->lens.base : LensParams{})));
+    return r;
+}
+
+JsonApi::Value trackLensResult(JsonApi::Env env, int trackId, int regionId, bool changed)
+{
+    JsonApi::Object r = JsonApi::Object::New(env);
+    r.Set("trackId",  JsonApi::Number::New(env, trackId));
+    r.Set("regionId", JsonApi::Number::New(env, regionId));
+    r.Set("changed",  JsonApi::Boolean::New(env, changed));
+    const TrackInfo* t = g_timeline->getTrack(trackId);
+    const bool explicitEntry = t && t->trackLens.count(regionId) != 0;
+    r.Set("explicit", JsonApi::Boolean::New(env, explicitEntry));
+    r.Set("lens", opaqueJsonToValue(env, lensroam::lensParamsToJson(
+        t ? lensroam::resolveSourceLens(*t, regionId) : LensParams{})));
+    return r;
+}
+
+JsonApi::Value trackRoamResult(JsonApi::Env env, int trackId, bool changed)
+{
+    JsonApi::Object r = JsonApi::Object::New(env);
+    r.Set("trackId", JsonApi::Number::New(env, trackId));
+    r.Set("changed", JsonApi::Boolean::New(env, changed));
+    const TrackInfo* t = g_timeline->getTrack(trackId);
+    r.Set("roam", opaqueJsonToValue(env, lensroam::roamParamsToJson(t ? t->roam.base : RoamParams{})));
+    return r;
+}
+
+// Shared body of setClipLens / resetClipLens. `patch` null = reset.
+JsonApi::Value applyClipLens(JsonApi::Env env, int clipId, const JsonApi::Object* patch,
+                             const char* logName)
+{
+    BridgeCallLog log(logName);
+    const Clip* c = g_timeline->getClip(clipId);
+    if (!c) {
+        JsonApi::Error::New(env, std::string(logName) + ": no clip " + std::to_string(clipId))
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const LensParams before = c->lens.base;
+    LensParams after = before;
+    if (patch) {
+        std::string err;
+        if (!applyLensPatch(*patch, after, err)) {
+            JsonApi::TypeError::New(env, std::string(logName) + ": " + err).ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+    } else {
+        after = resetLens(before);
+    }
+    const bool changed = after != before;
+    if (changed) {
+        g_undoManager->execute(
+            std::make_unique<SetClipLensCommand>(clipId, after, *g_timeline, patch == nullptr),
+            *g_timeline);
+        g_previewDirty = true;
+    }
+    log.done("clip " + std::to_string(clipId) + (changed ? " " : " unchanged ") + describeLens(after));
+    return clipLensResult(env, clipId, changed);
+}
+
+JsonApi::Value applyTrackLens(JsonApi::Env env, int trackId, int regionId,
+                              const JsonApi::Object* patch, const char* logName)
+{
+    BridgeCallLog log(logName);
+    const TrackInfo* t = g_timeline->getTrack(trackId);
+    if (!t) {
+        JsonApi::Error::New(env, std::string(logName) + ": no track " + std::to_string(trackId))
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    // Track Lens is the Pattern Track source default ({trackId, regionId});
+    // a Clip track's clips each carry their own (setClipLens).
+    if (t->type != TrackInfo::Type::Pattern) {
+        JsonApi::Error::New(env, std::string(logName) + ": track " + std::to_string(trackId)
+            + " is not a Pattern track (use setClipLens for clips)").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (!g_timeline->getRegion(regionId)) {
+        JsonApi::Error::New(env, std::string(logName) + ": no region " + std::to_string(regionId))
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const LensParams before = lensroam::resolveSourceLens(*t, regionId);
+    LensParams after = before;
+    if (patch) {
+        std::string err;
+        if (!applyLensPatch(*patch, after, err)) {
+            JsonApi::TypeError::New(env, std::string(logName) + ": " + err).ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+    } else {
+        after = resetLens(before);
+    }
+    const bool changed = after != before;
+    if (changed) {
+        g_undoManager->execute(
+            std::make_unique<SetTrackLensCommand>(trackId, regionId, after, *g_timeline,
+                                                  patch == nullptr),
+            *g_timeline);
+        g_previewDirty = true;
+    }
+    log.done("track " + std::to_string(trackId) + " region " + std::to_string(regionId)
+             + (changed ? " " : " unchanged ") + describeLens(after));
+    return trackLensResult(env, trackId, regionId, changed);
+}
+
+JsonApi::Value applyTrackRoam(JsonApi::Env env, int trackId, const JsonApi::Object* patch,
+                              const char* logName)
+{
+    BridgeCallLog log(logName);
+    const TrackInfo* t = g_timeline->getTrack(trackId);
+    if (!t) {
+        JsonApi::Error::New(env, std::string(logName) + ": no track " + std::to_string(trackId))
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const RoamParams before = t->roam.base;
+    RoamParams after = before;
+    if (patch) {
+        std::string err;
+        if (!applyRoamPatch(*patch, after, err)) {
+            JsonApi::TypeError::New(env, std::string(logName) + ": " + err).ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+    } else {
+        after = RoamParams{};
+    }
+    const bool changed = after != before;
+    if (changed) {
+        g_undoManager->execute(
+            std::make_unique<SetTrackRoamCommand>(trackId, after, *g_timeline, patch == nullptr),
+            *g_timeline);
+        g_previewDirty = true;
+    }
+    log.done("track " + std::to_string(trackId) + (changed ? " " : " unchanged ") + describeRoam(after));
+    return trackRoamResult(env, trackId, changed);
+}
+
+} // namespace
+
+// timeline_setClipLens(clipId, params) -> { clipId, changed, lens }
+// clipId is the Clip Track event id (the spec's eventId).
+JsonApi::Value Timeline_SetClipLens(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!lensRoamReady(env)) return env.Undefined();
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsObject()) {
+        JsonApi::TypeError::New(env, "timeline_setClipLens(clipId: number, params: object)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    JsonApi::Object patch = info[1].As<JsonApi::Object>();
+    return applyClipLens(env, info[0].As<JsonApi::Number>().Int32Value(), &patch,
+                         "timeline.setClipLens");
+}
+
+// timeline_resetClipLens(clipId) -> { clipId, changed, lens }
+JsonApi::Value Timeline_ResetClipLens(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!lensRoamReady(env)) return env.Undefined();
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        JsonApi::TypeError::New(env, "timeline_resetClipLens(clipId: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    return applyClipLens(env, info[0].As<JsonApi::Number>().Int32Value(), nullptr,
+                         "timeline.resetClipLens");
+}
+
+// timeline_setTrackLens(trackId, regionId, params) -> { trackId, regionId, changed, explicit, lens }
+JsonApi::Value Timeline_SetTrackLens(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!lensRoamReady(env)) return env.Undefined();
+    if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsNumber() || !info[2].IsObject()) {
+        JsonApi::TypeError::New(env, "timeline_setTrackLens(trackId: number, regionId: number, params: object)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    JsonApi::Object patch = info[2].As<JsonApi::Object>();
+    return applyTrackLens(env, info[0].As<JsonApi::Number>().Int32Value(),
+                          info[1].As<JsonApi::Number>().Int32Value(), &patch,
+                          "timeline.setTrackLens");
+}
+
+// timeline_resetTrackLens(trackId, regionId) -> { trackId, regionId, changed, explicit, lens }
+JsonApi::Value Timeline_ResetTrackLens(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!lensRoamReady(env)) return env.Undefined();
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
+        JsonApi::TypeError::New(env, "timeline_resetTrackLens(trackId: number, regionId: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    return applyTrackLens(env, info[0].As<JsonApi::Number>().Int32Value(),
+                          info[1].As<JsonApi::Number>().Int32Value(), nullptr,
+                          "timeline.resetTrackLens");
+}
+
+// timeline_setTrackRoam(trackId, params) -> { trackId, changed, roam }
+JsonApi::Value Timeline_SetTrackRoam(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!lensRoamReady(env)) return env.Undefined();
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsObject()) {
+        JsonApi::TypeError::New(env, "timeline_setTrackRoam(trackId: number, params: object)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    JsonApi::Object patch = info[1].As<JsonApi::Object>();
+    return applyTrackRoam(env, info[0].As<JsonApi::Number>().Int32Value(), &patch,
+                          "timeline.setTrackRoam");
+}
+
+// timeline_resetTrackRoam(trackId) -> { trackId, changed, roam }
+JsonApi::Value Timeline_ResetTrackRoam(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!lensRoamReady(env)) return env.Undefined();
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        JsonApi::TypeError::New(env, "timeline_resetTrackRoam(trackId: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    return applyTrackRoam(env, info[0].As<JsonApi::Number>().Int32Value(), nullptr,
+                          "timeline.resetTrackRoam");
+}
+
+// timeline_getLensRoam({ clipIds?, sources?: [{trackId, regionId}], trackIds? })
+//   -> { clips:   [{ clipId, lens }],
+//        sources: [{ trackId, regionId, explicit, lens }],
+//        tracks:  [{ trackId, roam }],
+//        missing: { clipIds: [], sources: [], trackIds: [] } }
+// `lens`/`roam` are the static bases (what the UI edits). A source with no
+// entry reports the value it renders with (newContentDefault) and
+// explicit=false. Ids that do not resolve go to `missing`, never a hole.
+JsonApi::Value Timeline_GetLensRoam(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!lensRoamReady(env)) return env.Undefined();
+    if (info.Length() < 1 || !info[0].IsObject()) {
+        JsonApi::TypeError::New(env,
+            "timeline_getLensRoam({ clipIds?: number[], sources?: {trackId, regionId}[], trackIds?: number[] })")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    JsonApi::Object sel = info[0].As<JsonApi::Object>();
+    auto arrayOf = [&](const char* key) -> JsonApi::Array {
+        if (sel.Has(key) && sel.Get(key).IsArray()) return sel.Get(key).As<JsonApi::Array>();
+        return JsonApi::Array::New(env);
+    };
+
+    JsonApi::Array clips = JsonApi::Array::New(env), sources = JsonApi::Array::New(env),
+                   tracks = JsonApi::Array::New(env);
+    JsonApi::Array missClips = JsonApi::Array::New(env), missSources = JsonApi::Array::New(env),
+                   missTracks = JsonApi::Array::New(env);
+    uint32_t nc = 0, ns = 0, nt = 0, mc = 0, ms = 0, mt = 0;
+
+    JsonApi::Array clipIds = arrayOf("clipIds");
+    for (uint32_t i = 0; i < clipIds.Length(); ++i) {
+        JsonApi::Value v = clipIds.Get(i);
+        const int id = v.IsNumber() ? v.As<JsonApi::Number>().Int32Value() : -1;
+        const Clip* c = id >= 0 ? g_timeline->getClip(id) : nullptr;
+        if (!c) { missClips.Set(mc++, v); continue; }
+        JsonApi::Object e = JsonApi::Object::New(env);
+        e.Set("clipId", JsonApi::Number::New(env, id));
+        e.Set("lens", opaqueJsonToValue(env, lensroam::lensParamsToJson(c->lens.base)));
+        clips.Set(nc++, e);
+    }
+
+    JsonApi::Array srcSel = arrayOf("sources");
+    for (uint32_t i = 0; i < srcSel.Length(); ++i) {
+        JsonApi::Value v = srcSel.Get(i);
+        const TrackInfo* t = nullptr;
+        int trackId = -1, regionId = -1;
+        if (v.IsObject()) {
+            JsonApi::Object so = v.As<JsonApi::Object>();
+            if (so.Get("trackId").IsNumber())  trackId  = so.Get("trackId").As<JsonApi::Number>().Int32Value();
+            if (so.Get("regionId").IsNumber()) regionId = so.Get("regionId").As<JsonApi::Number>().Int32Value();
+            t = g_timeline->getTrack(trackId);
+        }
+        if (!t || t->type != TrackInfo::Type::Pattern || !g_timeline->getRegion(regionId)) {
+            missSources.Set(ms++, v);
+            continue;
+        }
+        JsonApi::Object e = JsonApi::Object::New(env);
+        e.Set("trackId",  JsonApi::Number::New(env, trackId));
+        e.Set("regionId", JsonApi::Number::New(env, regionId));
+        e.Set("explicit", JsonApi::Boolean::New(env, t->trackLens.count(regionId) != 0));
+        e.Set("lens", opaqueJsonToValue(env, lensroam::lensParamsToJson(
+            lensroam::resolveSourceLens(*t, regionId))));
+        sources.Set(ns++, e);
+    }
+
+    JsonApi::Array trackIds = arrayOf("trackIds");
+    for (uint32_t i = 0; i < trackIds.Length(); ++i) {
+        JsonApi::Value v = trackIds.Get(i);
+        const TrackInfo* t = v.IsNumber() ? g_timeline->getTrack(v.As<JsonApi::Number>().Int32Value())
+                                          : nullptr;
+        if (!t) { missTracks.Set(mt++, v); continue; }
+        JsonApi::Object e = JsonApi::Object::New(env);
+        e.Set("trackId", JsonApi::Number::New(env, t->id));
+        e.Set("roam", opaqueJsonToValue(env, lensroam::roamParamsToJson(t->roam.base)));
+        tracks.Set(nt++, e);
+    }
+
+    JsonApi::Object missing = JsonApi::Object::New(env);
+    missing.Set("clipIds", missClips);
+    missing.Set("sources", missSources);
+    missing.Set("trackIds", missTracks);
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("clips", clips);
+    out.Set("sources", sources);
+    out.Set("tracks", tracks);
+    out.Set("missing", missing);
+    return out;
 }
 
 // timeline_setTrackSlideNoteEffect(trackId, sObj)

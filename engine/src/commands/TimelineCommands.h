@@ -1726,3 +1726,58 @@ private:
     bool   accepted_ = false;
 };
 
+
+// ─── Lens + Roam (docs/XLETH_LENS_ROAM_SPEC.md, phase P3) ─────────────────────
+// Whole-value before/after swaps of the static `base`, the SetTrackNoteFade
+// shape. Keys are not touched (they are not edited before P7). The bridge
+// builds these only for a real change, so a drag that ends where it started
+// leaves no undo entry. Reset is the same command with a computed value.
+
+// Clip Track event Lens: Clip::lens.base.
+class SetClipLensCommand : public Command {
+public:
+    SetClipLensCommand(int clipId, const LensParams& newLens, const Timeline& timeline,
+                       bool isReset = false);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int        clipId_;
+    LensParams oldLens_;
+    LensParams newLens_;
+    bool       isReset_;
+};
+
+// Pattern Track source Lens: TrackInfo::trackLens[regionId].base. A source
+// with no entry resolves to LensParams::newContentDefault(); undo restores
+// that ABSENCE (erases the entry) rather than materialising one.
+class SetTrackLensCommand : public Command {
+public:
+    SetTrackLensCommand(int trackId, int regionId, const LensParams& newLens,
+                        const Timeline& timeline, bool isReset = false);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int        trackId_;
+    int        regionId_;
+    bool       hadEntry_ = false;
+    LensTrack  oldEntry_;
+    LensParams newLens_;
+    bool       isReset_;
+};
+
+// Track Roam: TrackInfo::roam.base.
+class SetTrackRoamCommand : public Command {
+public:
+    SetTrackRoamCommand(int trackId, const RoamParams& newRoam, const Timeline& timeline,
+                        bool isReset = false);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int        trackId_;
+    RoamParams oldRoam_;
+    RoamParams newRoam_;
+    bool       isReset_;
+};

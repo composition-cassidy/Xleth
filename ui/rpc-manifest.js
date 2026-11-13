@@ -689,6 +689,66 @@ const METHODS = [
     returns: 'void',
     binary: null,
   },
+  // ── Lens + Roam (docs/XLETH_LENS_ROAM_SPEC.md, P3) ──
+  // Each setter/reset is one undo command; no streaming path (drags preview
+  // locally and commit once on mouseup). Renderer entry point:
+  // ui/src/lensRoam/lensRoamApi.js.
+  {
+    method: 'timeline_setClipLens',
+    channels: ['xleth:timeline:setClipLens'],
+    api: { 'timeline.setClipLens': 'xleth:timeline:setClipLens' },
+    handler: 'Timeline_SetClipLens',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_resetClipLens',
+    channels: ['xleth:timeline:resetClipLens'],
+    api: { 'timeline.resetClipLens': 'xleth:timeline:resetClipLens' },
+    handler: 'Timeline_ResetClipLens',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_setTrackLens',
+    channels: ['xleth:timeline:setTrackLens'],
+    api: { 'timeline.setTrackLens': 'xleth:timeline:setTrackLens' },
+    handler: 'Timeline_SetTrackLens',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_resetTrackLens',
+    channels: ['xleth:timeline:resetTrackLens'],
+    api: { 'timeline.resetTrackLens': 'xleth:timeline:resetTrackLens' },
+    handler: 'Timeline_ResetTrackLens',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_setTrackRoam',
+    channels: ['xleth:timeline:setTrackRoam'],
+    api: { 'timeline.setTrackRoam': 'xleth:timeline:setTrackRoam' },
+    handler: 'Timeline_SetTrackRoam',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_resetTrackRoam',
+    channels: ['xleth:timeline:resetTrackRoam'],
+    api: { 'timeline.resetTrackRoam': 'xleth:timeline:resetTrackRoam' },
+    handler: 'Timeline_ResetTrackRoam',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_getLensRoam',
+    channels: ['xleth:timeline:getLensRoam'],
+    api: { 'timeline.getLensRoam': 'xleth:timeline:getLensRoam' },
+    handler: 'Timeline_GetLensRoam',
+    returns: 'value',
+    binary: null,
+  },
   {
     method: 'timeline_setPreviewResolutionScale',
     channels: ['xleth:timeline:setPreviewResolutionScale'],

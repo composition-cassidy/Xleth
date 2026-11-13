@@ -3082,3 +3082,85 @@ void SetAutomationBaseValueCommand::undo(Timeline& timeline) {
 std::string SetAutomationBaseValueCommand::describe() const {
     return "Set automation base value";
 }
+
+// ─── SetClipLensCommand ──────────────────────────────────────────────────────
+
+SetClipLensCommand::SetClipLensCommand(int clipId, const LensParams& newLens,
+                                       const Timeline& timeline, bool isReset)
+    : clipId_(clipId), newLens_(newLens), isReset_(isReset)
+{
+    const Clip* c = timeline.getClip(clipId);
+    oldLens_ = c ? c->lens.base : LensParams{};
+}
+
+void SetClipLensCommand::execute(Timeline& timeline) {
+    if (Clip* c = timeline.getClipMutable(clipId_)) c->lens.base = newLens_;
+}
+
+void SetClipLensCommand::undo(Timeline& timeline) {
+    if (Clip* c = timeline.getClipMutable(clipId_)) c->lens.base = oldLens_;
+}
+
+std::string SetClipLensCommand::describe() const {
+    return std::string(isReset_ ? "Reset" : "Set") + " Clip Lens (clip="
+         + std::to_string(clipId_) + ")";
+}
+
+// ─── SetTrackLensCommand ─────────────────────────────────────────────────────
+
+SetTrackLensCommand::SetTrackLensCommand(int trackId, int regionId, const LensParams& newLens,
+                                         const Timeline& timeline, bool isReset)
+    : trackId_(trackId), regionId_(regionId), newLens_(newLens), isReset_(isReset)
+{
+    if (const TrackInfo* t = timeline.getTrack(trackId)) {
+        const auto it = t->trackLens.find(regionId);
+        if (it != t->trackLens.end()) {
+            hadEntry_ = true;
+            oldEntry_ = it->second;
+        }
+    }
+}
+
+void SetTrackLensCommand::execute(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(trackId_)) {
+        // A new entry starts from the old one (keys/hitCurve kept), or empty.
+        LensTrack& entry = t->trackLens[regionId_];
+        if (!hadEntry_) entry = LensTrack{};
+        entry.base = newLens_;
+    }
+}
+
+void SetTrackLensCommand::undo(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(trackId_)) {
+        if (hadEntry_) t->trackLens[regionId_] = oldEntry_;
+        else           t->trackLens.erase(regionId_);
+    }
+}
+
+std::string SetTrackLensCommand::describe() const {
+    return std::string(isReset_ ? "Reset" : "Set") + " Track Lens (track="
+         + std::to_string(trackId_) + ", region=" + std::to_string(regionId_) + ")";
+}
+
+// ─── SetTrackRoamCommand ─────────────────────────────────────────────────────
+
+SetTrackRoamCommand::SetTrackRoamCommand(int trackId, const RoamParams& newRoam,
+                                         const Timeline& timeline, bool isReset)
+    : trackId_(trackId), newRoam_(newRoam), isReset_(isReset)
+{
+    const TrackInfo* t = timeline.getTrack(trackId);
+    oldRoam_ = t ? t->roam.base : RoamParams{};
+}
+
+void SetTrackRoamCommand::execute(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(trackId_)) t->roam.base = newRoam_;
+}
+
+void SetTrackRoamCommand::undo(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(trackId_)) t->roam.base = oldRoam_;
+}
+
+std::string SetTrackRoamCommand::describe() const {
+    return std::string(isReset_ ? "Reset" : "Set") + " Track Roam (track="
+         + std::to_string(trackId_) + ")";
+}

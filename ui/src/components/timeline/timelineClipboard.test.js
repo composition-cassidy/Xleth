@@ -87,6 +87,19 @@ describe('buildTimelineClipboard', () => {
     })
     expect(cb.clips).toBeNull()
   })
+
+  it('carries the clip Lens through copy and into the paste payload', () => {
+    // Without it, paste / split / duplicate rebuild the clip at the new-clip
+    // default (fit = Cover): an old Stretch clip would start cropping.
+    const lens = { base: { fit: 'Stretch', centerX: 0.3, centerY: 0.5, zoom: 1.4, rotationDeg: 0, flip: 'FollowTrack' }, keys: [] }
+    const cb = buildTimelineClipboard({ clips: [clip({ lens })], tracks: TRACKS })
+    expect(cb.clips[0].lens).toEqual(lens)
+    expect(clipPayloadFromSnapshot(cb.clips[0], 11, 960).lens).toEqual(lens)
+    // A live clip object (split, duplicate) goes straight through too.
+    expect(clipPayloadFromSnapshot(clip({ lens }), 10, 0).lens).toEqual(lens)
+    // No lens (an engine older than P3) => no field, the engine's new-clip default.
+    expect('lens' in clipPayloadFromSnapshot(clip(), 10, 0)).toBe(false)
+  })
 })
 
 describe('buildTimelineClipboard — automation clips', () => {

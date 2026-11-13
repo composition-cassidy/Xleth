@@ -15,6 +15,8 @@
 #include "render/FrameCollector.h"
 #include "render/LensRoamMath.h"
 #include "SyncManager.h"
+#include "commands/TimelineCommands.h"
+#include "commands/UndoManager.h"
 
 #include <cmath>
 #include <cstdio>
@@ -816,6 +818,71 @@ static void test_p2_dev_hook() {
     CHECK(plain->roamFor(f.clipTrack).isIdentity(), "hook off -> real values");
 }
 
+// P3: the three undo commands the bridge builds. Whole-base swaps; a source
+// with no trackLens entry must come back ABSENT on undo (it then resolves to
+// newContentDefault again), not as a materialised entry.
+static void test_p3_commands() {
+    std::cout << "[12] P3 undo commands\n";
+    Fixture f;
+    buildFixture(f);
+    UndoManager um;
+
+    // Clip Lens
+    const LensParams clipBefore = f.tl.getClip(f.clip1)->lens.base;
+    LensParams l = clipBefore;
+    l.zoom = 1.5f; l.centerX = 0.25f; l.flip = LensFlip::Horizontal;
+    um.execute(std::make_unique<SetClipLensCommand>(f.clip1, l, f.tl), f.tl);
+    CHECK(f.tl.getClip(f.clip1)->lens.base == l, "setClipLens writes the base");
+    CHECK(buildLensRoamSnapshot(f.tl)->lensForClip(f.clip1) == l, "snapshot sees the clip lens");
+    CHECK(f.tl.getClip(f.clip2)->lens.base == clipBefore, "other clip untouched");
+    um.undo(f.tl);
+    CHECK(f.tl.getClip(f.clip1)->lens.base == clipBefore, "undo restores the clip lens");
+    um.redo(f.tl);
+    CHECK(f.tl.getClip(f.clip1)->lens.base == l, "redo re-applies the clip lens");
+
+    // Track (source) Lens on a source with no entry
+    const TrackInfo* pt = f.tl.getTrack(f.patTrack);
+    CHECK(pt->trackLens.count(f.regA) == 0, "fixture source starts with no entry");
+    LensParams s = lensroam::resolveSourceLens(*pt, f.regA);
+    s.zoom = 2.0f; s.rotationDeg = 15.0f;
+    um.execute(std::make_unique<SetTrackLensCommand>(f.patTrack, f.regA, s, f.tl), f.tl);
+    pt = f.tl.getTrack(f.patTrack);
+    CHECK(pt->trackLens.count(f.regA) == 1 && pt->trackLens.at(f.regA).base == s,
+          "setTrackLens materialises the entry");
+    CHECK(buildLensRoamSnapshot(f.tl)->lensForSource(f.patTrack, f.regA) == s,
+          "snapshot sees the source lens");
+    CHECK(lensroam::resolveSourceLens(*pt, f.regB) == LensParams::newContentDefault(),
+          "other source untouched");
+    um.undo(f.tl);
+    pt = f.tl.getTrack(f.patTrack);
+    CHECK(pt->trackLens.count(f.regA) == 0, "undo erases the entry it created");
+    um.redo(f.tl);
+    CHECK(f.tl.getTrack(f.patTrack)->trackLens.at(f.regA).base == s, "redo re-creates it");
+
+    // Track Lens on an existing entry keeps its hit curve
+    LensKey k; k.channel = LensChannel::Zoom; k.anchor = KeyAnchor::Head; k.pos = 0; k.value = 1.35;
+    f.tl.getTrackMutable(f.patTrack)->trackLens[f.regB] = LensTrack{ LensParams{}, { k } };
+    LensParams s2; s2.centerY = 0.75f;
+    um.execute(std::make_unique<SetTrackLensCommand>(f.patTrack, f.regB, s2, f.tl), f.tl);
+    CHECK(f.tl.getTrack(f.patTrack)->trackLens.at(f.regB).keys.size() == 1,
+          "setTrackLens keeps an existing entry's hit curve");
+    um.undo(f.tl);
+    CHECK(f.tl.getTrack(f.patTrack)->trackLens.at(f.regB).base == LensParams{},
+          "undo restores the existing entry");
+
+    // Roam + reset
+    RoamParams r; r.offsetX = 0.5f; r.scale = 0.8f; r.bounds = RoamBounds::Float;
+    um.execute(std::make_unique<SetTrackRoamCommand>(f.clipTrack, r, f.tl), f.tl);
+    CHECK(f.tl.getTrack(f.clipTrack)->roam.base == r, "setTrackRoam writes the base");
+    CHECK(buildLensRoamSnapshot(f.tl)->roamFor(f.clipTrack) == r, "snapshot sees the roam");
+    um.execute(std::make_unique<SetTrackRoamCommand>(f.clipTrack, RoamParams{}, f.tl, true), f.tl);
+    CHECK(f.tl.getTrack(f.clipTrack)->roam.base.isIdentity(), "reset roam = identity");
+    um.undo(f.tl);
+    CHECK(f.tl.getTrack(f.clipTrack)->roam.base == r, "undo of reset restores the roam");
+    um.undo(f.tl);
+    CHECK(f.tl.getTrack(f.clipTrack)->roam.base.isIdentity(), "undo of set restores identity");
+}
+
 int main() {
     std::cout << "[LensRoam] Lens + Roam P1 tests\n";
     test_defaults();
@@ -829,6 +896,7 @@ int main() {
     test_p2_roam_math();
     test_p2_collector_order();
     test_p2_dev_hook();
+    test_p3_commands();
     std::cout << "[LensRoam] " << g_pass << " passed, " << g_fail << " failed\n";
     return g_fail == 0 ? 0 : 1;
 }

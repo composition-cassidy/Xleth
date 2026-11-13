@@ -107,6 +107,9 @@ export function buildTimelineClipboard({ clips = [], patternBlocks = [], automat
       }
       // Vibrato / Scratch / Video Swirl+Scratch — copied whole so paste keeps it.
       snap.modulation = clip.modulation ?? null
+      // Lens {base, keys} — copied whole, or paste/split/duplicate rebuild the
+      // clip at the new-clip default (fit = Cover) and lose its framing.
+      snap.lens = clip.lens ?? null
       return snap
     })
 
@@ -289,6 +292,7 @@ export function clipPayloadFromSnapshot(item, trackId, positionTicks) {
   const payload = { trackId, positionTicks }
   for (const f of CLIP_SNAPSHOT_FIELDS) payload[f] = item[f] ?? CLIP_DEFAULTS[f]
   if (item.modulation) payload.modulation = item.modulation
+  if (item.lens) payload.lens = item.lens
   return payload
 }
 
