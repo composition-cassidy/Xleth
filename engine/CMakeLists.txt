@@ -218,6 +218,7 @@ endif()
 add_library(XlethEngineModel STATIC
     src/model/ParamTrack.cpp
     src/model/LensRoam.cpp
+    src/model/TimelineSnapshot.cpp
     src/model/AutomationEnvelope.cpp
     src/model/SampleRegion.cpp
     src/model/SamplerModulationConfig.cpp
@@ -3290,6 +3291,42 @@ target_compile_definitions(test_animation_manager PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_export_snapshot ─────────────────────────────────────────────────────
+# The frozen timeline copy export reads (spec Ruling 7, model/TimelineSnapshot.h):
+# complete, independent of live edits, never calls back into MixEngine, and the
+# shared event builder gives identical events from it. Set
+# XLETH_EXPORT_SNAPSHOT_PROJECT (a project directory) to time the copy on a real
+# project against the 200 ms budget. Output prefix: [ExportSnapshot].
+add_executable(test_export_snapshot
+    test/test_export_snapshot.cpp
+)
+
+target_link_libraries(test_export_snapshot PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_include_directories(test_export_snapshot PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_compile_definitions(test_export_snapshot PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_lens_roam ───────────────────────────────────────────────────────────
 # Lens + Roam P1 (model/LensRoam.h): identity defaults, JSON round-trip of
 # clips/tracks/sources incl. stored keys, tolerant loading, the v7 -> v8
@@ -3669,6 +3706,7 @@ set(XLETH_ENGINE_TESTS
     test_animation_manager
     test_param_track
     test_lens_roam
+    test_export_snapshot
     test_render_clock
     test_automation_clips
     test_sandbox

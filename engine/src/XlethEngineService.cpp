@@ -75,6 +75,7 @@
 #include "render/GpuDeviceManager.h"
 #include "render/HwEncoderDetector.h"
 #include "render/OfflineRenderer.h"
+#include "model/TimelineSnapshot.h"
 #include "render/RenderScope.h"
 // [PreviewUnify] GPU compositor pipeline for unified preview
 #include "render/GridCompositor.h"
@@ -910,6 +911,17 @@ std::unique_ptr<std::thread> g_exportThread;
 std::atomic<bool>            g_exportPendingRealtimeRestore{false};
 
 // ── Video export (offline A/V render via OfflineRenderer) ───────────────
+// ── Export timeline snapshot (spec Ruling 7: export reads a frozen copy) ─────
+// The frozen copy the running (or last) video export reads, video AND audio.
+// Declared BEFORE g_videoRenderer so it is destroyed AFTER it: the renderer
+// holds a reference to it. All three are message-thread only.
+std::shared_ptr<const Timeline> g_exportTimeline;
+// True while MixEngine reads the export copy instead of g_timeline.
+bool g_mixOnExportTimeline = false;
+// An UndoManager edit landed while MixEngine was on the copy. The handlers of
+// such edits could only derive MixEngine state from the copy, so the restore
+// rebuilds it from the live timeline.
+bool g_timelineEditedDuringExport = false;
 std::unique_ptr<OfflineRenderer> g_videoRenderer;
 std::atomic<bool>                g_audioSuspendedForExport{false};
 
@@ -5556,14 +5568,21 @@ JsonApi::Value Initialize(const JsonApi::CallbackInfo& info)
     {
         auto* ae = audioEngine.get();
         g_undoManager->setPostMutationHook([ae] {
-            if (ae) ae->getMixEngine().refreshEnvelopeDefinitions();
-            if (ae) ae->getMixEngine().refreshLfoDefinitions();
+            // While a video export renders, MixEngine reads the export's frozen
+            // timeline copy, so these three refreshes would only rebuild the
+            // same definitions from the same copy, and republishing them under
+            // the export thread perturbs its audio. Skip them; the restore
+            // (restoreLiveTimelineAfterExport) rebuilds all three from the live
+            // timeline once the export ends.
+            const bool exportOwnsMix = g_mixOnExportTimeline;
+            if (ae && !exportOwnsMix) ae->getMixEngine().refreshEnvelopeDefinitions();
+            if (ae && !exportOwnsMix) ae->getMixEngine().refreshLfoDefinitions();
             // Automation clips live in the Timeline, so EVERY automation edit —
             // clip, lane, envelope point, base value, and their undo/redo —
             // arrives here. Hooking UndoManager instead of each handler makes
             // the coverage complete by construction, the same argument the two
             // refreshes above rest on.
-            if (ae) ae->getMixEngine().refreshAutomationPlan();
+            if (ae && !exportOwnsMix) ae->getMixEngine().refreshAutomationPlan();
             // The preview's VideoEvent list is derived from clips, pattern
             // blocks and notes, so any timeline edit can change it. It used to
             // be rebuilt only by transport play(): a clip or note added while
@@ -5577,6 +5596,9 @@ JsonApi::Value Initialize(const JsonApi::CallbackInfo& info)
             // undo/redo) can change the resolved values. Runs on the RPC
             // thread, after the command released the mutation lock.
             publishLensRoamSnapshot("edit");
+            // The export is unaffected (it reads its frozen copy), but MixEngine
+            // state derived during it came from the copy; resync on restore.
+            if (g_mixOnExportTimeline) g_timelineEditedDuringExport = true;
         });
         // Timeline mutations are serialised against the video thread's reads at
         // the one place they all pass through. See syncEventsMutex.
@@ -20637,6 +20659,28 @@ JsonApi::Value Audio_ExportCancel(const JsonApi::CallbackInfo& info)
 
 // ── Video export (offline A/V render via OfflineRenderer) ────────────────────
 
+// Message thread. Points MixEngine back at the live timeline after a video
+// export (or a failed start) and, when edits landed during the export, rebuilds
+// the MixEngine state their handlers could only derive from the frozen copy.
+// Called with the device callback still suspended, so the swap cannot race the
+// audio thread.
+static void restoreLiveTimelineAfterExport(const char* why) {
+    if (!g_mixOnExportTimeline) return;
+    g_mixOnExportTimeline = false;
+    const bool edited = g_timelineEditedDuringExport;
+    g_timelineEditedDuringExport = false;
+    if (!audioEngine || !g_timeline) return;
+    auto& mix = audioEngine->getMixEngine();
+    mix.setTimeline(g_timeline.get());   // also resyncs track slots + envelope/LFO definitions
+    if (edited) {
+        mix.rebuildAllSamplers();
+        mix.syncSidechainTargetBuses();
+        mix.refreshAutomationPlan();
+    }
+    std::fprintf(stderr, "[ExportSnapshot] MixEngine back on the live timeline (%s)%s\n",
+                 why, edited ? "; edits made during the export resynced" : "");
+}
+
 // video_exportStart({ outputPath, videoCodec, hwEncoder, width, height,
 //                     fpsNum, fpsDen, crf, videoBitrate,
 //                     audioCodec, sampleRate, audioBitrate,
@@ -20673,6 +20717,26 @@ JsonApi::Value Video_ExportStart(const JsonApi::CallbackInfo& info)
     if (g_videoRenderer && g_videoRenderer->isRunning()) {
         return JsonApi::Boolean::New(env, false);
     }
+
+    // [ExportSnapshot] Freeze the model for this export (spec Ruling 7). Every
+    // read below, the render thread's OfflineRenderer AND its MixEngine blocks,
+    // goes to this copy, so an edit made while the export runs (move a clip,
+    // edit notes, add a track) can neither race it nor change its output.
+    // Taken under the model lock so it never sees a half-applied edit. Data
+    // only: media, decoders and caches live outside Timeline. Ids are kept, so
+    // every id-keyed engine cache stays valid against the copy.
+    FrozenTimelineCopy frozen;
+    {
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
+        frozen = makeFrozenTimelineCopy(*g_timeline);
+    }
+    const Timeline& exportTimeline = *frozen.timeline;
+    std::fprintf(stderr,
+        "[ExportSnapshot] froze the timeline for export in %.2f ms "
+        "(%zu clips, %zu tracks, %zu patterns, %zu blocks)\n",
+        frozen.copyMs, exportTimeline.getAllClips().size(),
+        exportTimeline.getAllTracks().size(), exportTimeline.getAllPatterns().size(),
+        exportTimeline.getAllPatternBlocks().size());
 
     JsonApi::Object o = info[0].As<JsonApi::Object>();
 
@@ -20748,12 +20812,12 @@ JsonApi::Value Video_ExportStart(const JsonApi::CallbackInfo& info)
     const bool hasEndBeat   = o.Has("endBeat");
     const double startBeatArg = hasStartBeat ? o.Get("startBeat").As<JsonApi::Number>().DoubleValue() : 0.0;
     const double endBeatArg   = hasEndBeat   ? o.Get("endBeat").As<JsonApi::Number>().DoubleValue()   : 0.0;
-    const auto scope = resolveExportScope(*g_timeline, hasStartBeat, startBeatArg,
+    const auto scope = resolveExportScope(exportTimeline, hasStartBeat, startBeatArg,
                                           hasEndBeat, endBeatArg);
 
     // Convert ticks → samples. Four distinct concepts (spec §5): warm-up start,
     // capture start, capture end, and the output timestamp (always 0).
-    const double bpm = g_timeline->getBPM();
+    const double bpm = exportTimeline.getBPM();
     const double sampleRate = static_cast<double>(settings.sampleRate);
     const int64_t startSample = RenderClock::ppqToSample(scope.captureStartTick, settings.sampleRate, bpm);
     const int64_t endSample   = RenderClock::ppqToSample(scope.captureEndTick,   settings.sampleRate, bpm);
@@ -20779,6 +20843,14 @@ JsonApi::Value Video_ExportStart(const JsonApi::CallbackInfo& info)
     audioEngine->suspendCallback();
     g_audioSuspendedForExport.store(true);
 
+    // Audio half of the freeze. With the device callback suspended the render
+    // thread is MixEngine's only reader, so its timeline can be swapped here
+    // (before prepare(), which also clears the latency-reset flag setTimeline
+    // raises). Restored on the message thread when the export ends.
+    audioEngine->getMixEngine().setTimeline(frozen.timeline.get());
+    g_mixOnExportTimeline = true;
+    g_timelineEditedDuringExport = false;
+
     // [PreviewUnify] Pause GPU preview to avoid D3D11 context contention
     g_previewPauseForExport.store(true);
 
@@ -20802,7 +20874,7 @@ JsonApi::Value Video_ExportStart(const JsonApi::CallbackInfo& info)
 
     // Create the renderer (destroys any prior instance — joins its thread via dtor)
     g_videoRenderer = std::make_unique<OfflineRenderer>(
-        *g_timeline,
+        exportTimeline,
         audioEngine->getMixEngine(),
         *g_gpuDevice
     );
@@ -20810,6 +20882,9 @@ JsonApi::Value Video_ExportStart(const JsonApi::CallbackInfo& info)
     // Resolution-aware render proxies are cached/generated in the project proxies
     // dir (same as preview proxies). Enables fast-export (useSourceMedia=false);
     // ignored for full-quality export.
+    // The previous export's copy dies here, after the renderer that referenced it.
+    g_exportTimeline = frozen.timeline;
+
     if (g_projectManager)
         g_videoRenderer->setProxiesDir(g_projectManager->getProxiesDir());
 
@@ -20821,7 +20896,7 @@ JsonApi::Value Video_ExportStart(const JsonApi::CallbackInfo& info)
     // non-scoped (full-timeline) render.
     {
         const auto tailPlan = xleth::resolveTailPlanForScope(
-            g_timeline->getLoopRegion(), sampleRate, scope.scoped);
+            exportTimeline.getLoopRegion(), sampleRate, scope.scoped);
         g_videoRenderer->setTailRenderPlan(tailPlan);
         std::fprintf(stderr,
             "[RenderScope] video tail=%s capSamples=%lld holdSamples=%lld\n",
@@ -20833,6 +20908,7 @@ JsonApi::Value Video_ExportStart(const JsonApi::CallbackInfo& info)
     if (!ok) {
         JsonApi::Error::New(env, "Failed to start video render").ThrowAsJavaScriptException();
         g_videoRenderer.reset();
+        restoreLiveTimelineAfterExport("export failed to start");
         audioEngine->resumeCallback();
         g_audioSuspendedForExport.store(false);
         return JsonApi::Boolean::New(env, false);
@@ -20869,6 +20945,7 @@ JsonApi::Value Video_ExportGetProgress(const JsonApi::CallbackInfo& info)
 
     // Resume audio device callback once the render thread has stopped
     if (!isRunning && g_audioSuspendedForExport.exchange(false)) {
+        restoreLiveTimelineAfterExport("export finished");
         audioEngine->resumeCallback();
         std::fprintf(stderr, "[Bridge] Audio callback resumed after video export\n");
 
