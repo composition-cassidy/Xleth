@@ -6,6 +6,9 @@ import { openClipFxEditor } from '../timeline/clipFxEditorOpeners.js'
 import { getSyllableDisplayNumber } from '../SyllableSplitter/syllableModel.js'
 import { VIBRATO_DEFAULTS, getClipModulationStatus } from './clipModulationStatus.js'
 import RowToggle from './RowToggle.jsx'
+import LensPanel from '../lensRoam/LensPanel.jsx'
+import { sourceTimeForClip } from '../grid/zprTimeline/zprSourceFrame.js'
+import { getTransportState } from '../../transportStore.js'
 import styles from './Inspector.module.css'
 
 // Stretch methods in the order the clip menu always listed them.
@@ -62,6 +65,15 @@ export default function ClipInspector({ context, actions }) {
   const reversed = !!clip.reversed
   const formant = !!clip.formantPreserve
 
+  // The still the Lens well frames: the source at this clip's first frame.
+  const lensFrame = hasVideo && region
+    ? {
+        sourceId: region.sourceId,
+        seconds: sourceTimeForClip(clip, region, clip.positionTicks ?? 0, getTransportState()?.bpm ?? 120),
+        aspect: source?.width > 0 && source?.height > 0 ? source.width / source.height : null,
+      }
+    : null
+
   return (
     <div className={styles.root} data-testid="xleth-inspector-clip">
       <header className={styles.head}>
@@ -98,6 +110,15 @@ export default function ClipInspector({ context, actions }) {
             />
           </Row>
         </section>
+
+        {hasVideo && (
+          <LensPanel
+            target={{ kind: 'clip', clipId }}
+            cellTrackId={clip.trackId}
+            context={`${clipName} · this event only`}
+            frameRef={lensFrame}
+          />
+        )}
 
         <section className={styles.section} aria-label="Modulation">
           <SectionHeader>Modulation</SectionHeader>

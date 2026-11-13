@@ -10,7 +10,10 @@ import { usePanelRegistry } from '../windowing/registry/PanelRegistry.ts'
  *            | { kind: 'track', trackId }
  *            | { kind: 'clip', clipId, trackId }
  *            | { kind: 'multi', noun, count }      several clips / tracks / blocks
- *            | { kind: 'blocks', count }           pattern blocks (no properties yet)
+ *            | { kind: 'blocks', count }           pattern blocks (no properties of their own)
+ *            | { kind: 'blocks', count: 1, blockId, trackId, patternId, regionId }
+ *                                                   ONE pattern block: its source is {trackId, regionId}
+ *                                                   (the Lens panel's target); ids are null if the pattern has no source yet
  *
  *   clip:        { clip, region, source, track } for a single selected clip, kept
  *                fresh by TimelineView on every clip refresh.
@@ -25,6 +28,16 @@ function sameSelection(a, b) {
   if (a === b) return true
   if (!a || !b || a.kind !== b.kind) return false
   return a.trackId === b.trackId && a.clipId === b.clipId && a.count === b.count && a.noun === b.noun
+    && a.blockId === b.blockId && a.patternId === b.patternId && a.regionId === b.regionId
+}
+
+/** The track a selection is about: a track, a clip's track, a single block's track. Else null. */
+export function selectedTrackIdOf(selection) {
+  if (!selection) return null
+  if (selection.kind === 'track' || selection.kind === 'clip' || selection.kind === 'blocks') {
+    return selection.trackId ?? null
+  }
+  return null
 }
 
 const useInspectorStore = create((set, get) => ({
@@ -56,7 +69,9 @@ export function revealInspector() {
  * Whichever set the user changed last wins; with no change information the
  * order is clips, blocks, tracks.
  */
-export function deriveInspectorSelection({ clipIds, blockIds, trackIds, changed = null, trackIdOfClip = () => null }) {
+export function deriveInspectorSelection({
+  clipIds, blockIds, trackIds, changed = null, trackIdOfClip = () => null, blockInfo = () => null,
+}) {
   const single = (set) => (set && set.size === 1 ? [...set][0] : null)
   const fromClips = () => {
     if (!clipIds?.size) return null
@@ -64,7 +79,18 @@ export function deriveInspectorSelection({ clipIds, blockIds, trackIds, changed 
     const clipId = single(clipIds)
     return { kind: 'clip', clipId, trackId: trackIdOfClip(clipId) }
   }
-  const fromBlocks = () => (blockIds?.size ? { kind: 'blocks', count: blockIds.size } : null)
+  const fromBlocks = () => {
+    if (!blockIds?.size) return null
+    if (blockIds.size > 1) return { kind: 'blocks', count: blockIds.size }
+    // One block: carry what the Lens panel needs to find its source.
+    const blockId = single(blockIds)
+    const info = blockInfo(blockId)
+    if (!info) return { kind: 'blocks', count: 1 }
+    return {
+      kind: 'blocks', count: 1, blockId,
+      trackId: info.trackId ?? null, patternId: info.patternId ?? null, regionId: info.regionId ?? null,
+    }
+  }
   const fromTracks = () => {
     if (!trackIds?.size) return null
     if (trackIds.size > 1) return { kind: 'multi', noun: 'tracks', count: trackIds.size }

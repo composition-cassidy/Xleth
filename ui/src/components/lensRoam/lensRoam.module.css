@@ -1,0 +1,61 @@
+/* Lens and Roam inspector sections. Rows, labels and sections come from
+ * Inspector.module.css; this file only adds the source-frame well and the
+ * one-line context under a section header. No transitions: every edit here is
+ * in the edit loop (ui/DESIGN.md, motion gate). */
+@layer kit {
+  .context {
+    margin: 0;
+    padding: 2px var(--space-2);
+    overflow: hidden;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* The source-frame well: a recessed display, ground colour. */
+  .well {
+    box-sizing: border-box;
+    margin: var(--space-1) var(--space-2);
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g0);
+  }
+
+  .canvas {
+    display: block;
+    width: 100%;
+    outline: none;
+    touch-action: none;
+  }
+
+  .canvas:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  /* One short, quiet line (what a disabled control is waiting for). */
+  .note {
+    margin: 0;
+    padding: 2px var(--space-2);
+    color: var(--ui-ink-3);
+    font-size: var(--type-11);
+  }
+
+  .actions {
+    display: flex;
+    gap: var(--space-1);
+    padding: var(--space-1) var(--space-2);
+  }
+
+  /* The viewer overlay canvas sits over the preview picture. It never takes
+   * pointer events itself: RoamOverlayCanvas hit-tests on its parent so the
+   * eyedropper and every other click on the picture keep working. */
+  .overlay {
+    position: absolute;
+    inset: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+  }
+}

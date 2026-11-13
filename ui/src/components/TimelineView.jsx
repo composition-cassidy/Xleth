@@ -527,6 +527,10 @@ export default function TimelineView({
   const patternBlocksRef = useRef([])
   patternBlocksRef.current = patternBlocks
   const [patterns, setPatterns] = useState({})        // { [id]: pattern }
+  // Latest-value mirror for the Inspector's single-block selection (its source is
+  // {block.trackId, pattern.regionId}); read at selection time, never a dependency.
+  const patternsRef = useRef({})
+  patternsRef.current = patterns
   const [selectedBlockIds, setSelectedBlockIds] = useState(new Set())
 
   // ── Transport state ────────────────────────────────────────────────────────
@@ -4383,6 +4387,12 @@ export default function TimelineView({
       trackIds: selectedTrackIds,
       changed,
       trackIdOfClip: (id) => clipsRef.current.find((c) => c.id === id)?.trackId ?? null,
+      blockInfo: (id) => {
+        const block = patternBlocksRef.current.find((b) => b.id === id)
+        if (!block) return null
+        const regionId = patternsRef.current[block.patternId]?.regionId
+        return { trackId: block.trackId, patternId: block.patternId, regionId: regionId >= 0 ? regionId : null }
+      },
     }))
   }, [selectedClipIds, selectedBlockIds, selectedTrackIds, setInspectorSelection])
 

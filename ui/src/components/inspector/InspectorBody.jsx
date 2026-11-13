@@ -1,6 +1,7 @@
 import useInspectorStore from '../../stores/useInspectorStore.js'
 import TrackVideoProperties from '../timeline/TrackVideoProperties.jsx'
 import ClipInspector from './ClipInspector.jsx'
+import PatternSourceInspector from './PatternSourceInspector.jsx'
 import styles from './Inspector.module.css'
 
 function Message({ children, testId = 'xleth-inspector-empty' }) {
@@ -27,6 +28,10 @@ export default function InspectorBody() {
   if (selection.kind === 'clip') {
     if (!clip || clip.clip?.id !== selection.clipId || !clipActions) return <Message>Loading clip…</Message>
     return <ClipInspector key={selection.clipId} context={clip} actions={clipActions} />
+  }
+
+  if (selection.kind === 'blocks' && selection.count === 1 && selection.trackId != null && selection.regionId != null) {
+    return <PatternSourceInspector key={`${selection.trackId}:${selection.regionId}`} selection={selection} />
   }
 
   if (selection.kind === 'blocks') {

@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import GridEditorOverlay from './GridEditorOverlay.jsx'
+import RoamOverlayCanvas from './lensRoam/RoamOverlayCanvas.jsx'
 import GridEditorDock from './GridEditorDock.jsx'
 import GridEditToolbar from './grid/GridEditToolbar.jsx'
 import GridEditFlyout from './grid/GridEditFlyout.jsx'
@@ -1091,6 +1092,11 @@ export default function VideoPreview({ headerActions = null, headerSlot = null }
             <div className={styles.placeholder} role="status">
               {mode === 'no-shm' || mode === 'shm-error' ? 'Preview unavailable' : 'No frame yet'}
             </div>
+          )}
+          {/* Roam handles for the selected track. A canvas of its own over the picture;
+              the grid editor's overlay (DOM) takes over while Edit Grid is on. */}
+          {!gridEditMode && (
+            <RoamOverlayCanvas aspect={outputDims.w > 0 && outputDims.h > 0 ? outputDims.w / outputDims.h : 16 / 9} />
           )}
           {gridEditMode && <GridEditorOverlay />}
 

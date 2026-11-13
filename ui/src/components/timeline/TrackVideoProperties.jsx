@@ -8,6 +8,7 @@ import { openVideoDevicesFor } from '../devices/video/openVideoDevices.js'
 import { getTrackPlacement, placementBadgeLabel, setFullscreenPlacementMode } from './trackPlacement.js'
 import { HOLD_THRESHOLD_UNLIMITED } from './holdLastFrame.js'
 import useTrackIdentityColors from '../inspector/useTrackIdentityColors.js'
+import RoamPanel from '../lensRoam/RoamPanel.jsx'
 import styles from '../inspector/Inspector.module.css'
 
 const snapZero = (v) => (Math.abs(v) < 0.025 ? 0 : v)
@@ -308,6 +309,8 @@ export default function TrackVideoProperties({ trackId }) {
             )}
           </Row>
         </section>
+
+        <RoamPanel trackId={track.id} context={`${track.name} · moves this cell on the picture`} />
 
         <VideoFlipSection track={track} onCommit={handleCommitFlip} />
 
