@@ -108,6 +108,18 @@ bool channelFromString(const std::string& s, RoamChannel& out) {
     return false;
 }
 
+using xleth::keycurve::Interp;
+using xleth::keycurve::NoteZones;
+using xleth::keycurve::ShortNoteRule;
+
+// Unknown or missing -> Linear: the segment shape P1's default bezier handles
+// described, so a key saved before P7 evaluates as it was always meant to.
+Interp interpFromString(const std::string& s) {
+    if (s == "Hold")    return Interp::Hold;
+    if (s == "EaseOut") return Interp::EaseOut;
+    return Interp::Linear;
+}
+
 template <typename Channel>
 json keyToJson(const LensRoamKey<Channel>& k) {
     return json{
@@ -115,12 +127,13 @@ json keyToJson(const LensRoamKey<Channel>& k) {
         {"anchor",  anchorToString(k.anchor)},
         {"pos",     k.pos},
         {"value",   k.value},
-        {"p1x", k.p1x}, {"p1y", k.p1y}, {"p2x", k.p2x}, {"p2y", k.p2y},
+        {"interp",  interpToString(k.interp)},
     };
 }
 
 // Strict: a key whose channel/anchor is unknown or whose time/value is not a
-// finite number is dropped rather than guessed at.
+// finite number is dropped rather than guessed at. `interp` is tolerant
+// (missing/unknown = Linear); P1's p1x..p2y handles, if present, are ignored.
 template <typename Channel>
 bool keyFromJson(const json& j, LensRoamKey<Channel>& k) {
     if (!j.is_object()) return false;
@@ -131,11 +144,7 @@ bool keyFromJson(const json& j, LensRoamKey<Channel>& k) {
     k.pos   = j.at("pos").get<double>();
     k.value = j.at("value").get<double>();
     if (!std::isfinite(k.pos) || !std::isfinite(k.value)) return false;
-    const LensRoamKey<Channel> d;
-    k.p1x = finiteOr(j, "p1x", d.p1x);
-    k.p1y = finiteOr(j, "p1y", d.p1y);
-    k.p2x = finiteOr(j, "p2x", d.p2x);
-    k.p2y = finiteOr(j, "p2y", d.p2y);
+    k.interp = interpFromString(stringOr(j, "interp"));
     return true;
 }
 
@@ -270,6 +279,42 @@ const char* lensOverrideModeToString(LensOverrideMode m) {
     return m == LensOverrideMode::Own ? "Own" : "Nudge";
 }
 
+const char* interpToString(Interp i) {
+    switch (i) {
+        case Interp::Hold:    return "Hold";
+        case Interp::EaseOut: return "EaseOut";
+        default:              return "Linear";
+    }
+}
+
+const char* shortNoteRuleToString(ShortNoteRule r) {
+    return r == ShortNoteRule::Cut ? "Cut" : "Squash";
+}
+
+json noteZonesToJson(const NoteZones& z) {
+    return json{
+        {"headTicks", z.headTicks},
+        {"tailTicks", z.tailTicks},
+        {"shortNote", shortNoteRuleToString(z.rule)},
+    };
+}
+
+// Tolerant: a zone length that is missing, non-numeric, non-finite or
+// negative loads as the spec default; an unknown rule as Squash (the default).
+NoteZones noteZonesFromJson(const json& j) {
+    const NoteZones d;
+    NoteZones z;
+    if (!j.is_object()) return z;
+    auto ticks = [&j](const char* key, double fallback) {
+        if (!j.contains(key) || !j.at(key).is_number()) return fallback;
+        return xleth::keycurve::sanitizeZoneTicks(j.at(key).get<double>(), fallback);
+    };
+    z.headTicks = ticks("headTicks", d.headTicks);
+    z.tailTicks = ticks("tailTicks", d.tailTicks);
+    z.rule = stringOr(j, "shortNote") == "Cut" ? ShortNoteRule::Cut : ShortNoteRule::Squash;
+    return z;
+}
+
 json lensNoteOverrideToJson(const LensNoteOverride& o) {
     json j = json::object();
     j["mode"] = lensOverrideModeToString(o.mode);
@@ -293,6 +338,7 @@ json trackLensToJson(const std::map<int, LensTrack>& m) {
     for (const auto& [regionId, lens] : m) {
         json e = lensTrackToJson(lens, "hitCurve");
         e["regionId"] = regionId;
+        e["zones"]    = noteZonesToJson(lens.zones);
         arr.push_back(std::move(e));
     }
     return arr;
@@ -306,7 +352,9 @@ std::map<int, LensTrack> trackLensFromJson(const json& j) {
             continue;
         const int regionId = e.at("regionId").get<int>();
         if (regionId < 0 || m.count(regionId)) continue;  // first wins on a duplicate
-        m.emplace(regionId, lensTrackFromJson(e, "hitCurve"));
+        LensTrack t = lensTrackFromJson(e, "hitCurve");
+        if (e.contains("zones")) t.zones = noteZonesFromJson(e.at("zones"));
+        m.emplace(regionId, std::move(t));
     }
     return m;
 }
@@ -344,29 +392,116 @@ MigrationStats migratePreLensProject(Timeline& timeline) {
 
 // ─── LensRoamSnapshot ─────────────────────────────────────────────────────────
 
+namespace {
+
+const LensRoamSnapshot::TrackEntry* findTrack(const std::vector<LensRoamSnapshot::TrackEntry>& v,
+                                              int trackId) {
+    const auto it = std::lower_bound(v.begin(), v.end(), trackId,
+        [](const LensRoamSnapshot::TrackEntry& e, int id) { return e.trackId < id; });
+    return (it != v.end() && it->trackId == trackId) ? &*it : nullptr;
+}
+
+const LensRoamSnapshot::ClipEntry* findClip(const std::vector<LensRoamSnapshot::ClipEntry>& v,
+                                            int clipId) {
+    const auto it = std::lower_bound(v.begin(), v.end(), clipId,
+        [](const LensRoamSnapshot::ClipEntry& e, int id) { return e.clipId < id; });
+    return (it != v.end() && it->clipId == clipId) ? &*it : nullptr;
+}
+
+const LensRoamSnapshot::SourceEntry* findSource(const std::vector<LensRoamSnapshot::SourceEntry>& v,
+                                                int trackId, int regionId) {
+    const auto it = std::lower_bound(v.begin(), v.end(), std::make_pair(trackId, regionId),
+        [](const LensRoamSnapshot::SourceEntry& e, const std::pair<int, int>& k) {
+            return std::tie(e.trackId, e.regionId) < std::tie(k.first, k.second);
+        });
+    return (it != v.end() && it->trackId == trackId && it->regionId == regionId) ? &*it : nullptr;
+}
+
+// One keyed channel of an EventTicks / TimelineTicks curve: its keys' value at
+// t, or `base` when the channel has no keys (ABSOLUTE: keys replace the base).
+float absoluteAt(const std::vector<xleth::keycurve::Key>& pool,
+                 const LensRoamSnapshot::KeyRun& run, double t, float base) {
+    if (run.count == 0) return base;
+    return static_cast<float>(
+        xleth::keycurve::valueAt(pool.data() + run.first, run.count, t, base));
+}
+
+// One channel of a note curve: the LAYER value, or the layer identity when the
+// channel has no keys.
+double layerAt(const std::vector<xleth::keycurve::Key>& pool,
+               const LensRoamSnapshot::KeyRun& run, const xleth::keycurve::NoteSpan& span,
+               double tSinceNoteOn, double identity) {
+    if (run.count == 0) return identity;
+    return xleth::keycurve::valueAtNote(pool.data() + run.first, run.count, span,
+                                        tSinceNoteOn, identity);
+}
+
+} // namespace
+
 RoamParams LensRoamSnapshot::roamFor(int trackId) const {
-    const auto it = std::lower_bound(tracks.begin(), tracks.end(), trackId,
-        [](const TrackEntry& e, int id) { return e.trackId < id; });
-    return (it != tracks.end() && it->trackId == trackId) ? it->roam : RoamParams{};
+    const TrackEntry* e = findTrack(tracks, trackId);
+    return e ? e->roam : RoamParams{};
 }
 
 LensParams LensRoamSnapshot::lensForClip(int clipId) const {
-    const auto it = std::lower_bound(clips.begin(), clips.end(), clipId,
-        [](const ClipEntry& e, int id) { return e.clipId < id; });
-    return (it != clips.end() && it->clipId == clipId) ? it->lens : LensParams{};
+    const ClipEntry* e = findClip(clips, clipId);
+    return e ? e->lens : LensParams{};
 }
 
 LensParams LensRoamSnapshot::lensForSource(int trackId, int regionId) const {
-    const auto it = std::lower_bound(sources.begin(), sources.end(),
-        std::make_pair(trackId, regionId),
-        [](const SourceEntry& e, const std::pair<int, int>& k) {
-            return std::tie(e.trackId, e.regionId) < std::tie(k.first, k.second);
-        });
-    if (it != sources.end() && it->trackId == trackId && it->regionId == regionId)
-        return it->lens;
-    const auto tr = std::lower_bound(tracks.begin(), tracks.end(), trackId,
-        [](const TrackEntry& e, int id) { return e.trackId < id; });
-    return (tr != tracks.end() && tr->trackId == trackId) ? tr->sourceFallback : LensParams{};
+    if (const SourceEntry* e = findSource(sources, trackId, regionId)) return e->lens;
+    const TrackEntry* tr = findTrack(tracks, trackId);
+    return tr ? tr->sourceFallback : LensParams{};
+}
+
+LensParams LensRoamSnapshot::lensForEventAt(int trackId, int clipId, int regionId,
+                                            const EventClock& clock) const {
+    const double t = clock.frameTick - clock.eventStartTick;
+
+    if (clipId >= 0) {
+        const ClipEntry* e = findClip(clips, clipId);
+        if (!e) return LensParams{};
+        LensParams p = e->lens;
+        if (!e->keyed) return p;
+        const auto& r = e->lensKeys;
+        p.centerX     = absoluteAt(keys, r[static_cast<int>(LensChannel::CenterX)],     t, p.centerX);
+        p.centerY     = absoluteAt(keys, r[static_cast<int>(LensChannel::CenterY)],     t, p.centerY);
+        p.zoom        = absoluteAt(keys, r[static_cast<int>(LensChannel::Zoom)],        t, p.zoom);
+        p.rotationDeg = absoluteAt(keys, r[static_cast<int>(LensChannel::RotationDeg)], t, p.rotationDeg);
+        return p;
+    }
+
+    const SourceEntry* e = findSource(sources, trackId, regionId);
+    if (!e) return lensForSource(trackId, regionId);   // a new source: no hit curve
+    LensParams p = e->lens;
+    if (!e->keyed) return p;
+
+    // Follow: base, then the hit curve as a layer (spec "Blend": zoom
+    // multiplies; centre and rotation add). Computed in double, one rounding.
+    const xleth::keycurve::NoteSpan span = xleth::keycurve::noteSpan(clock.eventLenTicks, e->zones);
+    const auto& r = e->hitCurve;
+    p.zoom        = static_cast<float>(static_cast<double>(p.zoom)
+                  * layerAt(keys, r[static_cast<int>(LensChannel::Zoom)], span, t, 1.0));
+    p.centerX     = static_cast<float>(static_cast<double>(p.centerX)
+                  + layerAt(keys, r[static_cast<int>(LensChannel::CenterX)], span, t, 0.0));
+    p.centerY     = static_cast<float>(static_cast<double>(p.centerY)
+                  + layerAt(keys, r[static_cast<int>(LensChannel::CenterY)], span, t, 0.0));
+    p.rotationDeg = static_cast<float>(static_cast<double>(p.rotationDeg)
+                  + layerAt(keys, r[static_cast<int>(LensChannel::RotationDeg)], span, t, 0.0));
+    return p;
+}
+
+RoamParams LensRoamSnapshot::roamAt(int trackId, double frameTick) const {
+    const TrackEntry* e = findTrack(tracks, trackId);
+    if (!e) return RoamParams{};
+    RoamParams p = e->roam;
+    if (!e->roamKeyed) return p;
+    const auto& r = e->roamKeys;
+    p.offsetX     = absoluteAt(keys, r[static_cast<int>(RoamChannel::OffsetX)],     frameTick, p.offsetX);
+    p.offsetY     = absoluteAt(keys, r[static_cast<int>(RoamChannel::OffsetY)],     frameTick, p.offsetY);
+    p.scale       = absoluteAt(keys, r[static_cast<int>(RoamChannel::Scale)],       frameTick, p.scale);
+    p.rotationDeg = absoluteAt(keys, r[static_cast<int>(RoamChannel::RotationDeg)], frameTick, p.rotationDeg);
+    return p;
 }
 
 LensRoamSnapshot::Counts LensRoamSnapshot::counts() const {
@@ -374,11 +509,51 @@ LensRoamSnapshot::Counts LensRoamSnapshot::counts() const {
     c.tracks  = static_cast<int>(tracks.size());
     c.clips   = static_cast<int>(clips.size());
     c.sources = static_cast<int>(sources.size());
+    c.keys    = static_cast<int>(keys.size());
     for (const auto& t : tracks)  if (!t.roam.isIdentity()) ++c.roamNonIdentity;
     for (const auto& e : clips)   if (!e.lens.isIdentity()) ++c.clipLensNonIdentity;
     for (const auto& e : sources) if (!e.lens.isIdentity()) ++c.sourceLensNonIdentity;
     return c;
 }
+
+// ─── Key compilation (message thread) ─────────────────────────────────────────
+namespace {
+
+bool isMultiplierChannel(LensChannel c) { return c == LensChannel::Zoom; }
+bool isMultiplierChannel(RoamChannel c) { return c == RoamChannel::Scale; }
+
+enum class CurveKind { Time, Note };
+
+// Compile one container's stored keys into the pool: per channel, converted to
+// keycurve::Key, cleaned, (clamped,) sorted, appended as one run. A zoom or
+// scale key <= 0 is dropped (zoom 0 is a black cell, negative a silent
+// mirror; the base readers refuse the same values). `scratch` is reused.
+template <typename Channel>
+bool compileChannelRuns(const std::vector<LensRoamKey<Channel>>& stored,
+                        xleth::keycurve::TimeBase origin, CurveKind kind,
+                        const xleth::keycurve::NoteZones& zones,
+                        std::vector<xleth::keycurve::Key>& pool,
+                        std::vector<xleth::keycurve::Key>& scratch,
+                        LensRoamSnapshot::KeyRun (&runs)[kLensRoamChannels]) {
+    bool any = false;
+    for (int c = 0; c < kLensRoamChannels; ++c) {
+        scratch.clear();
+        for (const auto& k : stored) {
+            if (static_cast<int>(k.channel) != c) continue;
+            if (isMultiplierChannel(k.channel) && !(k.value > 0.0)) continue;
+            scratch.push_back(lensroam::toCurveKey(k, origin));
+        }
+        if (kind == CurveKind::Note) xleth::keycurve::compileNoteKeys(scratch, zones);
+        else                         xleth::keycurve::compileTimeKeys(scratch);
+        runs[c].first = static_cast<uint32_t>(pool.size());
+        runs[c].count = static_cast<uint32_t>(scratch.size());
+        pool.insert(pool.end(), scratch.begin(), scratch.end());
+        any = any || !scratch.empty();
+    }
+    return any;
+}
+
+} // namespace
 
 // ─── Dev-only verification hook (P2) ──────────────────────────────────────────
 // XLETH_DEV_LENS_ROAM_TRACK=<trackId> forces one track's resolved values in
@@ -427,8 +602,10 @@ void applyDevLens(LensParams& p) {
 } // namespace
 
 std::shared_ptr<const LensRoamSnapshot> buildLensRoamSnapshot(const Timeline& timeline) {
+    using xleth::keycurve::TimeBase;
     auto snap = std::make_shared<LensRoamSnapshot>();
     const DevLensRoamHook dev = devLensRoamHook();
+    std::vector<xleth::keycurve::Key> scratch;   // one channel at a time
 
     const auto tracks = timeline.getAllTracks();
     snap->tracks.reserve(tracks.size());
@@ -446,20 +623,41 @@ std::shared_ptr<const LensRoamSnapshot> buildLensRoamSnapshot(const Timeline& ti
             e.roam.layer   = dev.layer;
             applyDevLens(e.sourceFallback);
         }
+        // Roam keys: timeline ticks. The dev hook forces static values, so a
+        // hooked track's own keys are not compiled (they would override it).
+        if (!devTrack)
+            e.roamKeyed = compileChannelRuns(t->roam.keys, TimeBase::TimelineTicks,
+                                             CurveKind::Time, t->roam.zones,
+                                             snap->keys, scratch, e.roamKeys);
         snap->tracks.push_back(e);
         for (const auto& [regionId, lens] : t->trackLens) {
-            LensParams lp = lensroam::resolveBase(lens);
-            if (devTrack) applyDevLens(lp);
-            snap->sources.push_back({ t->id, regionId, lp });
+            LensRoamSnapshot::SourceEntry s;
+            s.trackId  = t->id;
+            s.regionId = regionId;
+            s.lens     = lensroam::resolveBase(lens);
+            s.zones    = lens.zones;
+            if (devTrack) applyDevLens(s.lens);
+            // The hit curve: note anchors, clamped and ordered for these zones.
+            s.keyed = compileChannelRuns(lens.keys, TimeBase::EventTicks, CurveKind::Note,
+                                         lens.zones, snap->keys, scratch, s.hitCurve);
+            snap->sources.push_back(s);
         }
     }
 
     const auto clips = timeline.getAllClips();
     snap->clips.reserve(clips.size());
     for (const Clip* c : clips) {
-        LensParams lp = lensroam::resolveBase(c->lens);
-        if (dev.active && c->trackId == dev.trackId) applyDevLens(lp);
-        snap->clips.push_back({ c->id, lp });
+        LensRoamSnapshot::ClipEntry e;
+        e.clipId = c->id;
+        e.lens   = lensroam::resolveBase(c->lens);
+        if (dev.active && c->trackId == dev.trackId) {
+            applyDevLens(e.lens);            // forced static values: keys not compiled
+        } else {
+            // Clip lens keys: ticks from the event (clip) start.
+            e.keyed = compileChannelRuns(c->lens.keys, TimeBase::EventTicks, CurveKind::Time,
+                                         c->lens.zones, snap->keys, scratch, e.lensKeys);
+        }
+        snap->clips.push_back(e);
     }
 
     if (dev.active) {

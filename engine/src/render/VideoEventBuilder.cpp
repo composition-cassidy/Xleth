@@ -98,6 +98,9 @@ void buildClipEvents(const Timeline& timeline, double bpm, double sampleRate,
         VideoEvent ev;
         ev.startBeat     = clip->position.toBeats();
         ev.durationBeats = clip->duration.toBeats();
+        ev.startTick     = static_cast<double>(clip->position.ticks);   // clip lens keys' origin
+        ev.lengthTicks   = static_cast<double>(clip->duration.ticks);
+        ev.hasTickSpan   = true;
         ev.sourceId      = region->sourceId;
         ev.trackId       = clip->trackId;
         ev.regionId      = clip->regionId;   // routes to the per-region proxy
@@ -242,6 +245,11 @@ void buildPatternEvents(const Timeline& timeline, double bpm, BuildResult& out)
                 counter);
 
             for (auto& ev : arpEvents) {
+                // Arp steps are timed in beat space (free-time steps are not
+                // on the tick grid), so their tick span is the beats * 960.
+                ev.startTick   = ev.startBeat * 960.0;
+                ev.lengthTicks = ev.durationBeats * 960.0;
+                ev.hasTickSpan = true;
                 ev.x      = track->videoX;
                 ev.y      = track->videoY;
                 ev.width  = track->videoW;
@@ -292,6 +300,11 @@ void buildPatternEvents(const Timeline& timeline, double bpm, BuildResult& out)
                 VideoEvent ev;
                 ev.startBeat     = beatsFromTicks(startTicks);
                 ev.durationBeats = beatsFromTicks(endTicks - startTicks);
+                // The hit curve's clock: note-on and the CLAMPED length
+                // (spec Ruling 4: Tail anchors where the video stops).
+                ev.startTick     = static_cast<double>(startTicks);
+                ev.lengthTicks   = static_cast<double>(endTicks - startTicks);
+                ev.hasTickSpan   = true;
                 ev.sourceId      = region->sourceId;
                 ev.trackId       = block->trackId;
                 ev.regionId      = pattern->regionId;

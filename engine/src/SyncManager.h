@@ -11,7 +11,7 @@
 
 struct VideoEvent {
     double startBeat;       // When this event starts (in beats)
-    double durationBeats;   // How long it lasts
+    double durationBeats;   // How long it lasts (exact ticks: startTick / lengthTicks)
     int    sourceId;        // Which video source
     int    trackId = -1;    // Originating track (for grid compositor lookup)
     double sourceStartTime; // Where in the source video to start (seconds)
@@ -90,7 +90,30 @@ struct VideoEvent {
     // Both are populated by VideoFlipApplier from the track's VideoFlipConfig.
     int         stateIndex  = 0;
     Orientation orientation = Orientation::None;
+
+    // The event's span in TICKS (960 PPQ), exact: the clip start / the
+    // note-on, and the CLAMPED length (a note-off clamped to its block end:
+    // where the video actually stops). Lens/Roam keys are evaluated from these
+    // (spec Ruling 5: from the note's start tick, never the first frame that
+    // sees it), so a key on a zone boundary lands exactly on it, with no beat
+    // round trip. Clip and note events carry the integer ticks; arp steps are
+    // timed in beat space, so theirs are the beat values * 960. A hand-built
+    // event leaves hasTickSpan false and readers fall back to the beats
+    // (videoEventStartTick / videoEventLengthTicks below). Kept LAST so no
+    // positional initializer of the fields above can shift.
+    double startTick   = 0.0;
+    double lengthTicks = 0.0;
+    bool   hasTickSpan = false;
 };
+
+// An event's start and clamped length in ticks: the exact span when the
+// builder set it, else derived from the beats (see VideoEvent::startTick).
+inline double videoEventStartTick(const VideoEvent& ev) {
+    return ev.hasTickSpan ? ev.startTick : ev.startBeat * 960.0;
+}
+inline double videoEventLengthTicks(const VideoEvent& ev) {
+    return ev.hasTickSpan ? ev.lengthTicks : ev.durationBeats * 960.0;
+}
 
 class SyncManager {
 public:

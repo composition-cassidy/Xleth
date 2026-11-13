@@ -284,6 +284,8 @@ std::vector<CellFrameRequest>& FrameCollector::collectRequests(
         projectFrameSample, sampleRate, bpm);
     const double ticksPerBeat = static_cast<double>(TickTime::fromBeats(1).ticks);
     const double beatPos = static_cast<double>(projectFramePpq) / ticksPerBeat;
+    // The frame's timeline tick, the clock every Lens/Roam key is evaluated on.
+    const double frameTick = static_cast<double>(projectFramePpq);
 
     // Time-based snapshot resolution — RENDER PATH ONLY. Editing reads stay on the
     // active snapshot (Timeline::getGridLayout); the render/export path instead
@@ -665,11 +667,21 @@ std::vector<CellFrameRequest>& FrameCollector::collectRequests(
         req.layerKind        = kind;
         req.zOrder           = zOrder;
 
-        // Lens/Roam: two binary searches over the published snapshot, POD
-        // copies out. No allocation, no lock (see setLensRoamSnapshot).
+        // Lens/Roam at THIS frame's tick: binary searches over the published
+        // snapshot's precompiled keys plus one interpolation per keyed
+        // channel, POD copies out. No allocation, no lock, no state (see
+        // setLensRoamSnapshot). Stateless on purpose: clip keys run from the
+        // clip start, the hit curve from the note's START TICK (Ruling 5, the
+        // way Note Fade runs), Roam on the timeline tick, so a seek into a
+        // note lands mid-animation and the export, sampling the same tick,
+        // gets the same value.
         if (const LensRoamSnapshot* lr = lensRoam_.get()) {
-            req.lens = lr->lensForEvent(trackId, ev->clipId, ev->regionId);
-            req.roam = lr->roamFor(trackId);
+            LensRoamSnapshot::EventClock clock;
+            clock.frameTick      = frameTick;
+            clock.eventStartTick = videoEventStartTick(*ev);
+            clock.eventLenTicks  = videoEventLengthTicks(*ev);
+            req.lens = lr->lensForEventAt(trackId, ev->clipId, ev->regionId, clock);
+            req.roam = lr->roamAt(trackId, frameTick);
         }
 
         if (isFullscreen && kRenderLog) {
@@ -767,11 +779,13 @@ std::vector<CellFrameRequest>& FrameCollector::collectRequests(
         req.zOrder           = zOrder;
         req.orientation      = hold.lastOrientation;
         req.trackId          = trackId;
-        req.lens             = hold.lastLens;
+        req.lens             = hold.lastLens;   // the picture as last drawn
         req.sourcePixelW     = hold.lastSourcePixelW;
         req.sourcePixelH     = hold.lastSourcePixelH;
+        // Roam belongs to the track, not the event: its keys keep running on
+        // the timeline tick through a held gap.
         if (const LensRoamSnapshot* lr = lensRoam_.get())
-            req.roam = lr->roamFor(trackId);
+            req.roam = lr->roamAt(trackId, frameTick);
 
         // A held frame is the SAME picture the live path was drawing an
         // instant ago, so it has to carry the same look. The compositor runs

@@ -19,8 +19,14 @@
 #include "commands/AddNotesBatchCommand.h"
 #include "commands/UndoManager.h"
 #include "model/Pattern.h"
+#include "model/TimelineSnapshot.h"
+#include "render/VideoEventBuilder.h"
 
+#include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <new>
+#include <unordered_map>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -32,6 +38,17 @@
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
+
+// Global allocation counter: [18] proves the render-thread lookups
+// (lensForEventAt / roamAt) never allocate.
+static std::atomic<long long> g_allocs{ 0 };
+void* operator new(std::size_t n) {
+    ++g_allocs;
+    if (void* p = std::malloc(n ? n : 1)) return p;
+    throw std::bad_alloc();
+}
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 
 static int g_fail = 0;
 static int g_pass = 0;
@@ -209,7 +226,7 @@ static void test_round_trip() {
     c.lens.base = someLens();
     LensKey k;
     k.channel = LensChannel::Zoom; k.anchor = KeyAnchor::Origin;
-    k.pos = 480.0; k.value = 1.25; k.p1x = 0.1f; k.p1y = 1.4f; k.p2x = 0.9f; k.p2y = 1.0f;
+    k.pos = 480.0; k.value = 1.25; k.interp = xleth::keycurve::Interp::EaseOut;
     c.lens.keys.push_back(k);
 
     json jc = c;
@@ -223,9 +240,12 @@ static void test_round_trip() {
         const LensKey& r = c2.lens.keys[0];
         CHECK(r.channel == LensChannel::Zoom && r.anchor == KeyAnchor::Origin
               && r.pos == 480.0 && r.value == 1.25
-              && r.p1x == 0.1f && r.p1y == 1.4f && r.p2x == 0.9f && r.p2y == 1.0f,
-              "key fields survive exactly (p1y > 1 not clamped)");
+              && r.interp == xleth::keycurve::Interp::EaseOut,
+              "key fields survive exactly (interp included)");
     }
+    CHECK(jc["lens"]["keys"][0]["interp"] == "EaseOut" && !jc["lens"]["keys"][0].contains("p1x"),
+          "interp written as a string; no bezier handles (P7)");
+    CHECK(!jc["lens"].contains("zones"), "a clip lens never saves note zones");
 
     TrackInfo t;
     t.id = 3; t.name = "T"; t.type = TrackInfo::Type::Pattern;
@@ -241,7 +261,9 @@ static void test_round_trip() {
     hk.anchor = KeyAnchor::Body; hk.pos = 0.5; hk.value = 1.15;
     src.keys.push_back(hk);
     hk.anchor = KeyAnchor::Tail; hk.pos = 240.0; hk.value = 1.0;
+    hk.interp = xleth::keycurve::Interp::Hold;
     src.keys.push_back(hk);
+    src.zones = xleth::keycurve::NoteZones{ 60.0, 480.0, xleth::keycurve::ShortNoteRule::Cut };
     t.trackLens[9] = src;
     t.trackLens[4] = LensTrack{};
 
@@ -265,6 +287,17 @@ static void test_round_trip() {
           && t2.trackLens[9].keys[1].anchor == KeyAnchor::Body
           && t2.trackLens[9].keys[2].anchor == KeyAnchor::Tail,
           "hit curve anchors round-trip in order");
+    CHECK(t2.trackLens.count(9) && t2.trackLens[9].keys.size() == 3
+          && t2.trackLens[9].keys[2].interp == xleth::keycurve::Interp::Hold
+          && t2.trackLens[9].keys[0].interp == xleth::keycurve::Interp::Linear,
+          "hit curve interps round-trip");
+    CHECK(t2.trackLens.count(9) && t2.trackLens[9].zones == src.zones,
+          "hit curve zones round-trip (head, tail, Cut)");
+    CHECK(jt["trackLens"][1]["zones"]["shortNote"] == "Cut"
+          && jt["trackLens"][1]["zones"]["headTicks"] == 60.0,
+          "zones written per trackLens entry");
+    CHECK(t2.trackLens.count(4) && t2.trackLens[4].zones == xleth::keycurve::NoteZones{},
+          "an entry without custom zones gets the spec default (120, 240, Squash)");
     CHECK(t2.trackLens.count(4) && t2.trackLens[4].base.isIdentity(), "Stretch entry stays identity");
 
     // Writing twice gives the same JSON: the format is stable.
@@ -334,6 +367,37 @@ static void test_tolerant_load() {
     CHECK(m.size() == 1 && m.count(3) && m[3].base == someLens(),
           "duplicate regionId: first wins; negative / missing ids dropped");
     CHECK(lensroam::trackLensFromJson(json::object()).empty(), "non-array trackLens -> empty");
+
+    // P7: interp and zones.
+    json keysP7 = {
+        {"base", json::object()},
+        {"keys", json::array({
+            // a P1-format key: bezier handles, no interp -> Linear, handles ignored
+            {{"channel", "zoom"}, {"anchor", "Origin"}, {"pos", 0}, {"value", 2.0},
+             {"p1x", 0.1}, {"p1y", 1.4}, {"p2x", 0.9}, {"p2y", 1.0}},
+            {{"channel", "zoom"}, {"anchor", "Origin"}, {"pos", 10}, {"value", 2.0}, {"interp", "Bounce"}},
+            {{"channel", "zoom"}, {"anchor", "Origin"}, {"pos", 20}, {"value", 2.0}, {"interp", "Hold"}},
+        })}
+    };
+    LensTrack k7 = lensroam::lensTrackFromJson(keysP7);
+    CHECK(k7.keys.size() == 3, "P7 keys load");
+    CHECK(k7.keys.size() == 3 && k7.keys[0].interp == xleth::keycurve::Interp::Linear,
+          "a key with P1 bezier handles and no interp loads as Linear");
+    CHECK(k7.keys.size() == 3 && k7.keys[1].interp == xleth::keycurve::Interp::Linear,
+          "unknown interp -> Linear");
+    CHECK(k7.keys.size() == 3 && k7.keys[2].interp == xleth::keycurve::Interp::Hold, "Hold survives");
+
+    json zonesBad = json::array({
+        {{"regionId", 1}, {"zones", {{"headTicks", -5}, {"tailTicks", "long"}, {"shortNote", "Chop"}}}},
+        {{"regionId", 2}, {"zones", {{"headTicks", 30}, {"tailTicks", 60}, {"shortNote", "Cut"}}}},
+        {{"regionId", 3}},
+    });
+    auto zm = lensroam::trackLensFromJson(zonesBad);
+    CHECK(zm.size() == 3 && zm[1].zones == xleth::keycurve::NoteZones{},
+          "malformed zones -> spec defaults (120, 240, Squash)");
+    CHECK(zm[2].zones == (xleth::keycurve::NoteZones{ 30.0, 60.0, xleth::keycurve::ShortNoteRule::Cut }),
+          "valid zones survive");
+    CHECK(zm[3].zones == xleth::keycurve::NoteZones{}, "missing zones -> spec defaults");
 }
 
 // ─── [4] v7 -> v8 migration through ProjectManager ───────────────────────────
@@ -460,13 +524,13 @@ static void test_snapshot_lookup() {
     f.tl.getClipMutable(f.clip2)->lens.base = someLens();
     f.tl.getTrackMutable(f.clipTrack)->roam.base = someRoam();
     f.tl.getTrackMutable(f.patTrack)->trackLens[f.regB] = LensTrack{ someLens(), {} };
-    // Keys are stored but NOT evaluated in P1: a key must not move the base.
+    // The BASE lookups ignore keys (P7 evaluates them in lensForEventAt).
     LensKey k; k.channel = LensChannel::Zoom; k.value = 9.0;
     f.tl.getClipMutable(f.clip2)->lens.keys.push_back(k);
 
     auto s = buildLensRoamSnapshot(f.tl);
     CHECK(s->lensForEvent(f.clipTrack, f.clip2, f.regB) == someLens(),
-          "clip event -> that clip's lens (base only; keys ignored)");
+          "clip event -> that clip's lens (base lookup: keys ignored)");
     CHECK(s->lensForEvent(f.clipTrack, f.clip1, f.regA).fit == LensFit::Cover,
           "a fresh clip event -> Cover");
     CHECK(s->lensForEvent(f.patTrack, -1, f.regB) == someLens(),
@@ -1127,6 +1191,446 @@ static void test_p5_note_override() {
     }
 }
 
+// ─── [14..18] P7: keys evaluated through the shared curve engine ─────────────
+// model/KeyCurve.h is tested on its own (test_key_curve). Here: the snapshot
+// compiles the stored keys correctly, the collector feeds every lookup the
+// right clock (clip start, note-on + CLAMPED length, timeline tick), the
+// values blend per the spec, and preview and export agree frame for frame.
+
+using xleth::keycurve::Interp;
+using xleth::keycurve::NoteZones;
+using xleth::keycurve::ShortNoteRule;
+using xleth::keycurve::TimeBase;
+
+static LensKey lensKey(LensChannel ch, KeyAnchor a, double pos, double value,
+                       Interp interp = Interp::Linear) {
+    LensKey k;
+    k.channel = ch; k.anchor = a; k.pos = pos; k.value = value; k.interp = interp;
+    return k;
+}
+
+static RoamKey roamKey(RoamChannel ch, double pos, double value, Interp interp = Interp::Linear) {
+    RoamKey k;
+    k.channel = ch; k.anchor = KeyAnchor::Origin; k.pos = pos; k.value = value; k.interp = interp;
+    return k;
+}
+
+// Spec preset "Punch + drift": Head 0 1.35 -> Head 120 1.08 -> Tail 240 1.20
+// -> Tail 0 1.00, the punch easing out.
+static std::vector<LensKey> punchDriftCurve() {
+    return {
+        lensKey(LensChannel::Zoom, KeyAnchor::Head, 0,   1.35, Interp::EaseOut),
+        lensKey(LensChannel::Zoom, KeyAnchor::Head, 120, 1.08),
+        lensKey(LensChannel::Zoom, KeyAnchor::Tail, 240, 1.20),
+        lensKey(LensChannel::Zoom, KeyAnchor::Tail, 0,   1.00),
+    };
+}
+
+// The generic engine's value for a hit-curve channel, as the reference.
+static double hitLayer(const std::vector<LensKey>& stored, LensChannel ch, const NoteZones& z,
+                       double noteLen, double t, double identity) {
+    std::vector<xleth::keycurve::Key> k;
+    for (const auto& s : stored)
+        if (s.channel == ch) k.push_back(lensroam::toCurveKey(s, TimeBase::EventTicks));
+    xleth::keycurve::compileNoteKeys(k, z);
+    return xleth::keycurve::valueAtNote(k.data(), k.size(), xleth::keycurve::noteSpan(noteLen, z),
+                                        t, identity);
+}
+
+// At 140 BPM / 960 PPQ the timeline runs 2240 ticks a second: at this frame
+// rate frame N IS tick N, so tests can address ticks directly.
+static const AVRational kTickFps{ 2240, 1 };
+
+static const CellFrameRequest* reqFor(const std::vector<CellFrameRequest>& reqs, int trackId) {
+    for (const auto& r : reqs) if (r.trackId == trackId) return &r;
+    return nullptr;
+}
+
+static bool feq(float a, float b, float eps = 1e-5f) { return std::fabs(a - b) <= eps; }
+
+// Pattern B (on regB) plays in block B at [3840, 7680). Four notes; the last
+// overruns the block and is clamped to 240 ticks.
+//   A  note-on 3840, 960    B  4800, 180 (short)   C  5760, 300 (short)
+//   D  7440, 240 (raw 960, clamped at the block end)
+static void addHitNotes(Fixture& f) {
+    const int64_t pos[] = { 0, 960, 1920, 3600 };
+    const int64_t dur[] = { 960, 180, 300, 960 };
+    for (int i = 0; i < 4; ++i) {
+        PatternNote n;
+        n.position = TickTime{ pos[i] };
+        n.duration = TickTime{ dur[i] };
+        n.pitch = 60 + i;
+        f.tl.addNoteToPattern(f.patternB, n);
+    }
+    // Adding D grew the pattern, and the block-length cascade stretched its
+    // blocks with it. Pin block B back to [3840, 7680) so D overruns it.
+    for (const PatternBlock* b : f.tl.getPatternBlocksOnTrack(f.patTrack))
+        if (b->patternId == f.patternB) f.tl.resizePatternBlock(b->id, TickTime{ 3840 });
+}
+
+static void test_p7_snapshot_compile() {
+    std::cout << "[14] P7 snapshot compiles sorted key runs\n";
+    Fixture f;
+    buildFixture(f);
+
+    Clip* c1 = f.tl.getClipMutable(f.clip1);
+    c1->lens.keys = {
+        lensKey(LensChannel::Zoom,    KeyAnchor::Origin, 960, 2.0),
+        lensKey(LensChannel::Zoom,    KeyAnchor::Origin, 0,   1.0),
+        lensKey(LensChannel::Zoom,    KeyAnchor::Origin, 480, 0.0),  // zoom <= 0: dropped
+        lensKey(LensChannel::Zoom,    KeyAnchor::Head,   0,   1.5),  // note anchor on a clip: dropped
+        lensKey(LensChannel::CenterX, KeyAnchor::Origin, 0,   0.25),
+    };
+    TrackInfo* ct = f.tl.getTrackMutable(f.clipTrack);
+    ct->roam.keys = {
+        roamKey(RoamChannel::OffsetX, 1920, 1.0),
+        roamKey(RoamChannel::OffsetX, 0,    0.0),
+        roamKey(RoamChannel::Scale,   0,   -1.0),                    // scale <= 0: dropped
+    };
+    LensTrack src;
+    src.keys = punchDriftCurve();
+    std::reverse(src.keys.begin(), src.keys.end());                 // stored out of order
+    src.keys.push_back(lensKey(LensChannel::Zoom, KeyAnchor::Origin, 0, 3.0));  // not a note anchor
+    f.tl.getTrackMutable(f.patTrack)->trackLens[f.regB] = src;
+
+    auto s = buildLensRoamSnapshot(f.tl);
+    CHECK(s->counts().keys == 3 + 2 + 4, "9 keys compiled; 4 malformed or misplaced ones dropped");
+
+    const LensRoamSnapshot::ClipEntry* c1e = nullptr;
+    const LensRoamSnapshot::ClipEntry* c2e = nullptr;
+    for (const auto& e : s->clips) {
+        if (e.clipId == f.clip1) c1e = &e;
+        if (e.clipId == f.clip2) c2e = &e;
+    }
+    CHECK(c1e && c1e->keyed && c2e && !c2e->keyed, "keyed flags per clip");
+    if (c1e) {
+        const auto& z = c1e->lensKeys[static_cast<int>(LensChannel::Zoom)];
+        CHECK(z.count == 2 && s->keys[z.first].position.v == 0.0
+              && s->keys[z.first + 1].position.v == 960.0
+              && s->keys[z.first].position.base == TimeBase::EventTicks,
+              "clip zoom run: sorted by event tick");
+        CHECK(c1e->lensKeys[static_cast<int>(LensChannel::CenterX)].count == 1
+              && c1e->lensKeys[static_cast<int>(LensChannel::CenterY)].count == 0
+              && c1e->lensKeys[static_cast<int>(LensChannel::RotationDeg)].count == 0,
+              "one run per channel");
+    }
+
+    const LensRoamSnapshot::TrackEntry* cte = nullptr;
+    const LensRoamSnapshot::TrackEntry* pte = nullptr;
+    for (const auto& e : s->tracks) {
+        if (e.trackId == f.clipTrack) cte = &e;
+        if (e.trackId == f.patTrack)  pte = &e;
+    }
+    CHECK(cte && cte->roamKeyed && pte && !pte->roamKeyed, "roamKeyed per track");
+    if (cte) {
+        const auto& x = cte->roamKeys[static_cast<int>(RoamChannel::OffsetX)];
+        CHECK(x.count == 2 && s->keys[x.first].position.v == 0.0
+              && s->keys[x.first + 1].position.v == 1920.0
+              && s->keys[x.first].position.base == TimeBase::TimelineTicks,
+              "roam offsetX run: sorted by timeline tick");
+        CHECK(cte->roamKeys[static_cast<int>(RoamChannel::Scale)].count == 0,
+              "the only scale key was <= 0 and was dropped");
+    }
+
+    const LensRoamSnapshot::SourceEntry* se = nullptr;
+    for (const auto& e : s->sources)
+        if (e.trackId == f.patTrack && e.regionId == f.regB) se = &e;
+    CHECK(se && se->keyed && se->zones == NoteZones{}, "keyed source, default zones");
+    if (se) {
+        const auto& z = se->hitCurve[static_cast<int>(LensChannel::Zoom)];
+        const double want[] = { 1.35, 1.08, 1.20, 1.00 };
+        bool ok = z.count == 4;
+        for (uint32_t i = 0; ok && i < 4; ++i) ok = s->keys[z.first + i].value == want[i];
+        CHECK(ok, "hit curve run in canonical order: Head 0, Head 120, Tail 240, Tail 0");
+        CHECK(z.count == 4 && s->keys[z.first].position.base == TimeBase::NoteHead
+              && s->keys[z.first + 3].position.base == TimeBase::NoteTail,
+              "hit curve keys carry their note anchors");
+    }
+    CHECK(s->lensForClip(f.clip1) == f.tl.getClip(f.clip1)->lens.base,
+          "base lookups are unchanged by keys");
+}
+
+static void test_p7_clip_keys() {
+    std::cout << "[15] P7 clip lens keys run on event ticks (absolute)\n";
+    Fixture f;
+    buildFixture(f);
+    Clip* c2 = f.tl.getClipMutable(f.clip2);       // [3840, 7680)
+    c2->lens.base = LensParams{};
+    c2->lens.base.centerY = 0.3f;
+    c2->lens.keys = {
+        lensKey(LensChannel::Zoom,        KeyAnchor::Origin, 0,    1.0),
+        lensKey(LensChannel::Zoom,        KeyAnchor::Origin, 960,  2.0),
+        lensKey(LensChannel::RotationDeg, KeyAnchor::Origin, 480,  10.0, Interp::Hold),
+        lensKey(LensChannel::RotationDeg, KeyAnchor::Origin, 1440, 20.0),
+    };
+    auto s = buildLensRoamSnapshot(f.tl);
+
+    LensRoamSnapshot::EventClock c;
+    c.eventStartTick = 3840; c.eventLenTicks = 3840;
+    auto at = [&](double tick) { c.frameTick = tick; return s->lensForEventAt(f.clipTrack, f.clip2, f.regB, c); };
+    LensParams p = at(3840 + 480);
+    CHECK(p.zoom == 1.5f && p.rotationDeg == 10.0f, "event tick 480: zoom 1.5 (linear), rotation on its key");
+    CHECK(p.centerY == 0.3f && p.centerX == 0.5f, "unkeyed channels hold the base");
+    CHECK(at(3840 + 960).zoom == 2.0f && at(3840 + 1439).rotationDeg == 10.0f,
+          "Hold keeps 10 until the next key");
+    CHECK(at(3840 + 1440).rotationDeg == 20.0f, "next key reached");
+    CHECK(at(3840).zoom == 1.0f && at(3840).rotationDeg == 10.0f, "clip start: first keys' values");
+
+    c.eventStartTick = 7680;
+    CHECK(at(7680 + 480).zoom == 1.5f, "keys move with the event (start 7680)");
+
+    // Through the real builder and collector.
+    auto built = xleth::videoevents::build(f.tl, 140.0, 48000.0);
+    const VideoEvent* ev = nullptr;
+    for (const auto& e : built.events) if (e.clipId == f.clip2) ev = &e;
+    CHECK(ev && ev->hasTickSpan && ev->startTick == 3840.0 && ev->lengthTicks == 3840.0,
+          "clip event carries its exact tick span");
+    FrameCollector col;
+    col.setLensRoamSnapshot(s);
+    auto& reqs = col.collectRequests(3840 + 480, f.tl, 48000, kTickFps, built.events);
+    const CellFrameRequest* r = reqFor(reqs, f.clipTrack);
+    CHECK(r && r->lens.zoom == 1.5f && r->lens.rotationDeg == 10.0f && r->lens.centerY == 0.3f,
+          "collector: the clip cell is keyed at its event tick");
+
+    // Move the clip: same picture, 3840 ticks later.
+    f.tl.getClipMutable(f.clip2)->position = TickTime{ 7680 };
+    auto moved = xleth::videoevents::build(f.tl, 140.0, 48000.0);
+    FrameCollector col2;
+    col2.setLensRoamSnapshot(buildLensRoamSnapshot(f.tl));
+    auto& reqs2 = col2.collectRequests(7680 + 480, f.tl, 48000, kTickFps, moved.events);
+    const CellFrameRequest* r2 = reqFor(reqs2, f.clipTrack);
+    CHECK(r2 && r2->lens.zoom == 1.5f, "collector: a moved clip carries its keys along");
+}
+
+static void test_p7_roam_keys() {
+    std::cout << "[16] P7 Roam keys run on timeline ticks (absolute), through held gaps too\n";
+    Fixture f;
+    buildFixture(f);
+    TrackInfo* ct = f.tl.getTrackMutable(f.clipTrack);
+    ct->roam.base.offsetY = 0.25f;
+    ct->roam.keys = {
+        roamKey(RoamChannel::OffsetX, 0,    0.0),
+        roamKey(RoamChannel::OffsetX, 7680, 2.0),
+        roamKey(RoamChannel::Scale,   0,    1.0, Interp::Hold),
+        roamKey(RoamChannel::Scale,   1920, 2.0),
+    };
+    auto s = buildLensRoamSnapshot(f.tl);
+    RoamParams r = s->roamAt(f.clipTrack, 1920);
+    CHECK(r.offsetX == 0.5f && r.scale == 2.0f && r.offsetY == 0.25f, "tick 1920: offsetX 0.5, scale 2");
+    CHECK(s->roamAt(f.clipTrack, 1919).scale == 1.0f, "Hold: scale 1 until its next key");
+    CHECK(s->roamAt(f.clipTrack, -100).offsetX == 0.0f && s->roamAt(f.clipTrack, 1e7).offsetX == 2.0f,
+          "before / after the keys");
+    CHECK(s->roamAt(f.patTrack, 1920).isIdentity() && s->roamAt(99999, 1920).isIdentity(),
+          "unkeyed / unknown track");
+    CHECK(s->roamFor(f.clipTrack) == ct->roam.base, "base lookup ignores keys");
+
+    // A held gap: clip 1 ends at 3840, clip 2 now starts at 5760.
+    ct->videoHoldLastFrame = true;
+    ct->videoHoldLastFrameThresholdBeats = -1.0;
+    f.tl.getClipMutable(f.clip2)->position = TickTime::fromBeats(6);
+    s = buildLensRoamSnapshot(f.tl);
+    auto built = xleth::videoevents::build(f.tl, 140.0, 48000.0);
+    FrameCollector col;
+    col.setLensRoamSnapshot(s);
+    col.collectRequests(3800, f.tl, 48000, kTickFps, built.events);     // clip 1 on screen
+    auto& reqs = col.collectRequests(4800, f.tl, 48000, kTickFps, built.events);
+    const CellFrameRequest* h = reqFor(reqs, f.clipTrack);
+    CHECK(h != nullptr, "the gap is filled by a held frame");
+    CHECK(h && h->roam == s->roamAt(f.clipTrack, 4800) && h->roam.offsetX == 1.25f,
+          "a held frame's Roam keeps moving on the timeline tick");
+}
+
+static void test_p7_hit_curve() {
+    std::cout << "[17] P7 hit curve per active note (Follow), from note-on and the clamped length\n";
+    Fixture f;
+    buildFixture(f);
+    addHitNotes(f);
+
+    LensTrack src;
+    src.base.fit = LensFit::Cover;
+    src.base.zoom = 1.2f;
+    src.base.centerX = 0.4f;
+    src.keys = punchDriftCurve();
+    src.keys.push_back(lensKey(LensChannel::CenterX, KeyAnchor::Head, 0,   0.1));
+    src.keys.push_back(lensKey(LensChannel::CenterX, KeyAnchor::Head, 120, 0.0));
+    f.tl.getTrackMutable(f.patTrack)->trackLens[f.regB] = src;
+
+    auto built = xleth::videoevents::build(f.tl, 140.0, 48000.0);
+    std::vector<const VideoEvent*> notes;
+    for (const auto& e : built.events) if (e.trackId == f.patTrack) notes.push_back(&e);
+    std::sort(notes.begin(), notes.end(),
+              [](const VideoEvent* a, const VideoEvent* b) { return a->startTick < b->startTick; });
+    const double wantStart[] = { 3840, 4800, 5760, 7440 };
+    const double wantLen[]   = { 960, 180, 300, 240 };
+    bool spans = notes.size() == 4;
+    for (std::size_t i = 0; spans && i < 4; ++i)
+        spans = notes[i]->hasTickSpan && notes[i]->startTick == wantStart[i]
+             && notes[i]->lengthTicks == wantLen[i];
+    CHECK(spans, "note events carry note-on and the CLAMPED length in exact ticks (D: 960 -> 240)");
+
+    FrameCollector col;
+    col.setLensRoamSnapshot(buildLensRoamSnapshot(f.tl));
+    auto lensAt = [&](int64_t tick) -> LensParams {
+        auto& reqs = col.collectRequests(tick, f.tl, 48000, kTickFps, built.events);
+        const CellFrameRequest* r = reqFor(reqs, f.patTrack);
+        return r ? r->lens : LensParams{};
+    };
+    auto zoomWant = [&](const NoteZones& z, double L, double t) {
+        return static_cast<float>(1.2f * hitLayer(src.keys, LensChannel::Zoom, z, L, t, 1.0));
+    };
+    const NoteZones sq{}, cut{ 120.0, 240.0, ShortNoteRule::Cut };
+
+    // Note A (960): the punch, blended on the base (zoom multiplies, centre adds).
+    LensParams a0 = lensAt(3840);
+    CHECK(feq(a0.zoom, 1.2f * 1.35f) && feq(a0.centerX, 0.5f), "A note-on: zoom 1.2 x 1.35, centerX 0.4 + 0.1");
+    CHECK(a0.fit == LensFit::Cover && a0.rotationDeg == 0.0f, "fit and unkeyed channels from the base");
+    LensParams a60 = lensAt(3840 + 60);
+    CHECK(feq(a60.zoom, zoomWant(sq, 960, 60)) && feq(a60.centerX, 0.45f), "A +60: mid-punch, eased");
+    CHECK(feq(lensAt(3840 + 120).zoom, 1.2f * 1.08f) && feq(lensAt(3840 + 120).centerX, 0.4f),
+          "A +120: head end");
+    CHECK(feq(lensAt(3840 + 720).zoom, 1.2f * 1.20f), "A +720: Tail 240");
+    CHECK(feq(lensAt(3840 + 959).zoom, zoomWant(sq, 960, 959)) && lensAt(3840 + 959).zoom < 1.2f * 1.01f,
+          "A last tick: almost Tail 0");
+
+    // Note B (180 < 360): Squash by default.
+    CHECK(feq(lensAt(4800 + 30).zoom, zoomWant(sq, 180, 30)), "B Squash +30");
+    CHECK(feq(lensAt(4800 + 60).zoom, 1.2f * 1.20f), "B Squash +60: the squashed tail start");
+
+    // Note D: tail anchors at the CLAMPED end (240), not the raw note-off (960).
+    const float d120 = lensAt(7440 + 120).zoom;
+    CHECK(feq(d120, zoomWant(sq, 240, 120)), "D: evaluated with the clamped length 240");
+    CHECK(!feq(d120, zoomWant(sq, 960, 120)), "...which differs from the raw 960");
+
+    // Same notes under Cut.
+    f.tl.getTrackMutable(f.patTrack)->trackLens[f.regB].zones = cut;
+    col.setLensRoamSnapshot(buildLensRoamSnapshot(f.tl));
+    CHECK(feq(lensAt(4800).zoom, 1.2f * 1.15f), "B Cut: note-on lands part-way into the tail (no punch)");
+    CHECK(feq(lensAt(5760 + 30).zoom, zoomWant(cut, 300, 30)), "C Cut +30: head at its real speed");
+    CHECK(feq(lensAt(5760 + 60).zoom, 1.2f * 1.20f), "C Cut +60: the cut (Tail 240)");
+    CHECK(feq(lensAt(3840 + 60).zoom, zoomWant(sq, 960, 60)), "A (long) is the same under either rule");
+}
+
+static void test_p7_seek_and_live_vs_export() {
+    std::cout << "[18] P7 seek mid-note and live preview == export, Roam keys + hit curve\n";
+    Fixture f;
+    buildFixture(f);
+    addHitNotes(f);
+    LensTrack src;
+    src.base.zoom = 1.2f;
+    src.keys = punchDriftCurve();
+    src.keys.push_back(lensKey(LensChannel::RotationDeg, KeyAnchor::Body, 0.0, 0.0));
+    src.keys.push_back(lensKey(LensChannel::RotationDeg, KeyAnchor::Body, 1.0, 6.0));
+    f.tl.getTrackMutable(f.patTrack)->trackLens[f.regB] = src;
+    f.tl.getTrackMutable(f.patTrack)->roam.keys = {
+        roamKey(RoamChannel::OffsetX, 0,    0.0, Interp::EaseOut),
+        roamKey(RoamChannel::OffsetX, 7680, 1.0),
+        roamKey(RoamChannel::RotationDeg, 3840, 0.0),
+        roamKey(RoamChannel::RotationDeg, 7680, 45.0),
+    };
+    f.tl.getTrackMutable(f.clipTrack)->roam.keys = { roamKey(RoamChannel::Scale, 0, 0.5),
+                                                     roamKey(RoamChannel::Scale, 7680, 1.5) };
+    f.tl.getClipMutable(f.clip2)->lens.keys = {
+        lensKey(LensChannel::CenterX, KeyAnchor::Origin, 0, 0.2),
+        lensKey(LensChannel::CenterX, KeyAnchor::Origin, 3840, 0.8),
+    };
+
+    const auto liveEvents = xleth::videoevents::build(f.tl, 140.0, 48000.0);
+    const auto liveSnap   = buildLensRoamSnapshot(f.tl);
+    const FrozenTimelineCopy frozen = makeFrozenTimelineCopy(f.tl);
+    const Timeline& ex = *frozen.timeline;
+    const auto exEvents = xleth::videoevents::build(ex, 140.0, 48000.0);
+    const std::unordered_map<int, std::string> plan;    // empty render plan: originals
+
+    // Seek: a FRESH collector asked for one tick mid-note == one that played
+    // every tick up to it == the export's collector at the same tick.
+    const int64_t mid = 3840 + 60;                       // note A, mid-punch
+    FrameCollector played;
+    played.setLensRoamSnapshot(liveSnap);
+    for (int64_t t = 3600; t < mid; ++t)
+        played.collectRequests(t, f.tl, 48000, kTickFps, liveEvents.events);
+    const std::vector<CellFrameRequest> playedReqs =
+        played.collectRequests(mid, f.tl, 48000, kTickFps, liveEvents.events);
+    FrameCollector seeker;
+    seeker.setLensRoamSnapshot(liveSnap);
+    const std::vector<CellFrameRequest> seekReqs =
+        seeker.collectRequests(mid, f.tl, 48000, kTickFps, liveEvents.events);
+    FrameCollector exportAtMid;
+    exportAtMid.setLensRoamSnapshot(buildLensRoamSnapshot(ex));
+    const std::vector<CellFrameRequest> exportReqs =
+        exportAtMid.collectRequests(mid, ex, 48000, kTickFps, exEvents.events,
+                                    /*allowProxy=*/false, /*projectStartSample=*/0,
+                                    /*posterMode=*/false, &plan);
+    const CellFrameRequest* ps = reqFor(playedReqs, f.patTrack);
+    const CellFrameRequest* ss = reqFor(seekReqs, f.patTrack);
+    const CellFrameRequest* es = reqFor(exportReqs, f.patTrack);
+    CHECK(ps && ss && es, "the pattern cell is on screen at the seek tick");
+    if (ps && ss && es) {
+        CHECK(ss->lens == ps->lens && ss->roam == ps->roam, "seek == played-through, bit for bit");
+        CHECK(es->lens == ss->lens && es->roam == ss->roam, "export == preview at the seek tick");
+        CHECK(ss->lens.zoom > 1.2f * 1.08f && ss->lens.zoom < 1.2f * 1.35f,
+              "the seek lands MID-animation (between the punch and its settle)");
+    }
+
+    // Live vs export over a whole stretch: the preview at 30 fps on the live
+    // timeline (layout override, proxies allowed, preview effect mute), the
+    // export at 60 fps on the frozen copy, a subrange starting at 1 s. Every
+    // 30 fps frame p shares its project sample (1600 p) with export frame
+    // 2 (p - 30). Compared from 1 s to 3.4 s (beats 2.3 .. 7.9): clip track
+    // and pattern track, across notes A..D and a gap between them.
+    const GridLayout layout = f.tl.gridLayoutAt(TickTime{ 0 });
+    FrameCollector preview, exporter;
+    preview.setLensRoamSnapshot(liveSnap);
+    exporter.setLensRoamSnapshot(buildLensRoamSnapshot(ex));
+    const int64_t exportStart = 48000;
+    int frames = 0, cells = 0, hitCells = 0, changes = 0;
+    bool same = true;
+    std::unordered_map<int, std::pair<LensParams, RoamParams>> prev;
+    for (int64_t p = 30; p <= 102; ++p) {
+        const std::vector<CellFrameRequest> pr = preview.collectRequests(
+            p, f.tl, 48000, AVRational{ 30, 1 }, liveEvents.events,
+            /*allowProxy=*/true, /*projectStartSample=*/0, /*posterMode=*/false,
+            /*renderProxyBySource=*/nullptr, &layout, /*applyPreviewEffectMute=*/true);
+        const auto& er = exporter.collectRequests(
+            2 * (p - 30), ex, 48000, AVRational{ 60, 1 }, exEvents.events,
+            /*allowProxy=*/false, exportStart, /*posterMode=*/false, &plan);
+        ++frames;
+        same = same && pr.size() == er.size();
+        for (const auto& a : pr) {
+            const CellFrameRequest* b = reqFor(er, a.trackId);
+            same = same && b && a.lens == b->lens && a.roam == b->roam
+                && a.sourceFrameIndex == b->sourceFrameIndex;
+            ++cells;
+            if (a.trackId == f.patTrack) ++hitCells;
+            auto it = prev.find(a.trackId);
+            if (it != prev.end() && (!(it->second.first == a.lens) || !(it->second.second == a.roam)))
+                ++changes;
+            prev[a.trackId] = { a.lens, a.roam };
+        }
+    }
+    CHECK(same, "preview == export: every cell's Lens and Roam, every shared frame");
+    CHECK(hitCells >= 15, "...across every note of the hit curve");
+    CHECK(changes > 60, "...while the hit curve and the Roam keys were moving");
+    std::cout << "    " << frames << " frames, " << cells << " cells compared (" << hitCells
+              << " pattern cells), values changed between frames " << changes << " times\n";
+
+    // The render-thread lookups never allocate.
+    LensRoamSnapshot::EventClock clk;
+    double sink = 0.0;
+    const long long before = g_allocs.load();
+    for (int i = 0; i < 20000; ++i) {
+        clk.frameTick      = 3840.0 + (i % 3840);
+        clk.eventStartTick = 3840.0;
+        clk.eventLenTicks  = (i % 7 == 0) ? 180.0 : 960.0;
+        const LensParams a = liveSnap->lensForEventAt(f.patTrack, -1, f.regB, clk);
+        const LensParams b = liveSnap->lensForEventAt(f.clipTrack, f.clip2, f.regB, clk);
+        const RoamParams r = liveSnap->roamAt(f.patTrack, clk.frameTick);
+        sink += a.zoom + b.centerX + r.offsetX;
+    }
+    const long long after = g_allocs.load();
+    CHECK(after == before, "lensForEventAt / roamAt: zero allocations over 60k lookups");
+    std::cout << "    lookup allocations: " << (after - before) << " (checksum " << sink << ")\n";
+}
+
 int main() {
     std::cout << "[LensRoam] Lens + Roam P1 tests\n";
     test_defaults();
@@ -1142,6 +1646,11 @@ int main() {
     test_p2_dev_hook();
     test_p3_commands();
     test_p5_note_override();
+    test_p7_snapshot_compile();
+    test_p7_clip_keys();
+    test_p7_roam_keys();
+    test_p7_hit_curve();
+    test_p7_seek_and_live_vs_export();
     std::cout << "[LensRoam] " << g_pass << " passed, " << g_fail << " failed\n";
     return g_fail == 0 ? 0 : 1;
 }

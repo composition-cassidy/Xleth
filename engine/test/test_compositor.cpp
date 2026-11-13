@@ -8,9 +8,12 @@
 #include "render/FrameCollector.h"
 #include "model/TimelineTypes.h"  // kGridSubUnitsPerColumn / Row
 #include "model/Timeline.h"       // Test 18: preview/export parity timeline
+#include "model/TimelineSnapshot.h"  // Test 19: the export's frozen timeline copy
+#include "render/RenderClock.h"
 #include "render/VideoEventBuilder.h"
 
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -1237,6 +1240,174 @@ int main()
 
         compositor.shutdown();
         std::fprintf(stderr, "[TEST:Compositor] Test 18: PASSED\n");
+    }
+
+    // ── Test 19: P7 keys, live preview == export, pixel for pixel ────────────
+    // Roam keys (timeline ticks) on both tracks, a hit curve (note anchors) on
+    // the Pattern Track source, clip lens keys (event ticks). The preview
+    // renders the LIVE timeline at 30 fps through its collector call; the
+    // export renders a FROZEN copy (its own events and snapshot) at 60 fps
+    // from a 1 s subrange start. Every 30 fps frame shares its project sample
+    // with an export frame; each pair must composite to identical bytes, and a
+    // fresh collector that SEEKS straight to a mid-note frame must too.
+    {
+        std::fprintf(stderr, "\n[TEST:Compositor] --- Test 19: P7 keys, preview/export parity ---\n");
+
+        Timeline tl{ 140.0, 48000.0 };
+        SourceMedia src;
+        src.filePath = "p7_parity_src.mp4"; src.hasVideo = true;
+        src.fps = 30.0; src.duration = 60.0; src.totalFrames = 1800;
+        src.width = 1920; src.height = 1080;
+        const int srcId = tl.addSource(src);
+        SampleRegion reg;
+        reg.sourceId = srcId; reg.startTime = 0.0; reg.endTime = 10.0;
+        reg.startFrame = 0; reg.endFrame = 299;
+        const int regId = tl.addRegion(reg);
+
+        TrackInfo ct; ct.name = "Clips"; ct.type = TrackInfo::Type::Clip;
+        const int clipTrack = tl.addTrack(ct);
+        TrackInfo pt; pt.name = "Pattern"; pt.type = TrackInfo::Type::Pattern;
+        const int patTrack = tl.addTrack(pt);
+
+        auto lk = [](LensChannel ch, KeyAnchor a, double pos, double v,
+                     xleth::keycurve::Interp i = xleth::keycurve::Interp::Linear) {
+            LensKey k; k.channel = ch; k.anchor = a; k.pos = pos; k.value = v; k.interp = i; return k;
+        };
+        auto rk = [](RoamChannel ch, double pos, double v) {
+            RoamKey k; k.channel = ch; k.pos = pos; k.value = v; return k;
+        };
+
+        Clip c;
+        c.trackId = clipTrack; c.regionId = regId;
+        c.position = TickTime{ 0 }; c.duration = TickTime::fromBeats(8);
+        c.lens = LensTrack{};
+        c.lens.keys = { lk(LensChannel::Zoom, KeyAnchor::Origin, 0, 1.0),
+                        lk(LensChannel::Zoom, KeyAnchor::Origin, 7680, 2.0) };
+        tl.addClip(c);
+
+        Pattern pat;
+        pat.name = "P"; pat.regionId = regId; pat.length = TickTime::fromBeats(8);
+        const int patId = tl.addPattern(pat);
+        const int64_t notePos[] = { 2400, 3600, 4800 };      // long, short (Squash), long
+        const int64_t noteDur[] = { 960, 180, 1440 };
+        for (int i = 0; i < 3; ++i) {
+            PatternNote n;
+            n.position = TickTime{ notePos[i] }; n.duration = TickTime{ noteDur[i] };
+            tl.addNoteToPattern(patId, n);
+        }
+        PatternBlock blk;
+        blk.trackId = patTrack; blk.patternId = patId;
+        blk.position = TickTime{ 0 }; blk.duration = TickTime::fromBeats(8);
+        tl.addPatternBlock(blk);
+
+        TrackInfo* ptm = tl.getTrackMutable(patTrack);
+        LensTrack hit;                                       // Stretch base + Punch + drift
+        hit.keys = { lk(LensChannel::Zoom, KeyAnchor::Head, 0, 1.35, xleth::keycurve::Interp::EaseOut),
+                     lk(LensChannel::Zoom, KeyAnchor::Head, 120, 1.08),
+                     lk(LensChannel::Zoom, KeyAnchor::Tail, 240, 1.20),
+                     lk(LensChannel::Zoom, KeyAnchor::Tail, 0, 1.00),
+                     lk(LensChannel::RotationDeg, KeyAnchor::Body, 0.0, 0.0),
+                     lk(LensChannel::RotationDeg, KeyAnchor::Body, 1.0, 8.0) };
+        ptm->trackLens[regId] = hit;
+        ptm->roam.keys = { rk(RoamChannel::OffsetX, 0, -0.25), rk(RoamChannel::OffsetX, 7680, 0.25),
+                           rk(RoamChannel::Scale, 0, 0.8),     rk(RoamChannel::Scale, 7680, 1.1) };
+        tl.getTrackMutable(clipTrack)->roam.keys = { rk(RoamChannel::RotationDeg, 0, 0.0),
+                                                     rk(RoamChannel::RotationDeg, 7680, 20.0) };
+
+        GridLayout layout;
+        layout.columns = 2; layout.rows = 1;
+        layout.slots.push_back({ clipTrack, 0, 0, kGridSubUnitsPerColumn, kGridSubUnitsPerRow, 1.0f, 0 });
+        layout.slots.push_back({ patTrack, kGridSubUnitsPerColumn, 0,
+                                 kGridSubUnitsPerColumn, kGridSubUnitsPerRow, 1.0f, 1 });
+        tl.setGridLayout(layout);
+
+        const auto liveEvents = xleth::videoevents::build(tl, 140.0, 48000.0);
+        const auto liveSnap   = buildLensRoamSnapshot(tl);
+        const FrozenTimelineCopy frozen = makeFrozenTimelineCopy(tl);
+        const Timeline& ex = *frozen.timeline;
+        const auto exEvents = xleth::videoevents::build(ex, 140.0, 48000.0);
+        const auto exSnap   = buildLensRoamSnapshot(ex);
+        const std::unordered_map<int, std::string> plan;   // export: originals
+
+        auto fill = [&](const std::vector<CellFrameRequest>& reqs) {
+            for (const auto& r : reqs) {
+                FrameCacheKey k; k.sourcePath = r.sourcePath; k.frameIndex = r.sourceFrameIndex;
+                if (!cache.get(k)) cache.put(k, makeGradientTexture(64, 36));
+            }
+        };
+        GridCompositor compositor;
+        assert(compositor.init(g_device, g_deviceCtx, 320, 160));
+        const GridLayout liveLayout = tl.gridLayoutAt(TickTime{ 0 });
+        auto composite = [&](const std::vector<CellFrameRequest>& reqs, const GridLayout& l) {
+            fill(reqs);
+            compositor.compositeFrame(reqs, cache, l.columns, l.rows, 0.0f, l.gapScale);
+            ReadbackBuffer b = compositor.readback();
+            assert(b.valid);
+            return b.pixels;
+        };
+
+        FrameCollector preview, exporter;
+        preview.setLensRoamSnapshot(liveSnap);
+        exporter.setLensRoamSnapshot(exSnap);
+        const AVRational previewFps{ 30, 1 }, exportFps{ 60, 1 };
+        const int64_t exportStart = 48000;                   // 1 s subrange
+        int frames = 0, differing = 0, withHit = 0;
+        std::vector<uint8_t> prevPx;
+        for (int64_t p = 30; p <= 110; ++p) {                // beats 2.33 .. 8.0
+            const std::vector<CellFrameRequest> lr = preview.collectRequests(
+                p, tl, 48000, previewFps, liveEvents.events,
+                /*allowProxy=*/true, /*projectStartSample=*/0, /*posterMode=*/false,
+                /*renderProxyBySource=*/nullptr, &liveLayout, /*applyPreviewEffectMute=*/true);
+            const std::vector<uint8_t> a = composite(lr, liveLayout);
+
+            const std::vector<CellFrameRequest> er = exporter.collectRequests(
+                2 * (p - 30), ex, 48000, exportFps, exEvents.events,
+                /*allowProxy=*/false, exportStart, /*posterMode=*/false, &plan);
+            const std::vector<uint8_t> b = composite(er, ex.getGridLayout());
+
+            assert(a == b && "P7: preview == export, byte for byte, at every shared sample");
+            if (!prevPx.empty() && a != prevPx) ++differing;
+            for (const auto& r : lr) if (r.trackId == patTrack) ++withHit;
+            prevPx = a;
+            ++frames;
+        }
+        assert(withHit >= 20 && "the pattern cell was on screen across the notes");
+        assert(differing >= 60 && "the keys visibly moved the picture between frames");
+
+        // Seek: a fresh collector jumps straight to the first preview frame
+        // inside the last note's head (note-on 4800, head 120 ticks).
+        int64_t seekFrame = -1;
+        for (int64_t p = 30; p <= 110 && seekFrame < 0; ++p) {
+            const int64_t tick = RenderClock::sampleToPPQ(p * 1600, 48000, 140.0);
+            if (tick > 4800 + 20 && tick < 4800 + 120) seekFrame = p;
+        }
+        assert(seekFrame >= 0);
+        FrameCollector seeker;
+        seeker.setLensRoamSnapshot(liveSnap);
+        const std::vector<CellFrameRequest> sr = seeker.collectRequests(
+            seekFrame, tl, 48000, previewFps, liveEvents.events,
+            true, 0, false, nullptr, &liveLayout, true);
+        const std::vector<uint8_t> seekPx = composite(sr, liveLayout);
+        FrameCollector exportSeek;
+        exportSeek.setLensRoamSnapshot(exSnap);
+        const std::vector<CellFrameRequest> esr = exportSeek.collectRequests(
+            2 * (seekFrame - 30), ex, 48000, exportFps, exEvents.events,
+            false, exportStart, false, &plan);
+        assert(seekPx == composite(esr, ex.getGridLayout()) && "seek mid-note: preview == export");
+        float seekZoom = 0.0f;
+        for (const auto& r : sr) if (r.trackId == patTrack) seekZoom = r.lens.zoom;
+        assert(seekZoom > 1.08f && seekZoom < 1.35f && "the seek lands mid-punch");
+
+        auto fnv = [](const std::vector<uint8_t>& v) {
+            uint64_t h = 1469598103934665603ull;
+            for (uint8_t ch : v) { h ^= ch; h *= 1099511628211ull; }
+            return static_cast<unsigned long long>(h);
+        };
+        std::fprintf(stderr, "[TEST:Compositor] 19: %d frame pairs identical, %d pattern cells, "
+                     "picture changed on %d frames; seek frame %lld zoom %.4f, hash %016llx\n",
+                     frames, withHit, differing, (long long)seekFrame, seekZoom, fnv(seekPx));
+        compositor.shutdown();
+        std::fprintf(stderr, "[TEST:Compositor] Test 19: PASSED\n");
     }
 
     std::fprintf(stderr, "\n[TEST:Compositor] ALL TESTS PASSED\n");

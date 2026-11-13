@@ -78,6 +78,12 @@
 //     P5 (no bump, additive): a pattern note MAY carry "lensOverride"
 //     {mode: Nudge|Own, keys}. Written only when present; absent = Follow,
 //     so every older project loads with none and saves unchanged.
+//     P7 (no bump): keys are evaluated (model/KeyCurve.h). A key carries
+//     "interp" (Hold|Linear|EaseOut) in place of P1's never-evaluated bezier
+//     handles p1x..p2y; a key without it loads as Linear (what those default
+//     handles described) and the handles are ignored. Each trackLens entry
+//     carries "zones" {headTicks, tailTicks, shortNote: Squash|Cut}; missing
+//     = the spec default (120, 240, Squash). Nothing wrote keys before P7.
 inline constexpr int XLETH_PROJECT_SCHEMA_VERSION = 8;
 
 class ProjectManager {

@@ -129,13 +129,14 @@ struct CellFrameRequest {
     // compositor never looks at the audio graph itself.
     xleth::echo::EchoSettings echo;
 
-    // Lens + Roam, RESOLVED for this cell and frame (P1: the static base).
-    // Fixed-size values copied out of the published LensRoamSnapshot, so the
-    // compositor reads plain data and never the model. Identity when no
+    // Lens + Roam, RESOLVED for this cell and frame: the base with its keys
+    // evaluated at the frame's tick (P7, LensRoamSnapshot::lensForEventAt /
+    // roamAt). Fixed-size values copied out of the published LensRoamSnapshot,
+    // so the compositor reads plain data and never the model. Identity when no
     // snapshot is installed. GridCompositor applies both (P2) through
     // render/LensRoamMath.h; the collector's draw-order sort reads roam.layer.
-    LensParams lens;   // the event's clip lens, or its {trackId, regionId} source lens
-    RoamParams roam;   // the track's roam
+    LensParams lens;   // clip lens (+ its keys), or source lens + hit curve
+    RoamParams roam;   // the track's roam (+ its keys)
 
     // The source's own pixel size (SourceMedia width/height; 0 = unknown).
     // Lens Cover/Contain fit against it rather than the decoded texture, so a

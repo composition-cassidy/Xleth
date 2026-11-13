@@ -3363,6 +3363,19 @@ target_compile_definitions(test_lens_roam PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_key_curve ───────────────────────────────────────────────────────────
+# The shared keyframe curve engine (model/KeyCurve.h, Lens + Roam P7): empty
+# keys = base, Hold/Linear/EaseOut, Head/Body/Tail anchor mapping for every
+# note length 30..3840 under Squash and Cut, keys on zone boundaries, and no
+# allocation while evaluating. Header-only, pure CPU, no JUCE.
+add_executable(test_key_curve
+    test/test_key_curve.cpp
+)
+
+target_include_directories(test_key_curve PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
 # ── test_param_track ─────────────────────────────────────────────────────────
 # Verifies the ParamTrack keyframe core and the Zoom/Pan/Rot migration onto it:
 # bezier solve accuracy, the identity-in-x fast path, unclamped overshoot, the
@@ -3706,6 +3719,7 @@ set(XLETH_ENGINE_TESTS
     test_animation_manager
     test_param_track
     test_lens_roam
+    test_key_curve
     test_export_snapshot
     test_render_clock
     test_automation_clips
