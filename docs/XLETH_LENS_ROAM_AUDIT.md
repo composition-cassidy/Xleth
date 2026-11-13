@@ -160,3 +160,9 @@ Shared. `PatternBlock` holds a `patternId` reference plus `position / duration /
 3. Lens relative to the visual chain: frame before effects (extra pass) or after (folded into the final draw)?
 4. Tail anchor: real note-off, or the block-clamped note-off the audio uses (`VideoEventBuilder.cpp:288-289`)?
 5. Bounce already animates the cell per note; spec lists per-note Roam as out of scope. Confirm bounce stays as is and composes before Roam.
+
+## Rulings (2026-11-13)
+
+Spec questions 1-4 above and the verdict (a) blocker are answered in `docs/XLETH_LENS_ROAM_SPEC.md`, section "Rulings (2026-11-13, from the P0 audit)" (Rulings 1-8).
+
+- Verdict (a), static Lens and Roam: **RESOLVED by Ruling 1.** Lens gains a fit mode (Stretch | Cover | Contain). Old projects migrate to Stretch (today's behaviour), so identity renders bit-identically; new clips and sources default to Cover.
