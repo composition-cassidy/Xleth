@@ -433,6 +433,11 @@ void to_json(nlohmann::json& j, const TrackInfo& t) {
 
     j["subdivisionFactor"] = t.subdivisionFactor;
 
+    // ── Lens + Roam (schema v8) ─────────────────────────────────────────
+    // Always written; a missing key can only mean a pre-v8 file.
+    j["roam"]      = lensroam::roamTrackToJson(t.roam);
+    j["trackLens"] = lensroam::trackLensToJson(t.trackLens);
+
     // ── Track color (Pass 6D + 6F) ──────────────────────────────────────
     // Always emit mode; emit slot only for PaletteSlot mode and trackColorCustom
     // only for Custom mode to keep auto-only projects compact.
@@ -655,6 +660,17 @@ void from_json(const nlohmann::json& j, TrackInfo& t) {
         if (f != 1 && f != 2 && f != 4 && f != 8) f = 1;
         t.subdivisionFactor = f;
     }
+
+    // ── Lens + Roam (schema v8) ─────────────────────────────────────────
+    // Missing (pre-v8) → identity Roam and NO source entries; the v7→v8
+    // migration (lensroam::migratePreLensProject, run by ProjectManager)
+    // then materializes Stretch entries for the sources a pattern track
+    // already plays. Assigned unconditionally so a reused TrackInfo never
+    // keeps stale values.
+    t.roam      = j.contains("roam") ? lensroam::roamTrackFromJson(j.at("roam"))
+                                     : RoamTrack{};
+    t.trackLens = j.contains("trackLens") ? lensroam::trackLensFromJson(j.at("trackLens"))
+                                          : std::map<int, LensTrack>{};
 
     // ── Track color (Pass 6D + 6F) ──────────────────────────────────────
     // Old projects (no fields) → Auto. Invalid mode / slot / custom-hex

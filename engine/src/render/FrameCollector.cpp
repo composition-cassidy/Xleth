@@ -661,6 +661,13 @@ std::vector<CellFrameRequest>& FrameCollector::collectRequests(
         req.layerKind        = kind;
         req.zOrder           = zOrder;
 
+        // Lens/Roam: two binary searches over the published snapshot, POD
+        // copies out. No allocation, no lock (see setLensRoamSnapshot).
+        if (const LensRoamSnapshot* lr = lensRoam_.get()) {
+            req.lens = lr->lensForEvent(trackId, ev->clipId, ev->regionId);
+            req.roam = lr->roamFor(trackId);
+        }
+
         if (isFullscreen && kRenderLog) {
             std::fprintf(stderr, "[FrameCollector] FS-%s cell: '%s' frame=%lld opacity=%.2f\n",
                          kind == CellLayerKind::FullscreenBehind ? "behind" : "front",
@@ -684,6 +691,7 @@ std::vector<CellFrameRequest>& FrameCollector::collectRequests(
             s.lastFrame            = req.sourceFrameIndex;
             s.lastPath             = req.sourcePath;
             s.lastOrientation      = req.orientation;
+            s.lastLens             = req.lens;
             s.suppressAfterFadeOut = ev->fadeOutPercent > 0.0f
                                   || trackNoteFadeHasFadeOut(*ev, trk, bpm);
             s.lastClipEndBeat      = ev->startBeat + ev->durationBeats;
@@ -753,6 +761,9 @@ std::vector<CellFrameRequest>& FrameCollector::collectRequests(
         req.zOrder           = zOrder;
         req.orientation      = hold.lastOrientation;
         req.trackId          = trackId;
+        req.lens             = hold.lastLens;
+        if (const LensRoamSnapshot* lr = lensRoam_.get())
+            req.roam = lr->roamFor(trackId);
 
         // A held frame is the SAME picture the live path was drawing an
         // instant ago, so it has to carry the same look. The compositor runs

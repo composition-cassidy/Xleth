@@ -1,4 +1,5 @@
 #pragma once
+#include "LensRoam.h"
 #include "ParamTrack.h"
 #include "SamplerModulationConfig.h"
 
@@ -694,6 +695,12 @@ struct Clip {
     // Per-clip modulation FX (Vibrato / Scratch / video companion).
     // Phase A: data only — no DSP reads this yet. Defaults are all-disabled.
     ClipModulation modulation;
+
+    // Lens: framing of this clip's video inside its grid cell (Clip Track
+    // event lens, docs/XLETH_LENS_ROAM_SPEC.md). A NEW clip starts at fit =
+    // Cover; a clip loaded without a "lens" key (pre-v8 project) loads as
+    // identity, i.e. Stretch, today's rendering. See model/LensRoam.h.
+    LensTrack lens{ LensParams::newContentDefault(), {} };
 
     bool isSyllableClip() const { return syllableIndex >= 0; }
 };
@@ -1806,6 +1813,16 @@ struct TrackInfo {
     // Clip track. See NoteFadeSettings and model/NoteFade.h.
     NoteFadeSettings                noteFade;
     std::vector<VisualEffect>       visualEffectChain;
+
+    // ── Lens + Roam (model/LensRoam.h) ───────────────────────────────────
+    // roam: transform of this track's CELL (offset/scale/rotation/bounds/layer).
+    // trackLens: Pattern-track exclusive. Each source the track plays, keyed by
+    // regionId (so the spec's {trackId, regionId} key), has a default Lens plus
+    // its hit curve. A source with no entry is new and resolves to fit = Cover
+    // (lensroam::resolveSourceLens); pre-v8 sources are materialized as Stretch
+    // on load. Unused on a Clip track (each clip carries its own lens).
+    RoamTrack                       roam;
+    std::map<int, LensTrack>        trackLens;
 
     // Sub-column subdivision used when placing this track in the grid. 1 =
     // full column (default), 2 = half, 4 = quarter, 8 = eighth. Drives the

@@ -1,4 +1,5 @@
 #include "project/ProjectManager.h"
+#include "model/LensRoam.h"
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -460,6 +461,17 @@ std::optional<Timeline> ProjectManager::loadProject(const std::string& projectDi
     if (!timeline.fromJSON(tl)) {
         std::cerr << "[Project] ERROR loadProject: failed to deserialize timeline\n";
         return std::nullopt;
+    }
+
+    // v7 -> v8: Lens + Roam. Old projects keep today's stretched framing; see
+    // the v8 entry in ProjectManager.h.
+    if (loadedSchemaVersion_ < 8) {
+        const lensroam::MigrationStats m = lensroam::migratePreLensProject(timeline);
+        std::cout << "[Lens] schema v" << loadedSchemaVersion_ << " project: "
+                  << m.clips << " clip lens(es) and " << m.patternSources
+                  << " pattern source lens(es) loaded as fit=Stretch (identity)\n";
+        std::cout << "[Roam] schema v" << loadedSchemaVersion_ << " project: "
+                  << m.tracks << " track(s) loaded with identity Roam\n";
     }
 
     // Stash effect chain JSON for the caller (bridge) to apply after track routing

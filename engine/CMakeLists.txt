@@ -217,6 +217,7 @@ endif()
 # directory prepended to PATH.
 add_library(XlethEngineModel STATIC
     src/model/ParamTrack.cpp
+    src/model/LensRoam.cpp
     src/model/AutomationEnvelope.cpp
     src/model/SampleRegion.cpp
     src/model/SamplerModulationConfig.cpp
@@ -3289,6 +3290,42 @@ target_compile_definitions(test_animation_manager PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_lens_roam ───────────────────────────────────────────────────────────
+# Lens + Roam P1 (model/LensRoam.h): identity defaults, JSON round-trip of
+# clips/tracks/sources incl. stored keys, tolerant loading, the v7 -> v8
+# migration through ProjectManager (old project = Stretch everywhere, new
+# content = Cover), and the immutable snapshot every render request copies
+# from (identity in -> identity snapshot for every track). Pure CPU.
+add_executable(test_lens_roam
+    test/test_lens_roam.cpp
+)
+
+target_link_libraries(test_lens_roam PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_include_directories(test_lens_roam PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_compile_definitions(test_lens_roam PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_param_track ─────────────────────────────────────────────────────────
 # Verifies the ParamTrack keyframe core and the Zoom/Pan/Rot migration onto it:
 # bezier solve accuracy, the identity-in-x fast path, unclamped overshoot, the
@@ -3631,6 +3668,7 @@ set(XLETH_ENGINE_TESTS
     test_render_decoder
     test_animation_manager
     test_param_track
+    test_lens_roam
     test_render_clock
     test_automation_clips
     test_sandbox

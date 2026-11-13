@@ -933,7 +933,8 @@ async function main() {
     ok(saveProject() === true, 'project_save succeeds');
 
     const raw = JSON.parse(fs.readFileSync(path.join(projDir, 'project.json'), 'utf8'));
-    ok(raw.schema_version === 7, `project.json is schema v7 (${raw.schema_version})`);
+    // >= 7: the sandbox workspace arrived in v7; later bumps (v8 Lens + Roam) keep it.
+    ok(raw.schema_version >= 7, `project.json is schema v7 or later (${raw.schema_version})`);
     ok(raw.sandboxWorkspace && Array.isArray(raw.sandboxWorkspace.layers)
        && raw.sandboxWorkspace.layers.length === 2,
        'the workspace is ON DISK — the project.json key whitelist did not drop it');

@@ -61,7 +61,21 @@
 //     when the workspace has layers, so a project that never opened the Sandbox
 //     is byte-identical to a v6 one apart from schema_version. A v≤6 project
 //     has no key at all and loads with an empty workspace — an exact no-op.
-inline constexpr int XLETH_PROJECT_SCHEMA_VERSION = 7;
+// v8: Lens + Roam (docs/XLETH_LENS_ROAM_SPEC.md, model/LensRoam.h). Every
+//     clip carries "lens" {base, keys}; every track "roam" {base, keys} and
+//     "trackLens" [{regionId, base, hitCurve}] (one entry per Pattern Track
+//     source, i.e. the {trackId, regionId} key). A v≤7 project loads with
+//     identity everywhere, which is fit = Stretch, today's output: clips with
+//     no "lens" key load as Stretch, and lensroam::migratePreLensProject gives
+//     every source a pattern track already plays an explicit Stretch entry (a
+//     source with no entry is NEW and gets fit = Cover). Bit-exact: no
+//     rendering reads Lens/Roam in this version.
+//     No existing data migrates (Ruling 2's "anything that is an effect stays
+//     an effect"): the per-track Zoom/pan/rot, Bounce and slide-note ZPR are
+//     per-note animated devices in the video device chain, and the chain's
+//     ZoomPanRotation entry is a chain effect. TrackInfo::videoX/Y/W/H are
+//     written but never rendered; they are left as they are.
+inline constexpr int XLETH_PROJECT_SCHEMA_VERSION = 8;
 
 class ProjectManager {
 public:

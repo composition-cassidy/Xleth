@@ -642,6 +642,10 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
     AnimationManager animMgr;
     collector.setAnimationManager(&animMgr);
     collector.setCompanionFxEnabled(true);
+    // Lens/Roam, resolved ONCE from the timeline at export start (not per
+    // frame): every request copies its values from this snapshot, the same
+    // lookup the preview uses. See LensRoamSnapshot (model/LensRoam.h).
+    collector.setLensRoamSnapshot(buildLensRoamSnapshot(timeline_));
 
     // Visual Echo: the export renders its audio through THIS MixEngine, so the
     // Delay instances the echo binds to are the same objects, running the same
@@ -1451,6 +1455,10 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
     AnimationManager animMgr;
     collector.setAnimationManager(&animMgr);
     collector.setCompanionFxEnabled(true);
+    // Lens/Roam, resolved ONCE from the timeline at export start (not per
+    // frame): every request copies its values from this snapshot, the same
+    // lookup the preview uses. See LensRoamSnapshot (model/LensRoam.h).
+    collector.setLensRoamSnapshot(buildLensRoamSnapshot(timeline_));
 
     // Visual Echo: the export renders its audio through THIS MixEngine, so the
     // Delay instances the echo binds to are the same objects, running the same

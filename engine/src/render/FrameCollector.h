@@ -18,6 +18,7 @@
  */
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -27,6 +28,7 @@
 #include "VisualEchoTypes.h"     // xleth::echo::EchoSettings / IDelaySnapshotResolver
 #include "RenderClock.h"         // sampleToVideoFrame, videoFrameToSample
 #include "model/ClipCompanionFxSnapshot.h" // ClipCompanionFxSnapshot (shared with preview)
+#include "model/LensRoam.h"   // LensParams / RoamParams / LensRoamSnapshot
 
 // Forward declarations — avoid pulling heavy headers into every consumer
 class Timeline;
@@ -126,6 +128,13 @@ struct CellFrameRequest {
     // binding resolves. Plain values, same discipline as companionFx — the
     // compositor never looks at the audio graph itself.
     xleth::echo::EchoSettings echo;
+
+    // Lens + Roam, RESOLVED for this cell and frame (P1: the static base).
+    // Fixed-size values copied out of the published LensRoamSnapshot, so the
+    // compositor reads plain data and never the model. Identity when no
+    // snapshot is installed. Not consumed by GridCompositor yet (P2).
+    LensParams lens;   // the event's clip lens, or its {trackId, regionId} source lens
+    RoamParams roam;   // the track's roam
 };
 
 // ---------------------------------------------------------------------------
@@ -147,6 +156,17 @@ public:
      *  and SnapshotTransitionRenderer want. */
     void setEchoDelayResolver(const xleth::echo::IDelaySnapshotResolver* r) { echoResolver_ = r; }
     void setCompanionFxEnabled(bool enabled) { companionFxEnabled_ = enabled; }
+
+    /** Install the resolved Lens/Roam values every request copies from.
+     *  Call from the message/setup thread, under the same lock the caller
+     *  holds around collectRequests (the preview: syncEventsMutex), so the
+     *  render thread never swaps or frees a snapshot itself. The collector
+     *  keeps it alive; nullptr (the default) = identity everywhere, today's
+     *  rendering. */
+    void setLensRoamSnapshot(std::shared_ptr<const LensRoamSnapshot> snapshot) {
+        lensRoam_ = std::move(snapshot);
+    }
+    const LensRoamSnapshot* lensRoamSnapshot() const { return lensRoam_.get(); }
     bool companionFxEnabled() const { return companionFxEnabled_; }
 
     // ── Step 1: Collect ─────────────────────────────────────────────────────
@@ -334,6 +354,9 @@ private:
         // whatever the frame rate or seek history — preview, export and
         // snapshot transitions all agree.
         double      lastClipEndBeat = 0.0;
+        // Lens of the event that produced lastFrame: a held frame is the same
+        // picture, so it keeps the same framing.
+        LensParams  lastLens;
     };
     std::unordered_map<int, HoldState> holdByTrack_;
 
@@ -360,6 +383,9 @@ private:
     std::unordered_map<int, const VideoEvent*> activeByTrack_;
 
     AnimationManager* animationMgr_ = nullptr;
+
+    // Resolved Lens/Roam values (see setLensRoamSnapshot). nullptr = identity.
+    std::shared_ptr<const LensRoamSnapshot> lensRoam_;
 
     // Visual Echo delay-binding resolver. Not owned; nullptr = feature off.
     const xleth::echo::IDelaySnapshotResolver* echoResolver_ = nullptr;

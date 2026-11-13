@@ -1521,6 +1521,51 @@ static void rebuildVideoEventsFromClips() {
     (void)stats;
 }
 
+// ─── Lens + Roam snapshot (model/LensRoam.h) ─────────────────────────────────
+// The render thread never reads Lens/Roam from the Timeline. It reads this
+// immutable snapshot of resolved values, which FrameCollector copies into each
+// cell's request as plain PODs (two binary searches, no allocation, no lock of
+// its own).
+//
+// MESSAGE THREAD ONLY. Built and swapped here under syncEventsMutex, the lock
+// the video tick already holds around collectRequests, so the swap can never
+// land mid-collect. The previous snapshot is released at the end of this
+// function, on this thread: the video thread never drops the last reference,
+// so it never frees one.
+//
+// Published after every UndoManager mutation (post-mutation hook) and wherever
+// the whole timeline is replaced without one (init, new project, load).
+static std::shared_ptr<const LensRoamSnapshot> g_lensRoamSnapshot;   // guarded by syncEventsMutex
+static LensRoamSnapshot::Counts                g_lensRoamLoggedCounts;
+static bool                                    g_lensRoamEverLogged = false;
+
+static void publishLensRoamSnapshot(const char* reason) {
+    if (!g_timeline) return;
+    std::shared_ptr<const LensRoamSnapshot> retired;
+    LensRoamSnapshot::Counts c;
+    {
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
+        std::shared_ptr<const LensRoamSnapshot> snap = buildLensRoamSnapshot(*g_timeline);
+        c = snap->counts();
+        retired = std::move(g_lensRoamSnapshot);
+        g_lensRoamSnapshot = snap;
+        if (g_previewCollector) g_previewCollector->setLensRoamSnapshot(std::move(snap));
+    }
+    retired.reset();
+
+    // One line per CHANGE, not per edit: this runs after every command.
+    if (g_lensRoamEverLogged && c == g_lensRoamLoggedCounts) return;
+    g_lensRoamLoggedCounts = c;
+    g_lensRoamEverLogged = true;
+    std::fprintf(stderr,
+        "[Lens] snapshot (%s): %d clip lens(es), %d non-identity; "
+        "%d pattern source lens(es), %d non-identity\n",
+        reason, c.clips, c.clipLensNonIdentity, c.sources, c.sourceLensNonIdentity);
+    std::fprintf(stderr,
+        "[Roam] snapshot (%s): %d track(s), %d non-identity\n",
+        reason, c.tracks, c.roamNonIdentity);
+}
+
 // ─── Region proxy triggers ───────────────────────────────────────────────────
 // Called from Timeline_AddClip / Timeline_AssignTrackToGrid / Timeline_ModifyRegion
 // to schedule a per-region proxy (H.264 or legacy intra, per the proxy-codec
@@ -5528,11 +5573,16 @@ JsonApi::Value Initialize(const JsonApi::CallbackInfo& info)
             // tick however many commands land, so a burst of edits costs one
             // rebuild, and none of them waits for it.
             g_videoEventsDirty.store(true, std::memory_order_release);
+            // Lens/Roam live on clips and tracks, so any edit (and its
+            // undo/redo) can change the resolved values. Runs on the RPC
+            // thread, after the command released the mutation lock.
+            publishLensRoamSnapshot("edit");
         });
         // Timeline mutations are serialised against the video thread's reads at
         // the one place they all pass through. See syncEventsMutex.
         g_undoManager->setMutationMutex(&syncEventsMutex);
     }
+    publishLensRoamSnapshot("init");
 
     // Sync transport BPM from timeline default
     audioEngine->getTransport().setBPM(g_timeline->getBPM());
@@ -5575,6 +5625,10 @@ JsonApi::Value Initialize(const JsonApi::CallbackInfo& info)
 
         g_previewCollector->setAnimationManager(g_previewAnimMgr.get());
         g_previewCollector->setCompanionFxEnabled(true);
+        {
+            std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
+            g_previewCollector->setLensRoamSnapshot(g_lensRoamSnapshot);
+        }
 
         // Visual Echo: point the collector at the LIVE MixEngine so a bound
         // Delay's resolved repeat interval reaches the render path. The export
@@ -7134,6 +7188,7 @@ JsonApi::Value Project_NewBlank(const JsonApi::CallbackInfo& info)
         g_timeline->clear();
         g_timeline->setGlobalStretchMethod(newProjectGlobalStretchMethod);
     }
+    publishLensRoamSnapshot("new project");
 
     // 5. Clear undo/redo history. markSavepoint at the end so the empty
     //    project starts out "clean".
@@ -7304,6 +7359,7 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
         std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
         *g_timeline = std::move(*loaded);
     }
+    publishLensRoamSnapshot("project load");
     if (g_undoManager) g_undoManager->clear();
 
     // Re-wire MixEngine and sync transport BPM

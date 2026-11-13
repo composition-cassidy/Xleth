@@ -168,6 +168,9 @@ void to_json(nlohmann::json& j, const Clip& c) {
         {"fadeOutY2",         c.fadeOutY2},
         {"modulation",        c.modulation}
     };
+    // Lens (schema v8). Always written, so a v8 file states every clip's
+    // framing explicitly and "missing" below can only mean pre-v8.
+    j["lens"] = lensroam::lensTrackToJson(c.lens);
 }
 
 void from_json(const nlohmann::json& j, Clip& c) {
@@ -213,4 +216,10 @@ void from_json(const nlohmann::json& j, Clip& c) {
     // Phase A: clip modulation (Vibrato/Scratch/Video). Old projects with no
     // "modulation" key load with all-disabled defaults.
     c.modulation = j.value("modulation", ClipModulation{});
+
+    // Lens (schema v8). A clip without the key predates Lens and must render
+    // as it always did: identity, fit = Stretch. NOT Clip's member default,
+    // which is the new-clip default (Cover).
+    c.lens = j.contains("lens") ? lensroam::lensTrackFromJson(j.at("lens"))
+                                : LensTrack{};
 }
