@@ -14,6 +14,7 @@ import { iconComponent } from '../../ui-kit/icons'
 
 const IcEyeSlash = iconComponent('eye-slash')
 const IcFolder = iconComponent('folder')
+const IcLock = iconComponent('lock-simple')
 const IcPlus = iconComponent('plus')
 const IcTrash = iconComponent('trash')
 const IcXAutomation = iconComponent('xleth-automation')
@@ -38,6 +39,10 @@ export default function TrackHeaderList({
   width = HEADER_WIDTH,
   trackHeight,
   macroRows = [],
+  // Reel lane (read-only video lane under a Pattern track with video): one row
+  // per such track, and the collapse toggle.
+  reelRows = [],
+  onToggleReelLane,
   onHideMacroLane,
   automationGroupRows = [],
   automationLaneRows = [],
@@ -65,6 +70,12 @@ export default function TrackHeaderList({
     }
     return ids
   }, [folderLayout, folderById, tracks])
+
+  const reelByTrack = useMemo(() => {
+    const map = new Map()
+    for (const row of reelRows) map.set(row.parentTrackId, row)
+    return map
+  }, [reelRows])
 
   const lanesByTrack = useMemo(() => {
     const map = new Map()
@@ -202,6 +213,7 @@ export default function TrackHeaderList({
     const color = resolveAutoTrackColor(
       track, canonicalIndex, trackPalette, TRACK_PALETTE_FALLBACK[canonicalIndex % 16])
     const laneRows = lanesByTrack.get(track.id) ?? []
+    const reelRow = reelByTrack.get(track.id)
     return (
       <div key={track.id} className="track-header-group">
         <TrackHeader
@@ -227,6 +239,29 @@ export default function TrackHeaderList({
           onDrop={(event) => dropAt(event, target)}
           onOpenColorPicker={openColorPicker}
         />
+        {reelRow && (
+          <div
+            key={reelRow.id}
+            className={`track-header-reel-lane ${styles.reelLane}`}
+            style={{ height: reelRow.height, borderLeftColor: color }}
+            role="group"
+            aria-label="Reel lane, read only. Timing comes from notes"
+          >
+            <button
+              type="button"
+              className={styles.disclosureBtn}
+              onClick={() => onToggleReelLane?.(track.id)}
+              aria-expanded={!reelRow.collapsed}
+              aria-label={reelRow.collapsed ? 'Expand Reel lane' : 'Collapse Reel lane'}
+              data-hint={reelRow.collapsed ? 'Expand the Reel lane' : 'Collapse the Reel lane'}
+            >
+              <Disclosure open={!reelRow.collapsed} />
+            </button>
+            <span className={styles.reelLabel}>Reel</span>
+            <IcLock size={12} className={styles.groupIcon} aria-hidden="true" />
+            <span className={styles.reelHint}>Timing comes from notes</span>
+          </div>
+        )}
         {renderAutomationGroup(track.id)}
         {laneRows.map(lane => (
           <div

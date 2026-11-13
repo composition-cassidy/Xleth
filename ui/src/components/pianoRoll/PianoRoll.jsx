@@ -18,6 +18,7 @@ import { register as registerKeyboardBinding } from '../../windowing/managers/Ke
 import { usePanelVisibility } from '../../windowing/contexts/PanelVisibilityContext'
 import { usePanelRegistry } from '../../windowing/registry/PanelRegistry.ts'
 import useQuickNotationStore from '../../stores/quickNotationStore.js'
+import useNoteSelectionStore, { sameIdSet } from '../../stores/useNoteSelectionStore.js'
 import { useToast } from '../Toast.jsx'
 import { DEFAULT_SCALE, nextScalePitch } from './scales.js'
 import * as Edits from './pianoRollEdits.js'
@@ -150,6 +151,8 @@ export const PIANO_ROLL_KEYMAP = {
 // Editor-local clipboard fallback: note copy/paste must not depend on transient
 // Chromium clipboard permission or window-focus state.
 let pianoRollClipboard = null
+
+const EMPTY_ID_SET = new Set()
 
 export function resetPianoRollClipboardForTest() {
   pianoRollClipboard = null
@@ -286,6 +289,37 @@ export default function PianoRoll({
   }, [])
 
   const hasPattern = isUsablePatternId(patternId, availablePatterns)
+
+  // ── Note selection shared with the arrangement's Reel lane ────────────────
+  // The roll's selection stays local state (many edit paths use functional
+  // updates), mirrored through stores/useNoteSelectionStore.js in three steps:
+  //   1. ADOPT   when a pattern opens (or the roll mounts), take what the store
+  //              holds for it, so a clip clicked in the lane before the roll was
+  //              open is already selected here. Replaces any stale selection from
+  //              the previous pattern.
+  //   2. PUBLISH when the local selection changes, write it to the store. Skipped
+  //              for the render that adopts (it still holds the OLD local set and
+  //              would overwrite what was just read), and a no-op when equal.
+  //   3. MIRROR  when the store's set for this pattern changes (a lane click),
+  //              take it, unless it already equals the local one.
+  const adoptingRef = useRef(false)
+  useEffect(() => {
+    if (!hasPattern) return
+    adoptingRef.current = true
+    const stored = useNoteSelectionStore.getState().byPattern[patternId]
+    setSelectedNoteIds(stored ? new Set(stored) : new Set())
+  }, [patternId, hasPattern])
+  useEffect(() => {
+    if (!hasPattern) return
+    if (adoptingRef.current) { adoptingRef.current = false; return }
+    useNoteSelectionStore.getState().setPatternSelection(patternId, selectedNoteIds)
+  }, [selectedNoteIds, patternId, hasPattern])
+  const storedSelection = useNoteSelectionStore((s) => (hasPattern ? s.byPattern[patternId] : undefined))
+  useEffect(() => {
+    const next = storedSelection ?? EMPTY_ID_SET
+    if (!sameIdSet(next, selectedNoteIdsRef.current)) setSelectedNoteIds(new Set(next))
+  }, [storedSelection])
+
   const fetchPattern = useCallback(async () => {
     if (!hasPattern) {
       setPattern(null)

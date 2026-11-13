@@ -153,6 +153,11 @@ export function resolveTimelinePalette() {
     ink:               tokenValue('--ui-ink'),
     inkDark:           tokenValue('--ui-g1'),
     select:            tokenValue('--ui-select'),
+    // Reel lane ghost clips: neutral ramp steps, no hue (Follow clips are
+    // uncoloured). A selected clip is a step lighter AND outlined.
+    reelBody:          tokenValue('--ui-g3'),
+    reelBodySelected:  tokenValue('--ui-g4'),
+    reelBadgeInk:      tokenValue('--ui-ink-2'),
     // Depth
     wellTopShadow:     tokenValue('--theme-timeline-well-top-shadow'),
     // Track palette — resolved once per redraw, threaded into draw functions
@@ -317,7 +322,7 @@ export function drawGrid(ctx, w, h, scrollOffset, ppb, trackCount, tracks = null
   if (trackLayout && Array.isArray(trackLayout.rows)) {
     ctx.fillStyle = withAlpha(p.laneSeparator, 0.10)
     for (const r of trackLayout.rows) {
-      if (r.rowType !== 'macroAutomation') continue
+      if (r.rowType !== 'macroAutomation' && r.rowType !== 'reel') continue
       if (r.y >= h) break
       ctx.fillRect(0, r.y, w, r.height)
     }
@@ -901,7 +906,7 @@ function getTitleStripStyle(baseHex, mode, selected, muted, contrast) {
 
 // Muted content dims to the DESIGN.md mute opacity (--ui-mute-opacity) and
 // shows a mute glyph; colour is never the only signal.
-const MUTE_OPACITY = 0.45
+export const MUTE_OPACITY = 0.45
 
 // Clip label ink: whichever of ink / g1 contrasts more with the colour the text
 // actually sits on, the title strip composited over the lane (DESIGN.md 3.4,

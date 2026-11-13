@@ -5,6 +5,8 @@ import PatternListPanel from './timeline/PatternListPanel.jsx'
 import TimelineCanvas from './timeline/TimelineCanvas.jsx'
 import MacroAutomationLanes from './timeline/MacroAutomationLanes.jsx'
 import { buildTrackLayout } from './timeline/timelineRowLayout.js'
+import { buildReelModel } from './timeline/reelLaneModel.js'
+import useReelLaneStore from '../stores/useReelLaneStore.js'
 import { drawLengthForSnap, adoptDrawLength, resetDrawLength } from './timeline/drawLength.js'
 import { sourceTicksForTimelineTicks } from './timeline/clipSourceDomain.js'
 import { tokenValue } from '../theming/tokenValue.ts'
@@ -430,10 +432,8 @@ export default function TimelineView({
     return () => { cancelled = true }
   }, [automationEnvelopes])
 
-  const trackLayout = useMemo(
-    () => buildTrackLayout({ tracks, graphStates, folderLayout: normalizedFolderLayout, trackHeight, automationGroups }),
-    [tracks, graphStates, normalizedFolderLayout, trackHeight, automationGroups],
-  )
+  // (trackLayout is derived further down, after the pattern state it depends on:
+  // the Reel lane's height comes from the notes.)
   useEffect(() => {
     const visibleIds = new Set(visibleTracks.map(track => track.id))
     setSelectedTrackIds(previous => {
@@ -533,6 +533,40 @@ export default function TimelineView({
   // {block.trackId, pattern.regionId}); read at selection time, never a dependency.
   const patternsRef = useRef({})
   patternsRef.current = patterns
+
+  // ── Reel lane ──────────────────────────────────────────────────────────────
+  // One ghost clip per note, DERIVED from the blocks + patterns above on every
+  // data change (never stored), so a piano roll edit moves the clips as soon as
+  // the pattern refetch lands. Only Pattern tracks with a video source get a lane.
+  const reelModel = useMemo(
+    () => buildReelModel({ tracks, patternBlocks, patterns, regions, sources }),
+    [tracks, patternBlocks, patterns, regions, sources],
+  )
+  const reelCollapsed = useReelLaneStore((s) => s.collapsed)
+  // The layout only needs {has lane, collapsed, deepest overlap} per track. Keyed
+  // by a string so a note moving (new model, same depths) does NOT rebuild the row
+  // layout and repaint the grid.
+  const reelLanesKey = useMemo(() => {
+    let key = ''
+    for (const [trackId, lane] of reelModel.byTrack) {
+      key += `${trackId}:${reelCollapsed.has(trackId) ? 1 : 0}:${lane.subRows};`
+    }
+    return key
+  }, [reelModel, reelCollapsed])
+  const reelLanes = useMemo(() => {
+    const lanes = {}
+    for (const part of reelLanesKey.split(';')) {
+      if (!part) continue
+      const [trackId, collapsedFlag, subRows] = part.split(':')
+      lanes[trackId] = { collapsed: collapsedFlag === '1', subRows: Number(subRows) }
+    }
+    return lanes
+  }, [reelLanesKey])
+
+  const trackLayout = useMemo(
+    () => buildTrackLayout({ tracks, graphStates, folderLayout: normalizedFolderLayout, trackHeight, automationGroups, reelLanes }),
+    [tracks, graphStates, normalizedFolderLayout, trackHeight, automationGroups, reelLanes],
+  )
   const [selectedBlockIds, setSelectedBlockIds] = useState(new Set())
 
   // ── Transport state ────────────────────────────────────────────────────────
@@ -3288,6 +3322,10 @@ export default function TimelineView({
     }
   }, [automationClips, fetchAutomationAll])
 
+  const handleToggleReelLane = useCallback((trackId) => {
+    useReelLaneStore.getState().toggle(trackId)
+  }, [])
+
   const handleToggleAutomationGroup = useCallback((ownerTrackId, collapsed) => {
     setCollapsedAutomationGroups(prev => {
       const next = new Set(prev)
@@ -4578,6 +4616,8 @@ export default function TimelineView({
               width={timelineTrackHeaderWidth}
               trackHeight={trackHeight}
               macroRows={trackLayout.macroRows}
+              reelRows={trackLayout.reelRows}
+              onToggleReelLane={handleToggleReelLane}
               onHideMacroLane={(trackId, macroNodeId) =>
                 useEffectChainStore.getState().hideMacroAutomationLaneForTrack?.(trackId, macroNodeId)}
               automationGroupRows={trackLayout.automationGroupRows}
@@ -4725,6 +4765,7 @@ export default function TimelineView({
                   scrollOffset={scrollOffset}
                   pixelsPerBeat={pixelsPerBeat}
                   trackLayout={trackLayout}
+                  reel={reelModel}
                   setSelectedClipIds={setSelectedClipIds}
                   onFocusTrack={setFocusedTrackId}
                   pencilTemplateRef={pencilTemplateRef}

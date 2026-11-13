@@ -22,6 +22,7 @@
 // arrangement of audio/pattern clips is unchanged when a track has no lanes.
 
 import { DEFAULT_TRACK_HEIGHT, TRACK_HEIGHT } from '../../constants/timeline.js'
+import { reelLaneHeight } from './reelLaneModel.js'
 
 // Child macro automation lanes are shorter than full tracks — enough vertical
 // room for a clip body + a small curve preview, but visibly subordinate to the
@@ -118,6 +119,7 @@ export function buildTimelineRows({
   automationGroups = null,
   automationLaneHeight = Math.round(AUTOMATION_LANE_HEIGHT * trackHeight / DEFAULT_TRACK_HEIGHT),
   automationGroupHeaderHeight = AUTOMATION_GROUP_HEADER_HEIGHT,
+  reelLanes = null,
 } = {}) {
   const rows = []
   if (!Array.isArray(tracks)) return rows
@@ -156,6 +158,33 @@ export function buildTimelineRows({
 
     const trackCollapsed = collapsedSet?.has(trackId)
     if (trackCollapsed) return
+
+    // Reel lane (Pattern tracks that have video): the first child row, directly
+    // under the track. Its height follows the track's deepest note overlap, up to
+    // three sub-rows, then compresses; collapsed it is a thin strip.
+    const reel = reelLanes?.[String(trackId)]
+    if (reel) {
+      const reelCollapsed = reel.collapsed === true
+      const subRows = Math.max(1, reel.subRows | 0)
+      const reelHeight = reelLaneHeight({ subRows, collapsed: reelCollapsed, trackHeight })
+      rows.push({
+        id: `reel:${trackId}`,
+        rowType: 'reel',
+        laneKind: 'reel',
+        trackId: null,
+        trackIndex: null,
+        parentTrackId: trackId,
+        parentTrackIndex: trackIndex,
+        y,
+        height: reelHeight,
+        trackHeight,
+        visible: true,
+        collapsed: reelCollapsed,
+        subRows,
+        label: 'Reel',
+      })
+      y += reelHeight
+    }
 
     // Automation lanes group directly under their owning track row.
     y = pushAutomationGroupRows(rows, {
@@ -227,11 +256,12 @@ export function buildTimelineRows({
 // shifted geometry is identical everywhere.
 export function buildTrackLayout({
   tracks, graphStates = {}, collapsed = null, folderLayout = null, trackHeight = TRACK_HEIGHT,
-  automationGroups = null,
+  automationGroups = null, reelLanes = null,
 } = {}) {
-  const rows = buildTimelineRows({ tracks, graphStates, collapsed, folderLayout, trackHeight, automationGroups })
+  const rows = buildTimelineRows({ tracks, graphStates, collapsed, folderLayout, trackHeight, automationGroups, reelLanes })
   const trackRows = rows.filter((r) => r.rowType === 'track')
   const macroRows = rows.filter((r) => r.rowType === 'macroAutomation')
+  const reelRows = rows.filter((r) => r.rowType === 'reel')
   const folderRows = rows.filter((r) => r.rowType === 'folder')
   const automationGroupRows = rows.filter((r) => r.rowType === 'automationGroupHeader')
   const automationLaneRows = rows.filter((r) => r.rowType === 'automationLane')
@@ -255,12 +285,16 @@ export function buildTrackLayout({
   // band resolves to that lane's PARENT track (so e.g. dropping an audio clip
   // while hovering a lane lands on the parent track — child lanes never host
   // normal clips). Out-of-range Y clamps to the first/last track.
+  //
+  // The Reel lane resolves to -1, like the automation lanes: it is read-only, so
+  // no tool may act on the parent track's blocks through it (a click that fell
+  // through to the parent would select or drag a block the pointer is not over).
   function trackIndexAtY(y) {
     if (trackCount === 0) return -1
     if (y < 0) return 0
     for (const r of rows) {
       if (y >= r.y && y < r.y + r.height) {
-        if (r.rowType === 'folder' || r.rowType === 'automationGroupHeader' || r.rowType === 'automationLane') return -1
+        if (r.rowType === 'folder' || r.rowType === 'automationGroupHeader' || r.rowType === 'automationLane' || r.rowType === 'reel') return -1
         return r.rowType === 'track' ? r.trackIndex : r.parentTrackIndex
       }
     }
@@ -270,6 +304,14 @@ export function buildTrackLayout({
   // Returns the macro automation row whose band contains Y, else null.
   function macroRowAtY(y) {
     for (const r of macroRows) {
+      if (y >= r.y && y < r.y + r.height) return r
+    }
+    return null
+  }
+
+  // Returns the Reel lane row whose band contains Y, else null.
+  function reelRowAtY(y) {
+    for (const r of reelRows) {
       if (y >= r.y && y < r.y + r.height) return r
     }
     return null
@@ -289,6 +331,7 @@ export function buildTrackLayout({
     rows,
     trackRows,
     macroRows,
+    reelRows,
     folderRows,
     automationGroupRows,
     automationLaneRows,
@@ -298,6 +341,8 @@ export function buildTrackLayout({
     trackTop,
     trackIndexAtY,
     macroRowAtY,
+    reelRowAtY,
+    getReelRows: () => reelRows,
     automationLaneRowAtY,
     folderRowAtY: (y) => folderRows.find(r => y >= r.y && y < r.y + r.height) ?? null,
     automationGroupRowAtY: (y) => automationGroupRows.find(r => y >= r.y && y < r.y + r.height) ?? null,

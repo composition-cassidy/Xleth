@@ -3,6 +3,9 @@ import { drawGrid, drawClips, drawHoldZones, drawDropPreview, drawPatternBlocks,
 import { buildResolvedTrackColorMap } from './trackColorResolver.js'
 import useWorldProcessingStore from '../../stores/worldProcessingStore.js'
 import useGhostClipStore from '../../stores/ghostClipStore.js'
+import useNoteSelectionStore from '../../stores/useNoteSelectionStore.js'
+import { drawReelLanes, hitTestReel } from './reelLaneDrawing.js'
+import { subscribeReelStills } from './reelStills.js'
 import { TRACK_HEIGHT, beatToPixel, beatToPlayheadPixel, tickToPixel } from '../../constants/timeline.js'
 import { clipHasFxIntent } from './clipGeometry.js'
 import {
@@ -76,6 +79,8 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     scrollOffset,    // state value — used for badge re-positioning on scroll
     pixelsPerBeat,   // state value — used for badge re-positioning on zoom
     trackLayout,     // FXG.4-h-r1: derived row layout (track + macro lane rows)
+    // Reel lane model (reelLaneModel.js buildReelModel): ghost clips derived from the notes.
+    reel,
     // Automation clips (Phase B)
     automationClips, automationEnvelopesById, automationBindingLabelsById,
     selectedAutomationClipIds, setSelectedAutomationClipIds,
@@ -128,6 +133,14 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   // path + tools read the current track/lane geometry without re-creating tools.
   const trackLayoutRef = useRef(trackLayout)
   trackLayoutRef.current = trackLayout
+  // Reel lane: the derived clips, and the note selection it shares with the Piano
+  // Roll (stores/useNoteSelectionStore.js). Refs, so the draw path and the pointer
+  // handler read the current value without re-creating anything.
+  const reelRef = useRef(reel)
+  reelRef.current = reel
+  const noteSelection = useNoteSelectionStore((s) => s.byPattern)
+  const noteSelectionRef = useRef(noteSelection)
+  noteSelectionRef.current = noteSelection
   const badgeElsRef = useRef(new Map())   // clip id -> FX badge element
 
   clipsRef.current = clips
@@ -355,6 +368,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       regions: regionsRef.current,
       selectedBlockIds: selectedBlockIdsRef.current,
     })
+    drawReelLanes(view, { reel: reelRef.current, selection: noteSelectionRef.current })
     if (automationClipsRef.current?.length) {
       const laneRows = trackLayoutRef.current?.getAutomationLaneRows?.() ?? []
       const laneRowsByLaneId = new Map(laneRows.map((r) => [r.laneId, r]))
@@ -628,6 +642,16 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     clipControlCancelRef.current?.('unmount')
   }, [])
 
+  // ── Redraw when the Reel lane's clips or the shared note selection change ──
+  useEffect(() => {
+    requestContentRedraw('reel')
+  }, [reel])
+  useEffect(() => {
+    requestContentRedraw('note-selection')
+  }, [noteSelection])
+  // A still finished decoding: the plain block it replaces gets its thumbnail.
+  useEffect(() => subscribeReelStills(() => requestContentRedraw('reel-still')), [])
+
   // ── Redraw when notation ghost clips change ───────────────────────────────
   useEffect(() => {
     requestContentRedraw('ghost-clips')
@@ -716,6 +740,28 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   const handleMouseDown = useCallback((e) => {
     const pos = getLocalXY(e)
     if (!pos) return
+
+    // ── Reel lane: read-only. A click only SELECTS the note behind the ghost
+    // clip (shared with the Piano Roll); there is no drag, no resize and no
+    // tool dispatch, whatever tool is active, so nothing can be moved from here.
+    if (e.button === 0) {
+      const reelHit = hitTestReel(
+        reelRef.current, trackLayoutRef.current,
+        pos.localX, pos.localY, scrollOffsetRef.current, pixelsPerBeatRef.current,
+      )
+      if (reelHit) {
+        onFocusTrack?.(reelHit.row.parentTrackId)
+        const sel = useNoteSelectionStore.getState()
+        const additive = e.ctrlKey || e.metaKey || e.shiftKey
+        if (reelHit.noteId != null) {
+          if (additive) sel.toggle(reelHit.patternId, reelHit.noteId)
+          else sel.selectOnly(reelHit.patternId, reelHit.noteId)
+        } else if (!additive) {
+          sel.clear()
+        }
+        return
+      }
+    }
 
     if (e.button === 0 && activeTool !== 'pencil') {
       const handlers = clipControlHandlersRef.current

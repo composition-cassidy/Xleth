@@ -229,6 +229,39 @@
     border-left-color: var(--ui-value);
   }
 
+  /* Reel lane label row: disclosure, name, lock glyph, and the one-line reason it is read-only.
+     The left stripe takes the parent track's colour inline, like the macro lanes. */
+  .reelLane {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    min-width: 0;
+    padding: 0 var(--space-1) 0 0;
+    border-left: 3px solid var(--ui-g4);
+    border-bottom: 1px solid var(--ui-g0);
+    background: var(--ui-g1);
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    overflow: hidden;
+  }
+
+  .reelLabel {
+    flex: none;
+    font-size: var(--type-11);
+    font-weight: 600;
+  }
+
+  .reelHint {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--ui-ink-3);
+    font-size: var(--type-11);
+  }
+
   .orphan {
     opacity: var(--ui-mute-opacity);
   }
