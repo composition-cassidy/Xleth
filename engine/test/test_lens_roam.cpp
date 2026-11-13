@@ -16,13 +16,16 @@
 #include "render/LensRoamMath.h"
 #include "SyncManager.h"
 #include "commands/TimelineCommands.h"
+#include "commands/AddNotesBatchCommand.h"
 #include "commands/UndoManager.h"
+#include "model/Pattern.h"
 
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -883,6 +886,247 @@ static void test_p3_commands() {
     CHECK(f.tl.getTrack(f.clipTrack)->roam.base.isIdentity(), "undo of set restores identity");
 }
 
+// ─── [13] P5: per-note Lens override plumbing ─────────────────────────────────
+// The override lives on PatternNote, so the spec's {patternId, noteId} key is
+// the note's own address. Every note path must carry it: the dummy override set
+// on ONE note has to survive move, quantize, an edit of a DIFFERENT note,
+// undo/redo, copy/paste, Make Unique Copy and save/load, on that note only.
+
+static LensNoteOverridePtr dummyOverride() {
+    auto o = std::make_shared<LensNoteOverride>();
+    o->mode = LensOverrideMode::Own;
+    LensKey k;
+    k.channel = LensChannel::Zoom; k.anchor = KeyAnchor::Head; k.pos = 0.0; k.value = 1.35;
+    o->keys.push_back(k);
+    k.anchor = KeyAnchor::Tail; k.pos = 240.0; k.value = 1.0;
+    o->keys.push_back(k);
+    return o;
+}
+
+static bool isDummy(const LensNoteOverridePtr& o) {
+    return o && o->mode == LensOverrideMode::Own && o->keys.size() == 2
+        && o->keys[0].anchor == KeyAnchor::Head && o->keys[0].value == 1.35
+        && o->keys[1].anchor == KeyAnchor::Tail && o->keys[1].pos == 240.0;
+}
+
+static const PatternNote* findNote(const Timeline& tl, int patternId, int noteId) {
+    const Pattern* p = tl.getPattern(patternId);
+    if (!p) return nullptr;
+    for (const auto& n : p->notes) if (n.id == noteId) return &n;
+    return nullptr;
+}
+
+// Count the notes of one pattern that carry an override.
+static int overrideCount(const Timeline& tl, int patternId) {
+    const Pattern* p = tl.getPattern(patternId);
+    int c = 0;
+    if (p) for (const auto& n : p->notes) if (n.lensOverride) ++c;
+    return c;
+}
+
+// What the piano roll does for every compound edit: the WHOLE list after the
+// edit, round-tripped through JSON (the UI never holds C++ notes), committed
+// as one EditPatternNotesCommand.
+static std::vector<PatternNote> viaJson(const std::vector<PatternNote>& notes) {
+    json j = notes;
+    return j.get<std::vector<PatternNote>>();
+}
+
+static void test_p5_note_override() {
+    std::cout << "[13] P5 per-note Lens override plumbing\n";
+
+    // JSON shape
+    {
+        PatternNote plain;
+        plain.id = 3; plain.duration = TickTime{ 240 };
+        json jp = plain;
+        CHECK(!jp.contains("lensOverride"), "a Follow note writes no lensOverride key");
+        CHECK(!jp.get<PatternNote>().lensOverride, "and loads back as Follow");
+
+        PatternNote with = plain;
+        with.lensOverride = dummyOverride();
+        json jw = with;
+        CHECK(jw.contains("lensOverride") && jw["lensOverride"]["mode"] == "Own"
+              && jw["lensOverride"]["keys"].size() == 2, "override written {mode, keys}");
+        CHECK(isDummy(jw.get<PatternNote>().lensOverride), "override round-trips exactly");
+
+        json old = { {"id", 1}, {"positionTicks", 0}, {"durationTicks", 240},
+                     {"pitch", 60}, {"velocity", 1.0} };
+        CHECK(!old.get<PatternNote>().lensOverride, "pre-P5 note JSON loads with none");
+
+        CHECK(!lensroam::lensNoteOverrideFromJson(json(nullptr)), "null -> Follow");
+        CHECK(!lensroam::lensNoteOverrideFromJson(json::array()), "non-object -> Follow");
+        CHECK(!lensroam::lensNoteOverrideFromJson(json{ {"keys", json::array()} }), "no mode -> Follow");
+        CHECK(!lensroam::lensNoteOverrideFromJson(json{ {"mode", "Follow"} }), "unknown mode -> Follow");
+        auto nudge = lensroam::lensNoteOverrideFromJson(json{ {"mode", "Nudge"} });
+        CHECK(nudge && nudge->mode == LensOverrideMode::Nudge && nudge->keys.empty(),
+              "Nudge with no keys is kept as stored");
+    }
+
+    Fixture f;
+    buildFixture(f);
+    UndoManager um;
+
+    // Three notes in pattern A, three in pattern B: same ids 1..3 in both,
+    // so the {patternId, noteId} key is what tells them apart.
+    for (int pid : { f.patternA, f.patternB }) {
+        for (int i = 0; i < 3; ++i) {
+            PatternNote n;
+            n.position = TickTime{ 960 * i + 13 };   // off-grid on purpose (quantize)
+            n.duration = TickTime{ 240 };
+            n.pitch = 60 + i;
+            f.tl.addNoteToPattern(pid, n);
+        }
+    }
+    const int target = f.tl.getPattern(f.patternA)->notes[1].id;
+    const int other  = f.tl.getPattern(f.patternA)->notes[0].id;
+    CHECK(target == f.tl.getPattern(f.patternB)->notes[1].id, "fixture: same note id in both patterns");
+
+    // Dev-hook path: set it on ONE note with the whole-list edit.
+    {
+        auto notes = f.tl.getPattern(f.patternA)->notes;
+        for (auto& n : notes) if (n.id == target) n.lensOverride = dummyOverride();
+        um.execute(std::make_unique<EditPatternNotesCommand>(f.patternA, viaJson(notes), f.tl), f.tl);
+    }
+    CHECK(isDummy(findNote(f.tl, f.patternA, target)->lensOverride), "set on the target note");
+    CHECK(overrideCount(f.tl, f.patternA) == 1, "only the target note has one");
+    CHECK(overrideCount(f.tl, f.patternB) == 0, "same note id in pattern B untouched");
+
+    // Move (drag path: per-id RPC) and batch move.
+    um.execute(std::make_unique<MoveNoteCommand>(f.patternA, target, TickTime{ 2000 }, 72, f.tl), f.tl);
+    CHECK(findNote(f.tl, f.patternA, target)->position.ticks == 2000
+          && isDummy(findNote(f.tl, f.patternA, target)->lensOverride), "survives move");
+    um.execute(std::make_unique<MoveNotesBatchCommand>(f.patternA,
+        std::vector<MoveNotesBatchCommand::Move>{ { target, TickTime{ 2017 }, 71 }, { other, TickTime{ 5 }, 60 } },
+        f.tl), f.tl);
+    CHECK(isDummy(findNote(f.tl, f.patternA, target)->lensOverride), "survives batch move");
+
+    // Quantize (piano roll: whole list, positions snapped, ids kept).
+    {
+        auto notes = f.tl.getPattern(f.patternA)->notes;
+        for (auto& n : notes) n.position.ticks = (n.position.ticks + 120) / 240 * 240;
+        um.execute(std::make_unique<EditPatternNotesCommand>(f.patternA, viaJson(notes), f.tl), f.tl);
+    }
+    CHECK(findNote(f.tl, f.patternA, target)->position.ticks == 1920
+          && isDummy(findNote(f.tl, f.patternA, target)->lensOverride), "survives quantize");
+
+    // Edit a DIFFERENT note (velocity of `other`).
+    {
+        auto notes = f.tl.getPattern(f.patternA)->notes;
+        for (auto& n : notes) if (n.id == other) n.velocity = 0.25f;
+        um.execute(std::make_unique<EditPatternNotesCommand>(f.patternA, viaJson(notes), f.tl), f.tl);
+    }
+    CHECK(findNote(f.tl, f.patternA, other)->velocity == 0.25f, "other note edited");
+    CHECK(isDummy(findNote(f.tl, f.patternA, target)->lensOverride), "survives an edit of another note");
+    CHECK(overrideCount(f.tl, f.patternA) == 1, "and did not spread to it");
+
+    // Undo / redo across the whole chain (edit, quantize, batch move, move, set).
+    um.undo(f.tl); um.undo(f.tl); um.undo(f.tl); um.undo(f.tl);
+    CHECK(isDummy(findNote(f.tl, f.patternA, target)->lensOverride)
+          && findNote(f.tl, f.patternA, target)->position.ticks == 973, "undo to just after the set: kept");
+    um.undo(f.tl);
+    CHECK(!findNote(f.tl, f.patternA, target)->lensOverride, "undo the set: Follow again");
+    for (int i = 0; i < 5; ++i) um.redo(f.tl);
+    CHECK(isDummy(findNote(f.tl, f.patternA, target)->lensOverride)
+          && findNote(f.tl, f.patternA, target)->position.ticks == 1920
+          && findNote(f.tl, f.patternA, other)->velocity == 0.25f, "redo all: back on the target");
+
+    // Copy/paste and duplicate: copies are new notes (id 0) carrying the field.
+    {
+        auto notes = f.tl.getPattern(f.patternA)->notes;
+        PatternNote copy = *findNote(f.tl, f.patternA, target);
+        copy.id = 0;
+        copy.position.ticks += 3840;
+        notes.push_back(copy);
+        um.execute(std::make_unique<EditPatternNotesCommand>(f.patternA, viaJson(notes), f.tl), f.tl);
+    }
+    {
+        const auto& ns = f.tl.getPattern(f.patternA)->notes;
+        const PatternNote& pasted = ns.back();
+        CHECK(pasted.id != target && pasted.id > 0, "paste got a new id");
+        CHECK(isDummy(pasted.lensOverride), "paste carries the override to the new id");
+        CHECK(isDummy(findNote(f.tl, f.patternA, target)->lensOverride), "original keeps its own");
+        CHECK(overrideCount(f.tl, f.patternA) == 2, "exactly original + copy");
+    }
+
+    // Delete drops it; undo brings it back with the note.
+    um.execute(std::make_unique<RemoveNoteCommand>(f.patternA, target, f.tl), f.tl);
+    CHECK(!findNote(f.tl, f.patternA, target) && overrideCount(f.tl, f.patternA) == 1,
+          "delete drops the note and its override");
+    um.undo(f.tl);
+    CHECK(isDummy(findNote(f.tl, f.patternA, target)->lensOverride), "undo of delete restores it");
+    um.undo(f.tl);  // un-paste
+    CHECK(overrideCount(f.tl, f.patternA) == 1, "undo of paste removes the copy's");
+
+    // Make Unique Copy: new pattern + addNotesBatch (fresh ids, list order).
+    Pattern np;
+    np.name = "A (copy)";
+    np.regionId = f.regA;
+    np.length = f.tl.getPattern(f.patternA)->length;
+    const int uniqueId = f.tl.addPattern(np);
+    std::vector<PatternNote> batch = f.tl.getPattern(f.patternA)->notes;
+    for (auto& n : batch) n.id = 0;
+    um.execute(std::make_unique<AddNotesBatchCommand>(uniqueId, viaJson(batch)), f.tl);
+    {
+        const auto& src = f.tl.getPattern(f.patternA)->notes;
+        const auto& dst = f.tl.getPattern(uniqueId)->notes;
+        bool sameOrder = src.size() == dst.size();
+        for (size_t i = 0; sameOrder && i < src.size(); ++i)
+            sameOrder = (src[i].lensOverride != nullptr) == (dst[i].lensOverride != nullptr)
+                     && src[i].position.ticks == dst[i].position.ticks;
+        CHECK(sameOrder, "unique copy: every override on the matching new note");
+        CHECK(overrideCount(f.tl, uniqueId) == 1, "unique copy: exactly one override");
+    }
+    um.undo(f.tl);
+    CHECK(f.tl.getPattern(uniqueId)->notes.empty(), "undo of the copy batch empties it");
+    um.redo(f.tl);
+    CHECK(overrideCount(f.tl, uniqueId) == 1, "redo of the copy batch keeps the override");
+
+    // Save / load through ProjectManager.
+    const fs::path dir = freshDir("p5_note_override");
+    ProjectManager pm;
+    CHECK(pm.createProject(dir.string(), "lens_note_override"), "createProject");
+    CHECK(pm.saveProject(f.tl), "saveProject");
+    ProjectManager pm2;
+    auto loaded = pm2.loadProject(dir.string());
+    CHECK(loaded.has_value(), "project loads");
+    if (loaded) {
+        const Timeline& tl = *loaded;
+        CHECK(isDummy(findNote(tl, f.patternA, target)->lensOverride), "load: target keeps it");
+        CHECK(overrideCount(tl, f.patternA) == 1, "load: pattern A has exactly one");
+        CHECK(overrideCount(tl, f.patternB) == 0, "load: pattern B (same ids) has none");
+        CHECK(overrideCount(tl, uniqueId) == 1, "load: unique copy keeps its one");
+        CHECK(findNote(tl, f.patternA, other)->velocity == 0.25f, "load: other edits intact");
+    }
+
+    // An old project (no lensOverride keys anywhere) loads with none.
+    {
+        const fs::path file = dir / "project.json";
+        json j = readJson(file);
+        int stripped = 0;
+        std::function<void(json&)> strip = [&](json& v) {
+            if (v.is_object()) {
+                if (v.erase("lensOverride")) ++stripped;
+                for (auto& c : v) strip(c);
+            } else if (v.is_array()) {
+                for (auto& c : v) strip(c);
+            }
+        };
+        strip(j);
+        CHECK(stripped == 2, "saved file held exactly the two overrides");
+        writeJson(file, j);
+        ProjectManager pm3;
+        auto old = pm3.loadProject(dir.string());
+        CHECK(old.has_value(), "old-shape project loads");
+        if (old) {
+            int any = 0;
+            for (const auto& [pid, p] : old->getAllPatterns())
+                for (const auto& n : p.notes) if (n.lensOverride) ++any;
+            CHECK(any == 0, "old project: no note has an override");
+        }
+    }
+}
+
 int main() {
     std::cout << "[LensRoam] Lens + Roam P1 tests\n";
     test_defaults();
@@ -897,6 +1141,7 @@ int main() {
     test_p2_collector_order();
     test_p2_dev_hook();
     test_p3_commands();
+    test_p5_note_override();
     std::cout << "[LensRoam] " << g_pass << " passed, " << g_fail << " failed\n";
     return g_fail == 0 ? 0 : 1;
 }

@@ -746,6 +746,8 @@ export default function PianoRoll({
             velocity: n.velocity,
           }
           if (n.isSlide) Object.assign(out, { isSlide: true, slideCurveCx: n.slideCurveCx, slideCurveCy: n.slideCurveCy })
+          // Pasted copies get new ids; the Lens override travels with them.
+          if (n.lensOverride) out.lensOverride = n.lensOverride
           return out
         }),
       }

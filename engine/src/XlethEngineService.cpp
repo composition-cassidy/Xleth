@@ -3122,6 +3122,10 @@ static JsonApi::Object patternNoteToJs(JsonApi::Env env, const PatternNote& n) {
     o.Set("isSlide",       JsonApi::Boolean::New(env, n.isSlide));
     o.Set("slideCurveCx",  JsonApi::Number::New(env, n.slideCurveCx));
     o.Set("slideCurveCy",  JsonApi::Number::New(env, n.slideCurveCy));
+    // Absent key = Follow. jsToPatternNote reads it back, so a piano-roll edit
+    // that returns this object untouched keeps the override.
+    if (n.lensOverride)
+        o.Set("lensOverride", opaqueJsonToValue(env, lensroam::lensNoteOverrideToJson(*n.lensOverride)));
     return o;
 }
 
@@ -3141,6 +3145,15 @@ static PatternNote jsToPatternNote(const JsonApi::Object& o) {
         n.slideCurveCx = o.Get("slideCurveCx").As<JsonApi::Number>().FloatValue();
     if (o.Has("slideCurveCy") && o.Get("slideCurveCy").IsNumber())
         n.slideCurveCy = o.Get("slideCurveCy").As<JsonApi::Number>().FloatValue();
+    // Every note-list RPC (addNote, addNotesBatch, editPatternNotes) comes
+    // through here: without this, a piano-roll edit would erase the override.
+    if (o.Has("lensOverride")) {
+        const nlohmann::json raw = valueToJson(o.Get("lensOverride"));
+        n.lensOverride = lensroam::lensNoteOverrideFromJson(raw);
+        if (!n.lensOverride && !raw.is_null())
+            std::cout << "[Lens] note lensOverride ignored (needs mode Nudge|Own): "
+                      << raw.dump() << "\n";
+    }
     return n;
 }
 

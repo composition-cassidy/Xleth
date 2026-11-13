@@ -347,7 +347,21 @@ export function toEngineNote(n) {
     out.slideCurveCx = n.slideCurveCx ?? 0.5
     out.slideCurveCy = n.slideCurveCy ?? 0.5
   }
+  // Per-note Lens override (docs/XLETH_LENS_ROAM_SPEC.md, Ruling 6). editPatternNotes
+  // REPLACES the pattern's note list, so a note sent without it loses it. Opaque
+  // here: the engine owns the format. Absent = Follow.
+  if (n.lensOverride) out.lensOverride = n.lensOverride
   return out
+}
+
+/**
+ * A note as a NEW note for another pattern (Make Unique Copy): everything the
+ * engine keeps, Lens override included, minus the id (the target pattern
+ * assigns one).
+ */
+export function toNewNoteCopy(n) {
+  const { id, ...rest } = toEngineNote(n)
+  return rest
 }
 
 /**
@@ -382,7 +396,10 @@ export function sameNotes(a, b) {
     const x = a[i]
     const y = b[i]
     if (x.id !== y.id || x.positionTicks !== y.positionTicks || x.durationTicks !== y.durationTicks
-      || x.pitch !== y.pitch || (x.velocity ?? 1) !== (y.velocity ?? 1) || !!y._select) return false
+      || x.pitch !== y.pitch || (x.velocity ?? 1) !== (y.velocity ?? 1) || !!y._select
+      // By reference: edits spread a note and keep its override object, so
+      // only a real override change makes a new one.
+      || (x.lensOverride ?? null) !== (y.lensOverride ?? null)) return false
   }
   return true
 }

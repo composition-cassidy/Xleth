@@ -17,7 +17,8 @@
 //   Pattern Track source      TrackInfo::trackLens  regionId -> LensTrack {base, hitCurve}
 //                             (the {trackId, regionId} key: the map lives on the track)
 //   Track                     TrackInfo::roam       RoamTrack {base, keys}
-//   Per-note overrides        later phase (P5)
+//   Per note                  PatternNote::lensOverride  LensNoteOverride {mode, keys}
+//                             (the {patternId, noteId} key: it lives on the note; P5)
 //
 // Identity (LensParams{} / RoamParams{}) reproduces today's rendering
 // exactly: fit = Stretch is what GridComposite.hlsl does now (the source is
@@ -170,6 +171,28 @@ struct KeyedParams {
 using LensTrack = KeyedParams<LensParams, LensKey>;
 using RoamTrack = KeyedParams<RoamParams, RoamKey>;
 
+// ─── Per-note Lens override (spec "Storage", Ruling 6) ───────────────────────
+// Stored ON the PatternNote (PatternNote::lensOverride), so the spec's
+// {patternId, noteId} key is the note's own address: it rides every note
+// snapshot, undo entry and copy for free. Absent (null) = Follow: the note
+// plays its source's hit curve. Nudge = hit curve plus `keys`; Own = `keys`
+// only. Keys use the note anchors (Head / Body / Tail).
+//
+// P5 only carries the override without losing it. Nothing evaluates it yet
+// (P8), and nothing in the UI edits it (P8/P9).
+//
+// Immutable once built and shared by shared_ptr<const>: copying a note (undo
+// snapshots, the export's frozen timeline copy, piano-roll list edits) never
+// deep-copies or allocates; an edit replaces the pointer.
+enum class LensOverrideMode : uint8_t { Nudge = 0, Own = 1 };
+
+struct LensNoteOverride {
+    LensOverrideMode     mode = LensOverrideMode::Nudge;
+    std::vector<LensKey> keys;
+};
+
+using LensNoteOverridePtr = std::shared_ptr<const LensNoteOverride>;
+
 namespace lensroam {
 
 // P1 resolve: the base, keys ignored. The ONE place later phases replace with
@@ -202,6 +225,15 @@ RoamTrack      roamTrackFromJson(const nlohmann::json& j);
 // TrackInfo::trackLens as an array of {regionId, base, hitCurve}, ascending regionId.
 nlohmann::json            trackLensToJson(const std::map<int, LensTrack>& m);
 std::map<int, LensTrack>  trackLensFromJson(const nlohmann::json& j);
+
+// PatternNote::lensOverride as {mode: "Nudge"|"Own", keys: [...]}. The reader
+// returns null (Follow) for null / a non-object / a missing or unknown mode;
+// malformed keys are dropped like everywhere else. Used by Pattern.cpp (save /
+// load) and by both engine<->UI note converters.
+nlohmann::json      lensNoteOverrideToJson(const LensNoteOverride& o);
+LensNoteOverridePtr lensNoteOverrideFromJson(const nlohmann::json& j);
+
+const char* lensOverrideModeToString(LensOverrideMode m);
 
 const char* lensFitToString(LensFit f);
 const char* lensFlipToString(LensFlip f);

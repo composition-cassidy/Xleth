@@ -228,4 +228,42 @@ describe('Piano Roll keyboard ownership', () => {
       velocity: 0.8,
     })
   })
+
+  it('copy/paste carries a per-note Lens override to the pasted copy and keeps the original', async () => {
+    const lensOverride = { mode: 'Nudge', keys: [{ channel: 'zoom', anchor: 'Head', pos: 0, value: 1.2 }] }
+    timeline.getPattern.mockImplementation(async () => ({
+      id: 7,
+      regionId: 3,
+      lengthTicks: 960,
+      notes: [
+        { id: 1, positionTicks: 120, durationTicks: 240, pitch: 60, velocity: 0.8, lensOverride },
+        { id: 2, positionTicks: 480, durationTicks: 240, pitch: 62, velocity: 0.8 },
+      ],
+    }))
+    timeline.editPatternNotes = vi.fn(async (_id, notes) => notes.map((n, i) => ({ ...n, id: n.id ?? 100 + i })))
+    await act(async () => {
+      root.render(<PianoRoll patternId={7} key="override" />)
+      await Promise.resolve()
+    })
+    usePanelRegistry.getState().focusPanel('pianoRoll')
+    await act(async () => { handleKeyEvent(shortcut('a', { ctrlKey: true })) })
+    await act(async () => {
+      handleKeyEvent(shortcut('c', { ctrlKey: true }))
+      await Promise.resolve()
+    })
+    await act(async () => {
+      handleKeyEvent(shortcut('v', { ctrlKey: true }))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(timeline.editPatternNotes).toHaveBeenCalledTimes(1)
+    const [, sent] = timeline.editPatternNotes.mock.calls[0]
+    expect(sent).toHaveLength(4)
+    expect(sent[0]).toMatchObject({ id: 1, lensOverride })
+    expect(sent[1]).not.toHaveProperty('lensOverride')
+    // Pasted copies have no id (the engine assigns new ones); only note 1's copy carries it.
+    expect(sent[2]).not.toHaveProperty('id')
+    expect(sent[2].lensOverride).toEqual(lensOverride)
+    expect(sent[3]).not.toHaveProperty('lensOverride')
+  })
 })

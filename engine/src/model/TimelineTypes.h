@@ -1379,6 +1379,16 @@ struct PatternNote {
     bool     isSlide      = false;
     float    slideCurveCx = 0.5f;   // bezier control point (cubic 0,0 → cx,cy → 1-cx,1-cy → 1,1)
     float    slideCurveCy = 0.5f;
+
+    // ── Lens override (docs/XLETH_LENS_ROAM_SPEC.md, model/LensRoam.h) ────
+    // Null = Follow (the default; every pre-P5 note). Living on the note makes
+    // the spec's {patternId, noteId} key implicit, so it survives move,
+    // quantize, undo/redo and save/load with the note, and is dropped with it.
+    // Copies (paste, duplicate, Make Unique Copy) carry it to their new ids.
+    // Every note converter must carry this field: jsToPatternNote /
+    // patternNoteToJs (engine) and toEngineNote (piano roll), or a piano-roll
+    // edit silently erases it. Not evaluated until P8.
+    LensNoteOverridePtr lensOverride;
 };
 
 // ─── Pattern ──────────────────────────────────────────────────────────────────

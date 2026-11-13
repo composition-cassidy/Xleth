@@ -266,6 +266,28 @@ RoamTrack roamTrackFromJson(const json& j) {
     return t;
 }
 
+const char* lensOverrideModeToString(LensOverrideMode m) {
+    return m == LensOverrideMode::Own ? "Own" : "Nudge";
+}
+
+json lensNoteOverrideToJson(const LensNoteOverride& o) {
+    json j = json::object();
+    j["mode"] = lensOverrideModeToString(o.mode);
+    j["keys"] = keysToJson(o.keys);
+    return j;
+}
+
+LensNoteOverridePtr lensNoteOverrideFromJson(const json& j) {
+    if (!j.is_object()) return nullptr;
+    const std::string mode = stringOr(j, "mode");
+    auto o = std::make_shared<LensNoteOverride>();
+    if (mode == "Nudge")    o->mode = LensOverrideMode::Nudge;
+    else if (mode == "Own") o->mode = LensOverrideMode::Own;
+    else return nullptr;  // no mode is no override: Follow
+    o->keys = keysFromJson<LensChannel>(j, "keys");
+    return o;
+}
+
 json trackLensToJson(const std::map<int, LensTrack>& m) {
     json arr = json::array();
     for (const auto& [regionId, lens] : m) {

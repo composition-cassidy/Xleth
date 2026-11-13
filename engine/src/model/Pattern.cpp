@@ -11,6 +11,10 @@ void to_json(nlohmann::json& j, const PatternNote& n) {
         {"slideCurveCx",  n.slideCurveCx},
         {"slideCurveCy",  n.slideCurveCy}
     };
+    // Written only when present: a note without one (Follow) saves exactly as
+    // before, so projects that never used overrides are unchanged on disk.
+    if (n.lensOverride)
+        j["lensOverride"] = lensroam::lensNoteOverrideToJson(*n.lensOverride);
 }
 
 void from_json(const nlohmann::json& j, PatternNote& n) {
@@ -22,6 +26,10 @@ void from_json(const nlohmann::json& j, PatternNote& n) {
     n.isSlide      = j.value("isSlide", false);
     n.slideCurveCx = j.value("slideCurveCx", 0.5f);
     n.slideCurveCy = j.value("slideCurveCy", 0.5f);
+    // Absent (every older project) = Follow.
+    n.lensOverride = j.contains("lensOverride")
+        ? lensroam::lensNoteOverrideFromJson(j.at("lensOverride"))
+        : nullptr;
 }
 
 void to_json(nlohmann::json& j, const Pattern& p) {

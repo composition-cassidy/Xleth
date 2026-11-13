@@ -36,6 +36,8 @@ import { playheadClock } from '../services/PlayheadClock.js'
 import { editCursor } from '../services/EditCursor.js'
 import { createXlethStoppedPreviewSeekScheduler } from '../services/stoppedPreviewSeekScheduler.js'
 import { timelineEvents } from '../timelineEvents.js'
+import { toNewNoteCopy } from './pianoRoll/pianoRollEdits.js'
+import { installNoteLensDevHook } from '../lensRoam/noteLensOverride.js'
 import {
   BEATS_PER_BAR, DEFAULT_TRACK_HEIGHT, TRACK_HEIGHT, PPQ, RULER_HEIGHT, ADD_TRACK_ROW_HEIGHT,
   setTimelineTrackHeight, zoomTrackHeight,
@@ -1828,6 +1830,13 @@ export default function TimelineView({
     return () => { delete window.__xlethTimelineDebug }
   }, [])
 
+  // Dev-only: window.__xlethLensDev sets a per-note Lens override through the
+  // real editPatternNotes path (Lens + Roam P5 plumbing check; no UI until P8).
+  useEffect(() => {
+    if (!import.meta.env.DEV) return undefined
+    return installNoteLensDevHook(window)
+  }, [])
+
   // ── PER-FRAME: grid/ruler/content redraw + playhead reposition on zoom or
   // scroll. This used to live in two useEffects keyed on [pixelsPerBeat] /
   // [scrollOffset] state, which meant every wheel tick forced a React
@@ -3037,17 +3046,11 @@ export default function TimelineView({
       })
       if (newPatternId == null || newPatternId < 0) return
       if (orig.notes?.length > 0) {
+        // addNotesBatch assigns fresh ids in list order, so each note's Lens
+        // override lands on its own copy's new id.
         await window.xleth?.timeline?.addNotesBatch(
           newPatternId,
-          orig.notes.map(n => ({
-            positionTicks: n.positionTicks,
-            durationTicks: n.durationTicks,
-            pitch: n.pitch,
-            velocity: n.velocity,
-            isSlide: n.isSlide,
-            slideCurveCx: n.slideCurveCx,
-            slideCurveCy: n.slideCurveCy,
-          }))
+          orig.notes.map(toNewNoteCopy)
         )
       }
       await window.xleth?.timeline?.removePatternBlock(blockId)

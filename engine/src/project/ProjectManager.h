@@ -75,6 +75,9 @@
 //     per-note animated devices in the video device chain, and the chain's
 //     ZoomPanRotation entry is a chain effect. TrackInfo::videoX/Y/W/H are
 //     written but never rendered; they are left as they are.
+//     P5 (no bump, additive): a pattern note MAY carry "lensOverride"
+//     {mode: Nudge|Own, keys}. Written only when present; absent = Follow,
+//     so every older project loads with none and saves unchanged.
 inline constexpr int XLETH_PROJECT_SCHEMA_VERSION = 8;
 
 class ProjectManager {
