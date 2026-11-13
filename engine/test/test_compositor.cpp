@@ -7,6 +7,12 @@
 #include "render/FrameCache.h"
 #include "render/FrameCollector.h"
 #include "model/TimelineTypes.h"  // kGridSubUnitsPerColumn / Row
+#include "model/Timeline.h"       // Test 18: preview/export parity timeline
+#include "render/VideoEventBuilder.h"
+
+#include <string>
+#include <utility>
+#include <vector>
 
 // Force assert even in Release builds (NDEBUG is defined)
 #undef NDEBUG
@@ -916,6 +922,321 @@ int main()
 
         compositor.shutdown();
         std::fprintf(stderr, "[TEST:Compositor] Test 16: PASSED\n");
+    }
+
+    // ── Test 17: Lens + Roam (P2) ───────────────────────────────────────────
+    // Lens frames the source inside the cell (fit, centre, zoom; flip mirrors
+    // the FRAMED result). Roam moves the cell (offset in cell units, scale,
+    // rotation), Bounds Clip scissors to the home rect, Float does not. Half
+    // grid placements and the fullscreen (Chorus) layer take both.
+    {
+        std::fprintf(stderr, "\n[TEST:Compositor] --- Test 17: Lens + Roam ---\n");
+
+        auto makeTex = [](int w, int h, auto colorAt) {
+            std::vector<uint8_t> px(static_cast<size_t>(w) * h * 4);
+            for (int y = 0; y < h; ++y)
+                for (int x = 0; x < w; ++x) {
+                    uint8_t b, g, r;
+                    colorAt(x, y, b, g, r);
+                    const size_t i = (static_cast<size_t>(y) * w + x) * 4;
+                    px[i + 0] = b; px[i + 1] = g; px[i + 2] = r; px[i + 3] = 255;
+                }
+            D3D11_TEXTURE2D_DESC desc = {};
+            desc.Width = static_cast<UINT>(w); desc.Height = static_cast<UINT>(h);
+            desc.MipLevels = 1; desc.ArraySize = 1;
+            desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            desc.SampleDesc.Count = 1;
+            desc.Usage = D3D11_USAGE_DEFAULT;
+            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            D3D11_SUBRESOURCE_DATA init = {};
+            init.pSysMem = px.data();
+            init.SysMemPitch = static_cast<UINT>(w * 4);
+            FrameCacheEntry e;
+            HRESULT hr = g_device->CreateTexture2D(&desc, &init, &e.texture);
+            assert(SUCCEEDED(hr));
+            hr = g_device->CreateShaderResourceView(e.texture.Get(), nullptr, &e.srv);
+            assert(SUCCEEDED(hr));
+            e.width = w; e.height = h;
+            e.memorySizeBytes = static_cast<size_t>(w) * h * 4;
+            return e;
+        };
+        // 64x64 quadrants: TL red, TR green, BL blue, BR yellow.
+        cache.put({"quad.mp4", 0}, makeTex(64, 64, [](int x, int y, uint8_t& b, uint8_t& g, uint8_t& r) {
+            const bool right = x >= 32, bottom = y >= 32;
+            b = (!right && bottom) ? 255 : 0;
+            g = right ? 255 : 0;
+            r = (!right && !bottom) || (right && bottom) ? 255 : 0;
+        }));
+        // 128x64 (2:1): a blue band on the left eighth, green elsewhere.
+        cache.put({"band.mp4", 0}, makeTex(128, 64, [](int x, int, uint8_t& b, uint8_t& g, uint8_t& r) {
+            b = x < 16 ? 255 : 0; g = x < 16 ? 0 : 255; r = 0;
+        }));
+
+        GridCompositor compositor;
+        assert(compositor.init(g_device, g_deviceCtx, 320, 240));
+
+        struct Px { int r, g, b, a; };
+        auto at = [](const ReadbackBuffer& buf, int x, int y) {
+            uint8_t b, g, r, a;
+            extractBGRA(samplePixel(buf, x, y), b, g, r, a);
+            return Px{ r, g, b, a };
+        };
+        auto isEmpty = [](Px p) { return p.r == 0 && p.g == 0 && p.b == 0 && p.a == 0; };
+        auto isRed   = [](Px p) { return p.r > 200 && p.g < 50 && p.b < 50 && p.a > 200; };
+        auto isGreen = [](Px p) { return p.g > 200 && p.r < 50 && p.b < 50 && p.a > 200; };
+        auto isBlue  = [](Px p) { return p.b > 200 && p.r < 50 && p.g < 50 && p.a > 200; };
+        auto fullCell = [](const char* path) {
+            CellFrameRequest c{};
+            c.cellCol = 0; c.cellRow = 0;
+            c.spanX = kGridSubUnitsPerColumn; c.spanY = kGridSubUnitsPerRow;
+            c.sourcePath = path; c.sourceFrameIndex = 0; c.opacity = 1.0f;
+            return c;
+        };
+        auto render = [&](const std::vector<CellFrameRequest>& reqs, int cols, int rows) {
+            compositor.compositeFrame(reqs, cache, cols, rows);
+            ReadbackBuffer b = compositor.readback();
+            assert(b.valid);
+            return b;
+        };
+
+        // 17a: fit. A 2:1 source in a 4:3 cell (1x1 grid, 320x240).
+        {
+            CellFrameRequest c = fullCell("band.mp4");
+            ReadbackBuffer s = render({ c }, 1, 1);                 // identity = Stretch
+            assert(isBlue(at(s, 5, 120)) && isBlue(at(s, 30, 120)) && "stretch shows the band at the edge");
+
+            c.lens.fit = LensFit::Cover;                            // 480x240, 80 px cropped each side
+            ReadbackBuffer cv = render({ c }, 1, 1);
+            assert(isGreen(at(cv, 30, 120)) && "cover crops the band away");
+            assert(isGreen(at(cv, 160, 5)) && "cover fills the full height");
+
+            c.lens.fit = LensFit::Contain;                          // 320x160, 40 px bars top/bottom
+            ReadbackBuffer cn = render({ c }, 1, 1);
+            assert(isEmpty(at(cn, 160, 20)) && isEmpty(at(cn, 160, 220)) && "contain letterboxes with the empty cell background");
+            assert(isGreen(at(cn, 160, 120)) && isBlue(at(cn, 5, 120)) && "contain keeps the whole width");
+            std::fprintf(stderr, "[TEST:Compositor] 17a fit Stretch/Cover/Contain OK\n");
+        }
+
+        // 17b: centre + zoom. Zoom 2 about the red quadrant's centre fills the
+        // cell with red.
+        {
+            CellFrameRequest c = fullCell("quad.mp4");
+            c.lens.centerX = 0.25f; c.lens.centerY = 0.25f; c.lens.zoom = 2.0f;
+            ReadbackBuffer b = render({ c }, 1, 1);
+            assert(isRed(at(b, 10, 10)) && isRed(at(b, 310, 230)) && isRed(at(b, 160, 120)));
+            std::fprintf(stderr, "[TEST:Compositor] 17b centre + zoom OK\n");
+        }
+
+        // 17c: flip mirrors the FRAMED result. Centre moved left by a quarter:
+        // the cell's left quarter falls outside the source (empty). A
+        // horizontal flip of the framed cell puts that empty strip on the
+        // RIGHT (flipping the source first would have kept it on the left).
+        {
+            CellFrameRequest c = fullCell("quad.mp4");
+            c.lens.centerX = 0.25f;
+            ReadbackBuffer n = render({ c }, 1, 1);
+            assert(isEmpty(at(n, 20, 120)) && !isEmpty(at(n, 300, 120)));
+            c.orientation = 1;                                      // the track's flip
+            ReadbackBuffer f = render({ c }, 1, 1);
+            assert(isEmpty(at(f, 300, 120)) && !isEmpty(at(f, 20, 120)) && "flip mirrors the framed cell");
+            c.lens.flip = LensFlip::None;                           // Lens override beats the track
+            ReadbackBuffer o = render({ c }, 1, 1);
+            assert(isEmpty(at(o, 20, 120)) && !isEmpty(at(o, 300, 120)) && "Lens flip None overrides the track flip");
+            std::fprintf(stderr, "[TEST:Compositor] 17c flip after Lens OK\n");
+        }
+
+        // 17d: Roam offset, Clip vs Float. 2x2 grid: the red cell's home is
+        // the top-left quadrant (0..160 x 0..120).
+        {
+            CellFrameRequest c = fullCell("red.mp4");
+            c.roam.offsetX = 1.0f;                                  // one cell right
+            c.roam.bounds = RoamBounds::Float;
+            ReadbackBuffer fl = render({ c }, 2, 2);
+            assert(isRed(at(fl, 240, 60)) && isEmpty(at(fl, 80, 60)) && "Float: moved one cell right, unclipped");
+            c.roam.bounds = RoamBounds::Clip;
+            ReadbackBuffer cl = render({ c }, 2, 2);
+            assert(isEmpty(at(cl, 240, 60)) && isEmpty(at(cl, 80, 60)) && "Clip: moved fully out of its home -> gone");
+            c.roam.offsetX = 0.5f;
+            ReadbackBuffer half = render({ c }, 2, 2);
+            assert(isRed(at(half, 120, 60)) && isEmpty(at(half, 40, 60)) && isEmpty(at(half, 200, 60))
+                   && "Clip: half a cell right shows only the part still inside home");
+            c.roam.bounds = RoamBounds::Float;
+            ReadbackBuffer halfF = render({ c }, 2, 2);
+            assert(isRed(at(halfF, 200, 60)) && "Float: the overhang is drawn");
+            std::fprintf(stderr, "[TEST:Compositor] 17d offset Clip/Float OK\n");
+        }
+
+        // 17e: scale and rotation about the cell centre (80, 60).
+        {
+            CellFrameRequest c = fullCell("red.mp4");
+            c.roam.scale = 0.5f;
+            ReadbackBuffer s = render({ c }, 2, 2);
+            assert(isRed(at(s, 80, 60)) && isEmpty(at(s, 10, 10)) && "scale 0.5 shrinks about the centre");
+
+            CellFrameRequest r = fullCell("red.mp4");
+            r.roam.rotationDeg = 90.0f;                             // 160x120 -> 120x160 upright
+            r.roam.bounds = RoamBounds::Float;
+            ReadbackBuffer rf = render({ r }, 2, 2);
+            assert(isRed(at(rf, 80, 130)) && isEmpty(at(rf, 10, 60)) && "rotation 90: the cell stands up");
+            r.roam.bounds = RoamBounds::Clip;
+            ReadbackBuffer rc = render({ r }, 2, 2);
+            assert(isEmpty(at(rc, 80, 130)) && isRed(at(rc, 80, 60)) && "Clip scissors the rotated cell to home");
+            std::fprintf(stderr, "[TEST:Compositor] 17e scale + rotation OK\n");
+        }
+
+        // 17f: half-grid placement (span 4 = half a column): offset 1.0 moves
+        // ONE PLACEMENT, not one full column.
+        {
+            CellFrameRequest c = fullCell("red.mp4");
+            c.spanX = kGridSubUnitsPerColumn / 2; c.spanY = kGridSubUnitsPerRow / 2;   // 80x60 px
+            c.roam.offsetX = 1.0f;
+            c.roam.bounds = RoamBounds::Float;
+            ReadbackBuffer b = render({ c }, 2, 2);
+            assert(isRed(at(b, 120, 30)) && isEmpty(at(b, 40, 30)) && isEmpty(at(b, 200, 30)));
+            std::fprintf(stderr, "[TEST:Compositor] 17f half-grid offset OK\n");
+        }
+
+        // 17g: the fullscreen (Chorus) behind-layer. Its unit and home are the
+        // canvas; Clip keeps it inside the canvas, and Lens frames it too.
+        {
+            CellFrameRequest ch = fullCell("blue.mp4");
+            ch.layerKind = CellLayerKind::FullscreenBehind;
+            ch.roam.offsetX = 0.5f;
+            ReadbackBuffer b = render({ ch }, 2, 2);
+            assert(isEmpty(at(b, 80, 120)) && isBlue(at(b, 240, 120)) && "chorus: half a canvas right");
+
+            CellFrameRequest q = fullCell("quad.mp4");
+            q.layerKind = CellLayerKind::FullscreenBehind;
+            q.lens.centerX = 0.25f; q.lens.centerY = 0.25f; q.lens.zoom = 2.0f;
+            ReadbackBuffer l = render({ q }, 2, 2);
+            assert(isRed(at(l, 10, 10)) && isRed(at(l, 310, 230)) && "chorus: Lens zoom");
+            std::fprintf(stderr, "[TEST:Compositor] 17g Chorus layer OK\n");
+        }
+
+        compositor.shutdown();
+        std::fprintf(stderr, "[TEST:Compositor] Test 17: PASSED\n");
+    }
+
+    // ── Test 18: live preview == export, with the dev Lens/Roam hook on ──────
+    // The preview and the export each have their own FrameCollector call (the
+    // preview passes allowProxy, a resolved layout override and the preview
+    // effect mute; the export passes its own flags) but must produce the SAME
+    // picture: Lens/Roam is resolved by one snapshot builder and evaluated by
+    // one compositor. A timeline with a full cell, a half-grid cell and a
+    // fullscreen (Chorus) behind-layer; the hook (zoom 1.5, rotation 10 deg,
+    // Roam offset (0.5,-0.3) Float, layer Top) on the full cell.
+    {
+        std::fprintf(stderr, "\n[TEST:Compositor] --- Test 18: preview/export parity (dev hook) ---\n");
+
+        Timeline tl{ 140.0, 48000.0 };
+        SourceMedia src;
+        src.filePath = "parity_src.mp4"; src.hasVideo = true;
+        src.fps = 30.0; src.duration = 60.0; src.totalFrames = 1800;
+        src.width = 1920; src.height = 1080;
+        const int srcId = tl.addSource(src);
+        SampleRegion reg;
+        reg.sourceId = srcId; reg.startTime = 0.0; reg.endTime = 10.0;
+        reg.startFrame = 0; reg.endFrame = 299;
+        const int regId = tl.addRegion(reg);
+
+        int trk[3];
+        for (int i = 0; i < 3; ++i) {
+            TrackInfo t;
+            t.name = "T" + std::to_string(i);
+            t.type = TrackInfo::Type::Clip;
+            trk[i] = tl.addTrack(t);
+            Clip c;
+            c.trackId = trk[i]; c.regionId = regId;
+            c.position = TickTime{ 0 }; c.duration = TickTime::fromBeats(4);
+            c.lens = LensTrack{};             // old-project Stretch
+            tl.addClip(c);
+        }
+        GridLayout layout;
+        layout.columns = 2; layout.rows = 2;
+        layout.slots.push_back({ trk[0], 0, 0, kGridSubUnitsPerColumn, kGridSubUnitsPerRow, 1.0f, 2 });
+        layout.slots.push_back({ trk[1], kGridSubUnitsPerColumn, kGridSubUnitsPerRow,
+                                 kGridSubUnitsPerColumn / 2, kGridSubUnitsPerRow / 2, 1.0f, 3 });
+        FullscreenLayer chorus;
+        chorus.trackId = trk[2]; chorus.placement = FullscreenLayerPlacement::BehindGrid;
+        chorus.opacity = 1.0f; chorus.zOrder = 1;
+        layout.fullscreenLayers.push_back(chorus);
+        tl.setGridLayout(layout);
+
+        const auto built = xleth::videoevents::build(tl, 140.0, 48000.0);
+        assert(built.events.size() == 3);
+        const AVRational fps{ 30, 1 };
+        const int64_t frame = 15;
+
+        // A 16:9 gradient for every frame either collector asks for.
+        auto fill = [&](const std::vector<CellFrameRequest>& reqs) {
+            for (const auto& r : reqs) {
+                FrameCacheKey k; k.sourcePath = r.sourcePath; k.frameIndex = r.sourceFrameIndex;
+                if (!cache.get(k)) cache.put(k, makeGradientTexture(64, 36));
+            }
+        };
+
+        GridCompositor compositor;
+        assert(compositor.init(g_device, g_deviceCtx, 320, 240));
+        auto renderBoth = [&](std::vector<uint8_t>& preview, std::vector<uint8_t>& exportPx) {
+            auto snap = buildLensRoamSnapshot(tl);
+
+            FrameCollector live;                                     // XlethEngineService video tick
+            live.setLensRoamSnapshot(snap);
+            const GridLayout liveLayout = tl.gridLayoutAt(TickTime{ 0 });
+            auto& lr = live.collectRequests(frame, tl, 48000, fps, built.events,
+                                            /*allowProxy=*/true, /*projectStartSample=*/0,
+                                            /*posterMode=*/false, /*renderProxyBySource=*/nullptr,
+                                            /*layoutOverride=*/&liveLayout,
+                                            /*applyPreviewEffectMute=*/true);
+            assert(lr.size() == 3);
+            fill(lr);
+            compositor.compositeFrame(lr, cache, liveLayout.columns, liveLayout.rows, 0.0f, liveLayout.gapScale);
+            ReadbackBuffer a = compositor.readback();
+            assert(a.valid);
+            preview = a.pixels;
+
+            FrameCollector exp;                                      // OfflineRenderer
+            exp.setLensRoamSnapshot(buildLensRoamSnapshot(tl));
+            auto& er = exp.collectRequests(frame, tl, 48000, fps, built.events,
+                                           /*allowProxy=*/false, /*projectStartSample=*/0,
+                                           /*posterMode=*/false, /*renderProxyBySource=*/nullptr);
+            assert(er.size() == 3);
+            fill(er);
+            const GridLayout& el = tl.getGridLayout();
+            compositor.compositeFrame(er, cache, el.columns, el.rows, 0.0f, el.gapScale);
+            ReadbackBuffer b = compositor.readback();
+            assert(b.valid);
+            exportPx = b.pixels;
+            return std::make_pair(lr.back().trackId, er.back().trackId);
+        };
+
+        std::vector<uint8_t> offLive, offExport, onLive, onExport;
+        renderBoth(offLive, offExport);
+        assert(offLive == offExport && "identity: preview == export");
+
+        _putenv_s("XLETH_DEV_LENS_ROAM_TRACK", std::to_string(trk[0]).c_str());
+        _putenv_s("XLETH_DEV_LENS_ROAM_LAYER", "top");
+        const auto lastDrawn = renderBoth(onLive, onExport);
+        _putenv_s("XLETH_DEV_LENS_ROAM_TRACK", "");
+        _putenv_s("XLETH_DEV_LENS_ROAM_LAYER", "");
+
+        assert(lastDrawn.first == trk[0] && lastDrawn.second == trk[0] && "Float + Top draws the hooked track last");
+        assert(onLive != offLive && "the hook changed the picture");
+        assert(onLive == onExport && "dev hook: preview == export, byte for byte");
+
+        // FNV-1a of each frame, for the report.
+        auto fnv = [](const std::vector<uint8_t>& v) {
+            uint64_t h = 1469598103934665603ull;
+            for (uint8_t c : v) { h ^= c; h *= 1099511628211ull; }
+            return static_cast<unsigned long long>(h);
+        };
+        std::fprintf(stderr, "[TEST:Compositor] hook off: preview %016llx export %016llx\n",
+                     fnv(offLive), fnv(offExport));
+        std::fprintf(stderr, "[TEST:Compositor] hook on : preview %016llx export %016llx\n",
+                     fnv(onLive), fnv(onExport));
+
+        compositor.shutdown();
+        std::fprintf(stderr, "[TEST:Compositor] Test 18: PASSED\n");
     }
 
     std::fprintf(stderr, "\n[TEST:Compositor] ALL TESTS PASSED\n");

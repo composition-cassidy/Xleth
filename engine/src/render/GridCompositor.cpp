@@ -1,5 +1,6 @@
 #include "GridCompositor.h"
 #include "render/VisualEchoTypes.h"
+#include "render/LensRoamMath.h"   // the ONE Lens/Roam evaluator (preview + export)
 #include "XlethDebug.h"
 
 #include <algorithm>
@@ -200,7 +201,10 @@ void GridCompositor::shutdown()
     constantBuffer_.Reset();
     globalConstantBuffer_.Reset();
     rasterizerState_.Reset();
+    scissorRasterizerState_.Reset();
     depthStencilState_.Reset();
+    for (auto& t : roamGpuTimers_) t = RoamGpuTimer{};
+    roamGpuTimersReady_ = false;
 
     device_      = nullptr;
     deviceCtx_   = nullptr;
@@ -552,6 +556,17 @@ bool GridCompositor::createPipelineState()
         return false;
     }
 
+    // Roam Bounds Clip: identical state plus the scissor test, swapped in only
+    // around a clipped request's final draws.
+    D3D11_RASTERIZER_DESC scDesc = rsDesc;
+    scDesc.ScissorEnable = TRUE;
+    hr = device_->CreateRasterizerState(&scDesc, &scissorRasterizerState_);
+    if (FAILED(hr)) {
+        std::fprintf(stderr, "[Compositor] Failed to create scissor rasterizer state, HR=0x%08X\n",
+                     static_cast<unsigned int>(hr));
+        return false;
+    }
+
     // Depth-stencil state — depth disabled
     D3D11_DEPTH_STENCIL_DESC dsDesc = {};
     dsDesc.DepthEnable = FALSE;
@@ -577,6 +592,15 @@ bool GridCompositor::createPipelineState()
 // failure, device removal, readback failure, capacity eviction) stay
 // unconditional; those are wanted even when this is off.
 static const bool kRenderLog = std::getenv("XLETH_RENDER_LOG") != nullptr;
+
+#ifdef XLETH_DEBUG
+// Dev-only [Roam] per-frame composite timing. A deliberate, opt-in exception
+// to "no logging on the render thread": one line per frame, only when a
+// developer sets XLETH_DEV_ROAM_LOG (or runs the XLETH_DEV_LENS_ROAM_TRACK
+// verification hook). Never on in a normal session.
+static const bool kRoamDevLog = std::getenv("XLETH_DEV_ROAM_LOG") != nullptr
+                             || std::getenv("XLETH_DEV_LENS_ROAM_TRACK") != nullptr;
+#endif
 
 void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& requests,
                                      RenderFrameCache& cache,
@@ -609,6 +633,31 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
     ID3D11RenderTargetView* activeRTV = targetRTV ? targetRTV : renderTargetRTV_.Get();
 
     auto frameStart = std::chrono::high_resolution_clock::now();
+
+    // Lens/Roam work counters for the dev [Roam] line (plain ints, no cost).
+    int lensPasses = 0, roamCells = 0;
+#ifdef XLETH_DEBUG
+    RoamGpuTimer* roamTimer = nullptr;
+    if (kRoamDevLog) {
+        if (!roamGpuTimersReady_) {
+            // Created once per compositor, never per frame.
+            roamGpuTimersReady_ = true;
+            D3D11_QUERY_DESC dq{};  dq.Query = D3D11_QUERY_TIMESTAMP_DISJOINT;
+            D3D11_QUERY_DESC tq{};  tq.Query = D3D11_QUERY_TIMESTAMP;
+            for (auto& t : roamGpuTimers_) {
+                device_->CreateQuery(&dq, &t.disjoint);
+                device_->CreateQuery(&tq, &t.begin);
+                device_->CreateQuery(&tq, &t.end);
+            }
+        }
+        RoamGpuTimer& t = roamGpuTimers_[roamFrameCounter_ % kRoamGpuTimers];
+        if (!t.pending && t.disjoint && t.begin && t.end) {
+            roamTimer = &t;
+            deviceCtx_->Begin(t.disjoint.Get());
+            deviceCtx_->End(t.begin.Get());
+        }
+    }
+#endif
 
     // Count layers for logging
     int behindCount = 0, gridCount = 0, frontCount = 0;
@@ -744,6 +793,10 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
         } else {
             rx = 0.0f; ry = 0.0f; rw = 1.0f; rh = 1.0f;
         }
+        // One Roam cell unit: this placement before the gap (half-grid spans
+        // included), or the canvas for a fullscreen layer.
+        const float roamUnitW = rw;
+        const float roamUnitH = rh;
 
         // Apply gap scale: shrink rect symmetrically, creating inter-cell padding.
         // GRID-ONLY, deliberately: a gap is the space BETWEEN cells, and a
@@ -756,6 +809,13 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
             rx += sx;  ry += sy;
             rw -= sx * 2.0f;  rh -= sy * 2.0f;
         }
+
+        // The Lens framing box keeps THIS rect's aspect (the cell as laid out,
+        // before the per-note bounce squashes it; a squash then squashes the
+        // framed picture, as it squashes the stretched one today). Output
+        // pixels, canvas fit included, so Cover/Contain see the true shape.
+        const float lensFrameW = rw * canvasFitW_ * static_cast<float>(width_);
+        const float lensFrameH = rh * canvasFitH_ * static_cast<float>(height_);
 
         // Apply bounce: offset (fraction of post-gap cell size) then scale-from-center.
         // GRID-ONLY, deliberately: bounce displacement is authored as a fraction
@@ -777,6 +837,22 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
             }
         }
 
+        // ── Roam: move the cell itself ──────────────────────────────────────
+        // Spec order: grid rect -> (gap, per-note bounce: today's cell) ->
+        // Roam offset -> scale -> rotation about the cell centre. Applied here,
+        // before any content stage sizes its target from rw/rh, so effects,
+        // outline, echo and shadow all follow the moved cell. Rotation cannot
+        // live in an axis-aligned rect; it is applied by the final draws
+        // (CellDrawXform). An identity Roam leaves the rect untouched.
+        lensroam::UvRect roamHome{ rx, ry, rw, rh };   // canvas-UV, pre-Roam
+        float roamRotRad = 0.0f;
+        if (lensroam::roamMovesCell(req.roam)) {
+            const lensroam::UvRect q =
+                lensroam::roamCellRect(req.roam, roamHome, roamUnitW, roamUnitH, roamRotRad);
+            rx = q.x; ry = q.y; rw = q.w; rh = q.h;
+            ++roamCells;
+        }
+
         if (kRenderLog) {
             if (isGrid) {
                 std::fprintf(stderr, "[Compositor] Cell [%d,%d]: '%s' frame=%lld opacity=%.2f orient=%d\n",
@@ -794,6 +870,37 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
         // is applied by the last drawCell() call — intermediate effect-chain
         // passes use orientation=0 (identity).
         ID3D11ShaderResourceView* cellSRV = entry->srv.Get();
+
+        // ── Lens: frame the source inside the cell (spec Ruling 3) ──────────
+        // FIRST content stage, so the visual effects see what is actually in
+        // the cell and their cost scales with the cell, not the source. A
+        // render-to-texture pass at cell size; every later stage keeps today's
+        // order and reads its output. Not subject to effectsBypass_: framing is
+        // not an effect. Skipped entirely (today's bit-exact path) when the
+        // Lens moves no pixels: fit Stretch, centred, zoom 1, no rotation.
+        const bool lensFrames = lensroam::lensNeedsFraming(req.lens);
+        float lensRow0[4] = { 1.0f, 0.0f, 0.0f, 0.0f };
+        float lensRow1[4] = { 0.0f, 1.0f, 0.0f, 0.0f };
+        if (lensFrames) {
+            float srcW = 0.0f, srcH = 0.0f;
+            lensroam::fitSourceSize(req.sourcePixelW, req.sourcePixelH,
+                                    entry->width, entry->height, srcW, srcH);
+            const lensroam::LensUvMap map =
+                lensroam::computeLensUvMap(req.lens, lensFrameW, lensFrameH, srcW, srcH);
+            lensRow0[0] = map.m00; lensRow0[1] = map.m01; lensRow0[2] = map.tx;
+            lensRow1[0] = map.m10; lensRow1[1] = map.m11; lensRow1[2] = map.ty;
+
+            const int lensW = std::max(1, static_cast<int>(rw * width_));
+            const int lensH = std::max(1, static_cast<int>(rh * height_));
+            ID3D11ShaderResourceView* framed =
+                applyLensPass(cellSRV, lensW, lensH, lensRow0, lensRow1);
+            if (framed != cellSRV) {
+                cellSRV = framed;
+                ++lensPasses;
+            }
+            restoreMainPipelineState(activeRTV);
+            deviceCtx_->OMSetBlendState(blendState_.Get(), blendFactor, 0xFFFFFFFF);
+        }
 
         // Visual effect chain. effectsBypass_ (fast preview mode) is honoured
         // per-effect INSIDE processEffectChain rather than by skipping the call
@@ -934,6 +1041,14 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
                             cb.opacity      = req.pingPongBlendFactor;
                             cb.orientation  = 0;
                             cb.cornerRadius = 0.0f;
+                            // The secondary frame is raw source pixels: frame
+                            // it with the same Lens as the primary, or the
+                            // crossfade would blend an unframed picture in.
+                            if (lensFrames) {
+                                cb.xformFlags = kXformLens;
+                                std::memcpy(cb.lensRow0, lensRow0, sizeof(lensRow0));
+                                std::memcpy(cb.lensRow1, lensRow1, sizeof(lensRow1));
+                            }
                             std::memcpy(mapped.pData, &cb, sizeof(cb));
                             deviceCtx_->Unmap(constantBuffer_.Get(), 0);
                         }
@@ -1027,6 +1142,11 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
                 ry -= padV;
                 rw += padU * 2.0f;
                 rh += padV * 2.0f;
+                // The stroke belongs to the cell: Bounds Clip keeps it.
+                roamHome.x -= padU;
+                roamHome.y -= padV;
+                roamHome.w += padU * 2.0f;
+                roamHome.h += padV * 2.0f;
                 contentPxW += outlinePad * 2;
                 contentPxH += outlinePad * 2;
                 // The stage folded the corner rounding into its padded target.
@@ -1044,6 +1164,26 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
         rw *= canvasFitW_;
         rh *= canvasFitH_;
 
+        // How this request's final draws are placed: orientation (the track's
+        // flip, or a Lens flip override; it mirrors the FRAMED cell), Roam
+        // rotation, and the Bounds Clip scissor to the home rect. For an
+        // identity Lens/Roam this is exactly today's draw.
+        CellDrawXform xf;
+        xf.orientation = lensroam::effectiveOrientation(req.lens.flip, req.orientation);
+        xf.rotationRad = roamRotRad;
+        if (lensroam::roamClipsToHome(req.roam)) {
+            const lensroam::UvRect homeOut{ canvasFitX_ + roamHome.x * canvasFitW_,
+                                            canvasFitY_ + roamHome.y * canvasFitH_,
+                                            roamHome.w * canvasFitW_,
+                                            roamHome.h * canvasFitH_ };
+            const lensroam::PixelRect pr = lensroam::homeScissor(homeOut, width_, height_);
+            xf.scissor = true;
+            xf.scissorRect.left   = static_cast<LONG>(pr.left);
+            xf.scissorRect.top    = static_cast<LONG>(pr.top);
+            xf.scissorRect.right  = static_cast<LONG>(pr.right);
+            xf.scissorRect.bottom = static_cast<LONG>(pr.bottom);
+        }
+
         // ── Visual Echo: draw the trail ─────────────────────────────────────
         //
         // After the canvas-fit mapping (taps are placed in OUTPUT-UV, like the
@@ -1056,7 +1196,7 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
         // would leave the first tap visibly offset whenever an Outline is on.
         if (req.echo.active && !effectsBypass_) {
             const auto echoStart = std::chrono::high_resolution_clock::now();
-            drawEchoTaps(req, rx, ry, rw, rh, cellCornerRad, activeRTV);
+            drawEchoTaps(req, rx, ry, rw, rh, cellCornerRad, activeRTV, xf);
             echoAccumMs += std::chrono::duration<double, std::milli>(
                 std::chrono::high_resolution_clock::now() - echoStart).count();
         }
@@ -1068,11 +1208,11 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
         // canvas-fit mapping.
         if (!effectsBypass_) {
             drawDropShadowLayers(cellSRV, contentPxW, contentPxH, req,
-                                 rx, ry, rw, rh, cellCornerRad, activeRTV);
+                                 rx, ry, rw, rh, cellCornerRad, activeRTV, &xf);
         }
 
         drawCell(cellSRV, rx, ry, rw, rh,
-                 req.opacity, req.orientation, cellCornerRad);
+                 req.opacity, xf.orientation, cellCornerRad, &xf);
     }
 
     // Unbind render target to allow subsequent SRV reads
@@ -1100,6 +1240,43 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
             static_cast<double>(echoStats_.ringBytes) / (1024.0 * 1024.0));
     }
     XLETH_RENDER_LOG(std::fprintf(stderr, "[Compositor] Frame composited in %.2fms\n", ms));
+
+#ifdef XLETH_DEBUG
+    if (kRoamDevLog) {
+        if (roamTimer) {
+            deviceCtx_->End(roamTimer->end.Get());
+            deviceCtx_->End(roamTimer->disjoint.Get());
+            roamTimer->pending = true;
+            roamTimer->frame   = roamFrameCounter_;
+        }
+        // GPU time of the most recent frame the GPU has finished, read without
+        // flushing or waiting: -1 until it has caught up with one.
+        double    gpuMs    = -1.0;
+        long long gpuFrame = -1;
+        for (int i = 1; i <= kRoamGpuTimers; ++i) {
+            RoamGpuTimer& t = roamGpuTimers_[(roamFrameCounter_ + i) % kRoamGpuTimers];
+            if (!t.pending) continue;
+            D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj{};
+            UINT64 t0 = 0, t1 = 0;
+            const UINT nf = D3D11_ASYNC_GETDATA_DONOTFLUSH;
+            if (deviceCtx_->GetData(t.disjoint.Get(), &dj, sizeof(dj), nf) != S_OK) continue;
+            if (deviceCtx_->GetData(t.begin.Get(), &t0, sizeof(t0), nf) != S_OK) continue;
+            if (deviceCtx_->GetData(t.end.Get(),   &t1, sizeof(t1), nf) != S_OK) continue;
+            t.pending = false;
+            if (!dj.Disjoint && dj.Frequency > 0 && t1 >= t0) {
+                gpuMs    = static_cast<double>(t1 - t0) * 1000.0 / static_cast<double>(dj.Frequency);
+                gpuFrame = static_cast<long long>(t.frame);
+            }
+        }
+        std::fprintf(stderr,
+            "[Roam] frame %lld composite cpu=%.3fms gpu=%.3fms (frame %lld) "
+            "requests=%d lensPasses=%d roamCells=%d\n",
+            static_cast<long long>(roamFrameCounter_), ms, gpuMs, gpuFrame,
+            static_cast<int>(requests.size()), lensPasses, roamCells);
+        ++roamFrameCounter_;
+    }
+#endif
+    (void)lensPasses; (void)roamCells;
 }
 
 RTPool::RTPair& GridCompositor::acquireTransitionTargets()
@@ -1193,7 +1370,8 @@ void GridCompositor::transitionPass(ID3D11ShaderResourceView* srvA,
 
 void GridCompositor::drawCell(ID3D11ShaderResourceView* srv,
                                float rectX, float rectY, float rectW, float rectH,
-                               float opacity, int orientation, float cornerRadius)
+                               float opacity, int orientation, float cornerRadius,
+                               const CellDrawXform* xf)
 {
     // Update constant buffer
     D3D11_MAPPED_SUBRESOURCE mapped;
@@ -1209,14 +1387,94 @@ void GridCompositor::drawCell(ID3D11ShaderResourceView* srv,
     cb.orientation  = orientation;
     cb.cornerRadius = cornerRadius;
 
+    // Roam rotation: the shader finds each pixel's local UV through the
+    // inverse of "this rect turned about its own centre". Zero rotation keeps
+    // the original (uv - xy) / zw divide, bit for bit.
+    if (xf && xf->rotationRad != 0.0f) {
+        const lensroam::RoamInverse inv = lensroam::computeRoamInverse(
+            lensroam::UvRect{ rectX, rectY, rectW, rectH }, xf->rotationRad,
+            static_cast<float>(width_), static_cast<float>(height_));
+        cb.xformFlags |= kXformRoam;
+        cb.roamRow0[0] = inv.r00; cb.roamRow0[1] = inv.r01; cb.roamRow0[2] = inv.r02;
+        cb.roamRow1[0] = inv.r10; cb.roamRow1[1] = inv.r11; cb.roamRow1[2] = inv.r12;
+    }
+
     std::memcpy(mapped.pData, &cb, sizeof(cb));
     deviceCtx_->Unmap(constantBuffer_.Get(), 0);
 
     // Bind texture
     deviceCtx_->PSSetShaderResources(0, 1, &srv);
 
-    // Draw the quad (6 indices)
+    // Draw the quad (6 indices). Bounds Clip scissors to the home cell for
+    // this one draw only, so no intermediate pass ever sees the scissor.
+    const bool scissor = xf && xf->scissor && scissorRasterizerState_;
+    if (scissor) {
+        deviceCtx_->RSSetState(scissorRasterizerState_.Get());
+        deviceCtx_->RSSetScissorRects(1, &xf->scissorRect);
+    }
     deviceCtx_->DrawIndexed(6, 0, 0);
+    if (scissor) deviceCtx_->RSSetState(rasterizerState_.Get());
+}
+
+// ===========================================================================
+// Lens framing pass
+// ===========================================================================
+
+ID3D11ShaderResourceView* GridCompositor::applyLensPass(ID3D11ShaderResourceView* srcSRV,
+                                                        int dstW, int dstH,
+                                                        const float lensRow0[4],
+                                                        const float lensRow1[4])
+{
+    if (!initialized_ || !srcSRV || dstW <= 0 || dstH <= 0) return srcSRV;
+
+    // Pooled target: acquired once per (slot, size) and reused every frame.
+    RTPool::RTPair& rtp = rtPool_.acquire(device_, dstW, dstH, kLensRtSlot);
+    if (!rtp.rtvA || !rtp.srvA) return srcSRV;
+
+    // Cleared to the cell background: an empty cell is transparent today, so
+    // Contain's letterbox and any area a zoom-out or rotation uncovers show
+    // whatever lies behind the cell.
+    const float clear[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    deviceCtx_->ClearRenderTargetView(rtp.rtvA.Get(), clear);
+
+    D3D11_VIEWPORT vp{};
+    vp.Width    = static_cast<float>(dstW);
+    vp.Height   = static_cast<float>(dstH);
+    vp.MinDepth = 0.0f;
+    vp.MaxDepth = 1.0f;
+    deviceCtx_->RSSetViewports(1, &vp);
+    deviceCtx_->OMSetRenderTargets(1, rtp.rtvA.GetAddressOf(), nullptr);
+    deviceCtx_->PSSetShader(pixelShader_.Get(), nullptr, 0);
+    deviceCtx_->PSSetConstantBuffers(0, 1, constantBuffer_.GetAddressOf());
+    deviceCtx_->PSSetSamplers(0, 1, samplerState_.GetAddressOf());
+
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(deviceCtx_->Map(constantBuffer_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+        return srcSRV;
+    CellConstants cb{};
+    cb.cellRect[2]  = 1.0f;
+    cb.cellRect[3]  = 1.0f;
+    cb.opacity      = 1.0f;
+    cb.orientation  = 0;      // the flip is applied by the final draw, to the framed cell
+    cb.cornerRadius = 0.0f;
+    cb.xformFlags   = kXformLens;
+    std::memcpy(cb.lensRow0, lensRow0, sizeof(cb.lensRow0));
+    std::memcpy(cb.lensRow1, lensRow1, sizeof(cb.lensRow1));
+    std::memcpy(mapped.pData, &cb, sizeof(cb));
+    deviceCtx_->Unmap(constantBuffer_.Get(), 0);
+
+    // Straight overwrite, so the source's alpha and the transparent
+    // background land verbatim; the cell's own SRC_ALPHA composite stays the
+    // one place blending happens.
+    const float bf[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    deviceCtx_->OMSetBlendState(opaqueBlendState_.Get(), bf, 0xFFFFFFFF);
+    drawEffectPass(srcSRV);
+
+    ID3D11RenderTargetView* nullRTV = nullptr;
+    deviceCtx_->OMSetRenderTargets(1, &nullRTV, nullptr);
+    ID3D11ShaderResourceView* nullSRV = nullptr;
+    deviceCtx_->PSSetShaderResources(0, 1, &nullSRV);
+    return rtp.srvA.Get();
 }
 
 // ===========================================================================
@@ -1982,7 +2240,8 @@ ID3D11ShaderResourceView* GridCompositor::resolveEchoTapSRV(
 void GridCompositor::drawEchoTaps(const CellFrameRequest& req,
                                   float rectX, float rectY, float rectW, float rectH,
                                   float cornerRadius,
-                                  ID3D11RenderTargetView* activeRTV)
+                                  ID3D11RenderTargetView* activeRTV,
+                                  const CellDrawXform& xf)
 {
     const xleth::echo::EchoSettings& e = req.echo;
 
@@ -2037,13 +2296,17 @@ void GridCompositor::drawEchoTaps(const CellFrameRequest& req,
                        / static_cast<float>(e.taps);
         }
 
+        // xf.orientation: the track's flip, or the Lens flip override (the
+        // same orientation the live cell is drawn with).
         const int orientation =
-            xleth::echo::composeTapOrientation(req.orientation, e.flipMode, n);
+            xleth::echo::composeTapOrientation(xf.orientation, e.flipMode, n);
 
         if (e.additive)
             deviceCtx_->OMSetBlendState(additiveBlendState_.Get(), bf, 0xFFFFFFFF);
 
-        drawCell(tapSRV, tx, ty, tw, th, opacity, orientation, cornerRadius);
+        // Roam: each tap turns about its own centre and obeys the cell's
+        // Bounds Clip, like the live cell it trails.
+        drawCell(tapSRV, tx, ty, tw, th, opacity, orientation, cornerRadius, &xf);
         ++echoStats_.lastTapDraws;
 
         if (e.additive)
@@ -2968,10 +3231,16 @@ void GridCompositor::drawDropShadowLayers(
     const CellFrameRequest& req,
     float rectX, float rectY, float rectW, float rectH,
     float cornerRadius,
-    ID3D11RenderTargetView* activeRTV)
+    ID3D11RenderTargetView* activeRTV,
+    const CellDrawXform* xfIn)
 {
     if (!initialized_ || !effectShaders_.initialized || !cellSRV)          return;
     if (!effectShaders_.dropShadowPS || !effectShaders_.dropShadowCB)      return;
+
+    // nullptr = today's draw: the track's orientation, no Roam.
+    CellDrawXform xfDefault;
+    xfDefault.orientation = req.orientation;
+    const CellDrawXform& xf = xfIn ? *xfIn : xfDefault;
     if (contentWidth <= 0 || contentHeight <= 0)                           return;
     if (!(rectW > 0.0f) || !(rectH > 0.0f))                                return;
 
@@ -3042,7 +3311,7 @@ void GridCompositor::drawDropShadowLayers(
         // Output V grows downward, so +sin already points down — no sign flip.
         const float angleRad = fx.params[4] * 0.017453292f;   // pi/180
         float dirX = 0.0f, dirY = 0.0f;
-        orientDirection(req.orientation, std::cos(angleRad), std::sin(angleRad),
+        orientDirection(xf.orientation, std::cos(angleRad), std::sin(angleRad),
                         dirX, dirY);
         cb.offsetU = dirX * distancePx * cb.texelW;
         cb.offsetV = dirY * distancePx * cb.texelH;
@@ -3088,10 +3357,12 @@ void GridCompositor::drawDropShadowLayers(
         // Opacity is already folded into the layer's own alpha (and, for the
         // darkening modes, into its RGB), so this draw must pass 1.0 — scaling
         // alpha here would leave the baked RGB inconsistent with it.
+        // The padded rect shares the cell's centre, so a Roam rotation turns
+        // the shadow about the same point as the cell.
         drawCell(rtp.srvB.Get(),
                  rectX - padU, rectY - padV,
                  rectW + padU * 2.0f, rectH + padV * 2.0f,
-                 1.0f, req.orientation, 0.0f);
+                 1.0f, xf.orientation, 0.0f, &xf);
 
         // Back to the ordinary composite blend for the cell itself (and for any
         // further shadow on this track, which re-selects its own).

@@ -4,6 +4,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <string>
 #include <tuple>
 #include <utility>
 
@@ -355,8 +358,55 @@ LensRoamSnapshot::Counts LensRoamSnapshot::counts() const {
     return c;
 }
 
+// ─── Dev-only verification hook (P2) ──────────────────────────────────────────
+// XLETH_DEV_LENS_ROAM_TRACK=<trackId> forces one track's resolved values in
+// EVERY snapshot: Lens zoom 1.5 and rotation 10 deg on all of its content
+// (fit and centre left as they are), Roam offset (0.5, -0.3) cells, bounds
+// Float. XLETH_DEV_LENS_ROAM_LAYER=grid|above|top picks the Float layer
+// (default grid). The model is never touched: nothing is saved, nothing is
+// undoable, and the UI shows the real values.
+//
+// It lives HERE, in the one builder both the live preview and export call, so
+// the two are guaranteed to see the same forced values; that is the point of
+// the hook (preview/export parity of the P2 compositor). There is no separate
+// dev/release compile in this repo (XLETH_DEBUG is defined in every build),
+// so the env var is the dev flag; the #ifdef only lets a future build that
+// drops XLETH_DEBUG compile the hook away.
+namespace {
+struct DevLensRoamHook {
+    bool      active  = false;
+    int       trackId = -1;
+    RoamLayer layer   = RoamLayer::GridOrder;
+};
+
+DevLensRoamHook devLensRoamHook() {
+    DevLensRoamHook h;
+#ifdef XLETH_DEBUG
+    const char* t = std::getenv("XLETH_DEV_LENS_ROAM_TRACK");
+    if (!t || !t[0]) return h;
+    char* end = nullptr;
+    const long id = std::strtol(t, &end, 10);
+    if (end == t) return h;
+    h.active  = true;
+    h.trackId = static_cast<int>(id);
+    if (const char* l = std::getenv("XLETH_DEV_LENS_ROAM_LAYER")) {
+        const std::string v = l;
+        if (v == "above")    h.layer = RoamLayer::AboveNeighbours;
+        else if (v == "top") h.layer = RoamLayer::Top;
+    }
+#endif
+    return h;
+}
+
+void applyDevLens(LensParams& p) {
+    p.zoom        = 1.5f;
+    p.rotationDeg = 10.0f;
+}
+} // namespace
+
 std::shared_ptr<const LensRoamSnapshot> buildLensRoamSnapshot(const Timeline& timeline) {
     auto snap = std::make_shared<LensRoamSnapshot>();
+    const DevLensRoamHook dev = devLensRoamHook();
 
     const auto tracks = timeline.getAllTracks();
     snap->tracks.reserve(tracks.size());
@@ -366,15 +416,42 @@ std::shared_ptr<const LensRoamSnapshot> buildLensRoamSnapshot(const Timeline& ti
         e.roam    = lensroam::resolveBase(t->roam);
         e.sourceFallback = t->type == TrackInfo::Type::Pattern
             ? LensParams::newContentDefault() : LensParams{};
+        const bool devTrack = dev.active && t->id == dev.trackId;
+        if (devTrack) {
+            e.roam.offsetX = 0.5f;
+            e.roam.offsetY = -0.3f;
+            e.roam.bounds  = RoamBounds::Float;
+            e.roam.layer   = dev.layer;
+            applyDevLens(e.sourceFallback);
+        }
         snap->tracks.push_back(e);
-        for (const auto& [regionId, lens] : t->trackLens)
-            snap->sources.push_back({ t->id, regionId, lensroam::resolveBase(lens) });
+        for (const auto& [regionId, lens] : t->trackLens) {
+            LensParams lp = lensroam::resolveBase(lens);
+            if (devTrack) applyDevLens(lp);
+            snap->sources.push_back({ t->id, regionId, lp });
+        }
     }
 
     const auto clips = timeline.getAllClips();
     snap->clips.reserve(clips.size());
-    for (const Clip* c : clips)
-        snap->clips.push_back({ c->id, lensroam::resolveBase(c->lens) });
+    for (const Clip* c : clips) {
+        LensParams lp = lensroam::resolveBase(c->lens);
+        if (dev.active && c->trackId == dev.trackId) applyDevLens(lp);
+        snap->clips.push_back({ c->id, lp });
+    }
+
+    if (dev.active) {
+        // Message/setup thread (this builder allocates; it never runs on the
+        // render thread). Once per process: it is rebuilt after every edit.
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            std::fprintf(stderr,
+                "[Roam] DEV hook XLETH_DEV_LENS_ROAM_TRACK=%d: lens zoom 1.5 rot 10deg, "
+                "roam offset (0.5,-0.3) Float layer=%s (snapshot only, model untouched)\n",
+                dev.trackId, lensroam::roamLayerToString(dev.layer));
+        }
+    }
 
     std::sort(snap->tracks.begin(), snap->tracks.end(),
         [](const auto& a, const auto& b) { return a.trackId < b.trackId; });

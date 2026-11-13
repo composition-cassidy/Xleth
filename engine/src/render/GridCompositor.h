@@ -42,16 +42,41 @@ struct VisualEffect;
 // Phase 4: legacy flipMode / globalNoteIndex are gone from both the HLSL cbuffer
 // and this struct. Per-cell flip state is now resolved at event-build time and
 // flows through `orientation` only (0..5 — see Orientation enum / spec §5.3).
-// Layout matches the HLSL cbuffer's 28 bytes + 4 bytes implicit pad (sizeof=32).
+//
+// Lens + Roam (P2): `xformFlags` plus four float4 rows carry the two optional
+// affine maps computed by render/LensRoamMath.h. A zero-initialised
+// CellConstants (every existing `CellConstants cb{}` site) has xformFlags = 0,
+// which runs the shader's original arithmetic unchanged.
+// Layout matches the HLSL cbuffer exactly: 6 x float4 = 96 bytes.
 // ---------------------------------------------------------------------------
 struct alignas(16) CellConstants {
     float cellRect[4];      // x, y, width, height in UV [0,1]
     float opacity;
     int   orientation;      // 0=none, 1=h, 2=v, 3=rot180, 4=rot90cw, 5=rot90ccw
     float cornerRadius;
-    // 4-byte tail pad — implicit; struct is 28 bytes used, padded to 32 for alignof(16).
+    int   xformFlags;       // kXformLens | kXformRoam (0 = today's path)
+    float lensRow0[4];      // localUV -> source UV, row 0 (m00, m01, tx, 0)
+    float lensRow1[4];      //                       row 1 (m10, m11, ty, 0)
+    float roamRow0[4];      // output UV -> localUV, row 0 (r00, r01, r02, 0)
+    float roamRow1[4];      //                        row 1 (r10, r11, r12, 0)
 };
-static_assert(sizeof(CellConstants) == 32, "CellConstants must be 32 bytes (2 x float4)");
+static_assert(sizeof(CellConstants) == 96, "CellConstants must be 96 bytes (6 x float4)");
+static constexpr int kXformLens = 1;
+static constexpr int kXformRoam = 2;
+
+// How the final draws of ONE request (echo taps, drop shadow, the cell) are
+// placed beyond their rect: the orientation to draw with (the track's flip,
+// or a Lens flip override), a Roam rotation about each drawn rect's own
+// centre, and the Bounds Clip scissor to the home cell. Default-constructed
+// = today's draw. Passed explicitly, never stored on the compositor, so the
+// intermediate blits those stages make (echo lerp, shadow silhouette) can
+// never pick it up.
+struct CellDrawXform {
+    int        orientation = 0;
+    float      rotationRad = 0.0f;   // Roam rotation, clockwise on screen
+    bool       scissor     = false;  // Bounds Clip: clip to scissorRect
+    D3D11_RECT scissorRect{};        // home cell, output pixels
+};
 
 // ---------------------------------------------------------------------------
 // GlobalConstants — per-frame global data, bound to cbuffer register(b1)
@@ -619,7 +644,8 @@ public:
         const CellFrameRequest& req,
         float rectX, float rectY, float rectW, float rectH,
         float cornerRadius,
-        ID3D11RenderTargetView* activeRTV);
+        ID3D11RenderTargetView* activeRTV,
+        const CellDrawXform* xf = nullptr);   // nullptr = {req.orientation}, no Roam
 
 private:
     // ── Device references (not owned) ──────────────────────────────────────
@@ -714,6 +740,30 @@ private:
     // a slot would bind the same texture as both SRV and RTV.
     static constexpr int kOutlineRtSlot    = 5;
     static constexpr int kDropShadowRtSlot = 6;
+    // Lens framing pass (P2). Must differ from 0-7: it is the FIRST stage of a
+    // cell and every later stage (chain 0, ZPR 1, ping-pong 2, companion 3,
+    // outline 5, shadow 6, echo lerp 7) may still be reading it.
+    static constexpr int kLensRtSlot = 8;
+
+    // Bounds Clip: same as rasterizerState_ plus ScissorEnable. Bound only
+    // around a request's final draws (see drawCell).
+    Microsoft::WRL::ComPtr<ID3D11RasterizerState>   scissorRasterizerState_;
+
+    // Dev-only [Roam] per-frame composite timing (XLETH_DEV_ROAM_LOG or the
+    // XLETH_DEV_LENS_ROAM_TRACK hook). GPU time via timestamp queries, read
+    // back a few frames late without stalling. Created once, on first use.
+    // The members are UNCONDITIONAL on purpose: only the .cpp logic is gated
+    // on XLETH_DEBUG. A macro-dependent class layout would differ between the
+    // engine (XLETH_DEBUG on) and any consumer built without it (ODR).
+    struct RoamGpuTimer {
+        Microsoft::WRL::ComPtr<ID3D11Query> disjoint, begin, end;
+        bool    pending = false;
+        int64_t frame   = 0;
+    };
+    static constexpr int kRoamGpuTimers = 4;
+    RoamGpuTimer roamGpuTimers_[kRoamGpuTimers];
+    bool         roamGpuTimersReady_ = false;
+    int64_t      roamFrameCounter_   = 0;
 
     // ── Visual Echo state ──────────────────────────────────────────────────
     std::unordered_map<uint64_t, EchoRing> echoRings_;
@@ -739,7 +789,8 @@ private:
     void drawEchoTaps(const CellFrameRequest& req,
                       float rectX, float rectY, float rectW, float rectH,
                       float cornerRadius,
-                      ID3D11RenderTargetView* activeRTV);
+                      ID3D11RenderTargetView* activeRTV,
+                      const CellDrawXform& xf);
 
     /** Resolve one tap to a single SRV, lerping between the two adjacent
      *  buffered frames when the tap's offset is fractional. Returns nullptr when
@@ -764,7 +815,18 @@ private:
      *  `orientation` is the flip-v2 enum (0..5 — see GridComposite.hlsl). */
     void drawCell(ID3D11ShaderResourceView* srv,
                   float rectX, float rectY, float rectW, float rectH,
-                  float opacity, int orientation, float cornerRadius);
+                  float opacity, int orientation, float cornerRadius,
+                  const CellDrawXform* xf = nullptr);
+
+    /** Lens framing pass: draw `srcSRV` framed by `map` into slot kLensRtSlot
+     *  (dstW x dstH, cleared to the transparent cell background) and return
+     *  that target's SRV, or srcSRV when no target could be acquired. Runs
+     *  BEFORE the visual chain (spec Ruling 3). Leaves the caller to restore
+     *  the main pipeline state. */
+    ID3D11ShaderResourceView* applyLensPass(ID3D11ShaderResourceView* srcSRV,
+                                            int dstW, int dstH,
+                                            const float lensRow0[4],
+                                            const float lensRow1[4]);
 
     /** Blit sourceSRV into the currently bound render target as a fullscreen quad.
      *  Uses the main pixel shader with the supplied orientation applied. */

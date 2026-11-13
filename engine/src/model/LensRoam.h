@@ -7,9 +7,10 @@
 //   Roam  moves the CELL ITSELF                   (offset, scale, rotation, bounds, layer)
 //
 // Phase P1 (this file): data, persistence, and an immutable per-frame
-// snapshot the compositor can read. NOTHING renders from these values yet
-// (P2), nothing edits them yet (P3/P4), and keys are stored but never
-// evaluated (P7+): every resolve below returns `base`.
+// snapshot the compositor can read. P2 renders from it: GridCompositor applies
+// the resolved values through render/LensRoamMath.h, the one evaluator the
+// live preview and export share. Nothing edits them yet (P3/P4), and keys are
+// stored but never evaluated (P7+): every resolve below returns `base`.
 //
 // Storage (spec "Storage"):
 //   Clip Track event          Clip::lens            LensTrack {base, keys}

@@ -11,8 +11,10 @@
 #include "model/NoteFade.h"
 #include "SyncManager.h"     // VideoEvent
 #include "render/VisualEchoTypes.h"
+#include "render/LensRoamMath.h"   // roamDrawKey (draw order), shared with GridCompositor
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -552,6 +554,8 @@ std::vector<CellFrameRequest>& FrameCollector::collectRequests(
         req.sourcePath       = pickedPath;
         req.sourceId         = ev->sourceId;
         req.sourceFrameIndex = pickedFrame;
+        req.sourcePixelW     = src->width;
+        req.sourcePixelH     = src->height;
         const float fadeGain = videoEventFadeGain(*ev, beatPos)
                              * trackNoteFadeGain(*ev, trk, beatPos, bpm);
         req.opacity          = std::clamp(slotOpacity * ev->opacity * fadeGain, 0.0f, 1.0f);
@@ -692,6 +696,8 @@ std::vector<CellFrameRequest>& FrameCollector::collectRequests(
             s.lastPath             = req.sourcePath;
             s.lastOrientation      = req.orientation;
             s.lastLens             = req.lens;
+            s.lastSourcePixelW     = req.sourcePixelW;
+            s.lastSourcePixelH     = req.sourcePixelH;
             s.suppressAfterFadeOut = ev->fadeOutPercent > 0.0f
                                   || trackNoteFadeHasFadeOut(*ev, trk, bpm);
             s.lastClipEndBeat      = ev->startBeat + ev->durationBeats;
@@ -762,6 +768,8 @@ std::vector<CellFrameRequest>& FrameCollector::collectRequests(
         req.orientation      = hold.lastOrientation;
         req.trackId          = trackId;
         req.lens             = hold.lastLens;
+        req.sourcePixelW     = hold.lastSourcePixelW;
+        req.sourcePixelH     = hold.lastSourcePixelH;
         if (const LensRoamSnapshot* lr = lensRoam_.get())
             req.roam = lr->roamFor(trackId);
 
@@ -897,10 +905,30 @@ std::vector<CellFrameRequest>& FrameCollector::collectRequests(
     // grid-vs-grid keep slot array order, and on an exact tie between a fullscreen
     // layer and a grid cell the assembly order (behind < grid < front) breaks it
     // deterministically. The compositor then draws requests in this exact order.
-    std::stable_sort(requests.begin(), requests.end(),
-        [](const CellFrameRequest& a, const CellFrameRequest& b) {
-            return a.zOrder < b.zOrder;
-        });
+    //
+    // Roam layers (spec: Bounds Float draws per layer) are a secondary key in
+    // this same sort, so draw order is still decided in exactly one place. The
+    // key is lensroam::roamDrawKey; when no request floats on a non-grid layer
+    // (every project before Roam, and most after), the original zOrder-only
+    // comparator runs untouched, so today's order cannot move.
+    bool anyRoamLayer = false;
+    int  maxGridZOrder = INT_MIN;
+    for (const CellFrameRequest& r : requests) {
+        if (r.layerKind == CellLayerKind::Grid) maxGridZOrder = std::max(maxGridZOrder, r.zOrder);
+        if (lensroam::effectiveRoamLayer(r.roam) != RoamLayer::GridOrder) anyRoamLayer = true;
+    }
+    if (!anyRoamLayer) {
+        std::stable_sort(requests.begin(), requests.end(),
+            [](const CellFrameRequest& a, const CellFrameRequest& b) {
+                return a.zOrder < b.zOrder;
+            });
+    } else {
+        std::stable_sort(requests.begin(), requests.end(),
+            [maxGridZOrder](const CellFrameRequest& a, const CellFrameRequest& b) {
+                return lensroam::roamDrawKey(a.roam, a.zOrder, maxGridZOrder)
+                     < lensroam::roamDrawKey(b.roam, b.zOrder, maxGridZOrder);
+            });
+    }
 
     XLETH_RENDER_LOG(std::fprintf(stderr,
                  "[FrameCollector] Collecting for output frame %lld: %d active cells, %d gaps skipped\n",

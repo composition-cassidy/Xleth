@@ -13,6 +13,7 @@
 #include "model/Track.h"
 #include "project/ProjectManager.h"
 #include "render/FrameCollector.h"
+#include "render/LensRoamMath.h"
 #include "SyncManager.h"
 
 #include <cmath>
@@ -22,6 +23,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <vector>
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
@@ -586,6 +588,234 @@ static void test_real_project_resave() {
               "an old real project is identity for every track, clip and source");
 }
 
+// ─── [8] P2: the shared Lens/Roam evaluator (render/LensRoamMath.h) ──────────
+// The compositor's ONLY geometry source for both preview and export. Pure CPU
+// checks of the maps the shader applies.
+
+static bool approxEq(float a, float b, float eps = 1e-4f) { return std::fabs(a - b) <= eps; }
+
+static void test_p2_lens_math() {
+    std::cout << "[8] P2 Lens UV map\n";
+    using namespace lensroam;
+
+    // Identity takes today's path: no framing pass at all.
+    CHECK(!lensNeedsFraming(LensParams{}), "identity Lens needs no framing pass");
+    LensParams flipOnly; flipOnly.flip = LensFlip::Horizontal;
+    CHECK(!lensNeedsFraming(flipOnly), "a flip override alone is an orientation, not a framing pass");
+    CHECK(lensNeedsFraming(LensParams::newContentDefault()), "Cover frames");
+
+    // Stretch at zoom 1 maps local UV straight to source UV (16:9 source in a
+    // 4:3 cell: aspect ignored, exactly today's stretch).
+    {
+        const LensUvMap m = computeLensUvMap(LensParams{}, 400.0f, 300.0f, 1920.0f, 1080.0f);
+        float su, sv;
+        applyLensUvMap(m, 0.0f, 0.0f, su, sv);   CHECK(approxEq(su, 0.0f) && approxEq(sv, 0.0f), "stretch (0,0)");
+        applyLensUvMap(m, 1.0f, 1.0f, su, sv);   CHECK(approxEq(su, 1.0f) && approxEq(sv, 1.0f), "stretch (1,1)");
+        applyLensUvMap(m, 0.3f, 0.7f, su, sv);   CHECK(approxEq(su, 0.3f) && approxEq(sv, 0.7f), "stretch (0.3,0.7)");
+    }
+
+    // Cover: 16:9 source in a square cell fills the height, crops the sides.
+    // Visible source U span = (9/16) of the width, centred.
+    {
+        LensParams p; p.fit = LensFit::Cover;
+        const LensUvMap m = computeLensUvMap(p, 300.0f, 300.0f, 1920.0f, 1080.0f);
+        float su, sv;
+        applyLensUvMap(m, 0.0f, 0.0f, su, sv);
+        CHECK(approxEq(su, 0.5f - 0.5f * 1080.0f / 1920.0f) && approxEq(sv, 0.0f), "cover left/top edge");
+        applyLensUvMap(m, 1.0f, 1.0f, su, sv);
+        CHECK(approxEq(su, 0.5f + 0.5f * 1080.0f / 1920.0f) && approxEq(sv, 1.0f), "cover right/bottom edge");
+    }
+
+    // Contain: same pair letterboxes top/bottom: the cell's top edge is
+    // OUTSIDE the source (v < 0 -> background).
+    {
+        LensParams p; p.fit = LensFit::Contain;
+        const LensUvMap m = computeLensUvMap(p, 300.0f, 300.0f, 1920.0f, 1080.0f);
+        float su, sv;
+        applyLensUvMap(m, 0.5f, 0.0f, su, sv);
+        CHECK(approxEq(su, 0.5f) && sv < 0.0f, "contain: top edge is letterbox");
+        applyLensUvMap(m, 0.0f, 0.5f, su, sv);
+        CHECK(approxEq(su, 0.0f) && approxEq(sv, 0.5f), "contain: left edge touches the source");
+        const float barV = 0.5f - 0.5f * (1920.0f / 1080.0f);   // source v at the cell top
+        CHECK(approxEq(sv, 0.5f) && approxEq(m.ty + m.m11 * 0.0f + m.m10 * 0.5f, barV, 1e-3f),
+              "contain: letterbox height matches the aspect ratio");
+    }
+
+    // Zoom 2 about a moved centre shows half the source on each axis.
+    {
+        LensParams p; p.centerX = 0.25f; p.centerY = 0.75f; p.zoom = 2.0f;
+        const LensUvMap m = computeLensUvMap(p, 640.0f, 360.0f, 1920.0f, 1080.0f);
+        float su, sv;
+        applyLensUvMap(m, 0.5f, 0.5f, su, sv);  CHECK(approxEq(su, 0.25f) && approxEq(sv, 0.75f), "centre lands at the cell centre");
+        applyLensUvMap(m, 0.0f, 0.0f, su, sv);  CHECK(approxEq(su, 0.0f) && approxEq(sv, 0.5f), "zoom 2 halves the span");
+        applyLensUvMap(m, 1.0f, 1.0f, su, sv);  CHECK(approxEq(su, 0.5f) && approxEq(sv, 1.0f), "zoom 2 far corner");
+    }
+
+    // Rotation is rigid in PIXELS: a 90 deg clockwise turn of a picture that
+    // exactly covers a square cell sends the cell's top-right corner to the
+    // source's top-left (the picture's top-left corner swung round to the
+    // top-right).
+    {
+        LensParams p; p.fit = LensFit::Cover; p.rotationDeg = 90.0f;
+        const LensUvMap m = computeLensUvMap(p, 200.0f, 200.0f, 1000.0f, 1000.0f);
+        float su, sv;
+        applyLensUvMap(m, 1.0f, 0.0f, su, sv);
+        CHECK(approxEq(su, 0.0f) && approxEq(sv, 0.0f), "rot 90 cw: cell top-right samples source top-left");
+        applyLensUvMap(m, 0.5f, 0.5f, su, sv);
+        CHECK(approxEq(su, 0.5f) && approxEq(sv, 0.5f), "rotation is about the centre");
+    }
+
+    // Flip mapping: FollowTrack passes the state machine through.
+    CHECK(effectiveOrientation(LensFlip::FollowTrack, 4) == 4, "FollowTrack keeps the track's orientation");
+    CHECK(effectiveOrientation(LensFlip::None, 3) == 0, "None clears it");
+    CHECK(effectiveOrientation(LensFlip::Horizontal, 2) == 1, "Horizontal overrides");
+    CHECK(effectiveOrientation(LensFlip::Vertical, 1) == 2, "Vertical overrides");
+
+    // Source size: a proxy within 2% of the source's aspect fits with the
+    // SOURCE size (preview == export); another shape trusts the texture.
+    float w, h;
+    fitSourceSize(1920, 1080, 642, 360, w, h);
+    CHECK(w == 1920.0f && h == 1080.0f, "proxy texture -> source size");
+    fitSourceSize(1920, 1080, 480, 360, w, h);
+    CHECK(w == 480.0f && h == 360.0f, "different-shape texture -> texture size");
+    fitSourceSize(0, 0, 640, 360, w, h);
+    CHECK(w == 640.0f && h == 360.0f, "unknown source -> texture size");
+    fitSourceSize(1280, 720, 0, 0, w, h);
+    CHECK(w == 1280.0f && h == 720.0f, "no texture size -> source size");
+}
+
+static void test_p2_roam_math() {
+    std::cout << "[9] P2 Roam quad, inverse, scissor, draw order\n";
+    using namespace lensroam;
+
+    CHECK(!roamMovesCell(RoamParams{}) && !roamClipsToHome(RoamParams{}),
+          "identity Roam moves nothing and clips nothing (bounce overshoot stays unclipped)");
+    RoamParams layerOnly; layerOnly.layer = RoamLayer::Top;
+    CHECK(!roamMovesCell(layerOnly) && !roamClipsToHome(layerOnly), "layer alone under Clip: today's draw");
+
+    // Offset in cell units of the placement, then scale about the moved centre.
+    {
+        RoamParams r; r.offsetX = 0.5f; r.offsetY = -0.3f; r.scale = 2.0f; r.rotationDeg = 10.0f;
+        const UvRect home{ 0.25f, 0.5f, 0.25f, 0.25f };
+        float rot = 0.0f;
+        const UvRect q = roamCellRect(r, home, 0.25f, 0.25f, rot);
+        CHECK(approxEq(q.w, 0.5f) && approxEq(q.h, 0.5f), "scale 2 doubles the rect");
+        CHECK(approxEq(q.x + q.w * 0.5f, 0.25f + 0.125f + 0.125f), "centre x moved by half a cell");
+        CHECK(approxEq(q.y + q.h * 0.5f, 0.5f + 0.125f - 0.075f), "centre y moved by -0.3 cell");
+        CHECK(approxEq(rot, 10.0f * 3.14159265f / 180.0f), "rotation returned in radians");
+    }
+
+    // Inverse affine: rect corners/centre map back to local 0..1, rigidly in
+    // pixels on a non-square output.
+    {
+        const UvRect rect{ 0.25f, 0.25f, 0.5f, 0.5f };
+        const RoamInverse i0 = computeRoamInverse(rect, 0.0f, 1920.0f, 1080.0f);
+        auto loc = [](const RoamInverse& i, float u, float v, float& lu, float& lv) {
+            lu = i.r00 * u + i.r01 * v + i.r02;
+            lv = i.r10 * u + i.r11 * v + i.r12;
+        };
+        float lu, lv;
+        loc(i0, 0.25f, 0.25f, lu, lv); CHECK(approxEq(lu, 0.0f) && approxEq(lv, 0.0f), "unrotated top-left");
+        loc(i0, 0.75f, 0.75f, lu, lv); CHECK(approxEq(lu, 1.0f) && approxEq(lv, 1.0f), "unrotated bottom-right");
+
+        const RoamInverse i90 = computeRoamInverse(rect, 3.14159265f * 0.5f, 1920.0f, 1080.0f);
+        loc(i90, 0.5f, 0.5f, lu, lv);  CHECK(approxEq(lu, 0.5f) && approxEq(lv, 0.5f), "centre is fixed");
+        // 90 deg clockwise on screen: the rect's local top-centre (0.5, 0)
+        // swings to the right of the centre by half the rect HEIGHT in pixels.
+        const float halfHpx = 0.5f * 0.5f * 1080.0f;
+        loc(i90, 0.5f + halfHpx / 1920.0f, 0.5f, lu, lv);
+        CHECK(approxEq(lu, 0.5f, 1e-3f) && approxEq(lv, 0.0f, 1e-3f), "rot 90 cw: top edge swings to the right, rigidly");
+    }
+
+    // Scissor rounds each edge to the nearest pixel and clamps to the frame.
+    {
+        const PixelRect p = homeScissor(UvRect{ 0.25f, 0.5f, 0.25f, 0.5f }, 1920, 1080);
+        CHECK(p.left == 480 && p.top == 540 && p.right == 960 && p.bottom == 1080, "home scissor pixels");
+        const PixelRect c = homeScissor(UvRect{ -0.5f, -0.5f, 2.0f, 2.0f }, 100, 50);
+        CHECK(c.left == 0 && c.top == 0 && c.right == 100 && c.bottom == 50, "scissor clamps");
+    }
+
+    // Draw-order key: only Float honours the layer.
+    {
+        RoamParams fl; fl.bounds = RoamBounds::Float;
+        fl.layer = RoamLayer::Top;             CHECK(effectiveRoamLayer(fl) == RoamLayer::Top, "float top");
+        RoamParams cl = fl; cl.bounds = RoamBounds::Clip;
+        CHECK(effectiveRoamLayer(cl) == RoamLayer::GridOrder, "clip ignores layer");
+        RoamParams ab = fl; ab.layer = RoamLayer::AboveNeighbours;
+        CHECK(roamDrawKey(RoamParams{}, 5, 9) < roamDrawKey(ab, 0, 9), "above-neighbours sorts after the top grid cell");
+        CHECK(roamDrawKey(ab, 0, 9) < roamDrawKey(RoamParams{}, 10, 9), "...but under a layer stacked above the grid");
+        CHECK(roamDrawKey(RoamParams{}, 1000, 9) < roamDrawKey(fl, -5, 9), "top sorts after everything");
+    }
+}
+
+// The collector's single sort honours Float layers and leaves every other
+// case in today's zOrder order.
+static void test_p2_collector_order() {
+    std::cout << "[10] P2 draw order through the collector\n";
+    Fixture f;
+    buildFixture(f);
+    std::vector<VideoEvent> events = {
+        makeEvent(f.clipTrack, f.srcId, f.clip1, f.regA),
+        makeEvent(f.patTrack, f.srcId, -1, f.regB),
+    };
+    const AVRational fps{ 30, 1 };
+    auto orderFor = [&](const RoamParams& clipRoam) {
+        f.tl.getTrackMutable(f.clipTrack)->roam.base = clipRoam;
+        FrameCollector col;
+        col.setLensRoamSnapshot(buildLensRoamSnapshot(f.tl));
+        auto& reqs = col.collectRequests(0, f.tl, 48000, fps, events);
+        std::vector<int> ids;
+        for (const auto& r : reqs) ids.push_back(r.trackId);
+        return ids;
+    };
+    const std::vector<int> today = { f.clipTrack, f.patTrack };   // zOrder 0, 1
+    const std::vector<int> raised = { f.patTrack, f.clipTrack };
+
+    CHECK(orderFor(RoamParams{}) == today, "identity: zOrder order");
+    RoamParams r; r.offsetX = 0.5f;
+    r.layer = RoamLayer::Top;  r.bounds = RoamBounds::Clip;
+    CHECK(orderFor(r) == today, "Clip ignores the layer");
+    r.bounds = RoamBounds::Float; r.layer = RoamLayer::GridOrder;
+    CHECK(orderFor(r) == today, "Float + GridOrder keeps zOrder order");
+    r.layer = RoamLayer::AboveNeighbours;
+    CHECK(orderFor(r) == raised, "Float + AboveNeighbours draws over the neighbour");
+    r.layer = RoamLayer::Top;
+    CHECK(orderFor(r) == raised, "Float + Top draws last");
+
+    // Each request carries its source's own pixel size for the Lens fit.
+    f.tl.getTrackMutable(f.clipTrack)->roam.base = RoamParams{};
+    FrameCollector col;
+    auto& reqs = col.collectRequests(0, f.tl, 48000, fps, events);
+    for (const auto& q : reqs)
+        CHECK(q.sourcePixelW == 1920 && q.sourcePixelH == 1080, "request carries the source pixel size");
+}
+
+// The dev verification hook forces values in the SNAPSHOT (the one builder
+// preview and export share), never in the model.
+static void test_p2_dev_hook() {
+    std::cout << "[11] P2 dev hook (XLETH_DEV_LENS_ROAM_TRACK)\n";
+    // The hook is compiled into XlethEngineModel (built with XLETH_DEBUG, as
+    // every engine/bridge target is); this test target itself does not define
+    // the macro, so no #ifdef here.
+    Fixture f;
+    buildFixture(f);
+    _putenv_s("XLETH_DEV_LENS_ROAM_TRACK", std::to_string(f.clipTrack).c_str());
+    _putenv_s("XLETH_DEV_LENS_ROAM_LAYER", "top");
+    auto snap = buildLensRoamSnapshot(f.tl);
+    _putenv_s("XLETH_DEV_LENS_ROAM_TRACK", "");
+    _putenv_s("XLETH_DEV_LENS_ROAM_LAYER", "");
+
+    const RoamParams r = snap->roamFor(f.clipTrack);
+    CHECK(r.offsetX == 0.5f && r.offsetY == -0.3f && r.bounds == RoamBounds::Float
+          && r.layer == RoamLayer::Top, "hooked track: roam offset (0.5,-0.3) Float");
+    const LensParams l = snap->lensForClip(f.clip1);
+    CHECK(l.zoom == 1.5f && l.rotationDeg == 10.0f, "hooked track: clip lens zoom 1.5, rot 10");
+    CHECK(snap->roamFor(f.patTrack).isIdentity(), "other tracks untouched");
+    CHECK(f.tl.getTrack(f.clipTrack)->roam.base.isIdentity(), "model untouched");
+    auto plain = buildLensRoamSnapshot(f.tl);
+    CHECK(plain->roamFor(f.clipTrack).isIdentity(), "hook off -> real values");
+}
+
 int main() {
     std::cout << "[LensRoam] Lens + Roam P1 tests\n";
     test_defaults();
@@ -595,6 +825,10 @@ int main() {
     test_snapshot_lookup();
     test_collector_copy();
     test_real_project_resave();
+    test_p2_lens_math();
+    test_p2_roam_math();
+    test_p2_collector_order();
+    test_p2_dev_hook();
     std::cout << "[LensRoam] " << g_pass << " passed, " << g_fail << " failed\n";
     return g_fail == 0 ? 0 : 1;
 }

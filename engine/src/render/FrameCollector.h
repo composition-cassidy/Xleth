@@ -132,9 +132,17 @@ struct CellFrameRequest {
     // Lens + Roam, RESOLVED for this cell and frame (P1: the static base).
     // Fixed-size values copied out of the published LensRoamSnapshot, so the
     // compositor reads plain data and never the model. Identity when no
-    // snapshot is installed. Not consumed by GridCompositor yet (P2).
+    // snapshot is installed. GridCompositor applies both (P2) through
+    // render/LensRoamMath.h; the collector's draw-order sort reads roam.layer.
     LensParams lens;   // the event's clip lens, or its {trackId, regionId} source lens
     RoamParams roam;   // the track's roam
+
+    // The source's own pixel size (SourceMedia width/height; 0 = unknown).
+    // Lens Cover/Contain fit against it rather than the decoded texture, so a
+    // preview proxy (aspect-preserved, size rounded) frames exactly like the
+    // export's full-size source. See lensroam::fitSourceSize.
+    int sourcePixelW = 0;
+    int sourcePixelH = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -357,6 +365,8 @@ private:
         // Lens of the event that produced lastFrame: a held frame is the same
         // picture, so it keeps the same framing.
         LensParams  lastLens;
+        int         lastSourcePixelW = 0;
+        int         lastSourcePixelH = 0;
     };
     std::unordered_map<int, HoldState> holdByTrack_;
 
