@@ -3430,6 +3430,30 @@ target_compile_definitions(test_compositor PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_lens_roam_verify ─────────────────────────────────────────────────
+# Lens + Roam P12 verification: live vs export parity per feature, zero added
+# render-path allocations, 8x8 / 2,000-note stress timings (reported only).
+add_executable(test_lens_roam_verify
+    test/test_lens_roam_verify.cpp
+)
+
+target_link_libraries(test_lens_roam_verify PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    d3d11
+    dxgi
+)
+
+target_compile_definitions(test_lens_roam_verify PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_visual_echo ─────────────────────────────────────────────────────────
 # Visual Echo end-to-end: tap gain/orientation math, ring mechanics, and the
 # timing claim that matters — that a tap shows the frame from D frames ago,
@@ -3725,6 +3749,7 @@ set(XLETH_ENGINE_TESTS
     test_automation_clips
     test_sandbox
     test_compositor
+    test_lens_roam_verify
     test_visual_echo
     test_snapshot_transition
     test_muxer
