@@ -596,6 +596,19 @@ target_include_directories(test_landing PRIVATE
     ${FFMPEG_INCLUDE_DIRS}
 )
 
+# ── test_grid_rect_math ───────────────────────────────────────────────────────
+# Rect parity for render/GridRectMath.h (Landing spec §6.1): the promoted
+# slot -> canvas rect function against a frozen copy of the compositor's old
+# arithmetic, bit for bit, across every grid size, placement and gap. Header-
+# only maths; links the model tier only for TimelineTypes.h's include path.
+add_executable(test_grid_rect_math
+    test/test_grid_rect_math.cpp
+)
+
+target_link_libraries(test_grid_rect_math PRIVATE
+    XlethEngineModel
+)
+
 # ── test_loop_region ──────────────────────────────────────────────────────────
 # LoopRegion data model + invariants + the pure LoopTrap playback state machine.
 # Model-only (LoopTrap.h is header-only) — no JUCE, no FFmpeg, no GL.
@@ -3679,6 +3692,7 @@ endif()
 set(XLETH_ENGINE_TESTS
     test_timeline
     test_landing
+    test_grid_rect_math
     test_loop_region
     test_render_scope
     test_tail_render

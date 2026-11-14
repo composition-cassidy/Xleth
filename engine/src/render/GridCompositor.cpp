@@ -1,6 +1,7 @@
 #include "GridCompositor.h"
 #include "render/VisualEchoTypes.h"
 #include "render/LensRoamMath.h"   // the ONE Lens/Roam evaluator (preview + export)
+#include "render/GridRectMath.h"   // the ONE slot -> canvas rect (compositor + Landing resolver)
 #include "XlethDebug.h"
 
 #include <algorithm>
@@ -786,28 +787,31 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
         // Deliberately NOT gridCellToUV(0,0,spanX,spanY): a fullscreen request
         // is not obliged to carry full-canvas span fields (test_compositor's
         // Test 10 leaves them at the struct defaults).
+        //
+        // The slot -> rect arithmetic lives in render/GridRectMath.h and is
+        // shared with Timeline::landingsAt, so where a Landing ends and where
+        // this draws the same slot cannot diverge.
         float rx, ry, rw, rh;
-        if (isGrid) {
-            gridCellToUV(req.cellCol, req.cellRow, req.spanX, req.spanY,
-                         gridCols, gridRows, rx, ry, rw, rh);
-        } else {
-            rx = 0.0f; ry = 0.0f; rw = 1.0f; rh = 1.0f;
-        }
         // One Roam cell unit: this placement before the gap (half-grid spans
         // included), or the canvas for a fullscreen layer.
-        const float roamUnitW = rw;
-        const float roamUnitH = rh;
-
-        // Apply gap scale: shrink rect symmetrically, creating inter-cell padding.
-        // GRID-ONLY, deliberately: a gap is the space BETWEEN cells, and a
-        // fullscreen layer has no neighbours to be spaced from — inset-ing it
-        // would just letterbox the backdrop for no reason.
-        float effectiveGap = (req.gapScaleOverride >= 0.0f) ? req.gapScaleOverride : gapScale;
-        if (effectiveGap > 0.0f && isGrid) {
-            float sx = rw * effectiveGap * 0.5f;
-            float sy = rh * effectiveGap * 0.5f;
-            rx += sx;  ry += sy;
-            rw -= sx * 2.0f;  rh -= sy * 2.0f;
+        float roamUnitW, roamUnitH;
+        if (isGrid) {
+            float unitX, unitY;
+            xleth::slotCellRect(req.cellCol, req.cellRow, req.spanX, req.spanY,
+                                gridCols, gridRows, unitX, unitY, roamUnitW, roamUnitH);
+            // Placement, then the gap: shrink the rect symmetrically, creating
+            // inter-cell padding. GRID-ONLY, deliberately: a gap is the space
+            // BETWEEN cells, and a fullscreen layer has no neighbours to be
+            // spaced from — inset-ing it would just letterbox the backdrop for
+            // no reason.
+            xleth::slotCanvasRect(req.cellCol, req.cellRow, req.spanX, req.spanY,
+                                  gridCols, gridRows,
+                                  xleth::effectiveSlotGap(gapScale, req.gapScaleOverride),
+                                  rx, ry, rw, rh);
+        } else {
+            rx = 0.0f; ry = 0.0f; rw = 1.0f; rh = 1.0f;
+            roamUnitW = rw;
+            roamUnitH = rh;
         }
 
         // The Lens framing box keeps THIS rect's aspect (the cell as laid out,
@@ -1905,14 +1909,9 @@ void GridCompositor::gridCellToUV(int cellCol, int cellRow, int spanX, int spanY
     // Fine-grid: an NxM grid has (N*kGridSubUnitsPerColumn) x
     // (M*kGridSubUnitsPerRow) sub-grid positions. cellCol/cellRow are in
     // sub-grid coords; spanX/spanY are in sub-grid units (kGridSubUnitsPerColumn
-    // = full column).
-    const float subCellW = 1.0f / (gridCols * static_cast<float>(kGridSubUnitsPerColumn));
-    const float subCellH = 1.0f / (gridRows * static_cast<float>(kGridSubUnitsPerRow));
-
-    outX = cellCol * subCellW;
-    outY = cellRow * subCellH;
-    outW = spanX  * subCellW;
-    outH = spanY  * subCellH;
+    // = full column). The arithmetic is render/GridRectMath.h's.
+    xleth::slotCellRect(cellCol, cellRow, spanX, spanY, gridCols, gridRows,
+                        outX, outY, outW, outH);
 }
 
 // ===========================================================================
