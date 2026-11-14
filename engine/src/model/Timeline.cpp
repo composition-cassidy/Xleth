@@ -2,6 +2,8 @@
 #include "AutomationEnvelope.h"
 #include "SamplerLegacyMigration.h"
 #include "XlethDebug.h"
+#include "render/GridRectMath.h"   // slotCanvasRect: the one slot -> canvas rect
+#include "render/LandingMath.h"    // edgeFromRect / growFromRect
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -1823,6 +1825,14 @@ GridLayout Timeline::gridLayoutAt(TickTime t) const {
     // return a reference into m_gridLayout.
     GridLayout out = m_gridLayout;
 
+    // applyGridSnapshot overwrites ONLY the arrangement (columns/rows/gapScale/
+    // slots/fullscreenLayers), leaving the global fields seeded above untouched.
+    // GridSlot/FullscreenLayer eventActions ride along via the snapshot copy.
+    if (const GridSnapshot* chosen = snapshotAt(t)) applyGridSnapshot(out, *chosen);
+    return out;
+}
+
+const GridSnapshot* Timeline::snapshotAt(TickTime t) const {
     // Walk cues in ascending tick order, keeping the LAST cue whose tick <= t
     // that still resolves to a live snapshot. A cue pointing at a deleted
     // snapshot is skipped (treated as absent), so the previous valid cue wins.
@@ -1841,12 +1851,7 @@ GridLayout Timeline::gridLayoutAt(TickTime t) const {
         if (!chosen && !m_gridSnapshots.empty())
             chosen = &m_gridSnapshots.front();
     }
-
-    // applyGridSnapshot overwrites ONLY the arrangement (columns/rows/gapScale/
-    // slots/fullscreenLayers), leaving the global fields seeded above untouched.
-    // GridSlot/FullscreenLayer eventActions ride along via the snapshot copy.
-    if (chosen) applyGridSnapshot(out, *chosen);
-    return out;
+    return chosen;
 }
 
 void Timeline::addGridCue(TickTime tick, const std::string& snapshotId) {
@@ -1863,9 +1868,19 @@ bool Timeline::moveGridCue(TickTime oldTick, TickTime newTick) {
         [](const GridCue& c, TickTime tk) { return c.tick < tk; });
     if (pos == m_gridCues.end() || !(pos->tick == oldTick)) return false;
     if (oldTick == newTick) return true;         // no-op move
-    std::string id = std::move(pos->snapshotId);
+    // Move the WHOLE cue: its snapshot, its transition and its landings all
+    // belong to the boundary, so they travel with it. (Before landings this
+    // moved the snapshotId alone and silently dropped the transition — see
+    // docs/XLETH_LANDING_AUDIT.md, D1.)
+    GridCue moved = std::move(*pos);
     m_gridCues.erase(pos);
-    addGridCue(newTick, id);                     // sorted insert; replaces on collision
+    moved.tick = newTick;
+    auto dst = std::lower_bound(m_gridCues.begin(), m_gridCues.end(), newTick,
+        [](const GridCue& c, TickTime tk) { return c.tick < tk; });
+    if (dst != m_gridCues.end() && dst->tick == newTick)
+        *dst = std::move(moved);                 // collision: the moved cue replaces it
+    else
+        m_gridCues.insert(dst, std::move(moved));
     return true;
 }
 
@@ -1932,6 +1947,212 @@ Timeline::ResolvedTransition Timeline::transitionAt(TickTime t) const {
     // columns/rows/gapScale.
     out.layoutA = gridLayoutAt(TickTime{ winner->tick.ticks - 1 });
     out.layoutB = gridLayoutAt(winner->tick);
+    return out;
+}
+
+// ── Landings (docs/XLETH_LANDING_SPEC.md) ─────────────────────────────────────
+namespace {
+
+// Where a track is placed in a snapshot, as the compositor would draw it.
+struct PlacedRect {
+    enum class As { None, Slot, Fullscreen };
+    As                   as = As::None;
+    xleth::landing::Rect rect;              // the DRAWN rect (placement, then gap)
+    float                unitW = 0.0f;      // the placement before the gap: Roam's unit
+    float                unitH = 0.0f;
+    const GridSlot*      slot = nullptr;    // valid while the snapshot is; As::Slot only
+};
+
+// Reads the snapshot in place: no allocation, nothing copied but floats.
+// A grid slot wins over a fullscreen layer (a track is one or the other by
+// construction). A fullscreen layer fills the canvas.
+PlacedRect placedRectIn(const GridSnapshot& snap, int trackId, float trackGapOverride) {
+    PlacedRect out;
+    for (const GridSlot& s : snap.slots) {
+        if (s.trackId != trackId) continue;
+        float ux = 0.0f, uy = 0.0f;
+        xleth::slotCellRect(s.gridX, s.gridY, s.spanX, s.spanY,
+                            snap.columns, snap.rows, ux, uy, out.unitW, out.unitH);
+        xleth::slotCanvasRect(s.gridX, s.gridY, s.spanX, s.spanY,
+                              snap.columns, snap.rows,
+                              xleth::effectiveSlotGap(snap.gapScale, trackGapOverride),
+                              out.rect.x, out.rect.y, out.rect.w, out.rect.h);
+        out.as   = PlacedRect::As::Slot;
+        out.slot = &s;
+        return out;
+    }
+    for (const FullscreenLayer& fl : snap.fullscreenLayers) {
+        if (fl.trackId != trackId) continue;
+        out.as    = PlacedRect::As::Fullscreen;
+        out.rect  = xleth::landing::Rect{ 0.0f, 0.0f, 1.0f, 1.0f };
+        out.unitW = 1.0f;
+        out.unitH = 1.0f;
+        return out;
+    }
+    return out;
+}
+
+} // namespace
+
+void Timeline::setCueLandings(TickTime cueTick, const std::vector<TrackLanding>& landings) {
+    auto pos = std::lower_bound(m_gridCues.begin(), m_gridCues.end(), cueTick,
+        [](const GridCue& c, TickTime tk) { return c.tick < tk; });
+    if (pos == m_gridCues.end() || !(pos->tick == cueTick)) return;  // no cue here
+    pos->landings = landings;
+    sanitizeTrackLandings(pos->landings);
+}
+
+bool Timeline::reflowCueLandings(TickTime cueTick, int64_t leadInTicks) {
+    auto pos = std::lower_bound(m_gridCues.begin(), m_gridCues.end(), cueTick,
+        [](const GridCue& c, TickTime tk) { return c.tick < tk; });
+    if (pos == m_gridCues.end() || !(pos->tick == cueTick)) return false;
+
+    const GridSnapshot* snapB = findSnapshot(pos->snapshotId);
+    const GridSnapshot* snapA = snapshotAt(TickTime{ cueTick.ticks - 1 });
+    if (!snapB || !snapA) return false;
+
+    std::vector<TrackLanding> next = pos->landings;
+    for (const GridSlot& slot : snapB->slots) {
+        const TrackInfo* trk = getTrack(slot.trackId);
+        if (!trk) continue;                                  // slot of a deleted track
+        const PlacedRect to   = placedRectIn(*snapB, slot.trackId, trk->gapScaleOverride);
+        const PlacedRect from = placedRectIn(*snapA, slot.trackId, trk->gapScaleOverride);
+        if (to.as != PlacedRect::As::Slot) continue;
+        if (from.as == PlacedRect::As::None) continue;       // in B but not in A: left alone
+        if (from.rect.x == to.rect.x && from.rect.y == to.rect.y
+            && from.rect.w == to.rect.w && from.rect.h == to.rect.h)
+            continue;                                        // does not move
+
+        TrackLanding landing;
+        landing.trackId     = slot.trackId;
+        landing.leadInTicks = leadInTicks;
+        landing.from        = TrackLanding::From::WhereItWas;
+        auto same = std::find_if(next.begin(), next.end(),
+            [&](const TrackLanding& l) { return l.trackId == slot.trackId; });
+        if (same != next.end()) *same = landing;
+        else                    next.push_back(landing);
+    }
+    // Existing landings come first, so when the cue is already full it is the
+    // newly found tracks that the cap turns away.
+    sanitizeTrackLandings(next);
+    pos->landings = std::move(next);
+    return true;
+}
+
+// ── Time-based landing resolution (RENDER path only) ──────────────────────────
+Timeline::ResolvedLandings Timeline::landingsAt(TickTime t) const {
+    ResolvedLandings out;
+
+    // Latest pin first, so the first cue whose window holds t is the winner
+    // ("latest pin wins", like transitionAt).
+    for (size_t i = m_gridCues.size(); i-- > 0; ) {
+        const GridCue& cue = m_gridCues[i];
+        if (cue.landings.empty()) continue;
+
+        const int64_t pin      = cue.tick.ticks;
+        const int64_t carryEnd = pin + (cue.transition.enabled
+                                            ? cue.transition.endOffsetTicks : 0);
+        if (t.ticks >= carryEnd) continue;                               // window is half-open
+        if (t.ticks < pin - TrackLanding::kMaxLeadInTicks) continue;     // cannot have started
+
+        // Ruling 11: the cue's snapshot is gone -> nothing to land into.
+        const GridSnapshot* snapB = findSnapshot(cue.snapshotId);
+        if (!snapB) continue;
+        const GridSnapshot* snapA = snapshotAt(TickTime{ pin - 1 });
+
+        // A landing cannot start before snapshot A exists: clamp the lead-in at
+        // the previous cue that still resolves (a dangling cue is absent, as
+        // everywhere else), or at 0 when there is none.
+        int64_t floorTick = 0;
+        for (size_t j = i; j-- > 0; ) {
+            if (findSnapshot(m_gridCues[j].snapshotId)) {
+                floorTick = m_gridCues[j].tick.ticks;
+                break;
+            }
+        }
+        floorTick = std::min(floorTick, pin);
+
+        int     count       = 0;
+        int64_t windowStart = pin;
+        for (const TrackLanding& stored : cue.landings) {
+            if (count >= TrackLanding::kMaxLandingsPerCue) break;
+
+            const TrackInfo* trk = getTrack(stored.trackId);
+            if (!trk) continue;                                          // deleted track
+            const PlacedRect to = placedRectIn(*snapB, stored.trackId, trk->gapScaleOverride);
+            if (to.as != PlacedRect::As::Slot) continue;                 // no slot in B
+
+            // Stored data is already normalized by every writer; normalizing the
+            // copy keeps the resolver safe against a hand-built cue all the same.
+            TrackLanding l = stored;
+            l.normalize();
+
+            ResolvedLanding& r = out.items[count];
+            r = ResolvedLanding{};
+            r.trackId = l.trackId;
+            r.toX = to.rect.x;  r.toY = to.rect.y;  r.toW = to.rect.w;  r.toH = to.rect.h;
+            r.toUnitW = to.unitW;
+            r.toUnitH = to.unitH;
+
+            xleth::landing::Rect from;
+            float fromUnitW = 0.0f, fromUnitH = 0.0f;
+            bool  resolvedFrom = false;
+            if (l.from == TrackLanding::From::Custom) {
+                from = xleth::landing::Rect{ l.customX, l.customY, l.customW, l.customH };
+                fromUnitW = l.customW;
+                fromUnitH = l.customH;
+                resolvedFrom = true;
+            } else if (l.from == TrackLanding::From::WhereItWas && snapA) {
+                const PlacedRect was =
+                    placedRectIn(*snapA, l.trackId, trk->gapScaleOverride);
+                if (was.as != PlacedRect::As::None) {
+                    from = was.rect;
+                    fromUnitW = was.unitW;
+                    fromUnitH = was.unitH;
+                    resolvedFrom = true;
+                }
+                // Not in A: fall back to Grow below.
+            } else if (l.from == TrackLanding::From::Edge) {
+                // A pure translation: the cell keeps its size, so Roam's unit
+                // is the destination's all the way in.
+                from = xleth::landing::edgeFromRect(to.rect, l.edgeAngleDeg);
+                fromUnitW = to.unitW;
+                fromUnitH = to.unitH;
+                resolvedFrom = true;
+            }
+            if (!resolvedFrom) from = xleth::landing::growFromRect(to.rect);
+
+            r.fromX = from.x;  r.fromY = from.y;  r.fromW = from.w;  r.fromH = from.h;
+            r.fromUnitW   = fromUnitW;
+            r.fromUnitH   = fromUnitH;
+            r.fromOpacity = l.fromOpacity;
+            r.easing      = l.easing;
+            r.startTick   = TickTime{ std::max(pin - l.leadInTicks, floorTick) };
+
+            r.slotGridX   = to.slot->gridX;
+            r.slotGridY   = to.slot->gridY;
+            r.slotSpanX   = to.slot->spanX;
+            r.slotSpanY   = to.slot->spanY;
+            r.slotOpacity = to.slot->opacity;
+            r.slotZOrder  = to.slot->zOrder;
+
+            windowStart = std::min(windowStart, r.startTick.ticks);
+            ++count;
+        }
+
+        // The window opens with the earliest landing that actually resolved.
+        if (count == 0 || t.ticks < windowStart) continue;
+
+        out.count        = count;
+        out.pinTick      = cue.tick;
+        out.carryEndTick = TickTime{ carryEnd };
+        out.columns      = snapB->columns;
+        out.rows         = snapB->rows;
+        out.gapScale     = snapB->gapScale;
+        return out;
+    }
+
+    out.count = 0;
     return out;
 }
 
@@ -2799,6 +3020,29 @@ nlohmann::json Timeline::toJSON() const {
             }
             cj["transition"] = std::move(tj);
         }
+        // Landings: written ADDITIVELY and ONLY when the cue has some, so a
+        // project without landings serializes byte-identically to before.
+        if (!cue.landings.empty()) {
+            nlohmann::json lj = nlohmann::json::array();
+            for (const TrackLanding& l : cue.landings) {
+                lj.push_back({
+                    {"trackId",      l.trackId},
+                    {"leadInTicks",  l.leadInTicks},
+                    {"from",         trackLandingFromToString(l.from)},
+                    {"edgeAngleDeg", l.edgeAngleDeg},
+                    {"custom", {
+                        {"x", l.customX}, {"y", l.customY},
+                        {"w", l.customW}, {"h", l.customH},
+                    }},
+                    {"fromOpacity",  l.fromOpacity},
+                    {"easing", {
+                        {"x1", l.easing.x1}, {"y1", l.easing.y1},
+                        {"x2", l.easing.x2}, {"y2", l.easing.y2},
+                    }},
+                });
+            }
+            cj["landings"] = std::move(lj);
+        }
         gl["cues"].push_back(std::move(cj));
     }
     j["gridLayout"] = gl;
@@ -3151,6 +3395,47 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
                         }
                         tr.normalize();
                         cue.transition = tr;
+                    }
+                    // Additive landing list; absent => none. Every field is
+                    // optional and falls back to the TrackLanding default; a
+                    // wrong-typed field is treated as absent rather than
+                    // failing the load.
+                    if (c.contains("landings") && c.at("landings").is_array()) {
+                        const auto num = [](const nlohmann::json& obj, const char* key,
+                                            float fallback) {
+                            return (obj.contains(key) && obj.at(key).is_number())
+                                ? obj.at(key).get<float>() : fallback;
+                        };
+                        for (const auto& lj : c.at("landings")) {
+                            if (!lj.is_object()) continue;
+                            TrackLanding l;
+                            if (lj.contains("trackId") && lj.at("trackId").is_number_integer())
+                                l.trackId = lj.at("trackId").get<int>();
+                            if (lj.contains("leadInTicks") && lj.at("leadInTicks").is_number())
+                                l.leadInTicks = static_cast<int64_t>(std::clamp(
+                                    lj.at("leadInTicks").get<double>(), -1.0e15, 1.0e15));
+                            if (lj.contains("from") && lj.at("from").is_string())
+                                l.from = stringToTrackLandingFrom(lj.at("from").get<std::string>());
+                            l.edgeAngleDeg = num(lj, "edgeAngleDeg", l.edgeAngleDeg);
+                            if (lj.contains("custom") && lj.at("custom").is_object()) {
+                                const auto& cu = lj.at("custom");
+                                l.customX = num(cu, "x", l.customX);
+                                l.customY = num(cu, "y", l.customY);
+                                l.customW = num(cu, "w", l.customW);
+                                l.customH = num(cu, "h", l.customH);
+                            }
+                            l.fromOpacity = num(lj, "fromOpacity", l.fromOpacity);
+                            if (lj.contains("easing") && lj.at("easing").is_object()) {
+                                const auto& ej = lj.at("easing");
+                                l.easing.x1 = num(ej, "x1", l.easing.x1);
+                                l.easing.y1 = num(ej, "y1", l.easing.y1);
+                                l.easing.x2 = num(ej, "x2", l.easing.x2);
+                                l.easing.y2 = num(ej, "y2", l.easing.y2);
+                            }
+                            cue.landings.push_back(l);
+                        }
+                        // normalize + de-duplicate + cap, as setCueLandings does.
+                        sanitizeTrackLandings(cue.landings);
                     }
                     m_gridCues.push_back(std::move(cue));
                 }

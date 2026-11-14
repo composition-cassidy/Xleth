@@ -2196,6 +2196,119 @@ inline SnapshotTransition::Type stringToSnapshotTransitionType(const std::string
     return SnapshotTransition::Type::Crossfade;
 }
 
+// ─── TrackLanding ─────────────────────────────────────────────────────────────
+// One track's move into its slot in the cue's incoming snapshot (B), ending
+// exactly on the cue pin (docs/XLETH_LANDING_SPEC.md). The move runs during the
+// LEAD-IN before the pin: the track flies from a start rect to the rect its
+// slot occupies in B, so the cut is seamless for that track.
+//
+// Owned by the GridCue for the same reason SnapshotTransition is: a snapshot is
+// reused across many cues, and only the cue is an unambiguous boundary.
+//
+// Nothing here is baked. The destination is B's CURRENT slot, resolved at
+// render time (Timeline::landingsAt), and a landing whose track, slot or
+// snapshot is gone is skipped by the resolver and left untouched in storage.
+struct TrackLanding {
+    static constexpr int64_t kDefaultLeadInTicks = 960;        // 1 beat @ 960 PPQ
+    static constexpr int64_t kMaxLeadInTicks     = 960 * 16;   // 4 bars of 4/4
+    static constexpr int     kMaxLandingsPerCue  = 16;
+    static constexpr float   kDefaultEdgeAngleDeg = 270.0f;
+
+    // Where the move starts.
+    //   Edge       — off-canvas along edgeAngleDeg
+    //   Grow       — a zero-size rect at the destination centre
+    //   WhereItWas — the track's rect in the outgoing snapshot (A)
+    //   Custom     — the stored canvas-normalized rect
+    enum class From : uint8_t { Edge = 0, Grow = 1, WhereItWas = 2, Custom = 3 };
+
+    int      trackId      = -1;
+    int64_t  leadInTicks  = kDefaultLeadInTicks;
+    From     from         = From::Edge;
+    float    edgeAngleDeg = kDefaultEdgeAngleDeg;  // side it enters from: 0=left, 90=top,
+                                                   // 180=right, 270=bottom (the convention
+                                                   // of SnapshotTransition::geomAngleDeg)
+    float    customX = 0.0f, customY = 0.0f, customW = 0.0f, customH = 0.0f;  // canvas-normalized
+    float    fromOpacity  = 1.0f;       // 0..1, eases to 1.0 at the pin; 1.0 = no fade
+    SnapshotTransitionEasingCurve easing{0.22f, 1.0f, 0.36f, 1.0f};  // "Land" (strong ease-out)
+
+    void normalize() noexcept {
+        leadInTicks = std::clamp<int64_t>(leadInTicks, 0, kMaxLeadInTicks);
+
+        switch (from) {
+            case From::Edge: case From::Grow: case From::WhereItWas: case From::Custom: break;
+            default: from = From::Edge; break;
+        }
+
+        if (!std::isfinite(edgeAngleDeg)) {
+            edgeAngleDeg = kDefaultEdgeAngleDeg;
+        } else {
+            edgeAngleDeg = std::fmod(edgeAngleDeg, 360.0f);
+            if (edgeAngleDeg < 0.0f) edgeAngleDeg += 360.0f;
+            if (edgeAngleDeg >= 360.0f) edgeAngleDeg = 0.0f;   // -1e-9 + 360 rounds up to 360
+        }
+
+        if (!std::isfinite(customX)) customX = 0.0f;
+        if (!std::isfinite(customY)) customY = 0.0f;
+        if (!std::isfinite(customW)) customW = 0.0f;
+        if (!std::isfinite(customH)) customH = 0.0f;
+        customX = std::clamp(customX, 0.0f, 1.0f);
+        customY = std::clamp(customY, 0.0f, 1.0f);
+        customW = std::clamp(customW, 0.0f, 1.0f);
+        customH = std::clamp(customH, 0.0f, 1.0f);
+
+        if (!std::isfinite(fromOpacity)) fromOpacity = 1.0f;
+        fromOpacity = std::clamp(fromOpacity, 0.0f, 1.0f);
+
+        // A non-finite curve resets to THIS struct's default ("Land"), not to
+        // the linear default SnapshotTransitionEasingCurve::normalize falls to.
+        if (!std::isfinite(easing.x1) || !std::isfinite(easing.y1)
+            || !std::isfinite(easing.x2) || !std::isfinite(easing.y2))
+            easing = SnapshotTransitionEasingCurve{0.22f, 1.0f, 0.36f, 1.0f};
+        easing.normalize();
+    }
+};
+
+inline const char* trackLandingFromToString(TrackLanding::From from) {
+    switch (from) {
+        case TrackLanding::From::Grow:       return "grow";
+        case TrackLanding::From::WhereItWas: return "whereItWas";
+        case TrackLanding::From::Custom:     return "custom";
+        case TrackLanding::From::Edge:
+        default:                             return "edge";
+    }
+}
+
+// An unknown string loads as Edge.
+inline TrackLanding::From stringToTrackLandingFrom(const std::string& s) {
+    if (s == "grow")       return TrackLanding::From::Grow;
+    if (s == "whereItWas") return TrackLanding::From::WhereItWas;
+    if (s == "custom")     return TrackLanding::From::Custom;
+    return TrackLanding::From::Edge;
+}
+
+// The one place a landing list is made valid. Every landing is normalized; an
+// entry without a track is dropped; when a trackId appears more than once the
+// LATER entry wins (it takes the earlier one's position); entries past
+// kMaxLandingsPerCue are rejected. Used by Timeline::setCueLandings and by the
+// project loader, so a cue can never hold an invalid list.
+inline void sanitizeTrackLandings(std::vector<TrackLanding>& landings) {
+    std::vector<TrackLanding> out;
+    out.reserve(std::min<size_t>(landings.size(),
+                                 static_cast<size_t>(TrackLanding::kMaxLandingsPerCue)));
+    for (TrackLanding& landing : landings) {
+        if (landing.trackId < 0) continue;
+        landing.normalize();
+        auto same = std::find_if(out.begin(), out.end(),
+            [&](const TrackLanding& l) { return l.trackId == landing.trackId; });
+        if (same != out.end()) {
+            *same = landing;
+        } else if (out.size() < static_cast<size_t>(TrackLanding::kMaxLandingsPerCue)) {
+            out.push_back(landing);
+        }
+    }
+    landings = std::move(out);
+}
+
 // ─── GridCue ──────────────────────────────────────────────────────────────────
 // One entry in the project's time-based snapshot automation. It binds an
 // absolute project tick to a snapshot: at render time the grid arrangement in
@@ -2213,10 +2326,15 @@ inline SnapshotTransition::Type stringToSnapshotTransitionType(const std::string
 // A cue optionally carries a `transition` describing how the boundary AT this
 // cue animates (the cue tick is the transition pin). A default-constructed
 // (disabled) transition means the boundary hard-cuts, exactly as before.
+//
+// A cue also owns its `landings`: per-track moves that END on this cue's pin
+// (see TrackLanding). Empty = today's behaviour. At most one per trackId and at
+// most TrackLanding::kMaxLandingsPerCue; sanitizeTrackLandings enforces both.
 struct GridCue {
     TickTime           tick;         // absolute project tick where snapshotId takes effect
     std::string        snapshotId;   // -> GridSnapshot::id
     SnapshotTransition transition{}; // boundary animation; disabled default = hard cut
+    std::vector<TrackLanding> landings;  // per-track moves ending on the pin; empty = none
 };
 
 // ─── GridLayoutContainer (persisted shape, documented for reference) ──────────
@@ -2238,6 +2356,13 @@ struct GridCue {
 // describing the boundary animation at that cue. The transition object is written
 // ONLY when enabled (omitted entirely for a hard cut) and defaults to a hard cut
 // when absent, so projects saved before transitions existed load unchanged.
+//
+// A cue MAY also carry an additive `landings` array of
+// { trackId, leadInTicks, from, edgeAngleDeg, custom: {x,y,w,h}, fromOpacity,
+//   easing: {x1,y1,x2,y2} }
+// (`from` is "edge" | "grow" | "whereItWas" | "custom"; unknown loads as edge).
+// It is written ONLY when non-empty, and every field is optional on load, so a
+// project without landings serializes byte-identically to before they existed.
 //
 // A dedicated container struct is intentionally unnecessary: Timeline owns the
 // std::vector<GridSnapshot>, active + default identity, global flat cache, and

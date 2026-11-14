@@ -578,6 +578,24 @@ target_link_libraries(test_timeline PRIVATE
     XlethEngineModel
 )
 
+# ── test_landing ──────────────────────────────────────────────────────────────
+# Landing model + resolver (docs/XLETH_LANDING_SPEC.md): normalize, JSON, cue
+# CRUD, landingsAt windows and skips, From rects, the seam, Reflow. Model-only,
+# like test_timeline — the resolver and LandingMath.h need no GPU.
+add_executable(test_landing
+    test/test_landing.cpp
+)
+
+target_link_libraries(test_landing PRIVATE
+    XlethEngineModel
+)
+
+# RenderClock.h pulls in libavutil headers (the seam test converts ticks to
+# samples exactly as the render path does).
+target_include_directories(test_landing PRIVATE
+    ${FFMPEG_INCLUDE_DIRS}
+)
+
 # ── test_loop_region ──────────────────────────────────────────────────────────
 # LoopRegion data model + invariants + the pure LoopTrap playback state machine.
 # Model-only (LoopTrap.h is header-only) — no JUCE, no FFmpeg, no GL.
@@ -3660,6 +3678,7 @@ endif()
 
 set(XLETH_ENGINE_TESTS
     test_timeline
+    test_landing
     test_loop_region
     test_render_scope
     test_tail_render

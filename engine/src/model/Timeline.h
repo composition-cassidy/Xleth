@@ -273,8 +273,9 @@ public:
 
     // ── Grid cues (CRUD; sorted-by-tick invariant maintained internally) ──────
     // addGridCue inserts keeping ascending tick order; if a cue already exists at
-    // the exact tick its snapshotId is replaced. moveGridCue relocates the cue at
-    // oldTick to newTick (false if none at oldTick). removeGridCue deletes the cue
+    // the exact tick its snapshotId is replaced (its transition and landings are
+    // kept). moveGridCue relocates the WHOLE cue at oldTick — snapshot, transition
+    // and landings — to newTick (false if none at oldTick). removeGridCue deletes the cue
     // at that exact tick (false if none). snapshotId is NOT validated here —
     // dangling refs are tolerated by the resolver and pruned on snapshot delete.
     void addGridCue(TickTime tick, const std::string& snapshotId);
@@ -325,6 +326,81 @@ public:
     // with gridLayoutAt's "last cue wins"). If none is active, returns
     // { active = false }. const + self-allocating: safe on the render thread.
     ResolvedTransition transitionAt(TickTime t) const;
+
+    // ── Landings (docs/XLETH_LANDING_SPEC.md) ─────────────────────────────────
+    // Replace the landing list on the cue at `cueTick`. No-op if there is no cue
+    // at that exact tick. The list is sanitized (sanitizeTrackLandings):
+    // normalized, de-duplicated by trackId with the later entry winning, and
+    // capped at TrackLanding::kMaxLandingsPerCue. Same by-value / under-lock
+    // discipline as setCueTransition; not on the UndoManager (spec ruling 10).
+    void setCueLandings(TickTime cueTick, const std::vector<TrackLanding>& landings);
+
+    // Reflow: for every track that has a grid slot in the cue's snapshot (B) and
+    // is also placed in the outgoing snapshot (A — a slot or a fullscreen layer)
+    // at a DIFFERENT canvas rect, add or replace a WhereItWas landing with this
+    // lead-in. Tracks in B that are not in A are left alone, and landings for
+    // other tracks are kept. Returns false (and changes nothing) when there is
+    // no cue at that tick or its snapshot no longer resolves.
+    bool reflowCueLandings(TickTime cueTick, int64_t leadInTicks);
+
+    // True when any cue carries a landing. The render seams test this first so
+    // a project without landings pays one short scan and nothing else.
+    bool hasCueLandings() const noexcept {
+        for (const GridCue& cue : m_gridCues)
+            if (!cue.landings.empty()) return true;
+        return false;
+    }
+
+    // ── Time-based landing resolution (RENDER path only) ──────────────────────
+    // One landing, resolved against the snapshots as they are NOW. Plain data:
+    // the render thread owns it outright and nothing aliases the model.
+    struct ResolvedLanding {
+        int    trackId = -1;
+        float  fromX = 0.0f, fromY = 0.0f, fromW = 0.0f, fromH = 0.0f;   // canvas-normalized
+        float  toX   = 0.0f, toY   = 0.0f, toW   = 0.0f, toH   = 0.0f;   // == B's drawn rect for this track's slot
+        float  fromOpacity = 1.0f;
+        TickTime startTick{};                 // pin - clampedLeadIn
+        SnapshotTransitionEasingCurve easing{};
+
+        // The size a Roam offset is measured in (the placement BEFORE the gap)
+        // at each end of the move. Lerped with the rect, so a track that also
+        // roams does not jump when the carry ends (audit D3).
+        float  fromUnitW = 0.0f, fromUnitH = 0.0f;
+        float  toUnitW   = 0.0f, toUnitH   = 0.0f;
+
+        // The track's GridSlot in B, copied out so the carry layout can be
+        // built without copying a GridLayout (audit D4).
+        int    slotGridX = 0, slotGridY = 0, slotSpanX = 0, slotSpanY = 0;
+        float  slotOpacity = 1.0f;
+        int    slotZOrder  = 0;
+    };
+
+    struct ResolvedLandings {
+        int      count = 0;                   // 0 => caller takes today's path untouched
+        TickTime pinTick{};
+        TickTime carryEndTick{};              // pin + transition.endOffsetTicks if the
+                                              // transition is enabled, else pin
+        // Snapshot B's geometry, for the carry layout.
+        int      columns  = 1;
+        int      rows     = 1;
+        float    gapScale = 0.0f;
+        ResolvedLanding items[TrackLanding::kMaxLandingsPerCue];
+    };
+
+    // Resolve the landings to carry at tick `t`.
+    //
+    // A cue's window is [earliest resolved startTick, carryEndTick). When more
+    // than one cue's window contains t the LATEST pin wins, like transitionAt.
+    //   • Lead-in is clamped at resolve time: startTick = max(pin - leadIn,
+    //     previous resolving cue's pin, or 0). Stored data is never rewritten.
+    //   • The destination is the track's GridSlot in B, as B is now.
+    //   • A landing is skipped, never fatal, when its track is gone, when the
+    //     track has no grid slot in B (none, or only a fullscreen layer), or
+    //     when the cue's snapshot is gone.
+    // const, allocation-free, and reads the snapshots in place: call it under
+    // the same lock as transitionAt (preview: syncEventsMutex).
+    ResolvedLandings landingsAt(TickTime t) const;
+
     void   assignTrackToGrid(int trackId, int gridX, int gridY, int spanX, int spanY);
     // Same as assignTrackToGrid but stores the supplied zOrder on the slot
     // instead of resetting to 0. Used by the grid editor's drag-to-place flow
@@ -573,6 +649,11 @@ private:
     // Look up a live snapshot by id (nullptr if none / empty id). Used by the
     // cue resolver and the default-snapshot fallback.
     const GridSnapshot* findSnapshot(const std::string& id) const;
+    // The snapshot in effect at tick `t`, read in place: the LAST cue at or
+    // before t that still resolves, else the default snapshot, else the first.
+    // nullptr only when the project has no snapshot at all. This is
+    // gridLayoutAt's selection without the copy.
+    const GridSnapshot* snapshotAt(TickTime t) const;
     int getNextId();
     bool validateTrackLayout(const TrackLayout& layout, bool requireKnownFolders = true) const;
     void syncTrackOrdersFromLayout();
