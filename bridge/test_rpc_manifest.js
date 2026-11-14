@@ -141,6 +141,24 @@ async function main() {
   assert(frame === null || frame === undefined || typeof frame === 'object',
     'getFrameRGBA() returns null/undefined/object');
 
+  // Landing (docs/XLETH_LANDING_SPEC.md): both cue RPCs are manifest-only, so
+  // this is the generated export -> generated dispatch -> handler path. The
+  // full contract lives in test_snapshot_landing_contract.js.
+  console.log('\n[ landing RPCs through the generated dispatch ]');
+  const landingSnapshot = addon.timeline_listSnapshots().find((s) => s.active)?.id;
+  const landingTick = 4 * 960;
+  addon.timeline_addCue(landingTick, landingSnapshot);
+  const landingCues = addon.timeline_setCueLandings(landingTick, [{ trackId: trackA }]);
+  const landingCue = Array.isArray(landingCues)
+    ? landingCues.find((c) => c.tick === landingTick) : null;
+  assert(landingCue?.landings?.length === 1 && landingCue.landings[0].trackId === trackA
+      && landingCue.landings[0].from === 'edge' && landingCue.landings[0].leadInTicks === 960,
+    'timeline_setCueLandings() dispatches and returns the cue list with defaults filled in');
+  const reflowed = addon.timeline_reflowCueLandings(landingTick, 960);
+  assert(Array.isArray(reflowed) && reflowed.some((c) => c.tick === landingTick),
+    'timeline_reflowCueLandings() dispatches and returns the cue list');
+  addon.timeline_removeCue(landingTick);
+
   console.log('\n[ final shutdown ]');
   addon.shutdown();
   assert(true, 'final shutdown() completed');

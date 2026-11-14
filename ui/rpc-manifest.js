@@ -799,6 +799,30 @@ const METHODS = [
     returns: 'value',
     binary: null,
   },
+  // ── Landing (docs/XLETH_LANDING_SPEC.md, P4) ──
+  // Per-track moves owned by a snapshot cue, ending on its pin. Both return the
+  // post-mutation cue list (the shape listCues returns; a cue carries `landings`
+  // only when it has some). Like every other cue edit they are not on the
+  // UndoManager. No streaming path: a drag previews locally and commits one
+  // setCueLandings on release. The older cue RPCs (addCue, setCueTransition, ...)
+  // are still hand-wired in grid-layout.js / preload.js / XlethAddon.cpp; these
+  // two are pure pass-throughs, so they are declared here and nowhere else.
+  {
+    method: 'timeline_setCueLandings',
+    channels: ['xleth:timeline:setCueLandings'],
+    api: { 'timeline.setCueLandings': 'xleth:timeline:setCueLandings' },
+    handler: 'Timeline_SetCueLandings',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_reflowCueLandings',
+    channels: ['xleth:timeline:reflowCueLandings'],
+    api: { 'timeline.reflowCueLandings': 'xleth:timeline:reflowCueLandings' },
+    handler: 'Timeline_ReflowCueLandings',
+    returns: 'value',
+    binary: null,
+  },
   // ── Lens + Roam P11: Track Sweep keys (TimelineTicks, a Lens layer) ──
   {
     method: 'timeline_setTrackSweepKeys',

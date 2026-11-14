@@ -8574,6 +8574,23 @@ JsonApi::Value Timeline_ListSnapshots(const JsonApi::CallbackInfo& info) {
         item.Set("name", JsonApi::String::New(env, snapshots[i].name));
         item.Set("active", JsonApi::Boolean::New(
             env, snapshots[i].id == g_timeline->getActiveSnapshotId()));
+        // Which tracks this snapshot places, and how (additive; Landing UI).
+        // The cue inspector offers a landing only for a track with a GRID slot
+        // in the cue's snapshot, and "Where it was" only for a track the
+        // outgoing snapshot places at all (a slot or a fullscreen layer).
+        JsonApi::Array slotTracks = JsonApi::Array::New(env, snapshots[i].slots.size());
+        for (size_t k = 0; k < snapshots[i].slots.size(); ++k) {
+            slotTracks.Set(static_cast<uint32_t>(k), JsonApi::Number::New(
+                env, static_cast<double>(snapshots[i].slots[k].trackId)));
+        }
+        item.Set("slotTrackIds", slotTracks);
+        JsonApi::Array fullscreenTracks =
+            JsonApi::Array::New(env, snapshots[i].fullscreenLayers.size());
+        for (size_t k = 0; k < snapshots[i].fullscreenLayers.size(); ++k) {
+            fullscreenTracks.Set(static_cast<uint32_t>(k), JsonApi::Number::New(
+                env, static_cast<double>(snapshots[i].fullscreenLayers[k].trackId)));
+        }
+        item.Set("fullscreenTrackIds", fullscreenTracks);
         result.Set(static_cast<uint32_t>(i), item);
     }
     return result;
@@ -8632,6 +8649,31 @@ static JsonApi::Value gridCuesToJs(JsonApi::Env env, const std::vector<GridCue>&
         easingJs.Set("pinToEnd", easingCurveToJs(tr.pinToEndEasing));
         trJs.Set("easing", easingJs);
         item.Set("transition", trJs);
+        // Landings (docs/XLETH_LANDING_SPEC.md): present ONLY when the cue has
+        // some, so a cue without landings has exactly the shape it had before.
+        // Lead-in in ticks, like every other tick in this object.
+        const std::vector<TrackLanding>& landings = cues[i].landings;
+        if (!landings.empty()) {
+            JsonApi::Array landingsJs = JsonApi::Array::New(env, landings.size());
+            for (size_t k = 0; k < landings.size(); ++k) {
+                const TrackLanding& l = landings[k];
+                JsonApi::Object lJs = JsonApi::Object::New(env);
+                lJs.Set("trackId",      JsonApi::Number::New(env, static_cast<double>(l.trackId)));
+                lJs.Set("leadInTicks",  JsonApi::Number::New(env, static_cast<double>(l.leadInTicks)));
+                lJs.Set("from",         JsonApi::String::New(env, trackLandingFromToString(l.from)));
+                lJs.Set("edgeAngleDeg", JsonApi::Number::New(env, static_cast<double>(l.edgeAngleDeg)));
+                JsonApi::Object customJs = JsonApi::Object::New(env);
+                customJs.Set("x", JsonApi::Number::New(env, static_cast<double>(l.customX)));
+                customJs.Set("y", JsonApi::Number::New(env, static_cast<double>(l.customY)));
+                customJs.Set("w", JsonApi::Number::New(env, static_cast<double>(l.customW)));
+                customJs.Set("h", JsonApi::Number::New(env, static_cast<double>(l.customH)));
+                lJs.Set("custom", customJs);
+                lJs.Set("fromOpacity",  JsonApi::Number::New(env, static_cast<double>(l.fromOpacity)));
+                lJs.Set("easing", easingCurveToJs(l.easing));
+                landingsJs.Set(static_cast<uint32_t>(k), lJs);
+            }
+            item.Set("landings", landingsJs);
+        }
         result.Set(static_cast<uint32_t>(i), item);
     }
     return result;
@@ -8814,6 +8856,116 @@ JsonApi::Value Timeline_SetCueTransition(const JsonApi::CallbackInfo& info) {
 
     std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
     g_timeline->setCueTransition(tick, tr);
+    return gridCuesToJs(env, g_timeline->getGridCues());
+}
+
+// timeline_setCueLandings(tick: number, landings: object[]) → GridCue[] (post-mutation)
+// Replaces the landing list on the cue at `tick` (docs/XLETH_LANDING_SPEC.md).
+// Each entry is
+//   { trackId, leadInTicks, from, edgeAngleDeg, custom: {x,y,w,h}, fromOpacity,
+//     easing: {x1,y1,x2,y2} }
+// with `from` one of "edge" | "grow" | "whereItWas" | "custom" (anything else
+// reads as "edge"). Like timeline_setCueTransition, parsing is lenient: a
+// missing or wrong-typed field falls back to the TrackLanding default, and the
+// engine then normalizes, de-duplicates by trackId (the later entry wins) and
+// caps the list at TrackLanding::kMaxLandingsPerCue. An entry that is not an
+// object, or has no trackId, is dropped. No-op in the engine if no cue exists at
+// that exact tick. Not on the UndoManager, matching every other cue edit.
+// Returns the resulting cue list so the renderer refreshes in one round-trip.
+JsonApi::Value Timeline_SetCueLandings(const JsonApi::CallbackInfo& info) {
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsArray()) {
+        JsonApi::TypeError::New(env, "timeline_setCueLandings(tick: number, landings: object[])")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    TickTime tick; tick.ticks = static_cast<int64_t>(info[0].As<JsonApi::Number>().DoubleValue());
+    JsonApi::Array listJs = info[1].As<JsonApi::Array>();
+
+    std::vector<TrackLanding> landings;
+    landings.reserve(listJs.Length());
+    for (uint32_t i = 0; i < listJs.Length(); ++i) {
+        JsonApi::Value itemValue = listJs.Get(i);
+        if (!itemValue.IsObject()) continue;
+        JsonApi::Object item = itemValue.As<JsonApi::Object>();
+
+        TrackLanding l;  // defaults: one beat, from the bottom edge, no fade, "Land"
+        const auto readFloat = [](JsonApi::Object obj, const char* key, float& out) {
+            if (!obj.Has(key) || !obj.Get(key).IsNumber()) return;
+            const double value = obj.Get(key).As<JsonApi::Number>().DoubleValue();
+            if (std::isfinite(value)) out = static_cast<float>(value);
+        };
+        if (item.Has("trackId") && item.Get("trackId").IsNumber()) {
+            const double value = item.Get("trackId").As<JsonApi::Number>().DoubleValue();
+            if (std::isfinite(value) && value >= 0.0 && value <= 2147483647.0)
+                l.trackId = static_cast<int>(value);
+        }
+        if (item.Has("leadInTicks") && item.Get("leadInTicks").IsNumber()) {
+            const double value = item.Get("leadInTicks").As<JsonApi::Number>().DoubleValue();
+            if (std::isfinite(value)) {
+                l.leadInTicks = static_cast<int64_t>(
+                    std::clamp(value, -9007199254740991.0, 9007199254740991.0));
+            }
+        }
+        if (item.Has("from") && item.Get("from").IsString())
+            l.from = stringToTrackLandingFrom(item.Get("from").As<JsonApi::String>().Utf8Value());
+        readFloat(item, "edgeAngleDeg", l.edgeAngleDeg);
+        if (item.Has("custom") && item.Get("custom").IsObject()) {
+            JsonApi::Object customJs = item.Get("custom").As<JsonApi::Object>();
+            readFloat(customJs, "x", l.customX);
+            readFloat(customJs, "y", l.customY);
+            readFloat(customJs, "w", l.customW);
+            readFloat(customJs, "h", l.customH);
+        }
+        readFloat(item, "fromOpacity", l.fromOpacity);
+        if (item.Has("easing") && item.Get("easing").IsObject()) {
+            JsonApi::Object easingJs = item.Get("easing").As<JsonApi::Object>();
+            readFloat(easingJs, "x1", l.easing.x1);
+            readFloat(easingJs, "y1", l.easing.y1);
+            readFloat(easingJs, "x2", l.easing.x2);
+            readFloat(easingJs, "y2", l.easing.y2);
+        }
+        landings.push_back(l);
+    }
+
+    std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
+    g_timeline->setCueLandings(tick, landings);
+    return gridCuesToJs(env, g_timeline->getGridCues());
+}
+
+// timeline_reflowCueLandings(tick: number, leadInTicks: number) → GridCue[] (post-mutation)
+// Reflow: adds or replaces a "whereItWas" landing, with this lead-in, for every
+// track whose canvas rect differs between the outgoing snapshot and this cue's
+// snapshot. Tracks that are in the cue's snapshot but not in the outgoing one are
+// left alone, and landings for other tracks are kept. No-op if no cue exists at
+// that tick or its snapshot no longer resolves. Returns the resulting cue list.
+JsonApi::Value Timeline_ReflowCueLandings(const JsonApi::CallbackInfo& info) {
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        JsonApi::TypeError::New(env, "timeline_reflowCueLandings(tick: number, leadInTicks?: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    TickTime tick; tick.ticks = static_cast<int64_t>(info[0].As<JsonApi::Number>().DoubleValue());
+    int64_t leadInTicks = TrackLanding::kDefaultLeadInTicks;
+    if (info.Length() >= 2 && info[1].IsNumber()) {
+        const double value = info[1].As<JsonApi::Number>().DoubleValue();
+        if (std::isfinite(value)) {
+            leadInTicks = static_cast<int64_t>(std::clamp(
+                value, 0.0, static_cast<double>(TrackLanding::kMaxLeadInTicks)));
+        }
+    }
+
+    std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
+    g_timeline->reflowCueLandings(tick, leadInTicks);
     return gridCuesToJs(env, g_timeline->getGridCues());
 }
 

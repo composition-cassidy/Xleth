@@ -226,6 +226,56 @@ describe('rpc-manifest invariants', () => {
     }
   });
 
+  it('pins the Landing cue RPCs (docs/XLETH_LANDING_SPEC.md, P4)', () => {
+    const byMethod = Object.fromEntries(METHODS.map((m) => [m.method, m]));
+
+    // Both return the post-mutation cue list, and neither touches an effect
+    // graph, so they are plain value pass-throughs.
+    const set = byMethod.timeline_setCueLandings;
+    expect(set, 'timeline_setCueLandings missing').toBeTruthy();
+    expect(set.channels).toEqual(['xleth:timeline:setCueLandings']);
+    expect(set.api).toEqual({ 'timeline.setCueLandings': 'xleth:timeline:setCueLandings' });
+    expect(set.handler).toBe('Timeline_SetCueLandings');
+    expect(set.returns).toBe('value');
+    expect(set.binary).toBe(null);
+    expect(set.graph ?? null).toBe(null);
+
+    const reflow = byMethod.timeline_reflowCueLandings;
+    expect(reflow, 'timeline_reflowCueLandings missing').toBeTruthy();
+    expect(reflow.channels).toEqual(['xleth:timeline:reflowCueLandings']);
+    expect(reflow.api).toEqual({ 'timeline.reflowCueLandings': 'xleth:timeline:reflowCueLandings' });
+    expect(reflow.handler).toBe('Timeline_ReflowCueLandings');
+    expect(reflow.returns).toBe('value');
+    expect(reflow.binary).toBe(null);
+
+    // The older cue RPCs are hand-wired in grid-layout.js / preload.js; a
+    // manifest entry for one of them would register its channel twice.
+    for (const legacy of ['timeline_addCue', 'timeline_moveCue', 'timeline_removeCue',
+                          'timeline_listCues', 'timeline_setCueTransition']) {
+      expect(byMethod[legacy], `${legacy} must stay hand-wired`).toBeUndefined();
+    }
+  });
+
+  it('attaches the Landing wrappers beside the hand-written cue API', async () => {
+    const calls = [];
+    const invoke = (channel, ...args) => { calls.push([channel, ...args]); return Promise.resolve('ok'); };
+    // preload.js builds `timeline` by hand first (addCue, setCueTransition, ...).
+    const api = { timeline: { setCueTransition: () => 'hand-written' } };
+    attachRpcWrappers(api, invoke);
+
+    expect(typeof api.timeline.setCueLandings).toBe('function');
+    expect(typeof api.timeline.reflowCueLandings).toBe('function');
+    expect(api.timeline.setCueTransition()).toBe('hand-written');
+
+    const landings = [{ trackId: 3, from: 'whereItWas', leadInTicks: 960 }];
+    await api.timeline.setCueLandings(7680, landings);
+    await api.timeline.reflowCueLandings(7680, 960);
+    expect(calls).toEqual([
+      ['xleth:timeline:setCueLandings', 7680, landings],
+      ['xleth:timeline:reflowCueLandings', 7680, 960],
+    ]);
+  });
+
   it('rejects unknown graph keys', () => {
     METHODS.push({
       method: '__test_bad_graph', channels: ['xleth:__test:badGraph'],
