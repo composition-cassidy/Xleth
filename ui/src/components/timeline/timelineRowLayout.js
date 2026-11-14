@@ -23,6 +23,7 @@
 
 import { DEFAULT_TRACK_HEIGHT, TRACK_HEIGHT } from '../../constants/timeline.js'
 import { reelLaneHeight } from './reelLaneModel.js'
+import { roamLaneHeight } from './roamLaneModel.js'
 
 // Child macro automation lanes are shorter than full tracks — enough vertical
 // room for a clip body + a small curve preview, but visibly subordinate to the
@@ -120,6 +121,7 @@ export function buildTimelineRows({
   automationLaneHeight = Math.round(AUTOMATION_LANE_HEIGHT * trackHeight / DEFAULT_TRACK_HEIGHT),
   automationGroupHeaderHeight = AUTOMATION_GROUP_HEADER_HEIGHT,
   reelLanes = null,
+  roamLanes = null,
 } = {}) {
   const rows = []
   if (!Array.isArray(tracks)) return rows
@@ -184,6 +186,27 @@ export function buildTimelineRows({
         label: 'Reel',
       })
       y += reelHeight
+    }
+
+    // Roam key lane (a track with a cell, the lane switched on): the next child row,
+    // under the Reel lane. A graph of ONE Roam parameter on the arrangement's ticks.
+    if (roamLanes?.[String(trackId)]) {
+      const roamHeight = roamLaneHeight(trackHeight)
+      rows.push({
+        id: `roam:${trackId}`,
+        rowType: 'roam',
+        laneKind: 'roam',
+        trackId: null,
+        trackIndex: null,
+        parentTrackId: trackId,
+        parentTrackIndex: trackIndex,
+        y,
+        height: roamHeight,
+        trackHeight,
+        visible: true,
+        label: 'Roam',
+      })
+      y += roamHeight
     }
 
     // Automation lanes group directly under their owning track row.
@@ -256,12 +279,13 @@ export function buildTimelineRows({
 // shifted geometry is identical everywhere.
 export function buildTrackLayout({
   tracks, graphStates = {}, collapsed = null, folderLayout = null, trackHeight = TRACK_HEIGHT,
-  automationGroups = null, reelLanes = null,
+  automationGroups = null, reelLanes = null, roamLanes = null,
 } = {}) {
-  const rows = buildTimelineRows({ tracks, graphStates, collapsed, folderLayout, trackHeight, automationGroups, reelLanes })
+  const rows = buildTimelineRows({ tracks, graphStates, collapsed, folderLayout, trackHeight, automationGroups, reelLanes, roamLanes })
   const trackRows = rows.filter((r) => r.rowType === 'track')
   const macroRows = rows.filter((r) => r.rowType === 'macroAutomation')
   const reelRows = rows.filter((r) => r.rowType === 'reel')
+  const roamRows = rows.filter((r) => r.rowType === 'roam')
   const folderRows = rows.filter((r) => r.rowType === 'folder')
   const automationGroupRows = rows.filter((r) => r.rowType === 'automationGroupHeader')
   const automationLaneRows = rows.filter((r) => r.rowType === 'automationLane')
@@ -294,7 +318,7 @@ export function buildTrackLayout({
     if (y < 0) return 0
     for (const r of rows) {
       if (y >= r.y && y < r.y + r.height) {
-        if (r.rowType === 'folder' || r.rowType === 'automationGroupHeader' || r.rowType === 'automationLane' || r.rowType === 'reel') return -1
+        if (r.rowType === 'folder' || r.rowType === 'automationGroupHeader' || r.rowType === 'automationLane' || r.rowType === 'reel' || r.rowType === 'roam') return -1
         return r.rowType === 'track' ? r.trackIndex : r.parentTrackIndex
       }
     }
@@ -304,6 +328,16 @@ export function buildTrackLayout({
   // Returns the macro automation row whose band contains Y, else null.
   function macroRowAtY(y) {
     for (const r of macroRows) {
+      if (y >= r.y && y < r.y + r.height) return r
+    }
+    return null
+  }
+
+  // Returns the Roam key lane row whose band contains Y, else null. Like the Reel
+  // lane it resolves to no track (-1) in trackIndexAtY: a click in it must never
+  // fall through to the parent track's blocks.
+  function roamRowAtY(y) {
+    for (const r of roamRows) {
       if (y >= r.y && y < r.y + r.height) return r
     }
     return null
@@ -332,6 +366,7 @@ export function buildTrackLayout({
     trackRows,
     macroRows,
     reelRows,
+    roamRows,
     folderRows,
     automationGroupRows,
     automationLaneRows,
@@ -343,6 +378,8 @@ export function buildTrackLayout({
     macroRowAtY,
     reelRowAtY,
     getReelRows: () => reelRows,
+    roamRowAtY,
+    getRoamRows: () => roamRows,
     automationLaneRowAtY,
     folderRowAtY: (y) => folderRows.find(r => y >= r.y && y < r.y + r.height) ?? null,
     automationGroupRowAtY: (y) => automationGroupRows.find(r => y >= r.y && y < r.y + r.height) ?? null,

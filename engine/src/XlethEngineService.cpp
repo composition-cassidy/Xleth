@@ -16246,6 +16246,8 @@ JsonApi::Value trackRoamResult(JsonApi::Env env, int trackId, bool changed)
     r.Set("changed", JsonApi::Boolean::New(env, changed));
     const TrackInfo* t = g_timeline->getTrack(trackId);
     r.Set("roam", opaqueJsonToValue(env, lensroam::roamParamsToJson(t ? t->roam.base : RoamParams{})));
+    // P10: the track's keys (TimelineTicks), so a keys write needs no refetch.
+    r.Set("keys", opaqueJsonToValue(env, lensroam::roamTrackToJson(t ? t->roam : RoamTrack{}).at("keys")));
     return r;
 }
 
@@ -16536,6 +16538,7 @@ JsonApi::Value Timeline_GetLensRoam(const JsonApi::CallbackInfo& info)
         JsonApi::Object e = JsonApi::Object::New(env);
         e.Set("trackId", JsonApi::Number::New(env, t->id));
         e.Set("roam", opaqueJsonToValue(env, lensroam::roamParamsToJson(t->roam.base)));
+        e.Set("keys", opaqueJsonToValue(env, lensroam::roamTrackToJson(t->roam).at("keys")));
         tracks.Set(nt++, e);
     }
 
@@ -17031,6 +17034,85 @@ JsonApi::Value Timeline_SetClipLensKeys(const JsonApi::CallbackInfo& info)
     }
     log.done(what + (changed ? "" : " (unchanged)"));
     return clipLensResult(env, clipId, changed);
+}
+
+// timeline_setTrackRoamKeys(trackId, keys: [{channel, anchor: 'Origin', pos, value, interp?}])
+//   -> { trackId, changed, roam, keys }
+// P10. Replaces a track's Roam keys. Roam keys are ABSOLUTE (a keyed channel
+// follows its keys, an unkeyed one holds the base) and sit on TimelineTicks:
+// pos = ticks from timeline tick 0. Same contract as the other setters: strict
+// parse (unknown field, unknown channel/enum, non-finite number, a scale <= 0,
+// a negative pos), ONE UndoManager command only when something changes, the
+// post-state returned. A drag in the UI previews locally and calls this once.
+JsonApi::Value Timeline_SetTrackRoamKeys(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!lensRoamReady(env)) return env.Undefined();
+    const char* sig = "timeline_setTrackRoamKeys(trackId: number, keys: {channel, anchor:'Origin', pos, value, interp?}[])";
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsArray()) { throwType(env, sig); return env.Undefined(); }
+    BridgeCallLog log("timeline.setTrackRoamKeys");
+    const int trackId = info[0].As<JsonApi::Number>().Int32Value();
+    if (!g_timeline->getTrack(trackId)) {
+        JsonApi::Error::New(env, "timeline.setTrackRoamKeys: no track " + std::to_string(trackId))
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const nlohmann::json arr = valueToJson(info[1]);
+    std::vector<RoamKey> keys;
+    for (std::size_t i = 0; i < arr.size(); ++i) {
+        const nlohmann::json& e = arr[i];
+        const std::string at = "keys[" + std::to_string(i) + "]";
+        if (!e.is_object()) { throwType(env, std::string(sig) + ": " + at + " must be an object"); return env.Undefined(); }
+        for (auto it = e.begin(); it != e.end(); ++it) {
+            const std::string& f = it.key();
+            if (f != "channel" && f != "anchor" && f != "pos" && f != "value" && f != "interp") {
+                throwType(env, std::string(sig) + ": " + at + ": unknown field '" + f + "' (channel, anchor, pos, value, interp)");
+                return env.Undefined();
+            }
+        }
+        RoamKey k;
+        const std::string ch = e.contains("channel") && e["channel"].is_string() ? e["channel"].get<std::string>() : "";
+        if      (ch == "offsetX")     k.channel = RoamChannel::OffsetX;
+        else if (ch == "offsetY")     k.channel = RoamChannel::OffsetY;
+        else if (ch == "scale")       k.channel = RoamChannel::Scale;
+        else if (ch == "rotationDeg") k.channel = RoamChannel::RotationDeg;
+        else { throwType(env, std::string(sig) + ": " + at + ": channel must be offsetX | offsetY | scale | rotationDeg"); return env.Undefined(); }
+        if (!e.contains("anchor") || !e["anchor"].is_string() || e["anchor"].get<std::string>() != "Origin") {
+            throwType(env, std::string(sig) + ": " + at + ": anchor must be 'Origin' (a Roam key is timeline ticks)");
+            return env.Undefined();
+        }
+        k.anchor = KeyAnchor::Origin;
+        if (!e.contains("pos") || !e["pos"].is_number() || !std::isfinite(e["pos"].get<double>())
+            || e["pos"].get<double>() < 0.0) {
+            throwType(env, std::string(sig) + ": " + at + ": pos must be a finite number >= 0"); return env.Undefined();
+        }
+        if (!e.contains("value") || !e["value"].is_number() || !std::isfinite(e["value"].get<double>())) {
+            throwType(env, std::string(sig) + ": " + at + ": value must be a finite number"); return env.Undefined();
+        }
+        k.pos   = e["pos"].get<double>();
+        k.value = e["value"].get<double>();
+        if (k.channel == RoamChannel::Scale && !(k.value > 0.0)) {
+            throwType(env, std::string(sig) + ": " + at + ": a scale value must be > 0"); return env.Undefined();
+        }
+        k.interp = xleth::keycurve::Interp::Linear;
+        if (e.contains("interp")) {
+            const std::string in = e["interp"].is_string() ? e["interp"].get<std::string>() : "";
+            if      (in == "Hold")    k.interp = xleth::keycurve::Interp::Hold;
+            else if (in == "Linear")  k.interp = xleth::keycurve::Interp::Linear;
+            else if (in == "EaseOut") k.interp = xleth::keycurve::Interp::EaseOut;
+            else { throwType(env, std::string(sig) + ": " + at + ": interp must be Hold | Linear | EaseOut"); return env.Undefined(); }
+        }
+        keys.push_back(k);
+    }
+    auto cmd = std::make_unique<SetTrackRoamKeysCommand>(trackId, std::move(keys), *g_timeline);
+    const bool changed = cmd->changesAnything();
+    const std::string what = cmd->describe();
+    if (changed) {
+        g_undoManager->execute(std::move(cmd), *g_timeline);
+        g_previewDirty = true;
+    }
+    log.done(what + (changed ? "" : " (unchanged)"));
+    return trackRoamResult(env, trackId, changed);
 }
 
 // timeline_setTrackSlideNoteEffect(trackId, sObj)

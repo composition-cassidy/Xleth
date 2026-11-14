@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  Button, NumberBox, SectionHeader, SegmentedControl, Select, THIN_SPACE, formatValue, parseValue, logScale,
+  Button, NumberBox, SectionHeader, SegmentedControl, Select,
 } from '../../ui-kit'
 import {
-  OFFSET_RANGE_CELLS, SCALE_MAX, SCALE_MIN, cellGeometry, cellsToDisplay, displayToCells, roamIsIdentity,
+  OFFSET_RANGE_CELLS, cellGeometry, cellsToDisplay, displayToCells, roamIsIdentity,
 } from '../../lensRoam/lensRoamModel.js'
-import { useRoamValue, useTrackGeometry } from '../../lensRoam/useLensRoam.js'
+import { useRoamValue, useTrackGeometry, usePlayheadTick } from '../../lensRoam/useLensRoam.js'
+import { SCALE_SCALE, cellFmt, degFmt, pxFmt, scaleFmt } from './roamFormats.js'
+import RoamKeys from './RoamKeys.jsx'
 import styles from '../inspector/Inspector.module.css'
 import lens from './lensRoam.module.css'
 
@@ -29,24 +31,6 @@ const LAYER_OPTIONS = [
   { value: 'Top', label: 'Top', hint: 'Draw over everything.' },
 ]
 
-const SCALE_SCALE = logScale(SCALE_MIN, SCALE_MAX)
-const scaleFmt = {
-  format: (v) => `${formatValue(v, 'dB', { unitless: true, decimals: 2 })}${THIN_SPACE}×`,
-  parse: (t) => parseValue(String(t).replace(/[×x]/gi, ''), 'dB'),
-}
-const degFmt = {
-  format: (v) => `${formatValue(v, 'dB', { unitless: true, decimals: 1 })}${THIN_SPACE}°`,
-  parse: (t) => parseValue(String(t).replace(/°/g, ''), 'dB'),
-}
-const cellFmt = {
-  format: (v) => `${formatValue(v, 'dB', { unitless: true, decimals: 2 })}${THIN_SPACE}cells`,
-  parse: (t) => parseValue(String(t).replace(/cells?/gi, ''), 'dB'),
-}
-const pxFmt = {
-  format: (v) => `${formatValue(Math.round(v), 'dB', { unitless: true, decimals: 0 })}${THIN_SPACE}px`,
-  parse: (t) => parseValue(String(t).replace(/px/gi, ''), 'dB'),
-}
-
 // Units is a display choice: remembered for the session's next launch, never sent.
 const UNITS_KEY = 'xleth.roam.units'
 function readUnits() {
@@ -69,11 +53,14 @@ function Row({ label, children }) {
 }
 
 export default function RoamPanel({ trackId, context }) {
-  const { roam, ready, preview, commit, cancel, reset } = useRoamValue(trackId)
+  const roamState = useRoamValue(trackId)
+  const { roam, ready, preview, commit, cancel, reset, keyed, autoKey, resolveAt } = roamState
   const { layout, track } = useTrackGeometry(trackId)
   const geo = useMemo(() => cellGeometry(layout, track), [layout, track])
   const [units, setUnits] = useState(readUnits)
   useEffect(() => { writeUnits(units) }, [units])
+  // The playhead, at the display rate, only while some parameter is keyed.
+  const tick = usePlayheadTick(roamState.keyed.size > 0)
 
   if (!ready) {
     return (
@@ -96,6 +83,15 @@ export default function RoamPanel({ trackId, context }) {
   const identity = roamIsIdentity(roam)
   const floating = roam.bounds === 'Float'
 
+  // A KEYED parameter follows its keys, so its box shows the cell's value at the
+  // playhead (draft included) and only edits when Auto-key is on (the edit becomes a
+  // key at the playhead). With Auto-key off it is read-only: the base would be ignored.
+  const shownRoam = keyed.size > 0 ? resolveAt(tick) : roam
+  const locked = (ch) => keyed.has(ch) && !autoKey
+  const lockedHint = (ch) => (locked(ch)
+    ? 'Keyed: this value follows its keys. Edit them in the lane, or turn on Auto-key to write a key at the playhead.'
+    : keyed.has(ch) ? 'Keyed: with Auto-key on, a change writes a key at the playhead.' : null)
+
   const offsetBox = (axis, px) => {
     const key = axis === 'X' ? 'offsetX' : 'offsetY'
     const range = offsetRange(px)
@@ -103,12 +99,12 @@ export default function RoamPanel({ trackId, context }) {
       <NumberBox
         key={`${key}-${shown}`}
         label={`Offset ${axis}`} hideLabel width={96} min={-range} max={range} bipolar centre={0} defaultValue={0}
-        value={cellsToDisplay(roam[key], shown, px)} format={fmt.format} parse={fmt.parse}
-        pxPerRange={400}
+        value={cellsToDisplay(shownRoam[key], shown, px)} format={fmt.format} parse={fmt.parse}
+        pxPerRange={400} disabled={locked(key)}
         onChange={(v) => preview({ [key]: displayToCells(v, shown, px) })}
         onCommit={(v) => set({ [key]: displayToCells(v, shown, px) })}
         onCancel={cancel}
-        hint={`Move the cell ${axis === 'X' ? 'across' : 'down'} the picture. Positive is ${axis === 'X' ? 'right' : 'down'}. Stored in cells, so it keeps its proportion if the grid changes.`}
+        hint={lockedHint(key) ?? `Move the cell ${axis === 'X' ? 'across' : 'down'} the picture. Positive is ${axis === 'X' ? 'right' : 'down'}. Stored in cells, so it keeps its proportion if the grid changes.`}
       />
     )
   }
@@ -130,21 +126,21 @@ export default function RoamPanel({ trackId, context }) {
       <Row label="Scale">
         <NumberBox
           label="Scale" hideLabel width={96} scale={SCALE_SCALE} defaultValue={1}
-          value={roam.scale} format={scaleFmt.format} parse={scaleFmt.parse}
+          value={shownRoam.scale} format={scaleFmt.format} parse={scaleFmt.parse} disabled={locked('scale')}
           onChange={(scale) => preview({ scale })}
           onCommit={(scale) => set({ scale })}
           onCancel={cancel}
-          hint="Resize the cell about its own centre. 1.00 is the grid box."
+          hint={lockedHint('scale') ?? 'Resize the cell about its own centre. 1.00 is the grid box.'}
         />
       </Row>
       <Row label="Rotate">
         <NumberBox
           label="Rotate" hideLabel width={96} min={-360} max={360} bipolar centre={0} defaultValue={0} pxPerRange={1440}
-          value={roam.rotationDeg} format={degFmt.format} parse={degFmt.parse}
+          value={shownRoam.rotationDeg} format={degFmt.format} parse={degFmt.parse} disabled={locked('rotationDeg')}
           onChange={(rotationDeg) => preview({ rotationDeg })}
           onCommit={(rotationDeg) => set({ rotationDeg })}
           onCancel={cancel}
-          hint="Turn the cell about its own centre. Positive is clockwise."
+          hint={lockedHint('rotationDeg') ?? 'Turn the cell about its own centre. Positive is clockwise.'}
         />
       </Row>
       <Row label="Bounds">
@@ -164,11 +160,13 @@ export default function RoamPanel({ trackId, context }) {
       <div className={lens.actions}>
         <Button
           size="sm" onClick={() => reset()} disabled={identity}
-          hint="Return the cell to its grid box: no offset, scale 1.00, no rotation, Clip, Grid order."
+          hint="Return the cell's base to its grid box: no offset, scale 1.00, no rotation, Clip, Grid order. Keys are kept: Clear keys removes them."
         >
           Back to grid box
         </Button>
       </div>
+      <SectionHeader>Roam keys</SectionHeader>
+      <RoamKeys trackId={trackId} roam={roamState} placed={!!geo} />
     </section>
   )
 }

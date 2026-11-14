@@ -2,6 +2,7 @@ import { useCallback, useMemo, useRef, useState, useEffect } from 'react'
 import { IconButton, isHeard } from '../../ui-kit'
 import Disclosure from '../browser/Disclosure.jsx'
 import TrackHeader from './TrackHeader.jsx'
+import RoamLaneHeader from './RoamLaneHeader.jsx'
 import TrackColorPopover from './TrackColorPopover.jsx'
 import TrackContextMenu from './TrackContextMenu.jsx'
 import { RULER_HEIGHT, HEADER_WIDTH, ADD_TRACK_ROW_HEIGHT, TIMELINE_HSCROLL_HEIGHT } from '../../constants/timeline.js'
@@ -43,6 +44,8 @@ export default function TrackHeaderList({
   // per such track, and the collapse toggle.
   reelRows = [],
   onToggleReelLane,
+  // Roam key lane (a track with a cell, the lane switched on): one row per such track.
+  roamRows = [],
   onHideMacroLane,
   automationGroupRows = [],
   automationLaneRows = [],
@@ -76,6 +79,12 @@ export default function TrackHeaderList({
     for (const row of reelRows) map.set(row.parentTrackId, row)
     return map
   }, [reelRows])
+
+  const roamByTrack = useMemo(() => {
+    const map = new Map()
+    for (const row of roamRows) map.set(row.parentTrackId, row)
+    return map
+  }, [roamRows])
 
   const lanesByTrack = useMemo(() => {
     const map = new Map()
@@ -214,6 +223,7 @@ export default function TrackHeaderList({
       track, canonicalIndex, trackPalette, TRACK_PALETTE_FALLBACK[canonicalIndex % 16])
     const laneRows = lanesByTrack.get(track.id) ?? []
     const reelRow = reelByTrack.get(track.id)
+    const roamRow = roamByTrack.get(track.id)
     return (
       <div key={track.id} className="track-header-group">
         <TrackHeader
@@ -262,6 +272,7 @@ export default function TrackHeaderList({
             <span className={styles.reelHint}>Timing comes from notes</span>
           </div>
         )}
+        {roamRow && <RoamLaneHeader key={roamRow.id} row={roamRow} color={color} trackName={track.name} />}
         {renderAutomationGroup(track.id)}
         {laneRows.map(lane => (
           <div

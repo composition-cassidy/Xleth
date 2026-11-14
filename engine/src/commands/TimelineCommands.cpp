@@ -3187,6 +3187,28 @@ std::string SetTrackRoamCommand::describe() const {
          + std::to_string(trackId_) + ")";
 }
 
+// ─── SetTrackRoamKeysCommand ─────────────────────────────────────────────────
+
+SetTrackRoamKeysCommand::SetTrackRoamKeysCommand(int trackId, std::vector<RoamKey> keys,
+                                                 const Timeline& timeline)
+    : trackId_(trackId), newKeys_(std::move(keys))
+{
+    if (const TrackInfo* t = timeline.getTrack(trackId)) oldKeys_ = t->roam.keys;
+}
+
+void SetTrackRoamKeysCommand::execute(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(trackId_)) t->roam.keys = newKeys_;
+}
+
+void SetTrackRoamKeysCommand::undo(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(trackId_)) t->roam.keys = oldKeys_;
+}
+
+std::string SetTrackRoamKeysCommand::describe() const {
+    return "Set Track Roam keys (track=" + std::to_string(trackId_) + ", "
+         + std::to_string(newKeys_.size()) + " keys)";
+}
+
 // ─── Lens + Roam P8: per-note overrides ──────────────────────────────────────
 
 namespace {

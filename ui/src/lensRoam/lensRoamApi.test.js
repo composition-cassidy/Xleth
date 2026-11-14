@@ -253,3 +253,46 @@ describe('P9 calls: clip keys, multi-note keys, presets', () => {
     expect(await setNotesLensKeys([])).toBeNull()
   })
 })
+
+describe('P10 call: Track Roam keys', () => {
+  const KEY = { channel: 'offsetX', anchor: 'Origin', pos: 11520, value: 2.5, interp: 'EaseOut' }
+
+  it('setTrackRoamKeys goes to its own bridge method and announces lens-roam-changed with the post-state', async () => {
+    const { setTrackRoamKeys } = await import('./lensRoamApi.js')
+    timeline.setTrackRoamKeys = vi.fn(async (trackId, keys) => ({ trackId, changed: true, roam: ROAM, keys }))
+    const seen = vi.fn()
+    timelineEvents.addEventListener('lens-roam-changed', seen)
+    try {
+      const res = await setTrackRoamKeys(7, [KEY])
+      expect(timeline.setTrackRoamKeys).toHaveBeenCalledTimes(1)
+      expect(timeline.setTrackRoamKeys).toHaveBeenCalledWith(7, [KEY])
+      expect(res.keys).toEqual([KEY])
+      expect(seen).toHaveBeenCalledTimes(1)
+      expect(seen.mock.calls[0][0].detail).toMatchObject({ trackId: 7, keys: [KEY], roam: ROAM })
+    } finally {
+      timelineEvents.removeEventListener('lens-roam-changed', seen)
+    }
+  })
+
+  it('an unchanged write announces nothing; a failed one resolves null so the caller drops its preview', async () => {
+    const { setTrackRoamKeys } = await import('./lensRoamApi.js')
+    timeline.setTrackRoamKeys = vi.fn(async (trackId, keys) => ({ trackId, changed: false, roam: ROAM, keys }))
+    const seen = vi.fn()
+    timelineEvents.addEventListener('lens-roam-changed', seen)
+    try {
+      await setTrackRoamKeys(7, [])
+      expect(seen).not.toHaveBeenCalled()
+      timeline.setTrackRoamKeys = vi.fn(async () => { throw new Error('timeline.setTrackRoamKeys: no track 7') })
+      expect(await setTrackRoamKeys(7, [KEY])).toBeNull()
+    } finally {
+      timelineEvents.removeEventListener('lens-roam-changed', seen)
+    }
+  })
+
+  it('a missing bridge link sends nothing and resolves null (the four-layer bridge never fails silently)', async () => {
+    const { setTrackRoamKeys } = await import('./lensRoamApi.js')
+    delete timeline.setTrackRoamKeys
+    expect(await setTrackRoamKeys(7, [KEY])).toBeNull()
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('timeline.setTrackRoamKeys is unavailable'))
+  })
+})

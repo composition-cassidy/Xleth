@@ -790,6 +790,15 @@ const METHODS = [
     returns: 'value',
     binary: null,
   },
+  // ── Lens + Roam P10: Track Roam keys (TimelineTicks) ──
+  {
+    method: 'timeline_setTrackRoamKeys',
+    channels: ['xleth:timeline:setTrackRoamKeys'],
+    api: { 'timeline.setTrackRoamKeys': 'xleth:timeline:setTrackRoamKeys' },
+    handler: 'Timeline_SetTrackRoamKeys',
+    returns: 'value',
+    binary: null,
+  },
   // ── Lens + Roam P9: Clip Track event Lens keys (EventTicks) ──
   {
     method: 'timeline_setClipLensKeys',

@@ -7,6 +7,9 @@ import MacroAutomationLanes from './timeline/MacroAutomationLanes.jsx'
 import { buildTrackLayout } from './timeline/timelineRowLayout.js'
 import { buildReelModel } from './timeline/reelLaneModel.js'
 import useReelLaneStore from '../stores/useReelLaneStore.js'
+import useRoamKeysStore from '../stores/useRoamKeysStore.js'
+import { useRoamLaneData } from '../lensRoam/useLensRoam.js'
+import { setTrackRoamKeys } from '../lensRoam/lensRoamApi.js'
 import { drawLengthForSnap, adoptDrawLength, resetDrawLength } from './timeline/drawLength.js'
 import { sourceTicksForTimelineTicks } from './timeline/clipSourceDomain.js'
 import { tokenValue } from '../theming/tokenValue.ts'
@@ -563,9 +566,42 @@ export default function TimelineView({
     return lanes
   }, [reelLanesKey])
 
+  // ── Roam key lanes ─────────────────────────────────────────────────────────
+  // A lane under each track that has a cell, switched on per track (the Roam
+  // inspector's "Key lane" toggle, or the lane header's close button). A track that
+  // arrives with keys shows its lane once, so keys are never hidden by default.
+  const roamTrackIds = useMemo(() => tracks.map((t) => t.id), [tracks])
+  const roamData = useRoamLaneData(roamTrackIds)
+  const roamLaneOpen = useRoamKeysStore((s) => s.laneOpen)
+  const roamSeenKeyed = useRef(new Set())
+  useEffect(() => {
+    for (const [id, d] of roamData.byTrack) {
+      if (d.keys.length > 0 && !roamSeenKeyed.current.has(id)) {
+        roamSeenKeyed.current.add(id)
+        useRoamKeysStore.getState().setLaneOpen(id, true)
+      }
+    }
+  }, [roamData.byTrack])
+  const roamLanes = useMemo(() => {
+    const lanes = {}
+    for (const id of roamLaneOpen) if (roamData.placed.has(id)) lanes[id] = true
+    return lanes
+  }, [roamLaneOpen, roamData.placed])
+  // What the canvas needs: every track's keys, and ONE call to commit a gesture's list.
+  const { applyKeys: applyRoamKeys } = roamData
+  const roamCanvas = useMemo(() => ({
+    byTrack: roamData.byTrack,
+    commitKeys: async (trackId, keys) => {
+      const res = await setTrackRoamKeys(trackId, keys)
+      if (Array.isArray(res?.keys)) applyRoamKeys(trackId, res.keys)
+      useRoamKeysStore.getState().clearDraft()
+      return res
+    },
+  }), [roamData.byTrack, applyRoamKeys])
+
   const trackLayout = useMemo(
-    () => buildTrackLayout({ tracks, graphStates, folderLayout: normalizedFolderLayout, trackHeight, automationGroups, reelLanes }),
-    [tracks, graphStates, normalizedFolderLayout, trackHeight, automationGroups, reelLanes],
+    () => buildTrackLayout({ tracks, graphStates, folderLayout: normalizedFolderLayout, trackHeight, automationGroups, reelLanes, roamLanes }),
+    [tracks, graphStates, normalizedFolderLayout, trackHeight, automationGroups, reelLanes, roamLanes],
   )
   const [selectedBlockIds, setSelectedBlockIds] = useState(new Set())
 
@@ -4617,6 +4653,7 @@ export default function TimelineView({
               trackHeight={trackHeight}
               macroRows={trackLayout.macroRows}
               reelRows={trackLayout.reelRows}
+              roamRows={trackLayout.roamRows}
               onToggleReelLane={handleToggleReelLane}
               onHideMacroLane={(trackId, macroNodeId) =>
                 useEffectChainStore.getState().hideMacroAutomationLaneForTrack?.(trackId, macroNodeId)}
@@ -4766,6 +4803,7 @@ export default function TimelineView({
                   pixelsPerBeat={pixelsPerBeat}
                   trackLayout={trackLayout}
                   reel={reelModel}
+                  roam={roamCanvas}
                   setSelectedClipIds={setSelectedClipIds}
                   onFocusTrack={setFocusedTrackId}
                   pencilTemplateRef={pencilTemplateRef}

@@ -21,7 +21,7 @@
 import { timelineEvents } from '../timelineEvents.js'
 
 const TAG = '[LensBridge]'
-// (P9 adds setNotesLensKeys, setClipLensKeys, getHitPresets below.)
+// (P9 adds setNotesLensKeys, setClipLensKeys, getHitPresets below; P10 adds setTrackRoamKeys.)
 
 export const LENS_FIELDS = ['fit', 'centerX', 'centerY', 'zoom', 'rotationDeg', 'flip']
 export const ROAM_FIELDS = ['offsetX', 'offsetY', 'scale', 'rotationDeg', 'bounds', 'layer']
@@ -91,6 +91,16 @@ export function setTrackRoam(trackId, params) {
 
 export function resetTrackRoam(trackId) {
   return call('resetTrackRoam', `track=${trackId}`, [trackId], { write: true })
+}
+
+/**
+ * Replace a track's Roam keys (P10) as ONE undo step, whatever the gesture
+ * changed. keys: [{ channel: 'offsetX'|'offsetY'|'scale'|'rotationDeg', anchor: 'Origin',
+ * pos: timeline ticks, value, interp }]. Roam keys are absolute: a keyed channel
+ * follows its keys, an unkeyed one holds the base. Resolves to { trackId, changed, roam, keys }.
+ */
+export function setTrackRoamKeys(trackId, keys) {
+  return call('setTrackRoamKeys', `track=${trackId} ${keys?.length ?? 0} keys`, [trackId, keys], { write: true })
 }
 
 // ── Per-note overrides (P8) ──────────────────────────────────────────────────

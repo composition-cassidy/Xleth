@@ -47,6 +47,15 @@
     padding: var(--space-1) var(--space-2);
   }
 
+  /* A value's plain-language twin beside its box (a tick position as bar.beat.ticks). */
+  .readout {
+    margin-left: var(--space-2);
+    color: var(--ui-ink-3);
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
   /* The viewer overlay canvas sits over the preview picture. It never takes
    * pointer events itself: RoamOverlayCanvas hit-tests on its parent so the
    * eyedropper and every other click on the picture keep working. */

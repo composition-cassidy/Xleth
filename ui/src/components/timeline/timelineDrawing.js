@@ -160,6 +160,10 @@ export function resolveTimelinePalette() {
     reelBodySelected:  tokenValue('--ui-g4'),
     reelBadgeFill:     tokenValue('--ui-g1'),
     reelBadgeInk:      tokenValue('--ui-ink'),
+    // Roam key lane: neutral axis and labels; the curve and keys take the track's colour.
+    roamAxis:          tokenValue('--ui-g4'),
+    roamLine:          tokenValue('--ui-ink-3'),
+    roamLabel:         tokenValue('--ui-ink-3'),
     // Depth
     wellTopShadow:     tokenValue('--theme-timeline-well-top-shadow'),
     // Track palette — resolved once per redraw, threaded into draw functions
@@ -324,7 +328,7 @@ export function drawGrid(ctx, w, h, scrollOffset, ppb, trackCount, tracks = null
   if (trackLayout && Array.isArray(trackLayout.rows)) {
     ctx.fillStyle = withAlpha(p.laneSeparator, 0.10)
     for (const r of trackLayout.rows) {
-      if (r.rowType !== 'macroAutomation' && r.rowType !== 'reel') continue
+      if (r.rowType !== 'macroAutomation' && r.rowType !== 'reel' && r.rowType !== 'roam') continue
       if (r.y >= h) break
       ctx.fillRect(0, r.y, w, r.height)
     }

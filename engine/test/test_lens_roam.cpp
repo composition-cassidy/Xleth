@@ -2395,6 +2395,106 @@ static void test_p9_batch_note_keys() {
     CHECK(noteLensOverrideOf(f.tl, A)->keys == ka && noteLensOverrideOf(f.tl, B)->keys == kb, "redo");
 }
 
+static void test_p10_roam_keys_command() {
+    std::cout << "[25] P10 SetTrackRoamKeysCommand: undo/redo, bar 4 -> bar 5 flight, preview == export, save/load\n";
+    Fixture f;
+    buildFixture(f);
+    UndoManager um;
+    constexpr double kBar = 3840.0;   // 4 beats x 960 PPQ
+    // A cell that rests until bar 4, flies out over bar 4 and lands in bar 5.
+    const std::vector<RoamKey> keys = {
+        roamKey(RoamChannel::OffsetX, 3 * kBar, 0.0, Interp::EaseOut),   // interp shapes the segment LEAVING a key
+        roamKey(RoamChannel::OffsetX, 4 * kBar, 2.5),
+        roamKey(RoamChannel::Scale,   3 * kBar, 1.0),
+        roamKey(RoamChannel::Scale,   4 * kBar, 0.5, Interp::Hold),
+        roamKey(RoamChannel::Scale,   5 * kBar, 1.0),
+    };
+    const TrackInfo* t0 = f.tl.getTrack(f.clipTrack);
+    CHECK(t0 && t0->roam.keys.empty(), "fixture: the track starts unkeyed");
+    const RoamParams base0 = t0->roam.base;
+
+    auto roamAtTick = [&](double tick) {
+        return buildLensRoamSnapshot(f.tl)->roamAt(f.clipTrack, tick);
+    };
+    {
+        SetTrackRoamKeysCommand same(f.clipTrack, {}, f.tl);
+        CHECK(!same.changesAnything(), "an identical key set is not a change (no undo entry)");
+        SetTrackRoamKeysCommand cmd(f.clipTrack, keys, f.tl);
+        CHECK(cmd.changesAnything(), "new keys are a change");
+    }
+    um.execute(std::make_unique<SetTrackRoamKeysCommand>(f.clipTrack, keys, f.tl), f.tl);
+    CHECK(f.tl.getTrack(f.clipTrack)->roam.keys == keys, "keys stored in order");
+    CHECK(f.tl.getTrack(f.clipTrack)->roam.base == base0, "the static base is untouched");
+
+    CHECK(roamAtTick(3 * kBar - 1).offsetX == 0.0f && roamAtTick(0).offsetX == 0.0f,
+          "bar 1..3 and the first tick of bar 4: the cell is home");
+    const RoamParams mid = roamAtTick(3.5 * kBar);
+    CHECK(mid.offsetX > 1.5f && mid.offsetX < 2.5f, "mid bar 4: EaseOut, past the half way mark");
+    CHECK(roamAtTick(4 * kBar).offsetX == 2.5f, "bar 5 starts with the cell out at 2.5 cells");
+    CHECK(roamAtTick(4.5 * kBar).scale == 0.5f && roamAtTick(5 * kBar).scale == 1.0f,
+          "Hold: the cell stays small through the first half of bar 5, then is back to 1");
+    CHECK(roamAtTick(9 * kBar).offsetX == 2.5f && roamAtTick(9 * kBar).scale == 1.0f,
+          "after the last key each channel holds its last value");
+
+    // Preview == export: the live timeline against the frozen copy the export
+    // reads, over a stretch of ticks that crosses every key of the fixture's
+    // range (the cell exists in bars 1..2, so re-time the keys into them too).
+    um.execute(std::make_unique<SetTrackRoamKeysCommand>(f.clipTrack, std::vector<RoamKey>{
+        roamKey(RoamChannel::OffsetX, 0,    0.0),
+        roamKey(RoamChannel::OffsetX, 1920, 2.5, Interp::EaseOut),
+        roamKey(RoamChannel::Scale,   1920, 1.0),
+        roamKey(RoamChannel::Scale,   5760, 0.5),
+    }, f.tl), f.tl);
+    const auto liveEvents = xleth::videoevents::build(f.tl, 140.0, 48000.0);
+    const FrozenTimelineCopy frozen = makeFrozenTimelineCopy(f.tl);
+    const Timeline& ex = *frozen.timeline;
+    const auto exEvents = xleth::videoevents::build(ex, 140.0, 48000.0);
+    const std::unordered_map<int, std::string> plan;
+    FrameCollector preview, exporter;
+    preview.setLensRoamSnapshot(buildLensRoamSnapshot(f.tl));
+    exporter.setLensRoamSnapshot(buildLensRoamSnapshot(ex));
+    int cells = 0, moved = 0;
+    bool same = true;
+    for (int64_t tick = 100; tick < 7000; tick += 97) {
+        const std::vector<CellFrameRequest> pr =
+            preview.collectRequests(tick, f.tl, 48000, kTickFps, liveEvents.events);
+        const std::vector<CellFrameRequest> er =
+            exporter.collectRequests(tick, ex, 48000, kTickFps, exEvents.events,
+                                     /*allowProxy=*/false, /*projectStartSample=*/0,
+                                     /*posterMode=*/false, &plan);
+        const CellFrameRequest* a = reqFor(pr, f.clipTrack);
+        const CellFrameRequest* b = reqFor(er, f.clipTrack);
+        if (!a || !b) continue;
+        ++cells;
+        same = same && a->roam == b->roam;
+        if (!(a->roam == RoamParams{})) ++moved;
+    }
+    CHECK(cells > 40 && moved > 20 && same, "preview == export, bit for bit, on every sampled tick");
+
+    {
+        const fs::path dir = freshDir("p10_roam_keys");
+        ProjectManager pm;
+        bool ok = pm.createProject(dir.string(), "p10_roam_keys") && pm.saveProject(f.tl);
+        ProjectManager pm2;
+        auto loaded = pm2.loadProject(dir.string());
+        const TrackInfo* lt = (ok && loaded) ? loaded->getTrack(f.clipTrack) : nullptr;
+        CHECK(lt && lt->roam.keys == f.tl.getTrack(f.clipTrack)->roam.keys, "save/load keeps the keys, order and interp");
+    }
+
+    um.undo(f.tl);
+    CHECK(f.tl.getTrack(f.clipTrack)->roam.keys == keys, "undo restores the bar 4 -> bar 5 keys");
+    um.undo(f.tl);
+    CHECK(f.tl.getTrack(f.clipTrack)->roam.keys.empty() && roamAtTick(4 * kBar).offsetX == 0.0f,
+          "undo again restores unkeyed");
+    um.redo(f.tl);
+    CHECK(f.tl.getTrack(f.clipTrack)->roam.keys == keys, "redo restores the keys");
+    um.execute(std::make_unique<SetTrackRoamKeysCommand>(f.clipTrack, std::vector<RoamKey>{}, f.tl), f.tl);
+    CHECK(f.tl.getTrack(f.clipTrack)->roam.keys.empty() && roamAtTick(4 * kBar).isIdentity(),
+          "clearing the keys sends the cell back to its base");
+    um.undo(f.tl);
+    CHECK(f.tl.getTrack(f.clipTrack)->roam.keys == keys, "undo the clear");
+}
+
 int main() {
     std::cout << "[LensRoam] Lens + Roam P1 tests\n";
     test_defaults();
@@ -2421,6 +2521,7 @@ int main() {
     test_p8_survival_real_overrides();
     test_p9_clip_keys_command();
     test_p9_batch_note_keys();
+    test_p10_roam_keys_command();
     std::cout << "[LensRoam] " << g_pass << " passed, " << g_fail << " failed\n";
     return g_fail == 0 ? 0 : 1;
 }

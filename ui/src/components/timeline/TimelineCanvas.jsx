@@ -6,6 +6,11 @@ import useGhostClipStore from '../../stores/ghostClipStore.js'
 import useNoteSelectionStore from '../../stores/useNoteSelectionStore.js'
 import { drawReelLanes, hitTestReel } from './reelLaneDrawing.js'
 import { subscribeReelStills } from './reelStills.js'
+import { drawRoamLanes } from './roamLaneDrawing.js'
+import { hitTestRoamLane } from './roamLaneModel.js'
+import { beginRoamLaneGesture, removeKeyAt } from './roamLaneGesture.js'
+import useRoamKeysStore, { DEFAULT_ROAM_CHANNEL } from '../../stores/useRoamKeysStore.js'
+import useInspectorStore from '../../stores/useInspectorStore.js'
 import { TRACK_HEIGHT, beatToPixel, beatToPlayheadPixel, tickToPixel } from '../../constants/timeline.js'
 import { clipHasFxIntent } from './clipGeometry.js'
 import {
@@ -81,6 +86,8 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     trackLayout,     // FXG.4-h-r1: derived row layout (track + macro lane rows)
     // Reel lane model (reelLaneModel.js buildReelModel): ghost clips derived from the notes.
     reel,
+    // Roam key lanes (P10): { byTrack: Map<trackId, {base, keys}>, commitKeys(trackId, keys) }.
+    roam,
     // Automation clips (Phase B)
     automationClips, automationEnvelopesById, automationBindingLabelsById,
     selectedAutomationClipIds, setSelectedAutomationClipIds,
@@ -138,6 +145,23 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   // handler read the current value without re-creating anything.
   const reelRef = useRef(reel)
   reelRef.current = reel
+  // Roam key lanes: the committed keys per track (a prop), and the lane/gesture state
+  // (stores/useRoamKeysStore). Read through refs and getState(), so the draw path and
+  // the pointer handler see the current value without re-creating anything.
+  const roamRef = useRef(roam)
+  roamRef.current = roam
+  const roamDataOf = useCallback((trackId) => {
+    const committed = roamRef.current?.byTrack?.get(trackId)
+    const draft = useRoamKeysStore.getState().draft
+    return {
+      base: committed?.base ?? {},
+      keys: draft && draft.trackId === trackId ? draft.keys : (committed?.keys ?? []),
+    }
+  }, [])
+  const roamChannelOf = useCallback(
+    (trackId) => useRoamKeysStore.getState().channelByTrack[trackId] ?? DEFAULT_ROAM_CHANNEL,
+    [],
+  )
   const noteSelection = useNoteSelectionStore((s) => s.byPattern)
   const noteSelectionRef = useRef(noteSelection)
   noteSelectionRef.current = noteSelection
@@ -369,6 +393,9 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       selectedBlockIds: selectedBlockIdsRef.current,
     })
     drawReelLanes(view, { reel: reelRef.current, selection: noteSelectionRef.current })
+    drawRoamLanes(view, {
+      dataOf: roamDataOf, channelOf: roamChannelOf, selected: useRoamKeysStore.getState().selected,
+    })
     if (automationClipsRef.current?.length) {
       const laneRows = trackLayoutRef.current?.getAutomationLaneRows?.() ?? []
       const laneRowsByLaneId = new Map(laneRows.map((r) => [r.laneId, r]))
@@ -652,6 +679,18 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   // A still finished decoding: the plain block it replaces gets its thumbnail.
   useEffect(() => subscribeReelStills(() => requestContentRedraw('reel-still')), [])
 
+  // ── Redraw when the Roam lanes' keys, a gesture's draft, the key selection or a
+  // lane's parameter change. The draft changes once per frame while a key is dragged,
+  // so it is a store subscription (no React render), not a prop.
+  useEffect(() => {
+    requestContentRedraw('roam')
+  }, [roam])
+  useEffect(() => useRoamKeysStore.subscribe((s, prev) => {
+    if (s.draft !== prev.draft || s.selected !== prev.selected || s.channelByTrack !== prev.channelByTrack) {
+      requestContentRedraw('roam-state')
+    }
+  }), [])
+
   // ── Redraw when notation ghost clips change ───────────────────────────────
   useEffect(() => {
     requestContentRedraw('ghost-clips')
@@ -740,6 +779,48 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   const handleMouseDown = useCallback((e) => {
     const pos = getLocalXY(e)
     if (!pos) return
+
+    // ── Roam key lane: its own gestures, whatever tool is active. A left-click adds
+    // a key or grabs one (drag to move: local preview, ONE commit on mouseup); a
+    // right-click on a key deletes it. Like the Reel lane it never falls through to the
+    // parent track's blocks.
+    if (e.button === 0 || e.button === 2) {
+      const roamHit = hitTestRoamLane(
+        { trackLayout: trackLayoutRef.current, dataOf: roamDataOf, channelOf: roamChannelOf },
+        pos.localX, pos.localY, scrollOffsetRef.current, pixelsPerBeatRef.current,
+      )
+      if (roamHit) {
+        e.preventDefault()
+        onFocusTrack?.(roamHit.trackId)
+        const committed = roamRef.current?.byTrack?.get(roamHit.trackId) ?? { base: {}, keys: [] }
+        if (e.button === 2) {
+          const next = roamHit.key ? removeKeyAt(committed.keys, roamHit.key) : null
+          if (next) {
+            useRoamKeysStore.getState().select(null)
+            roamRef.current?.commitKeys?.(roamHit.trackId, next)
+          }
+          return
+        }
+        useInspectorStore.getState().requestTrackSelection(roamHit.trackId)
+        const rect = containerRef.current?.getBoundingClientRect()
+        beginRoamLaneGesture({
+          event: e,
+          hit: roamHit,
+          data: committed,
+          view: () => ({ scrollOffset: scrollOffsetRef.current, ppb: pixelsPerBeatRef.current }),
+          localOf: (ev) => {
+            const r = containerRef.current?.getBoundingClientRect() ?? rect
+            return { localX: ev.clientX - (r?.left ?? 0), localY: ev.clientY - (r?.top ?? 0) }
+          },
+          granularity: () => snapGranularityRef.current,
+          setDraft: (keys) => useRoamKeysStore.getState().setDraft(roamHit.trackId, keys),
+          clearDraft: () => useRoamKeysStore.getState().clearDraft(),
+          commit: (keys) => roamRef.current?.commitKeys?.(roamHit.trackId, keys),
+          select: (sel) => useRoamKeysStore.getState().select(sel),
+        })
+        return
+      }
+    }
 
     // ── Reel lane: read-only. A click only SELECTS the note behind the ghost
     // clip (shared with the Piano Roll); there is no drag, no resize and no
@@ -981,6 +1062,8 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   const handleContextMenu = useCallback((e) => {
     const pos = getLocalXY(e)
     if (!pos) return
+    // A right-click in a Roam key lane is a verb (delete a key, done on mousedown), not a menu.
+    if (trackLayoutRef.current?.roamRowAtY?.(pos.localY)) { e.preventDefault(); return }
     // Focus shift before any menu opens — keeps right-click paste consistent
     if (onFocusTrack) {
       const tks = tracksRef.current

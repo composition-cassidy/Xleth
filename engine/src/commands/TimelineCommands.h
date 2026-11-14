@@ -1798,6 +1798,23 @@ private:
     bool       isReset_;
 };
 
+// Track Roam keys (P10): TrackInfo::roam.keys, TimelineTicks (anchor Origin,
+// pos = timeline ticks). Whole-vector swap; the static base is not touched, so
+// ONE command is ONE undo step however many keys a gesture changed. Built only
+// when changesAnything().
+class SetTrackRoamKeysCommand : public Command {
+public:
+    SetTrackRoamKeysCommand(int trackId, std::vector<RoamKey> keys, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+    bool changesAnything() const { return oldKeys_ != newKeys_; }
+private:
+    int                  trackId_;
+    std::vector<RoamKey> oldKeys_;
+    std::vector<RoamKey> newKeys_;
+};
+
 // ─── Lens + Roam P8: per-note overrides and the hit curve ────────────────────
 // docs/XLETH_LENS_ROAM_SPEC.md, "Storage": per note, keyed {patternId,
 // noteId}: lensOverride {mode: Nudge | Own, keys}; absent = Follow. The
