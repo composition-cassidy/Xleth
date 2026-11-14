@@ -12,6 +12,7 @@ import { timelineEvents } from '../timelineEvents.js'
 import { toEngineNote } from '../components/pianoRoll/pianoRollEdits.js'
 import {
   setNoteLensMode, setNoteLensKeys, revertNotesToFollow, setHitCurve, applyHitPreset,
+  setNotesLensKeys, setClipLensKeys, getHitPresets,
 } from './lensRoamApi.js'
 
 const TAG = '[LensNote]'
@@ -78,6 +79,7 @@ export function installNoteLensDevHook(win) {
   win.__xlethLensDev = {
     setNoteLensOverride, getNoteLensOverride,
     setNoteLensMode, setNoteLensKeys, revertNotesToFollow, setHitCurve, applyHitPreset,
+    setNotesLensKeys, setClipLensKeys, getHitPresets,
   }
   return () => { delete win.__xlethLensDev }
 }

@@ -6,6 +6,7 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { timelineEvents } from '../../../timelineEvents.js'
 import { useRoamDraftStore } from '../../../lensRoam/useLensRoam.js'
+import useLensPanelMode from '../../../lensRoam/lensPanelMode.js'
 import LensPanel from '../LensPanel.jsx'
 import RoamPanel from '../RoamPanel.jsx'
 
@@ -54,6 +55,7 @@ beforeEach(() => {
   document.body.appendChild(container)
   root = createRoot(container)
   useRoamDraftStore.getState().clearDraft()
+  useLensPanelMode.setState({ mode: 'simple' })
 })
 
 afterEach(() => {
@@ -87,8 +89,12 @@ describe('LensPanel', () => {
     }
     expect(container.querySelector('[data-testid="lens-frame-canvas"]').getAttribute('data-hint')).toBeTruthy()
     expect([...container.querySelectorAll('button')].some((b) => b.textContent === 'Reset')).toBe(true)
-    // No Simple / Advanced toggle yet (P9).
-    expect(container.textContent).not.toMatch(/Simple|Advanced/)
+    // P9: the Simple | Advanced toggle, Simple by default; Simple shows nothing of the Advanced block.
+    const mode = byLabel('Lens panel mode')
+    expect(mode).not.toBeNull()
+    expect(hintOf(mode)).toBeTruthy()
+    expect([...mode.querySelectorAll('[role="radio"]')].map((r) => `${r.textContent}:${r.getAttribute('aria-checked')}`)).toEqual(['Simple:true', 'Advanced:false'])
+    expect(container.querySelector('[data-testid="lens-advanced"]')).toBeNull()
   })
 
   it('a Fit change is one setClipLens with only that field', async () => {

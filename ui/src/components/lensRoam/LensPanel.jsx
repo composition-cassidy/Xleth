@@ -1,22 +1,35 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  Button, NumberBox, SectionHeader, SegmentedControl, Select, THIN_SPACE, formatValue, parseValue, logScale,
+  Button, NumberBox, SectionHeader, SegmentedControl, Select,
 } from '../../ui-kit'
-import { cellGeometry, lensIsNeutral, ZOOM_MAX, ZOOM_MIN } from '../../lensRoam/lensRoamModel.js'
+import { cellGeometry, lensIsNeutral } from '../../lensRoam/lensRoamModel.js'
+import { ZOOM_SCALE, degFmt, pctFmt, zoomFmt } from '../../lensRoam/lensFormats.js'
+import useLensPanelMode from '../../lensRoam/lensPanelMode.js'
 import { useLensValue, useTrackGeometry } from '../../lensRoam/useLensRoam.js'
 import styles from '../inspector/Inspector.module.css'
 import lens from './lensRoam.module.css'
 import LensFrameCanvas from './LensFrameCanvas.jsx'
+import { ClipLensAdvanced, SourceLensExtras } from './LensAdvanced.jsx'
 
 // Lens: how the video is framed INSIDE its grid cell (docs/XLETH_LENS_ROAM_SPEC.md).
 // One Lens panel for a Clip Track event or a Pattern Track source. Edits go
 // through lensRoamApi: each commit is one engine UndoManager command, and
-// nothing is sent while a gesture is in flight. (Simple / Advanced arrives in P9.)
+// nothing is sent while a gesture is in flight.
+//
+// Simple | Advanced: Advanced only REVEALS more (spec "UI"). Simple is the framing
+// box, Fit, the number boxes and, for a Pattern Track source, the hit-curve
+// presets with Strength and Short notes. Advanced adds the layer stack and the
+// keyframe lanes (LensAdvanced.jsx). The choice is remembered per user.
 
 const FIT_OPTIONS = [
   { value: 'Stretch', label: 'Stretch', hint: 'Stretch the source to the cell, ignoring its shape. What projects made before Lens do.' },
   { value: 'Cover', label: 'Cover', hint: 'Fill the cell and crop what overflows. Zoom 1.00 is this fit.' },
   { value: 'Contain', label: 'Contain', hint: 'Fit the whole source inside the cell and leave the rest empty.' },
+]
+
+const MODE_OPTIONS = [
+  { value: 'simple', label: 'Simple' },
+  { value: 'advanced', label: 'Advanced' },
 ]
 
 const FLIP_OPTIONS = [
@@ -25,20 +38,6 @@ const FLIP_OPTIONS = [
   { value: 'Horizontal', label: 'Horizontal', hint: 'Always mirror left to right, after the framing.' },
   { value: 'Vertical', label: 'Vertical', hint: 'Always mirror top to bottom, after the framing.' },
 ]
-
-const ZOOM_SCALE = logScale(ZOOM_MIN, ZOOM_MAX)
-const zoomFmt = {
-  format: (v) => `${formatValue(v, 'dB', { unitless: true, decimals: 2 })}${THIN_SPACE}×`,
-  parse: (t) => parseValue(String(t).replace(/[×x]/gi, ''), 'dB'),
-}
-const pctFmt = {
-  format: (v) => formatValue(v * 100, '%', { decimals: 1 }),
-  parse: (t) => { const n = parseValue(t, '%'); return n === null ? null : n / 100 },
-}
-const degFmt = {
-  format: (v) => `${formatValue(v, 'dB', { unitless: true, decimals: 1 })}${THIN_SPACE}°`,
-  parse: (t) => parseValue(String(t).replace(/°/g, ''), 'dB'),
-}
 
 function Row({ label, children }) {
   return (
@@ -73,12 +72,16 @@ function useSourceFrame(frameRef) {
  * @param {number} props.cellTrackId  the track whose cell this Lens frames (its aspect)
  * @param {string} props.context      the header line, e.g. "Chorus · applies to all notes"
  * @param {{sourceId:number, seconds:number, aspect:number|null}|null} props.frameRef
+ * @param {{startTick:number, lengthTicks:number}} [props.clipTiming]  a clip target's place on the timeline (the lanes' time base)
  */
-export default function LensPanel({ target, cellTrackId, context, frameRef }) {
+export default function LensPanel({ target, cellTrackId, context, frameRef, clipTiming }) {
   const { lens: value, ready, preview, commit, commitDraft, cancel, reset } = useLensValue(target)
   const { layout, track } = useTrackGeometry(cellTrackId)
   const geo = useMemo(() => cellGeometry(layout, track), [layout, track])
   const frameUrl = useSourceFrame(frameRef)
+  const panelMode = useLensPanelMode((st) => st.mode)
+  const setPanelMode = useLensPanelMode((st) => st.setMode)
+  const advanced = panelMode === 'advanced'
 
   if (!ready) {
     return (
@@ -100,7 +103,14 @@ export default function LensPanel({ target, cellTrackId, context, frameRef }) {
   return (
     <section className={styles.section} aria-label="Lens" data-testid="xleth-lens-panel">
       <SectionHeader>Lens</SectionHeader>
-      <p className={lens.context} title={context} data-testid="xleth-lens-context">{context}</p>
+      <div className={lens.modeRow}>
+        <p className={lens.context} title={context} data-testid="xleth-lens-context">{context}</p>
+        <SegmentedControl
+          size="sm" label="Lens panel mode" options={MODE_OPTIONS} value={panelMode}
+          onChange={setPanelMode}
+          hint="Simple is the framing and the presets. Advanced adds the keyframe lanes. Nothing in Simple moves."
+        />
+      </div>
 
       <LensFrameCanvas
         lens={value}
@@ -177,6 +187,10 @@ export default function LensPanel({ target, cellTrackId, context, frameRef }) {
           Reset
         </Button>
       </div>
+      {target.kind === 'source' && <SourceLensExtras target={target} lens={value} advanced={advanced} />}
+      {target.kind === 'clip' && advanced && (
+        <ClipLensAdvanced clipId={target.clipId} lens={value} clipTiming={clipTiming} />
+      )}
     </section>
   )
 }

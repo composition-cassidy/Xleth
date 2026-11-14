@@ -3106,6 +3106,28 @@ std::string SetClipLensCommand::describe() const {
          + std::to_string(clipId_) + ")";
 }
 
+// ─── SetClipLensKeysCommand ──────────────────────────────────────────────────
+
+SetClipLensKeysCommand::SetClipLensKeysCommand(int clipId, std::vector<LensKey> keys,
+                                               const Timeline& timeline)
+    : clipId_(clipId), newKeys_(std::move(keys))
+{
+    if (const Clip* c = timeline.getClip(clipId)) oldKeys_ = c->lens.keys;
+}
+
+void SetClipLensKeysCommand::execute(Timeline& timeline) {
+    if (Clip* c = timeline.getClipMutable(clipId_)) c->lens.keys = newKeys_;
+}
+
+void SetClipLensKeysCommand::undo(Timeline& timeline) {
+    if (Clip* c = timeline.getClipMutable(clipId_)) c->lens.keys = oldKeys_;
+}
+
+std::string SetClipLensKeysCommand::describe() const {
+    return "Set Clip Lens keys (clip=" + std::to_string(clipId_) + ", "
+         + std::to_string(newKeys_.size()) + " keys)";
+}
+
 // ─── SetTrackLensCommand ─────────────────────────────────────────────────────
 
 SetTrackLensCommand::SetTrackLensCommand(int trackId, int regionId, const LensParams& newLens,
@@ -3265,6 +3287,19 @@ SetNoteLensKeysCommand::SetNoteLensKeysCommand(const NoteLensRef& note, std::vec
     }
     label_ = "Set note Lens keys (pattern=" + std::to_string(note.patternId)
            + ", note=" + std::to_string(note.noteId) + ")";
+}
+
+SetNoteLensKeysCommand::SetNoteLensKeysCommand(
+    const std::vector<std::pair<NoteLensRef, std::vector<LensKey>>>& entries, const Timeline& timeline) {
+    for (const auto& e : entries) {
+        Swap* s = addNote(timeline, e.first);
+        if (!s) continue;
+        auto o = std::make_shared<LensNoteOverride>();
+        o->mode = s->before ? s->before->mode : LensOverrideMode::Nudge;
+        o->keys = e.second;
+        s->after = std::move(o);
+    }
+    label_ = "Set note Lens keys (" + noteCountLabel(swaps_.size()) + ")";
 }
 
 RevertNotesToFollowCommand::RevertNotesToFollowCommand(const std::vector<NoteLensRef>& notes,

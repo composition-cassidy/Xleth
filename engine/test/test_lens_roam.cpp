@@ -2301,6 +2301,100 @@ static void test_p8_survival_real_overrides() {
     CHECK(roundTripsP8(f, "p8_survival", uniqueId), "save/load: pattern B and the unique copy keep every override");
 }
 
+static void test_p9_clip_keys_command() {
+    std::cout << "[23] P9 SetClipLensKeysCommand: undo/redo, evaluated, save/load\n";
+    Fixture f;
+    buildFixture(f);
+    UndoManager um;
+    const std::vector<LensKey> keys = {
+        lensKey(LensChannel::Zoom,    KeyAnchor::Origin, 0,   1.0),
+        lensKey(LensChannel::Zoom,    KeyAnchor::Origin, 960, 2.0, Interp::EaseOut),
+        lensKey(LensChannel::CenterX, KeyAnchor::Origin, 480, 0.25),
+    };
+    const Clip* c = f.tl.getClip(f.clip2);
+    CHECK(c && c->lens.keys.empty(), "fixture: the clip starts unkeyed");
+    const LensParams base0 = c->lens.base;
+
+    auto value = [&](double tickIntoEvent) {
+        auto s = buildLensRoamSnapshot(f.tl);
+        LensRoamSnapshot::EventClock ck;
+        ck.eventStartTick = 3840; ck.eventLenTicks = 3840; ck.frameTick = 3840 + tickIntoEvent;
+        return s->lensForEventAt(f.clipTrack, f.clip2, f.regB, ck);
+    };
+    const LensParams before = value(480);
+
+    {
+        SetClipLensKeysCommand same(f.clip2, {}, f.tl);
+        CHECK(!same.changesAnything(), "an identical key set is not a change (no undo entry)");
+        SetClipLensKeysCommand cmd(f.clip2, keys, f.tl);
+        CHECK(cmd.changesAnything(), "new keys are a change");
+    }
+    um.execute(std::make_unique<SetClipLensKeysCommand>(f.clip2, keys, f.tl), f.tl);
+    CHECK(f.tl.getClip(f.clip2)->lens.keys == keys, "keys stored in order");
+    CHECK(f.tl.getClip(f.clip2)->lens.base == base0, "the static base is untouched");
+    const LensParams p = value(480);
+    CHECK(p.centerX == 0.25f && p.zoom > 1.0f && p.zoom < 2.0f, "evaluated at event tick 480");
+    CHECK(value(960).zoom == 2.0f, "evaluated at the second zoom key");
+
+    {
+        const fs::path dir = freshDir("p9_clip_keys");
+        ProjectManager pm;
+        bool ok = pm.createProject(dir.string(), "p9_clip_keys") && pm.saveProject(f.tl);
+        ProjectManager pm2;
+        auto loaded = pm2.loadProject(dir.string());
+        const Clip* lc = (ok && loaded) ? loaded->getClip(f.clip2) : nullptr;
+        CHECK(lc && lc->lens.keys == keys, "save/load keeps the keys, order and interp");
+    }
+
+    um.undo(f.tl);
+    CHECK(f.tl.getClip(f.clip2)->lens.keys.empty() && value(480) == before, "undo restores unkeyed");
+    um.redo(f.tl);
+    CHECK(f.tl.getClip(f.clip2)->lens.keys == keys && value(480) == p, "redo restores the keys");
+    um.execute(std::make_unique<SetClipLensKeysCommand>(f.clip2, std::vector<LensKey>{}, f.tl), f.tl);
+    CHECK(f.tl.getClip(f.clip2)->lens.keys.empty() && value(480) == before, "clearing the keys unkeys the clip");
+    um.undo(f.tl);
+    CHECK(f.tl.getClip(f.clip2)->lens.keys == keys, "undo the clear");
+}
+
+static void test_p9_batch_note_keys() {
+    std::cout << "[24] P9 SetNoteLensKeysCommand (batch): several notes, ONE undo step\n";
+    Fixture f;
+    buildFixture(f);
+    addHitNotes(f);
+    f.tl.getTrackMutable(f.patTrack)->trackLens[f.regB] = p8Source();
+    const std::vector<HitNote> hn = hitNotes(f);
+    if (hn.size() != 4) { CHECK(false, "fixture"); return; }
+    const NoteLensRef A{ f.patternB, hn[0].id }, B{ f.patternB, hn[1].id }, C{ f.patternB, hn[2].id };
+    UndoManager um;
+    auto state = [&]() { return overridesOf(f.tl, f.patternB); };
+
+    // B becomes Own first, to prove a batch keeps a note's mode.
+    um.execute(std::make_unique<SetNoteLensModeCommand>(std::vector<NoteLensRef>{ B }, NoteLensMode::Own, f.tl), f.tl);
+    const auto s0 = state();
+
+    const std::vector<LensKey> ka = { lensKey(LensChannel::Zoom, KeyAnchor::Head, 0, 1.4) };
+    const std::vector<LensKey> kb = { lensKey(LensChannel::CenterX, KeyAnchor::Body, 0.5, 0.1) };
+    const std::vector<LensKey> kc = {};
+    {
+        SetNoteLensKeysCommand fromFollow({ { C, kc } }, f.tl);
+        CHECK(fromFollow.changesAnything(), "a Follow note given no keys still becomes a Nudge: a change");
+    }
+    auto cmd = std::make_unique<SetNoteLensKeysCommand>(
+        std::vector<std::pair<NoteLensRef, std::vector<LensKey>>>{ { A, ka }, { B, kb }, { A, kb } }, f.tl);
+    CHECK(cmd->changesAnything() && cmd->notes().size() == 2, "two notes, the duplicate ref skipped");
+    um.execute(std::move(cmd), f.tl);
+    CHECK(noteLensOverrideOf(f.tl, A) && noteLensOverrideOf(f.tl, A)->mode == LensOverrideMode::Nudge
+          && noteLensOverrideOf(f.tl, A)->keys == ka, "A: Follow became Nudge with its keys (the first entry won)");
+    CHECK(noteLensOverrideOf(f.tl, B) && noteLensOverrideOf(f.tl, B)->mode == LensOverrideMode::Own
+          && noteLensOverrideOf(f.tl, B)->keys == kb, "B: stays Own, new keys");
+    CHECK(!noteLensOverrideOf(f.tl, C), "C untouched");
+    CHECK(roundTripsP8(f, "p9_batch_keys"), "save/load after the batch");
+    um.undo(f.tl);
+    CHECK(state() == s0, "ONE undo restores every note");
+    um.redo(f.tl);
+    CHECK(noteLensOverrideOf(f.tl, A)->keys == ka && noteLensOverrideOf(f.tl, B)->keys == kb, "redo");
+}
+
 int main() {
     std::cout << "[LensRoam] Lens + Roam P1 tests\n";
     test_defaults();
@@ -2325,6 +2419,8 @@ int main() {
     test_p8_note_commands();
     test_p8_hit_curve_edits();
     test_p8_survival_real_overrides();
+    test_p9_clip_keys_command();
+    test_p9_batch_note_keys();
     std::cout << "[LensRoam] " << g_pass << " passed, " << g_fail << " failed\n";
     return g_fail == 0 ? 0 : 1;
 }

@@ -117,6 +117,7 @@ export default function ClipInspector({ context, actions }) {
             cellTrackId={clip.trackId}
             context={`${clipName} · this event only`}
             frameRef={lensFrame}
+            clipTiming={{ startTick: clip.positionTicks ?? 0, lengthTicks: clip.durationTicks ?? 0 }}
           />
         )}
 

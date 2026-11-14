@@ -58,4 +58,156 @@
     height: 100%;
     pointer-events: none;
   }
+  /* Simple | Advanced: the context line and the toggle share a row. */
+  .modeRow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    padding-right: var(--space-2);
+  }
+
+  .modeRow .context {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  /* The Advanced block: revealed below the Simple controls, never in place of them. */
+  .advanced {
+    display: flex;
+    flex-direction: column;
+    margin-top: var(--space-1);
+    border-top: 1px solid var(--ui-g4);
+  }
+
+  .subhead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    padding: var(--space-1) var(--space-2);
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    font-weight: var(--weight-semibold);
+  }
+
+  /* The keyframe lanes: a recessed display, ground colour, two stacked canvases. */
+  .lanes {
+    position: relative;
+    box-sizing: content-box;
+    margin: var(--space-1) var(--space-2);
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g0);
+  }
+
+  .lanesCanvas {
+    display: block;
+    outline: none;
+    touch-action: none;
+  }
+
+  .lanesCanvas:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  /* The playhead canvas never takes the pointer: the lanes under it do. */
+  .lanesOverlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+  }
+
+  .sparkline {
+    margin: var(--space-1) var(--space-2);
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g0);
+  }
+
+  /* The layer stack: a dense table of tabular numerals. */
+  .stack {
+    margin: var(--space-1) var(--space-2);
+  }
+
+  .stack table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .stack th,
+  .stack td {
+    padding: 1px 4px;
+    text-align: right;
+    font-weight: normal;
+    white-space: nowrap;
+  }
+
+  .stack thead th {
+    color: var(--ui-ink-3);
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .stack tbody th {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    color: var(--ui-ink);
+    text-align: left;
+  }
+
+  .stack tbody td {
+    color: var(--ui-ink);
+  }
+
+  /* A layer that does not reach this note is dimmed as well as labelled. */
+  .stack tr[data-inert='true'] td {
+    color: var(--ui-ink-3);
+  }
+
+  .stack tr[data-resolved='true'] th,
+  .stack tr[data-resolved='true'] td {
+    border-top: 1px solid var(--ui-g4);
+    font-weight: var(--weight-semibold);
+  }
+
+  .stackStatus {
+    color: var(--ui-ink-3);
+    font-size: var(--type-11);
+  }
+
+  .srOnly {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  /* The four presets as a 2 x 2 grid: "Punch + drift" does not fit a row of four in a 300 px Inspector. */
+  div.presetGrid[role='radiogroup'] {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    width: 100%;
+    height: auto;
+  }
+
+  div.presetGrid[role='radiogroup'] > button {
+    min-width: 0;
+    height: var(--ctl-h-sm);
+    padding: 0 var(--space-1);
+    border-left: 1px solid var(--ui-boundary);
+  }
+
+  div.presetGrid[role='radiogroup'] > button:nth-child(odd) {
+    border-left: 0;
+  }
+
+  div.presetGrid[role='radiogroup'] > button:nth-child(n + 3) {
+    border-top: 1px solid var(--ui-boundary);
+  }
 }

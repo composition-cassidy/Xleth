@@ -790,6 +790,31 @@ const METHODS = [
     returns: 'value',
     binary: null,
   },
+  // ── Lens + Roam P9: Clip Track event Lens keys (EventTicks) ──
+  {
+    method: 'timeline_setClipLensKeys',
+    channels: ['xleth:timeline:setClipLensKeys'],
+    api: { 'timeline.setClipLensKeys': 'xleth:timeline:setClipLensKeys' },
+    handler: 'Timeline_SetClipLensKeys',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_setNotesLensKeys',
+    channels: ['xleth:timeline:setNotesLensKeys'],
+    api: { 'timeline.setNotesLensKeys': 'xleth:timeline:setNotesLensKeys' },
+    handler: 'Timeline_SetNotesLensKeys',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_getHitPresets',
+    channels: ['xleth:timeline:getHitPresets'],
+    api: { 'timeline.getHitPresets': 'xleth:timeline:getHitPresets' },
+    handler: 'Timeline_GetHitPresets',
+    returns: 'value',
+    binary: null,
+  },
   {
     method: 'timeline_setPreviewResolutionScale',
     channels: ['xleth:timeline:setPreviewResolutionScale'],

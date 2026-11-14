@@ -27,7 +27,7 @@ export const REFRESH_EVENTS = [
   'timeline-grid-changed',
 ]
 
-function useRefreshOn(events, refresh) {
+export function useRefreshOn(events, refresh) {
   useEffect(() => {
     const on = () => refresh()
     events.forEach((e) => timelineEvents.addEventListener(e, on))

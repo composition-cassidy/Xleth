@@ -1,4 +1,8 @@
+import { useEffect, useState } from 'react'
 import useInspectorStore from '../../stores/useInspectorStore.js'
+import useNoteSelectionStore from '../../stores/useNoteSelectionStore.js'
+import useLensPanelMode from '../../lensRoam/lensPanelMode.js'
+import { useNoteSource } from '../../lensRoam/useLensKeys.js'
 import TrackVideoProperties from '../timeline/TrackVideoProperties.jsx'
 import ClipInspector from './ClipInspector.jsx'
 import PatternSourceInspector from './PatternSourceInspector.jsx'
@@ -20,6 +24,28 @@ export default function InspectorBody() {
   const selection = useInspectorStore((s) => s.selection)
   const clip = useInspectorStore((s) => s.clip)
   const clipActions = useInspectorStore((s) => s.clipActions)
+
+  // Advanced Lens editing follows the NOTES the user picked in the Piano Roll or
+  // the Reel lane: the Lens panel of that note's source replaces the arrangement
+  // selection while the notes were the last thing touched. Simple mode never does
+  // this (Advanced only reveals more), and the arrangement selection is untouched.
+  const advanced = useLensPanelMode((s) => s.mode) === 'advanced'
+  const noteSelection = useNoteSelectionStore((s) => s.byPattern)
+  const [lastTouched, setLastTouched] = useState('arrangement')
+  // Order matters: when one click changes both (a Reel ghost selects its track AND
+  // its note), the effect declared last wins, and that is the note.
+  useEffect(() => { setLastTouched('arrangement') }, [selection])
+  useEffect(() => { if (Object.keys(noteSelection).length) setLastTouched('notes') }, [noteSelection])
+  const noteSource = useNoteSource(advanced && lastTouched === 'notes')
+
+  if (advanced && lastTouched === 'notes' && noteSource) {
+    return (
+      <PatternSourceInspector
+        key={`${noteSource.trackId}:${noteSource.regionId}`}
+        selection={{ kind: 'blocks', count: 1, ...noteSource }}
+      />
+    )
+  }
 
   if (!selection) return <Message>Select a clip or track to edit its properties</Message>
 

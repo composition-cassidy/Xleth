@@ -1767,6 +1767,22 @@ private:
     bool       isReset_;
 };
 
+// Clip Track event Lens keys (P9): Clip::lens.keys, EventTicks (anchor Origin,
+// pos = ticks from the event start). Whole-vector swap; the static base is not
+// touched. Built only when changesAnything().
+class SetClipLensKeysCommand : public Command {
+public:
+    SetClipLensKeysCommand(int clipId, std::vector<LensKey> keys, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+    bool changesAnything() const { return oldKeys_ != newKeys_; }
+private:
+    int                  clipId_;
+    std::vector<LensKey> oldKeys_;
+    std::vector<LensKey> newKeys_;
+};
+
 // Track Roam: TrackInfo::roam.base.
 class SetTrackRoamCommand : public Command {
 public:
@@ -1838,6 +1854,10 @@ public:
 class SetNoteLensKeysCommand : public NoteLensOverrideCommand {
 public:
     SetNoteLensKeysCommand(const NoteLensRef& note, std::vector<LensKey> keys,
+                           const Timeline& timeline);
+    // P9: several notes, each with its own new key list, as ONE command (one
+    // undo step). Unknown and duplicate refs are skipped.
+    SetNoteLensKeysCommand(const std::vector<std::pair<NoteLensRef, std::vector<LensKey>>>& entries,
                            const Timeline& timeline);
 };
 

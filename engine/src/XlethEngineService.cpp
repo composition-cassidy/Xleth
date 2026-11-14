@@ -16220,6 +16220,8 @@ JsonApi::Value clipLensResult(JsonApi::Env env, int clipId, bool changed)
     r.Set("changed", JsonApi::Boolean::New(env, changed));
     const Clip* c = g_timeline->getClip(clipId);
     r.Set("lens", opaqueJsonToValue(env, lensroam::lensParamsToJson(c ? c->lens.base : LensParams{})));
+    // P9: the event's keys (EventTicks), so a keys write needs no refetch.
+    r.Set("keys", opaqueJsonToValue(env, lensroam::lensTrackToJson(c ? c->lens : LensTrack{}, "keys").at("keys")));
     return r;
 }
 
@@ -16489,6 +16491,7 @@ JsonApi::Value Timeline_GetLensRoam(const JsonApi::CallbackInfo& info)
         JsonApi::Object e = JsonApi::Object::New(env);
         e.Set("clipId", JsonApi::Number::New(env, id));
         e.Set("lens", opaqueJsonToValue(env, lensroam::lensParamsToJson(c->lens.base)));
+        e.Set("keys", opaqueJsonToValue(env, lensroam::lensTrackToJson(c->lens, "keys").at("keys")));
         clips.Set(nc++, e);
     }
 
@@ -16822,6 +16825,69 @@ JsonApi::Value Timeline_SetNoteLensKeys(const JsonApi::CallbackInfo& info)
                                                                              *g_timeline), log);
 }
 
+// timeline_setNotesLensKeys(entries: [{patternId, noteId, keys: [...]}]) -> { changed, notes }
+// P9. The multi-select form of setNoteLensKeys: each listed note gets its own
+// new key list, all as ONE UndoManager command (one undo step). A Follow note
+// becomes Nudge; a Nudge or Own note keeps its mode.
+JsonApi::Value Timeline_SetNotesLensKeys(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!lensRoamReady(env)) return env.Undefined();
+    const char* sig = "timeline_setNotesLensKeys(entries: {patternId, noteId, keys: object[]}[])";
+    if (info.Length() < 1 || !info[0].IsArray()) { throwType(env, sig); return env.Undefined(); }
+    BridgeCallLog log("timeline.setNotesLensKeys");
+    const nlohmann::json arr = valueToJson(info[0]);
+    std::vector<std::pair<NoteLensRef, std::vector<LensKey>>> entries;
+    std::vector<NoteLensRef> asRefs;
+    std::string err;
+    for (std::size_t i = 0; i < arr.size(); ++i) {
+        const nlohmann::json& e = arr[i];
+        const std::string at = "entries[" + std::to_string(i) + "]";
+        if (!e.is_object() || !e.contains("keys")) { throwType(env, std::string(sig) + ": " + at + " needs patternId, noteId, keys"); return env.Undefined(); }
+        nlohmann::json ref = nlohmann::json::object();
+        for (auto it = e.begin(); it != e.end(); ++it) {
+            if (it.key() == "keys") continue;
+            ref[it.key()] = *it;   // unknown fields are rejected by parseNoteRefs
+        }
+        nlohmann::json one = nlohmann::json::array();
+        one.push_back(ref);
+        std::vector<NoteLensRef> r;
+        std::vector<LensKey> keys;
+        if (!parseNoteRefs(one, r, err) || !parseNoteKeys(e["keys"], (at + ".keys").c_str(), keys, err)) {
+            throwType(env, std::string(sig) + ": " + err);
+            return env.Undefined();
+        }
+        entries.emplace_back(r[0], std::move(keys));
+    }
+    if (entries.empty()) { throwType(env, std::string(sig) + ": entries is empty"); return env.Undefined(); }
+    return runNoteLensCommand(env, std::make_unique<SetNoteLensKeysCommand>(entries, *g_timeline), log);
+}
+
+// timeline_getHitPresets() -> [{ name, keys: [...], zones: {headTicks, tailTicks} }]
+// P9. The presets' keys, straight from model/LensHitPresets.h (the one data
+// file), so the UI lists and scales them without keeping a copy.
+JsonApi::Value Timeline_GetHitPresets(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!lensRoamReady(env)) return env.Undefined();
+    JsonApi::Array out = JsonApi::Array::New(env);
+    uint32_t i = 0;
+    for (const lensroam::HitPreset& p : lensroam::kHitPresets) {
+        LensTrack t;
+        t.keys = lensroam::hitPresetKeys(p);
+        const xleth::keycurve::NoteZones z = lensroam::hitPresetZones(xleth::keycurve::NoteZones{});
+        JsonApi::Object o = JsonApi::Object::New(env);
+        o.Set("name", JsonApi::String::New(env, p.name));
+        o.Set("keys", opaqueJsonToValue(env, lensroam::lensTrackToJson(t, "keys").at("keys")));
+        JsonApi::Object zo = JsonApi::Object::New(env);
+        zo.Set("headTicks", JsonApi::Number::New(env, z.headTicks));
+        zo.Set("tailTicks", JsonApi::Number::New(env, z.tailTicks));
+        o.Set("zones", zo);
+        out.Set(i++, o);
+    }
+    return out;
+}
+
 // timeline_revertNotesToFollow(notes: [{patternId, noteId}]) -> { changed, notes }
 JsonApi::Value Timeline_RevertNotesToFollow(const JsonApi::CallbackInfo& info)
 {
@@ -16914,6 +16980,57 @@ JsonApi::Value Timeline_ApplyHitPreset(const JsonApi::CallbackInfo& info)
                             + std::to_string(trackId) + ", region=" + std::to_string(regionId) + ")";
     return runHitCurveCommand(env, trackId, regionId, lensroam::hitPresetKeys(*preset), &zones,
                               label, preset->name, log);
+}
+
+// timeline_setClipLensKeys(clipId, keys: [{channel, anchor: 'Origin', pos, value, interp?}])
+//   -> { clipId, changed, lens, keys }
+// P9. Replaces a Clip Track event's Lens keys. A clip's keys are ABSOLUTE
+// (a keyed channel follows its keys, an unkeyed one holds the base) and sit on
+// EventTicks: pos = ticks from the event start, so they move with the event.
+// Same contract as the other setters: strict parse, one UndoManager command
+// only when something changes, post-state returned.
+JsonApi::Value Timeline_SetClipLensKeys(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!lensRoamReady(env)) return env.Undefined();
+    const char* sig = "timeline_setClipLensKeys(clipId: number, keys: {channel, anchor:'Origin', pos, value, interp?}[])";
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsArray()) { throwType(env, sig); return env.Undefined(); }
+    BridgeCallLog log("timeline.setClipLensKeys");
+    const int clipId = info[0].As<JsonApi::Number>().Int32Value();
+    if (!g_timeline->getClip(clipId)) {
+        JsonApi::Error::New(env, "timeline.setClipLensKeys: no clip " + std::to_string(clipId))
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const nlohmann::json arr = valueToJson(info[1]);
+    std::vector<LensKey> keys;
+    std::string err;
+    for (std::size_t i = 0; i < arr.size(); ++i) {
+        const nlohmann::json& e = arr[i];
+        const std::string at = "keys[" + std::to_string(i) + "]";
+        // Reuse the note-key parser on a copy whose anchor is a placeholder it
+        // accepts, then insist the real anchor was Origin.
+        if (!e.is_object() || !e.contains("anchor") || !e["anchor"].is_string()
+            || e["anchor"].get<std::string>() != "Origin") {
+            throwType(env, std::string(sig) + ": " + at + ": anchor must be 'Origin' (a clip key is ticks from the event start)");
+            return env.Undefined();
+        }
+        nlohmann::json asHead = e;
+        asHead["anchor"] = "Head";
+        LensKey k;
+        if (!parseNoteKey(asHead, at, k, err)) { throwType(env, std::string(sig) + ": " + err); return env.Undefined(); }
+        k.anchor = KeyAnchor::Origin;
+        keys.push_back(k);
+    }
+    auto cmd = std::make_unique<SetClipLensKeysCommand>(clipId, std::move(keys), *g_timeline);
+    const bool changed = cmd->changesAnything();
+    const std::string what = cmd->describe();
+    if (changed) {
+        g_undoManager->execute(std::move(cmd), *g_timeline);
+        g_previewDirty = true;
+    }
+    log.done(what + (changed ? "" : " (unchanged)"));
+    return clipLensResult(env, clipId, changed);
 }
 
 // timeline_setTrackSlideNoteEffect(trackId, sObj)

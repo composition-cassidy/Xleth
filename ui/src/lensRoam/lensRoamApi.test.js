@@ -199,3 +199,57 @@ describe('lensRoamApi P8: per-note overrides and the hit curve', () => {
     expect(await setHitCurve(5, 3, { keys: [{ channel: 'zoom', anchor: 'Origin', pos: 0, value: 1 }] })).toBeNull()
   })
 })
+
+describe('P9 calls: clip keys, multi-note keys, presets', () => {
+  const KEY = { channel: 'zoom', anchor: 'Origin', pos: 480, value: 1.5, interp: 'Linear' }
+
+  it('setClipLensKeys goes to its own bridge method and announces lens-roam-changed with the post-state', async () => {
+    const { setClipLensKeys } = await import('./lensRoamApi.js')
+    timeline.setClipLensKeys = vi.fn(async (clipId, keys) => ({ clipId, changed: true, lens: LENS, keys }))
+    const seen = vi.fn()
+    timelineEvents.addEventListener('lens-roam-changed', seen)
+    try {
+      const res = await setClipLensKeys(12, [KEY])
+      expect(timeline.setClipLensKeys).toHaveBeenCalledWith(12, [KEY])
+      expect(res.keys).toEqual([KEY])
+      expect(seen).toHaveBeenCalledTimes(1)
+      expect(seen.mock.calls[0][0].detail).toMatchObject({ clipId: 12, keys: [KEY] })
+    } finally {
+      timelineEvents.removeEventListener('lens-roam-changed', seen)
+    }
+  })
+
+  it('setNotesLensKeys is ONE call for many notes and refreshes the patterns like the other note writes', async () => {
+    const { setNotesLensKeys } = await import('./lensRoamApi.js')
+    const entries = [{ patternId: 9, noteId: 2, keys: [] }, { patternId: 9, noteId: 3, keys: [] }]
+    timeline.setNotesLensKeys = vi.fn(async () => ({ changed: true, notes: [] }))
+    const seen = vi.fn()
+    timelineEvents.addEventListener('timeline-patterns-changed', seen)
+    try {
+      await setNotesLensKeys(entries)
+      expect(timeline.setNotesLensKeys).toHaveBeenCalledTimes(1)
+      expect(timeline.setNotesLensKeys).toHaveBeenCalledWith(entries)
+      expect(seen).toHaveBeenCalledTimes(1)
+    } finally {
+      timelineEvents.removeEventListener('timeline-patterns-changed', seen)
+    }
+  })
+
+  it('getHitPresets asks the engine once and caches; a failed ask is not cached', async () => {
+    const { getHitPresets, resetHitPresetsCache } = await import('./lensRoamApi.js')
+    resetHitPresetsCache()
+    timeline.getHitPresets = vi.fn(async () => null)
+    expect(await getHitPresets()).toBeNull()
+    timeline.getHitPresets = vi.fn(async () => [{ name: 'Still', keys: [], zones: {} }])
+    expect(await getHitPresets()).toEqual([{ name: 'Still', keys: [], zones: {} }])
+    await getHitPresets()
+    expect(timeline.getHitPresets).toHaveBeenCalledTimes(1)
+    resetHitPresetsCache()
+  })
+
+  it('a missing bridge link for a new call sends nothing and resolves null', async () => {
+    const { setClipLensKeys, setNotesLensKeys } = await import('./lensRoamApi.js')
+    expect(await setClipLensKeys(1, [])).toBeNull()
+    expect(await setNotesLensKeys([])).toBeNull()
+  })
+})

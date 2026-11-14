@@ -21,6 +21,7 @@
 import { timelineEvents } from '../timelineEvents.js'
 
 const TAG = '[LensBridge]'
+// (P9 adds setNotesLensKeys, setClipLensKeys, getHitPresets below.)
 
 export const LENS_FIELDS = ['fit', 'centerX', 'centerY', 'zoom', 'rotationDeg', 'flip']
 export const ROAM_FIELDS = ['offsetX', 'offsetY', 'scale', 'rotationDeg', 'bounds', 'layer']
@@ -137,6 +138,45 @@ export function setHitCurve(trackId, regionId, curve) {
 export function applyHitPreset(trackId, regionId, name) {
   return call('applyHitPreset', `track=${trackId} region=${regionId} '${name}'`,
     [trackId, regionId, name], { write: true })
+}
+
+// ── Keys (P9) ────────────────────────────────────────────────────────────────
+
+/**
+ * Replace SEVERAL notes' keys as ONE undo step (a multi-select edit).
+ * entries: [{ patternId, noteId, keys }]. Each Follow note becomes Nudge; a
+ * Nudge or Own note keeps its mode. Resolves like setNoteLensKeys.
+ */
+export function setNotesLensKeys(entries) {
+  return noteCall('setNotesLensKeys', `${entries?.length ?? 0} notes`, [entries])
+}
+
+/**
+ * Replace a Clip Track event's Lens keys (anchor 'Origin', pos = ticks from the
+ * event start). Resolves to { clipId, changed, lens, keys }.
+ */
+export function setClipLensKeys(clipId, keys) {
+  return call('setClipLensKeys', `clip=${clipId} ${keys?.length ?? 0} keys`, [clipId, keys], { write: true })
+}
+
+// The four presets, straight from the engine's one data file. Static for the
+// life of the app, so asked once.
+let presetsPromise = null
+
+/** [{ name, keys, zones: {headTicks, tailTicks} }] in the spec's order; null if unavailable. */
+export function getHitPresets() {
+  if (!presetsPromise) {
+    presetsPromise = call('getHitPresets', '', [], { write: false }).then((res) => {
+      if (!Array.isArray(res)) presetsPromise = null   // a failed ask is not cached
+      return Array.isArray(res) ? res : null
+    })
+  }
+  return presetsPromise
+}
+
+/** Test seam: forget the cached presets. */
+export function resetHitPresetsCache() {
+  presetsPromise = null
 }
 
 // ── Getter ───────────────────────────────────────────────────────────────────
