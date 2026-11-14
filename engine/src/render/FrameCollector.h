@@ -144,6 +144,21 @@ struct CellFrameRequest {
     // export's full-size source. See lensroam::fitSourceSize.
     int sourcePixelW = 0;
     int sourcePixelH = 0;
+
+    // ── Landing override (docs/XLETH_LANDING_SPEC.md §6.2) ─────────────────
+    // true => draw at canvasRect and ignore cellCol / cellRow / span, the grid
+    // size and the gap: the rect IS this cell's home rect for the frame. Set
+    // only by LandingRenderer, on the requests of a track that is in flight.
+    // Everything after the home rect is unchanged: bounce, Roam (and its
+    // Bounds Clip scissor, which clips to this rect), Lens, the visual chain
+    // and flip all apply as for any grid cell.
+    bool  hasCanvasRect = false;
+    float canvasRect[4] = { 0.0f, 0.0f, 0.0f, 0.0f };   // x, y, w, h — canvas-normalized
+    // The size a Roam offset is measured in. A slot's is its placement BEFORE
+    // the gap, which a drawn rect alone cannot give back, so it travels with
+    // the rect (audit D3). Lerped like the rect; equals the slot's own unit at
+    // the end of the move.
+    float canvasRoamUnit[2] = { 0.0f, 0.0f };           // w, h
 };
 
 // ---------------------------------------------------------------------------
@@ -177,6 +192,32 @@ public:
     }
     const LensRoamSnapshot* lensRoamSnapshot() const { return lensRoam_.get(); }
     bool companionFxEnabled() const { return companionFxEnabled_; }
+
+    // ── Hold-frame GC guards (Landing; docs/XLETH_LANDING_AUDIT.md D2) ──────
+    // collectRequests forgets the held frame of every track that is not placed
+    // in the layout it was just given. A landing frame collects more than one
+    // layout — the frame's layout WITHOUT the landing tracks, then a carry
+    // layout holding ONLY them — so without these two guards each collect
+    // would erase the other's held frames, and a landing track with Hold Last
+    // Frame would lose its picture in every gap for the length of the move.
+    //
+    // Both are inert by default: with no kept tracks and the GC enabled, the
+    // GC is exactly what it was. LandingRenderer is the only caller.
+
+    /** Tracks the hold GC must keep even when the layout does not place them.
+     *  Copied (at most TrackLanding::kMaxLandingsPerCue ids); count 0 clears. */
+    void setHoldKeepTracks(const int* trackIds, int count) {
+        holdKeepCount_ = 0;
+        for (int i = 0; i < count && holdKeepCount_ < kMaxHoldKeepTracks; ++i)
+            holdKeepTracks_[holdKeepCount_++] = trackIds[i];
+    }
+    int holdKeepTrackCount() const { return holdKeepCount_; }
+
+    /** false suspends the hold GC for the following collectRequests calls
+     *  (the carry collect, whose layout places only the landing tracks).
+     *  Re-enable it straight after. */
+    void setHoldGcEnabled(bool enabled) { holdGcEnabled_ = enabled; }
+    bool holdGcEnabled() const { return holdGcEnabled_; }
 
     // ── Step 1: Collect ─────────────────────────────────────────────────────
 
@@ -406,4 +447,10 @@ private:
     // same collector/compositor stack for E.1 timing follow, so keep this off
     // by default and let OfflineRenderer opt in explicitly.
     bool companionFxEnabled_ = false;
+
+    // Hold-frame GC guards (see setHoldKeepTracks / setHoldGcEnabled).
+    static constexpr int kMaxHoldKeepTracks = 16;   // == TrackLanding::kMaxLandingsPerCue
+    int  holdKeepTracks_[kMaxHoldKeepTracks] = {};
+    int  holdKeepCount_ = 0;
+    bool holdGcEnabled_ = true;
 };

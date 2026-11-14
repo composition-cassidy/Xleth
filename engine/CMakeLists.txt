@@ -396,6 +396,7 @@ add_library(XlethEngineCore STATIC
     src/render/Nv12Converter.cpp
     src/render/GridCompositor.cpp
     src/render/SnapshotTransitionRenderer.cpp
+    src/render/LandingRenderer.cpp
     src/render/VisualFrameDiagnostics.cpp
     src/render/HwEncoderDetector.cpp
     src/render/OfflineRenderer.cpp
@@ -3533,6 +3534,58 @@ target_compile_definitions(test_snapshot_transition PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_landing_render ──────────────────────────────────────────────────────
+# Landing on a real D3D11 device (docs/XLETH_LANDING_SPEC.md §9): the carry
+# geometry, the pixel-identical seam at the pin, preview==export determinism
+# through LandingRenderer (the helper both seams call), carried tracks across
+# Push / crossfade, hold-last-frame through the extra collects, the perf floor.
+add_executable(test_landing_render
+    test/test_landing_render.cpp
+)
+
+target_link_libraries(test_landing_render PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    d3d11
+    dxgi
+)
+
+target_compile_definitions(test_landing_render PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_landing_floor ───────────────────────────────────────────────────────
+# The Landing perf floor as a cross-build probe (spec ruling 9): a fixed
+# project with cues and NO landings, one hash per frame, written against the
+# pre-feature API only so the same file also builds on the commit before
+# Landings. docs/XLETH_LANDING_VERIFY.md records the two digests matching.
+add_executable(test_landing_floor
+    test/test_landing_floor.cpp
+)
+
+target_link_libraries(test_landing_floor PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    d3d11
+    dxgi
+)
+
+target_compile_definitions(test_landing_floor PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_muxer ───────────────────────────────────────────────────────────────
 # Verifies FFmpegMuxer with built-in mpeg4 + aac encoders.
 # No GPU needed — uses only FFmpeg C API.
@@ -3785,6 +3838,8 @@ set(XLETH_ENGINE_TESTS
     test_lens_roam_verify
     test_visual_echo
     test_snapshot_transition
+    test_landing_render
+    test_landing_floor
     test_muxer
     test_hw_detect
     test_offline_render

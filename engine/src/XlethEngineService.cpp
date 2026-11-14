@@ -89,6 +89,7 @@
 #include "render/FrameCollector.h"
 #include "render/FrameCache.h"          // RenderFrameCache
 #include "render/SnapshotTransitionRenderer.h"  // snapshot transition preview seam (Slice 3b)
+#include "render/LandingRenderer.h"             // landing carry, shared with the export seam
 #include "render/RenderVideoDecoder.h"
 #include "render/AnimationManager.h"
 #include "render/RenderClock.h"
@@ -392,6 +393,9 @@ std::unique_ptr<RenderFrameCache>   g_previewRenderCache;
 std::unique_ptr<RenderVideoDecoder> g_previewRenderDecoder;
 std::unique_ptr<AnimationManager>   g_previewAnimMgr;
 std::unique_ptr<FrameCollector>     g_previewCollector;
+// Landing carry for the preview tick (docs/XLETH_LANDING_SPEC.md). Video thread
+// only; lives and dies with the collector it drives.
+std::unique_ptr<xleth::LandingRenderer> g_previewLanding;
 
 // Visual Echo delay binding for the preview tick. Holds a raw MixEngine
 // reference, so it is constructed only once the audio engine exists and is torn
@@ -4373,6 +4377,14 @@ static void videoThreadBody()
                     const int64_t frameProjectTick = RenderClock::sampleToPPQ(
                         frameProjectSample, sampleRate, previewBpm);
                     Timeline::ResolvedTransition previewTransition;
+                    // ── Landing resolve (docs/XLETH_LANDING_SPEC.md) ──────────
+                    // The tracks to carry on THIS frame, resolved for the same
+                    // tick and under the same lock as the transition. Plain
+                    // data: nothing aliases the model after this. count stays 0
+                    // for a project without landings, and every landing branch
+                    // below is gated on it, so such a project takes exactly the
+                    // path it took before landings existed.
+                    Timeline::ResolvedLandings previewLandings;
                     if (g_timeline) {
                         // Settled frames must use the snapshot resolved at this
                         // timeline tick. FrameCollector already does this for the
@@ -4380,6 +4392,8 @@ static void videoThreadBody()
                         // of leaking the editor's active snapshot into playback.
                         layout = g_timeline->gridLayoutAt(TickTime{ frameProjectTick });
                         previewTransition = g_timeline->transitionAt(TickTime{ frameProjectTick });
+                        if (g_timeline->hasCueLandings())
+                            previewLandings = g_timeline->landingsAt(TickTime{ frameProjectTick });
                     }
                     g_previewDiag.lastLayoutColumns.store(layout.columns, std::memory_order_relaxed);
                     g_previewDiag.lastLayoutRows.store(layout.rows, std::memory_order_relaxed);
@@ -4445,12 +4459,45 @@ static void videoThreadBody()
                     // from the same project sample and BPM the collector would
                     // use — so hand it over rather than have the collector resolve
                     // (cue search + GridLayout copy) the identical layout again.
-                    auto& requests = g_previewCollector->collectRequests(
-                        collectorOutputFrame, *g_timeline, sampleRate, fpsRat,
-                        events, true, collectorProjectStartSample,
-                        g_previewPosterMode, /*renderProxyBySource=*/nullptr,
-                        /*layoutOverride=*/&layout,
-                        /*applyPreviewEffectMute=*/true);
+                    //
+                    // Landings: beginFrame tells the collector which tracks'
+                    // held frames must survive this frame's extra collects (and
+                    // clears that on the first frame after a window). On a
+                    // landing frame WITHOUT a transition the request list comes
+                    // from the shared LandingRenderer instead: the same layout
+                    // minus the landing tracks, plus those tracks carried at
+                    // their in-flight rect on top. Everything downstream (dedup,
+                    // decode budget, held frames, the one compositeFrame) takes
+                    // that list exactly as it takes an ordinary frame's. With a
+                    // transition active the carry is drawn after the blend, in
+                    // the transition block below.
+                    const bool carryLandings =
+                        previewLandings.count > 0 && g_previewLanding != nullptr;
+                    xleth::LandingRenderer::beginFrame(previewLandings, *g_previewCollector);
+                    std::vector<CellFrameRequest>* collectedRequests = nullptr;
+                    if (carryLandings && !previewTransition.active) {
+                        xleth::SnapshotTransitionFrameCtx landingCtx;
+                        landingCtx.sampleRate          = sampleRate;
+                        landingCtx.bpm                 = previewBpm;
+                        landingCtx.fps                 = fpsRat;
+                        landingCtx.outputFrameIndex    = collectorOutputFrame;
+                        landingCtx.projectStartSample  = collectorProjectStartSample;
+                        landingCtx.allowProxy          = true;
+                        landingCtx.posterMode          = g_previewPosterMode;
+                        landingCtx.renderProxyBySource = nullptr;
+                        collectedRequests = &g_previewLanding->collectFrame(
+                            previewLandings, layout, *g_timeline, events,
+                            *g_previewCollector, landingCtx,
+                            /*applyPreviewEffectMute=*/true);
+                    } else {
+                        collectedRequests = &g_previewCollector->collectRequests(
+                            collectorOutputFrame, *g_timeline, sampleRate, fpsRat,
+                            events, true, collectorProjectStartSample,
+                            g_previewPosterMode, /*renderProxyBySource=*/nullptr,
+                            /*layoutOverride=*/&layout,
+                            /*applyPreviewEffectMute=*/true);
+                    }
+                    auto& requests = *collectedRequests;
                     s_collectTimer.record(
                         tickUsBetween(tTickStart, TickClock::now()),
                         g_previewDiag.lastCollectUs, g_previewDiag.avgCollectUs,
@@ -4799,11 +4846,29 @@ static void videoThreadBody()
                                 }
                             };
 
+                            // Landings: a carried track is taken out of BOTH
+                            // snapshots before they are composited, then drawn
+                            // once over the blend. Otherwise a Push would split
+                            // it between A and B and a crossfade would dim it.
+                            if (carryLandings) {
+                                xleth::LandingRenderer::stripLandingTracks(
+                                    previewLandings, previewTransition.layoutA);
+                                xleth::LandingRenderer::stripLandingTracks(
+                                    previewLandings, previewTransition.layoutB);
+                            }
+
                             didTransition = xleth::renderSnapshotTransition(
                                 previewTransition, *g_timeline,
                                 events,
                                 *g_previewCompositor, *g_previewCollector,
                                 *g_previewRenderCache, txCtx, decodeMisses);
+
+                            if (didTransition && carryLandings) {
+                                g_previewLanding->renderCarryOverlay(
+                                    previewLandings, *g_timeline, events,
+                                    *g_previewCompositor, *g_previewCollector,
+                                    *g_previewRenderCache, txCtx, decodeMisses);
+                            }
                         }
                         // Visual Echo seek flush. Done here, on the video thread and
                         // immediately before the composite, because flushEchoRings
@@ -5665,6 +5730,7 @@ JsonApi::Value Initialize(const JsonApi::CallbackInfo& info)
         g_previewRenderDecoder->setOpenFailureBackoff(2.0);
         g_previewAnimMgr       = std::make_unique<AnimationManager>();
         g_previewCollector     = std::make_unique<FrameCollector>();
+        g_previewLanding       = std::make_unique<xleth::LandingRenderer>();
 
         g_previewCollector->setAnimationManager(g_previewAnimMgr.get());
         g_previewCollector->setCompanionFxEnabled(true);
@@ -5712,6 +5778,7 @@ JsonApi::Value Initialize(const JsonApi::CallbackInfo& info)
             g_previewRenderDecoder.reset();
             g_previewRenderCache.reset();
             g_previewCollector.reset();
+            g_previewLanding.reset();
             g_previewEchoResolver.reset();   // points at nothing useful without the collector
             g_previewAnimMgr.reset();
         }
@@ -5846,6 +5913,7 @@ void Shutdown(const JsonApi::CallbackInfo& info)
         g_previewRenderDecoder.reset();
         g_previewRenderCache.reset();
         g_previewCollector.reset();
+        g_previewLanding.reset();
         // Released AFTER the collector that holds a raw pointer to it — order
         // matters here, not just tidiness.
         g_previewEchoResolver.reset();

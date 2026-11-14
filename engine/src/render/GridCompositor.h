@@ -476,6 +476,23 @@ public:
                         float gapScale = 0.0f,
                         ID3D11RenderTargetView* targetRTV = nullptr);
 
+    /**
+     * Draw requests ON TOP of what the target already holds: compositeFrame
+     * without the clear. Same per-cell path, same order, same blend state.
+     *
+     * Landing (docs/XLETH_LANDING_SPEC.md §6.3) uses it on a transition frame:
+     * the A/B blend is already in the readback target and the carried tracks
+     * are drawn over it once, so a Push cannot split them and a crossfade
+     * cannot dim them. nullptr targets the member (readback) target, which is
+     * where transitionPass writes.
+     */
+    void compositeOverlay(const std::vector<CellFrameRequest>& requests,
+                          RenderFrameCache& cache,
+                          int gridCols, int gridRows,
+                          float time = 0.0f,
+                          float gapScale = 0.0f,
+                          ID3D11RenderTargetView* targetRTV = nullptr);
+
     // ── Visual Echo ────────────────────────────────────────────────────────
 
     /** Drop all buffered echo history (textures are kept for reuse).
@@ -810,6 +827,15 @@ private:
     static void gridCellToUV(int cellCol, int cellRow, int spanX, int spanY,
                               int gridCols, int gridRows,
                               float& outX, float& outY, float& outW, float& outH);
+
+    // The one body behind compositeFrame (clearTarget = true) and
+    // compositeOverlay (false). The flag decides the clear and nothing else.
+    void compositeRequests(const std::vector<CellFrameRequest>& requests,
+                           RenderFrameCache& cache,
+                           int gridCols, int gridRows,
+                           float time, float gapScale,
+                           ID3D11RenderTargetView* targetRTV,
+                           bool clearTarget);
 
     /** Draw one cell: set constants, bind texture, draw quad.
      *  `orientation` is the flip-v2 enum (0..5 — see GridComposite.hlsl). */

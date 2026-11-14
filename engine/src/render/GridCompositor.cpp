@@ -610,6 +610,29 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
                                      float gapScale,
                                      ID3D11RenderTargetView* targetRTV)
 {
+    compositeRequests(requests, cache, gridCols, gridRows, time, gapScale,
+                      targetRTV, /*clearTarget=*/true);
+}
+
+void GridCompositor::compositeOverlay(const std::vector<CellFrameRequest>& requests,
+                                       RenderFrameCache& cache,
+                                       int gridCols, int gridRows,
+                                       float time,
+                                       float gapScale,
+                                       ID3D11RenderTargetView* targetRTV)
+{
+    compositeRequests(requests, cache, gridCols, gridRows, time, gapScale,
+                      targetRTV, /*clearTarget=*/false);
+}
+
+void GridCompositor::compositeRequests(const std::vector<CellFrameRequest>& requests,
+                                        RenderFrameCache& cache,
+                                        int gridCols, int gridRows,
+                                        float time,
+                                        float gapScale,
+                                        ID3D11RenderTargetView* targetRTV,
+                                        bool clearTarget)
+{
     if (!initialized_) return;
 
     // Idle RT pairs (dead grid sizes/effect slots from earlier in the
@@ -687,8 +710,11 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
     // Clear to transparent black — areas with no content will be transparent.
     // The chorus layer provides the background; gaps without chorus encode
     // as black in H.264 (which has no alpha channel).
-    const float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-    deviceCtx_->ClearRenderTargetView(activeRTV, clearColor);
+    // An overlay (compositeOverlay) keeps what is there and draws over it.
+    if (clearTarget) {
+        const float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        deviceCtx_->ClearRenderTargetView(activeRTV, clearColor);
+    }
 
     // Set viewport
     D3D11_VIEWPORT viewport = {};
@@ -753,6 +779,11 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
                            : (req.layerKind == CellLayerKind::FullscreenBehind) ? "behind"
                                                                                 : "front";
 
+        // A landing in flight can have no area yet (From: Grow at its first
+        // frame). Nothing to draw, and no stage may size a target from it.
+        if (req.hasCanvasRect && (req.canvasRect[2] <= 0.0f || req.canvasRect[3] <= 0.0f))
+            continue;
+
         FrameCacheKey key;
         key.sourcePath = req.sourcePath;
         key.frameIndex = req.sourceFrameIndex;
@@ -795,7 +826,16 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
         // One Roam cell unit: this placement before the gap (half-grid spans
         // included), or the canvas for a fullscreen layer.
         float roamUnitW, roamUnitH;
-        if (isGrid) {
+        if (req.hasCanvasRect) {
+            // Landing: the request names its own home rect for this frame, so
+            // the slot, the grid size and the gap are not consulted. The rect
+            // already IS the drawn (post-gap) rect; at the end of the move it
+            // is bitwise what the grid branch below computes for the slot.
+            rx = req.canvasRect[0];  ry = req.canvasRect[1];
+            rw = req.canvasRect[2];  rh = req.canvasRect[3];
+            roamUnitW = (req.canvasRoamUnit[0] > 0.0f) ? req.canvasRoamUnit[0] : rw;
+            roamUnitH = (req.canvasRoamUnit[1] > 0.0f) ? req.canvasRoamUnit[1] : rh;
+        } else if (isGrid) {
             float unitX, unitY;
             xleth::slotCellRect(req.cellCol, req.cellRow, req.spanX, req.spanY,
                                 gridCols, gridRows, unitX, unitY, roamUnitW, roamUnitH);

@@ -844,8 +844,15 @@ std::vector<CellFrameRequest>& FrameCollector::collectRequests(
     // GC the hold-state map: keep entries only for tracks still placed as a
     // BehindGrid layer or a grid slot. Bounds the map size to the live layout
     // rather than every track ever assigned.
-    {
+    //
+    // A landing frame collects more than one layout, so LandingRenderer
+    // suspends the GC for its carry collect and names the landing tracks as
+    // kept for the others (see setHoldKeepTracks). On every other frame both
+    // guards are inert and this block is what it always was.
+    if (holdGcEnabled_) {
         std::unordered_set<int> holdableTrackIds;
+        for (int i = 0; i < holdKeepCount_; ++i)
+            holdableTrackIds.insert(holdKeepTracks_[i]);
         for (const auto& fl : layout.fullscreenLayers) {
             if (fl.placement == FullscreenLayerPlacement::BehindGrid && fl.trackId >= 0)
                 holdableTrackIds.insert(fl.trackId);

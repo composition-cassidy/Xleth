@@ -14,6 +14,7 @@
 #include "render/RenderVideoDecoder.h"
 #include "render/GridCompositor.h"
 #include "render/SnapshotTransitionRenderer.h"  // snapshot transition export seam (Slice 3b)
+#include "render/LandingRenderer.h"             // landing carry, shared with the preview seam
 #include "render/VisualFrameDiagnostics.h"  // opt-in pixel-content instrumentation
 #include "XlethDebug.h"
 #include "render/CanvasFit.h"
@@ -639,6 +640,11 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
     // Frame cache + collector (no GPU thread binding needed for offline)
     RenderFrameCache cache;
     FrameCollector collector;
+    // Landing carry (docs/XLETH_LANDING_SPEC.md): the same helper the live
+    // preview calls. timeline_ is the export's frozen copy, so whether any cue
+    // has landings is decided once; without any, no landing code runs.
+    xleth::LandingRenderer landingRenderer;
+    const bool projectHasLandings = timeline_.hasCueLandings();
     AnimationManager animMgr;
     collector.setAnimationManager(&animMgr);
     collector.setCompanionFxEnabled(true);
@@ -900,16 +906,51 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
                     prevBeat = currentBeat;
                 }
 
+                // ── Transition + landing resolve ────────────────────────
+                // Both for this frame's tick. The transition used to be
+                // resolved just before the composite; it is resolved here
+                // (same call, same result) because a landing frame has to
+                // know whether a transition is active before it collects.
+                // The landing count stays 0 for a project without landings,
+                // and every landing branch below is gated on it.
+                Timeline::ResolvedTransition tx =
+                    timeline_.transitionAt(TickTime{ projectFrameTick });
+                Timeline::ResolvedLandings landings;
+                if (projectHasLandings)
+                    landings = timeline_.landingsAt(TickTime{ projectFrameTick });
+                xleth::LandingRenderer::beginFrame(landings, collector);
+
                 // Collect what each grid cell needs for this output frame.
                 // Export honors settings.useSourceMedia: full quality → originals
                 // (planPtr null, allowProxy false); fast export → resolution-aware
                 // render proxies via planPtr.
-                auto& requests = collector.collectRequests(
-                    f, timeline_, sampleRate, fps, videoEvents,
-                    /*allowProxy=*/ !settings.useSourceMedia,
-                    /*projectStartSample=*/ startSample,
-                    /*posterMode=*/ false,
-                    /*renderProxyBySource=*/ planPtr);
+                //
+                // On a landing frame without a transition the list comes from
+                // the shared LandingRenderer (the preview calls the same
+                // function): this frame's layout minus the landing tracks, plus
+                // those tracks carried on top at their in-flight rect.
+                std::vector<CellFrameRequest>* collectedRequests = nullptr;
+                if (landings.count > 0 && !tx.active) {
+                    xleth::SnapshotTransitionFrameCtx landingCtx;
+                    landingCtx.sampleRate          = sampleRate;
+                    landingCtx.bpm                 = bpm;
+                    landingCtx.fps                 = fps;
+                    landingCtx.outputFrameIndex    = f;
+                    landingCtx.projectStartSample  = startSample;
+                    landingCtx.allowProxy          = !settings.useSourceMedia;
+                    landingCtx.posterMode          = false;
+                    landingCtx.renderProxyBySource = planPtr;
+                    collectedRequests = &landingRenderer.collectFrame(
+                        landings, frameGrid, timeline_, videoEvents, collector, landingCtx);
+                } else {
+                    collectedRequests = &collector.collectRequests(
+                        f, timeline_, sampleRate, fps, videoEvents,
+                        /*allowProxy=*/ !settings.useSourceMedia,
+                        /*projectStartSample=*/ startSample,
+                        /*posterMode=*/ false,
+                        /*renderProxyBySource=*/ planPtr);
+                }
+                auto& requests = *collectedRequests;
 
                 // Deduplicate: multiple cells may reference the same source frame
                 auto deduplicated = FrameCollector::deduplicateRequests(requests);
@@ -959,8 +1000,7 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
                     // path below runs unchanged.
                     bool didTransition = false;
                     {
-                        const Timeline::ResolvedTransition tx =
-                            timeline_.transitionAt(TickTime{ projectFrameTick });
+                        // The transition was resolved before the collect (above).
                         if (tx.active) {
                             xleth::SnapshotTransitionFrameCtx txCtx;
                             txCtx.sampleRate          = sampleRate;
@@ -979,9 +1019,20 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
                                     if (entry.texture) cache.put(key, std::move(entry));
                                 }
                             };
+                            // Landings: out of both snapshots, then drawn once
+                            // over the blend (the preview runs this same sequence).
+                            if (landings.count > 0) {
+                                xleth::LandingRenderer::stripLandingTracks(landings, tx.layoutA);
+                                xleth::LandingRenderer::stripLandingTracks(landings, tx.layoutB);
+                            }
                             didTransition = xleth::renderSnapshotTransition(
                                 tx, timeline_, videoEvents, compositor, collector,
                                 cache, txCtx, decodeMisses);
+                            if (didTransition && landings.count > 0) {
+                                landingRenderer.renderCarryOverlay(
+                                    landings, timeline_, videoEvents, compositor,
+                                    collector, cache, txCtx, decodeMisses);
+                            }
                         }
                     }
                     if (!didTransition) {
@@ -1452,6 +1503,11 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
 
     RenderFrameCache cache;
     FrameCollector collector;
+    // Landing carry (docs/XLETH_LANDING_SPEC.md): the same helper the live
+    // preview calls. timeline_ is the export's frozen copy, so whether any cue
+    // has landings is decided once; without any, no landing code runs.
+    xleth::LandingRenderer landingRenderer;
+    const bool projectHasLandings = timeline_.hasCueLandings();
     AnimationManager animMgr;
     collector.setAnimationManager(&animMgr);
     collector.setCompanionFxEnabled(true);
@@ -1587,12 +1643,37 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
                     prevBeat = currentBeat;
                 }
 
-                auto& requests = collector.collectRequests(
-                    f, timeline_, sampleRate, fps, videoEvents,
-                    /*allowProxy=*/ !settings.useSourceMedia,
-                    /*projectStartSample=*/ startSample,
-                    /*posterMode=*/ false,
-                    /*renderProxyBySource=*/ planPtr);
+                // Transition + landing resolve, and the landing collect: see
+                // the matching block in the tail-render loop above.
+                Timeline::ResolvedTransition tx =
+                    timeline_.transitionAt(TickTime{ projectFrameTick });
+                Timeline::ResolvedLandings landings;
+                if (projectHasLandings)
+                    landings = timeline_.landingsAt(TickTime{ projectFrameTick });
+                xleth::LandingRenderer::beginFrame(landings, collector);
+
+                std::vector<CellFrameRequest>* collectedRequests = nullptr;
+                if (landings.count > 0 && !tx.active) {
+                    xleth::SnapshotTransitionFrameCtx landingCtx;
+                    landingCtx.sampleRate          = sampleRate;
+                    landingCtx.bpm                 = bpm;
+                    landingCtx.fps                 = fps;
+                    landingCtx.outputFrameIndex    = f;
+                    landingCtx.projectStartSample  = startSample;
+                    landingCtx.allowProxy          = !settings.useSourceMedia;
+                    landingCtx.posterMode          = false;
+                    landingCtx.renderProxyBySource = planPtr;
+                    collectedRequests = &landingRenderer.collectFrame(
+                        landings, frameGrid, timeline_, videoEvents, collector, landingCtx);
+                } else {
+                    collectedRequests = &collector.collectRequests(
+                        f, timeline_, sampleRate, fps, videoEvents,
+                        /*allowProxy=*/ !settings.useSourceMedia,
+                        /*projectStartSample=*/ startSample,
+                        /*posterMode=*/ false,
+                        /*renderProxyBySource=*/ planPtr);
+                }
+                auto& requests = *collectedRequests;
                 auto deduplicated = FrameCollector::deduplicateRequests(requests);
 
                 // See the equivalent block above (~line 1099-1114) for why this
@@ -1625,8 +1706,7 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
                     // Same shared path as renderImpl / preview (export==preview).
                     bool didTransition = false;
                     {
-                        const Timeline::ResolvedTransition tx =
-                            timeline_.transitionAt(TickTime{ projectFrameTick });
+                        // The transition was resolved before the collect (above).
                         if (tx.active) {
                             xleth::SnapshotTransitionFrameCtx txCtx;
                             txCtx.sampleRate          = sampleRate;
@@ -1645,9 +1725,20 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
                                     if (entry.texture) cache.put(key, std::move(entry));
                                 }
                             };
+                            // Landings: out of both snapshots, then drawn once
+                            // over the blend (the preview runs this same sequence).
+                            if (landings.count > 0) {
+                                xleth::LandingRenderer::stripLandingTracks(landings, tx.layoutA);
+                                xleth::LandingRenderer::stripLandingTracks(landings, tx.layoutB);
+                            }
                             didTransition = xleth::renderSnapshotTransition(
                                 tx, timeline_, videoEvents, compositor, collector,
                                 cache, txCtx, decodeMisses);
+                            if (didTransition && landings.count > 0) {
+                                landingRenderer.renderCarryOverlay(
+                                    landings, timeline_, videoEvents, compositor,
+                                    collector, cache, txCtx, decodeMisses);
+                            }
                         }
                     }
                     if (!didTransition) {
