@@ -408,6 +408,19 @@ const LensRoamSnapshot::ClipEntry* findClip(const std::vector<LensRoamSnapshot::
     return (it != v.end() && it->clipId == clipId) ? &*it : nullptr;
 }
 
+bool overrideLess(const LensRoamSnapshot::OverrideEntry& a, const LensRoamSnapshot::OverrideEntry& b) {
+    return std::tie(a.trackId, a.patternId, a.noteId) < std::tie(b.trackId, b.patternId, b.noteId);
+}
+
+const LensRoamSnapshot::OverrideEntry* findOverride(
+        const std::vector<LensRoamSnapshot::OverrideEntry>& v, int trackId, int patternId, int noteId) {
+    LensRoamSnapshot::OverrideEntry key;
+    key.trackId = trackId; key.patternId = patternId; key.noteId = noteId;
+    const auto it = std::lower_bound(v.begin(), v.end(), key, overrideLess);
+    return (it != v.end() && it->trackId == trackId && it->patternId == patternId
+            && it->noteId == noteId) ? &*it : nullptr;
+}
+
 const LensRoamSnapshot::SourceEntry* findSource(const std::vector<LensRoamSnapshot::SourceEntry>& v,
                                                 int trackId, int regionId) {
     const auto it = std::lower_bound(v.begin(), v.end(), std::make_pair(trackId, regionId),
@@ -425,6 +438,9 @@ float absoluteAt(const std::vector<xleth::keycurve::Key>& pool,
     return static_cast<float>(
         xleth::keycurve::valueAt(pool.data() + run.first, run.count, t, base));
 }
+
+// An unused layer: every channel unkeyed (constant-initialized, no guard).
+const LensRoamSnapshot::ChannelRuns kNoRuns{};
 
 // One channel of a note curve: the LAYER value, or the layer identity when the
 // channel has no keys.
@@ -454,8 +470,14 @@ LensParams LensRoamSnapshot::lensForSource(int trackId, int regionId) const {
     return tr ? tr->sourceFallback : LensParams{};
 }
 
+const LensRoamSnapshot::OverrideEntry* LensRoamSnapshot::overrideFor(int trackId, int patternId,
+                                                                     int noteId) const {
+    if (patternId < 0 || overrides.empty()) return nullptr;
+    return findOverride(overrides, trackId, patternId, noteId);
+}
+
 LensParams LensRoamSnapshot::lensForEventAt(int trackId, int clipId, int regionId,
-                                            const EventClock& clock) const {
+                                            const EventClock& clock, const NoteRef& note) const {
     const double t = clock.frameTick - clock.eventStartTick;
 
     if (clipId >= 0) {
@@ -471,23 +493,42 @@ LensParams LensRoamSnapshot::lensForEventAt(int trackId, int clipId, int regionI
         return p;
     }
 
-    const SourceEntry* e = findSource(sources, trackId, regionId);
-    if (!e) return lensForSource(trackId, regionId);   // a new source: no hit curve
-    LensParams p = e->lens;
-    if (!e->keyed) return p;
+    // Pattern note. A source with no entry is new: its fallback base, no hit
+    // curve, default zones (an override on it still plays).
+    const SourceEntry* e  = findSource(sources, trackId, regionId);
+    const OverrideEntry* ov = overrideFor(trackId, note.patternId, note.noteId);
+    const bool useHit  = e && e->keyed && (!ov || ov->mode == LensOverrideMode::Nudge);
+    const bool useNote = ov && ov->keyed;
+    LensParams p = e ? e->lens : lensForSource(trackId, regionId);
+    if (!useHit && !useNote) return p;   // Follow/Nudge with no hit curve, Own with no keys
 
-    // Follow: base, then the hit curve as a layer (spec "Blend": zoom
-    // multiplies; centre and rotation add). Computed in double, one rounding.
-    const xleth::keycurve::NoteSpan span = xleth::keycurve::noteSpan(clock.eventLenTicks, e->zones);
-    const auto& r = e->hitCurve;
+    // Layers on the base (spec "Blend": zoom multiplies; centre and rotation
+    // add): Follow = hit curve, Nudge = hit curve then note keys, Own = note
+    // keys. An unused layer is its identity (x1, +0), which leaves the
+    // double unchanged, so Follow is bit-identical to P7. Computed in double,
+    // one rounding. Zones belong to the hit curve: Follow and Nudge play on
+    // the source's zones (a Nudge was compiled against them, so one span
+    // serves both layers); an Own note plays on the spec defaults, so no
+    // hit-curve edit, zones included, ever reaches it.
+    const bool own = ov && ov->mode == LensOverrideMode::Own;
+    const xleth::keycurve::NoteZones zones = (e && !own) ? e->zones : xleth::keycurve::NoteZones{};
+    const xleth::keycurve::NoteSpan span = xleth::keycurve::noteSpan(clock.eventLenTicks, zones);
+    const ChannelRuns& h = useHit  ? e->hitCurve : kNoRuns;
+    const ChannelRuns& n = useNote ? ov->keys    : kNoRuns;
+    auto layer = [&](LensChannel ch, double identity, bool mul) {
+        const int c = static_cast<int>(ch);
+        const double a = layerAt(keys, h[c], span, t, identity);
+        const double b = layerAt(keys, n[c], span, t, identity);
+        return mul ? a * b : a + b;
+    };
     p.zoom        = static_cast<float>(static_cast<double>(p.zoom)
-                  * layerAt(keys, r[static_cast<int>(LensChannel::Zoom)], span, t, 1.0));
+                  * layer(LensChannel::Zoom, 1.0, true));
     p.centerX     = static_cast<float>(static_cast<double>(p.centerX)
-                  + layerAt(keys, r[static_cast<int>(LensChannel::CenterX)], span, t, 0.0));
+                  + layer(LensChannel::CenterX, 0.0, false));
     p.centerY     = static_cast<float>(static_cast<double>(p.centerY)
-                  + layerAt(keys, r[static_cast<int>(LensChannel::CenterY)], span, t, 0.0));
+                  + layer(LensChannel::CenterY, 0.0, false));
     p.rotationDeg = static_cast<float>(static_cast<double>(p.rotationDeg)
-                  + layerAt(keys, r[static_cast<int>(LensChannel::RotationDeg)], span, t, 0.0));
+                  + layer(LensChannel::RotationDeg, 0.0, false));
     return p;
 }
 
@@ -513,6 +554,10 @@ LensRoamSnapshot::Counts LensRoamSnapshot::counts() const {
     for (const auto& t : tracks)  if (!t.roam.isIdentity()) ++c.roamNonIdentity;
     for (const auto& e : clips)   if (!e.lens.isIdentity()) ++c.clipLensNonIdentity;
     for (const auto& e : sources) if (!e.lens.isIdentity()) ++c.sourceLensNonIdentity;
+    for (const auto& o : overrides) {
+        if (o.mode == LensOverrideMode::Own) ++c.noteOwn;
+        else                                 ++c.noteNudge;
+    }
     return c;
 }
 
@@ -644,6 +689,44 @@ std::shared_ptr<const LensRoamSnapshot> buildLensRoamSnapshot(const Timeline& ti
         }
     }
 
+    // Per-note overrides (P8), one entry per {track, pattern, note} the
+    // timeline actually plays: every pattern placed on a Pattern track. A
+    // Nudge is compiled against THAT track's zones for the pattern's source,
+    // so it and the hit curve it nudges share one note span at render time;
+    // an Own note against the spec defaults (zones are part of the hit curve,
+    // which never reaches it). A pattern placed twice on one track compiles once.
+    {
+        std::vector<std::pair<int, int>> done;   // (trackId, patternId)
+        for (const TrackInfo* t : tracks) {
+            if (t->type != TrackInfo::Type::Pattern) continue;
+            for (const PatternBlock* block : timeline.getPatternBlocksOnTrack(t->id)) {
+                const std::pair<int, int> key{ t->id, block->patternId };
+                if (std::find(done.begin(), done.end(), key) != done.end()) continue;
+                done.push_back(key);
+                const Pattern* pattern = timeline.getPattern(block->patternId);
+                if (!pattern) continue;
+                const auto lensIt = t->trackLens.find(pattern->regionId);
+                const xleth::keycurve::NoteZones zones = lensIt != t->trackLens.end()
+                    ? lensIt->second.zones : xleth::keycurve::NoteZones{};
+                for (const PatternNote& n : pattern->notes) {
+                    // An id <= 0 is not an address (old data; no load-time
+                    // repair yet): such a note plays Follow.
+                    if (!n.lensOverride || n.id <= 0) continue;
+                    LensRoamSnapshot::OverrideEntry o;
+                    o.trackId   = t->id;
+                    o.patternId = pattern->id;
+                    o.noteId    = n.id;
+                    o.mode      = n.lensOverride->mode;
+                    const xleth::keycurve::NoteZones noteZones = o.mode == LensOverrideMode::Own
+                        ? xleth::keycurve::NoteZones{} : zones;
+                    o.keyed = compileChannelRuns(n.lensOverride->keys, TimeBase::EventTicks,
+                                                 CurveKind::Note, noteZones, snap->keys, scratch, o.keys);
+                    snap->overrides.push_back(o);
+                }
+            }
+        }
+    }
+
     const auto clips = timeline.getAllClips();
     snap->clips.reserve(clips.size());
     for (const Clip* c : clips) {
@@ -681,5 +764,14 @@ std::shared_ptr<const LensRoamSnapshot> buildLensRoamSnapshot(const Timeline& ti
         [](const auto& a, const auto& b) {
             return std::tie(a.trackId, a.regionId) < std::tie(b.trackId, b.regionId);
         });
+    // A note id is unique inside its pattern, so (track, pattern, note) is a
+    // key. Should old data hold a duplicate id, the first note in the pattern
+    // wins (stable sort keeps note order), the same note the edit commands
+    // address.
+    std::stable_sort(snap->overrides.begin(), snap->overrides.end(), overrideLess);
+    snap->overrides.erase(std::unique(snap->overrides.begin(), snap->overrides.end(),
+        [](const LensRoamSnapshot::OverrideEntry& a, const LensRoamSnapshot::OverrideEntry& b) {
+            return !overrideLess(a, b) && !overrideLess(b, a);
+        }), snap->overrides.end());
     return snap;
 }

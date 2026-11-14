@@ -16,7 +16,11 @@
 // the message thread; the collector asks lensForEventAt / roamAt per frame
 // (binary search + interpolation, nothing else). Clip lens keys run on event
 // ticks, Roam keys on timeline ticks, a Pattern Track source's hit curve on
-// note anchors for every active note (all notes are Follow until P8).
+// note anchors for every active note.
+//
+// P8: per-note overrides (Follow / Nudge / Own) are evaluated on top of that,
+// and the hit curve is edited (SetHitCurveCommand, presets in
+// model/LensHitPresets.h).
 //
 // Storage (spec "Storage"):
 //   Clip Track event          Clip::lens            LensTrack {base, keys}
@@ -202,9 +206,15 @@ using RoamTrack = KeyedParams<RoamParams, RoamKey>;
 // plays its source's hit curve. Nudge = hit curve plus `keys`; Own = `keys`
 // only. Keys use the note anchors (Head / Body / Tail).
 //
-// P5 only carries the override without losing it. Nothing evaluates it yet
-// (P8: until then every note is Follow, P7), and nothing in the UI edits it
-// (P8/P9).
+// P5 carries the override without losing it. P8 evaluates it
+// (LensRoamSnapshot::lensForEventAt) and edits it through UndoManager
+// commands (SetNoteLensModeCommand, SetNoteLensKeysCommand,
+// RevertNotesToFollowCommand). Keys are a LAYER, like the hit curve: an
+// unkeyed channel is the layer identity (zoom 1, offsets 0), so a Nudge with
+// no keys plays exactly the hit curve and an Own with no keys holds the base.
+// Zones (head/tail lengths, Squash/Cut) belong to the hit curve: a Nudge's
+// keys play on the source's zones, an Own note's on the spec defaults (120,
+// 240, Squash), so no hit-curve edit, zones included, reaches an Own note.
 //
 // Immutable once built and shared by shared_ptr<const>: copying a note (undo
 // snapshots, the export's frozen timeline copy, piano-roll list edits) never
@@ -217,6 +227,25 @@ struct LensNoteOverride {
 };
 
 using LensNoteOverridePtr = std::shared_ptr<const LensNoteOverride>;
+
+// Exact compares (channel, anchor, pos, value, interp, in stored order): what
+// an edit command uses to decide whether it changes anything.
+template <typename Channel>
+inline bool operator==(const LensRoamKey<Channel>& a, const LensRoamKey<Channel>& b) {
+    return a.channel == b.channel && a.anchor == b.anchor && a.pos == b.pos
+        && a.value == b.value && a.interp == b.interp;
+}
+template <typename Channel>
+inline bool operator!=(const LensRoamKey<Channel>& a, const LensRoamKey<Channel>& b) {
+    return !(a == b);
+}
+
+// Two overrides (either may be null = Follow) are the same state.
+inline bool sameLensOverride(const LensNoteOverridePtr& a, const LensNoteOverridePtr& b) {
+    if (a == b) return true;
+    if (!a || !b) return false;
+    return a->mode == b->mode && a->keys == b->keys;
+}
 
 namespace lensroam {
 
@@ -353,10 +382,25 @@ struct LensRoamSnapshot {
         bool        keyed = false;
     };
 
-    std::vector<TrackEntry>           tracks;   // ascending trackId
-    std::vector<ClipEntry>            clips;    // ascending clipId
-    std::vector<SourceEntry>          sources;  // ascending (trackId, regionId)
-    std::vector<xleth::keycurve::Key> keys;     // every compiled key (see KeyRun)
+    // A per-note Lens override (P8), compiled for ONE track's placement of
+    // its pattern: the keys are clamped into that track's source zones, so a
+    // pattern placed on two tracks with different zones gets two entries.
+    // Only notes that HAVE an override (Nudge / Own) get one; a miss is
+    // Follow.
+    struct OverrideEntry {
+        int              trackId   = -1;
+        int              patternId = -1;
+        int              noteId    = -1;
+        LensOverrideMode mode      = LensOverrideMode::Nudge;
+        ChannelRuns      keys{};           // note anchors, a layer
+        bool             keyed     = false;
+    };
+
+    std::vector<TrackEntry>           tracks;     // ascending trackId
+    std::vector<ClipEntry>            clips;      // ascending clipId
+    std::vector<SourceEntry>          sources;    // ascending (trackId, regionId)
+    std::vector<OverrideEntry>        overrides;  // ascending (trackId, patternId, noteId)
+    std::vector<xleth::keycurve::Key> keys;       // every compiled key (see KeyRun)
 
     // ── Static bases (keys ignored) ─────────────────────────────────────────
     RoamParams roamFor(int trackId) const;
@@ -378,11 +422,26 @@ struct LensRoamSnapshot {
         double eventLenTicks  = 0.0;  // the event's CLAMPED length (where it stops)
     };
 
+    // Which note a pattern event plays: the {patternId, noteId} key of its
+    // override (spec Ruling 6). -1 = not a note (a clip, an arp step): Follow.
+    struct NoteRef {
+        int patternId = -1;
+        int noteId    = -1;
+    };
+
     // Clip event: the clip lens, keyed channels at (frameTick - eventStartTick).
-    // Pattern event: the source lens with its hit curve blended on top, at
-    // (frameTick - note-on) inside a note of eventLenTicks (Squash/Cut per the
-    // source's zones). Every note is Follow (P7; overrides are P8).
-    LensParams lensForEventAt(int trackId, int clipId, int regionId, const EventClock& clock) const;
+    // Pattern event: the source lens with the note animation blended on top,
+    // at (frameTick - note-on) inside a note of eventLenTicks (Squash/Cut per
+    // the source's zones). The note's override picks the layers (spec
+    // "Blend": zoom multiplies; centre and rotation add):
+    //   Follow (no override)  base x hit curve
+    //   Nudge                 base x hit curve x note keys
+    //   Own                   base x note keys          (hit-curve edits never reach it)
+    LensParams lensForEventAt(int trackId, int clipId, int regionId, const EventClock& clock,
+                              const NoteRef& note = NoteRef{}) const;
+
+    // The override entry for one note on one track, or null (Follow).
+    const OverrideEntry* overrideFor(int trackId, int patternId, int noteId) const;
 
     // The track's Roam, keyed channels at the timeline tick.
     RoamParams roamAt(int trackId, double frameTick) const;
@@ -392,11 +451,12 @@ struct LensRoamSnapshot {
         int clips = 0, clipLensNonIdentity = 0;
         int sources = 0, sourceLensNonIdentity = 0;
         int keys = 0;   // compiled keys across every curve
+        int noteNudge = 0, noteOwn = 0;   // per-note overrides (per track placement)
         bool operator==(const Counts& o) const {
             return tracks == o.tracks && roamNonIdentity == o.roamNonIdentity
                 && clips == o.clips && clipLensNonIdentity == o.clipLensNonIdentity
                 && sources == o.sources && sourceLensNonIdentity == o.sourceLensNonIdentity
-                && keys == o.keys;
+                && keys == o.keys && noteNudge == o.noteNudge && noteOwn == o.noteOwn;
         }
         bool operator!=(const Counts& o) const { return !(*this == o); }
     };

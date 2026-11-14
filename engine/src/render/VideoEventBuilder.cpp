@@ -247,6 +247,9 @@ void buildPatternEvents(const Timeline& timeline, double bpm, BuildResult& out)
             for (auto& ev : arpEvents) {
                 // Arp steps are timed in beat space (free-time steps are not
                 // on the tick grid), so their tick span is the beats * 960.
+                // A step is not one note (the arp cycles the held notes), so
+                // it carries no note key: arp steps play the hit curve
+                // (Follow), never a per-note override.
                 ev.startTick   = ev.startBeat * 960.0;
                 ev.lengthTicks = ev.durationBeats * 960.0;
                 ev.hasTickSpan = true;
@@ -325,6 +328,13 @@ void buildPatternEvents(const Timeline& timeline, double bpm, BuildResult& out)
                 ev.sourceTriggerOrder    = sourceOrderFor(note, noteRef.sourceOrder);
                 ev.originalEmissionOrder = emissionOrder;
                 ev.pitch = note.pitch;   // flip-v2 resolver input
+                // The {patternId, noteId} of its Lens override (Follow / Nudge /
+                // Own). A note without a real id (<= 0, old data) has no address
+                // and plays Follow.
+                if (note.id > 0) {
+                    ev.lensPatternId = pattern->id;
+                    ev.lensNoteId    = note.id;
+                }
 
                 out.events.push_back(std::move(ev));
                 ++out.stats.noteEvents;

@@ -126,3 +126,76 @@ describe('drag sessions', () => {
     expect(changedFields(ROAM, ROAM, ['offsetX'])).toBeNull()
   })
 })
+
+describe('lensRoamApi P8: per-note overrides and the hit curve', () => {
+  const A = { patternId: 9, noteId: 2 }
+  const B = { patternId: 12, noteId: 2 }      // same note id, another pattern
+  const noteState = (refs, mode) => ({
+    changed: true,
+    notes: refs.map((r) => ({ ...r, mode, lensOverride: mode === 'Follow' ? null : { mode, keys: [] } })),
+  })
+
+  beforeEach(() => {
+    timeline.setNoteLensMode = vi.fn(async (notes, mode) => noteState(notes, mode))
+    timeline.setNoteLensKeys = vi.fn(async (note, keys) => ({ changed: keys.length > 0, notes: [{ ...note, mode: 'Nudge', lensOverride: { mode: 'Nudge', keys } }] }))
+    timeline.revertNotesToFollow = vi.fn(async (notes) => noteState(notes, 'Follow'))
+    timeline.setHitCurve = vi.fn(async (trackId, regionId, curve) => ({ trackId, regionId, changed: true, explicit: true, lens: LENS, hitCurve: curve.keys, zones: { headTicks: 120, tailTicks: 240, shortNote: 'Squash' } }))
+    timeline.applyHitPreset = vi.fn(async (trackId, regionId, name) => ({ trackId, regionId, changed: true, explicit: true, lens: LENS, hitCurve: [], zones: {}, preset: name }))
+  })
+
+  it('each command goes to its own bridge method, notes addressed by {patternId, noteId}', async () => {
+    const { setNoteLensMode, setNoteLensKeys, revertNotesToFollow, setHitCurve, applyHitPreset } = await import('./lensRoamApi.js')
+    const keys = [{ channel: 'zoom', anchor: 'Head', pos: 0, value: 1.2, interp: 'EaseOut' }]
+    await setNoteLensMode([A, B], 'Own')
+    await setNoteLensKeys(A, keys)
+    await revertNotesToFollow([A, B])
+    await setHitCurve(5, 3, { keys, zones: { shortNote: 'Cut' } })
+    await applyHitPreset(5, 3, 'Punch + drift')
+    expect(timeline.setNoteLensMode).toHaveBeenCalledWith([A, B], 'Own')
+    expect(timeline.setNoteLensKeys).toHaveBeenCalledWith(A, keys)
+    expect(timeline.revertNotesToFollow).toHaveBeenCalledWith([A, B])
+    expect(timeline.setHitCurve).toHaveBeenCalledWith(5, 3, { keys, zones: { shortNote: 'Cut' } })
+    expect(timeline.applyHitPreset).toHaveBeenCalledWith(5, 3, 'Punch + drift')
+  })
+
+  it('a changed note override refreshes the patterns (piano roll + Reel lane); an unchanged one does not', async () => {
+    const { setNoteLensMode, setNoteLensKeys } = await import('./lensRoamApi.js')
+    const seen = vi.fn()
+    timelineEvents.addEventListener('timeline-patterns-changed', seen)
+    try {
+      const res = await setNoteLensMode([A], 'Nudge')
+      expect(res.notes[0]).toMatchObject({ patternId: 9, noteId: 2, mode: 'Nudge' })
+      expect(seen).toHaveBeenCalledTimes(1)
+      await setNoteLensKeys(A, [])                         // the mock reports changed: false
+      expect(seen).toHaveBeenCalledTimes(1)
+    } finally {
+      timelineEvents.removeEventListener('timeline-patterns-changed', seen)
+    }
+  })
+
+  it('a hit-curve write announces lens-roam-changed with the post-state', async () => {
+    const { applyHitPreset } = await import('./lensRoamApi.js')
+    const seen = vi.fn()
+    timelineEvents.addEventListener('lens-roam-changed', seen)
+    try {
+      const res = await applyHitPreset(5, 3, 'Punch')
+      expect(res.preset).toBe('Punch')
+      expect(seen).toHaveBeenCalledTimes(1)
+      expect(seen.mock.calls[0][0].detail).toMatchObject({ trackId: 5, regionId: 3, preset: 'Punch' })
+    } finally {
+      timelineEvents.removeEventListener('lens-roam-changed', seen)
+    }
+  })
+
+  it('a missing bridge link sends nothing and resolves null (never looks like a write that worked)', async () => {
+    const { revertNotesToFollow } = await import('./lensRoamApi.js')
+    delete timeline.revertNotesToFollow
+    expect(await revertNotesToFollow([A])).toBeNull()
+  })
+
+  it('a rejected call (engine strict parse) resolves null', async () => {
+    const { setHitCurve } = await import('./lensRoamApi.js')
+    timeline.setHitCurve = vi.fn(async () => { throw new TypeError("keys[0]: anchor must be Head | Body | Tail") })
+    expect(await setHitCurve(5, 3, { keys: [{ channel: 'zoom', anchor: 'Origin', pos: 0, value: 1 }] })).toBeNull()
+  })
+})

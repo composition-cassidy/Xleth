@@ -176,3 +176,68 @@ describe('hitTestReel', () => {
     expect(hit.noteId).toBe(7)
   })
 })
+
+describe('drawReelLanes: Lens state badges (P8)', () => {
+  const badgePalette = { ...palette, reelBadgeFill: '#1a1a1a', reelBadgeInk: '#f0f0f0' }
+  const override = (mode) => ({ mode, keys: [] })
+
+  // Records every fill with the fillStyle in force, and every glyph.
+  function recordingCtx() {
+    const fills = []
+    const texts = []
+    const ctx = {
+      globalAlpha: 1, fillStyle: '', strokeStyle: '', lineWidth: 1, font: '', textAlign: '', textBaseline: '',
+      save() {}, restore() {}, beginPath() {}, rect() {}, clip() {}, strokeRect() {}, drawImage() {},
+      fillRect(x, y, w, h) { fills.push({ x, y, w, h, style: ctx.fillStyle }) },
+      fillText(t, x, y) { texts.push({ t, x, y, style: ctx.fillStyle }) },
+    }
+    return { ctx, fills, texts }
+  }
+
+  function paintBadges(notes, { ppb = 40 } = {}) {
+    const env = setup(notes)
+    const rec = recordingCtx()
+    drawReelLanes(
+      { ctx: rec.ctx, w: 1200, h: 400, scrollOffset: 0, ppb, trackLayout: env.trackLayout, palette: badgePalette, mutedTrackIds: new Set() },
+      { reel: env.reel, selection: {} },
+    )
+    return rec
+  }
+
+  // Two-beat notes: 80px wide at ppb 40, past the 40px badge-slot minimum.
+  const follow = { ...note(1, 0, T(2)) }
+  const nudge = { ...note(2, T(4), T(2)), lensOverride: override('Nudge') }
+  const own = { ...note(3, T(8), T(2)), lensOverride: override('Own') }
+
+  it('Nudge draws "+", Own draws "O", Follow draws nothing', () => {
+    const { texts } = paintBadges([follow, nudge, own])
+    expect(texts.map((t) => t.t)).toEqual(['+', 'O'])
+    // Each glyph sits in its own clip's badge slot (right edge).
+    expect(texts[0].x).toBeGreaterThan(T(4) / T(1) * 40)
+    expect(texts[1].x).toBeGreaterThan(T(8) / T(1) * 40)
+  })
+
+  it('chip and glyph use the theme-token palette entries; a Follow clip stays uncoloured', () => {
+    const { fills, texts } = paintBadges([follow, nudge, own])
+    expect(texts.every((t) => t.style === badgePalette.reelBadgeInk)).toBe(true)
+    const chips = fills.filter((f) => f.style === badgePalette.reelBadgeFill)
+    expect(chips).toHaveLength(2)
+    const bodies = fills.filter((f) => f.style === badgePalette.reelBody)
+    expect(bodies).toHaveLength(3)                         // every clip body is the neutral ramp step
+    // The Follow clip (x 0..80) carries no chip.
+    expect(chips.some((c) => c.x < 80)).toBe(false)
+  })
+
+  it('restores the body fill after a badge, so the next clip is not painted in badge colours', () => {
+    // Own first, then a Follow clip right after it in the same pass.
+    const { fills } = paintBadges([{ ...note(1, 0, T(2)), lensOverride: override('Own') }, note(2, T(4), T(2))])
+    const second = fills.filter((f) => f.x >= T(4) / T(1) * 40 - 1 && f.w > 20)
+    expect(second.length).toBeGreaterThan(0)
+    expect(second[0].style).toBe(badgePalette.reelBody)
+  })
+
+  it('a clip too narrow for the slot shows no badge (the state is still in the model)', () => {
+    const { texts } = paintBadges([{ ...note(1, 0, T(0.5)), lensOverride: override('Own') }])
+    expect(texts).toHaveLength(0)
+  })
+})

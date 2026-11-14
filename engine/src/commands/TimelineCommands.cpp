@@ -3164,3 +3164,149 @@ std::string SetTrackRoamCommand::describe() const {
     return std::string(isReset_ ? "Reset" : "Set") + " Track Roam (track="
          + std::to_string(trackId_) + ")";
 }
+
+// ─── Lens + Roam P8: per-note overrides ──────────────────────────────────────
+
+namespace {
+
+PatternNote* findLensNote(Timeline& timeline, const NoteLensRef& ref) {
+    Pattern* p = timeline.getPatternMutable(ref.patternId);
+    if (!p) return nullptr;
+    for (PatternNote& n : p->notes)
+        if (n.id == ref.noteId) return &n;
+    return nullptr;
+}
+
+const PatternNote* findLensNote(const Timeline& timeline, const NoteLensRef& ref) {
+    const Pattern* p = timeline.getPattern(ref.patternId);
+    if (!p) return nullptr;
+    for (const PatternNote& n : p->notes)
+        if (n.id == ref.noteId) return &n;
+    return nullptr;
+}
+
+const char* noteLensModeName(NoteLensMode m) {
+    switch (m) {
+        case NoteLensMode::Nudge: return "Nudge";
+        case NoteLensMode::Own:   return "Own";
+        default:                  return "Follow";
+    }
+}
+
+std::string noteCountLabel(std::size_t n) {
+    return std::to_string(n) + (n == 1 ? " note" : " notes");
+}
+
+} // namespace
+
+LensNoteOverridePtr noteLensOverrideOf(const Timeline& timeline, const NoteLensRef& ref) {
+    const PatternNote* n = findLensNote(timeline, ref);
+    return n ? n->lensOverride : nullptr;
+}
+
+NoteLensOverrideCommand::Swap* NoteLensOverrideCommand::addNote(const Timeline& timeline,
+                                                                const NoteLensRef& ref) {
+    const PatternNote* n = findLensNote(timeline, ref);
+    if (!n) return nullptr;
+    for (const Swap& s : swaps_)
+        if (s.ref == ref) return nullptr;
+    swaps_.push_back(Swap{ ref, n->lensOverride, n->lensOverride });
+    return &swaps_.back();
+}
+
+void NoteLensOverrideCommand::execute(Timeline& timeline) {
+    for (const Swap& s : swaps_)
+        if (PatternNote* n = findLensNote(timeline, s.ref)) n->lensOverride = s.after;
+}
+
+void NoteLensOverrideCommand::undo(Timeline& timeline) {
+    for (auto it = swaps_.rbegin(); it != swaps_.rend(); ++it)
+        if (PatternNote* n = findLensNote(timeline, it->ref)) n->lensOverride = it->before;
+}
+
+bool NoteLensOverrideCommand::changesAnything() const {
+    for (const Swap& s : swaps_)
+        if (!sameLensOverride(s.before, s.after)) return true;
+    return false;
+}
+
+std::vector<NoteLensRef> NoteLensOverrideCommand::notes() const {
+    std::vector<NoteLensRef> out;
+    out.reserve(swaps_.size());
+    for (const Swap& s : swaps_) out.push_back(s.ref);
+    return out;
+}
+
+SetNoteLensModeCommand::SetNoteLensModeCommand(const std::vector<NoteLensRef>& notes,
+                                               NoteLensMode mode, const Timeline& timeline) {
+    for (const NoteLensRef& ref : notes) {
+        Swap* s = addNote(timeline, ref);
+        if (!s) continue;
+        if (mode == NoteLensMode::Follow) { s->after = nullptr; continue; }
+        const LensOverrideMode m = mode == NoteLensMode::Own ? LensOverrideMode::Own
+                                                             : LensOverrideMode::Nudge;
+        if (s->before && s->before->mode == m) continue;          // already in that mode
+        auto o = std::make_shared<LensNoteOverride>();
+        o->mode = m;
+        if (s->before) o->keys = s->before->keys;                 // the keys carry over
+        s->after = std::move(o);
+    }
+    label_ = std::string("Set note Lens mode ") + noteLensModeName(mode) + " ("
+           + noteCountLabel(swaps_.size()) + ")";
+}
+
+SetNoteLensKeysCommand::SetNoteLensKeysCommand(const NoteLensRef& note, std::vector<LensKey> keys,
+                                               const Timeline& timeline) {
+    if (Swap* s = addNote(timeline, note)) {
+        auto o = std::make_shared<LensNoteOverride>();
+        o->mode = s->before ? s->before->mode : LensOverrideMode::Nudge;
+        o->keys = std::move(keys);
+        s->after = std::move(o);
+    }
+    label_ = "Set note Lens keys (pattern=" + std::to_string(note.patternId)
+           + ", note=" + std::to_string(note.noteId) + ")";
+}
+
+RevertNotesToFollowCommand::RevertNotesToFollowCommand(const std::vector<NoteLensRef>& notes,
+                                                       const Timeline& timeline) {
+    for (const NoteLensRef& ref : notes)
+        if (Swap* s = addNote(timeline, ref)) s->after = nullptr;
+    label_ = "Revert " + noteCountLabel(swaps_.size()) + " to Follow";
+}
+
+// ─── SetHitCurveCommand ──────────────────────────────────────────────────────
+
+SetHitCurveCommand::SetHitCurveCommand(int trackId, int regionId, std::vector<LensKey> keys,
+                                       const xleth::keycurve::NoteZones* zones,
+                                       const Timeline& timeline, std::string label)
+    : trackId_(trackId), regionId_(regionId), label_(std::move(label))
+{
+    if (const TrackInfo* t = timeline.getTrack(trackId)) {
+        const auto it = t->trackLens.find(regionId);
+        if (it != t->trackLens.end()) {
+            hadEntry_ = true;
+            oldEntry_ = it->second;
+        }
+    }
+    // A new entry keeps rendering what the absent one did (newContentDefault).
+    newEntry_ = hadEntry_ ? oldEntry_ : LensTrack{};
+    if (!hadEntry_) newEntry_.base = LensParams::newContentDefault();
+    newEntry_.keys = std::move(keys);
+    if (zones) newEntry_.zones = *zones;
+}
+
+void SetHitCurveCommand::execute(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(trackId_)) t->trackLens[regionId_] = newEntry_;
+}
+
+void SetHitCurveCommand::undo(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(trackId_)) {
+        if (hadEntry_) t->trackLens[regionId_] = oldEntry_;
+        else           t->trackLens.erase(regionId_);
+    }
+}
+
+bool SetHitCurveCommand::changesAnything() const {
+    if (!hadEntry_) return true;   // materialising the entry is itself a change
+    return newEntry_.keys != oldEntry_.keys || newEntry_.zones != oldEntry_.zones;
+}

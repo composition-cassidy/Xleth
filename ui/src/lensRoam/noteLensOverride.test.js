@@ -94,34 +94,59 @@ afterEach(() => {
 const notesOf = async (pid) => (await engine.timeline.getPattern(pid)).notes
 const withOverride = async (pid) => (await notesOf(pid)).filter((n) => n.lensOverride).map((n) => n.id)
 
-describe('per-note Lens override plumbing (P5)', () => {
+// P8: the same survival run with REAL overrides, in the exact shape the engine
+// emits (patternNoteToJs -> lensNoteOverrideToJson): Nudge and Own, keys with
+// `interp`, every anchor. The P5 dummy (P1-era bezier handles) stays as a case.
+const REAL_NUDGE = {
+  mode: 'Nudge',
+  keys: [
+    { channel: 'centerX', anchor: 'Head', pos: 0, value: 0.05, interp: 'Linear' },
+    { channel: 'centerX', anchor: 'Head', pos: 120, value: 0, interp: 'Linear' },
+    { channel: 'rotationDeg', anchor: 'Body', pos: 0.5, value: 10, interp: 'Hold' },
+    { channel: 'zoom', anchor: 'Tail', pos: 240, value: 1.1, interp: 'Linear' },
+    { channel: 'zoom', anchor: 'Tail', pos: 0, value: 1, interp: 'Linear' },
+  ],
+}
+const REAL_OWN = {
+  mode: 'Own',
+  keys: [
+    { channel: 'zoom', anchor: 'Head', pos: 0, value: 2, interp: 'EaseOut' },
+    { channel: 'zoom', anchor: 'Head', pos: 120, value: 1.5, interp: 'Linear' },
+  ],
+}
+
+describe.each([
+  ['P5 dummy', DUMMY],
+  ['P8 real Nudge', REAL_NUDGE],
+  ['P8 real Own', REAL_OWN],
+])('per-note Lens override plumbing (%s)', (_label, OV) => {
   it('withNoteLensOverride sets/clears one note and leaves the rest identical', () => {
     const notes = [{ id: 1 }, { id: 2 }]
-    const set = withNoteLensOverride(notes, 2, DUMMY)
+    const set = withNoteLensOverride(notes, 2, OV)
     expect(set[0]).toBe(notes[0])
-    expect(set[1].lensOverride).toBe(DUMMY)
+    expect(set[1].lensOverride).toBe(OV)
     expect(withNoteLensOverride(set, 2, null)[1]).not.toHaveProperty('lensOverride')
-    expect(withNoteLensOverride(notes, 9, DUMMY)).toBeNull()
+    expect(withNoteLensOverride(notes, 9, OV)).toBeNull()
   })
 
   it('toEngineNote carries it; an absent one stays absent', () => {
-    expect(Edits.toEngineNote({ id: 4, positionTicks: 0, durationTicks: 1, pitch: 60, lensOverride: DUMMY }).lensOverride).toBe(DUMMY)
+    expect(Edits.toEngineNote({ id: 4, positionTicks: 0, durationTicks: 1, pitch: 60, lensOverride: OV }).lensOverride).toBe(OV)
     expect(Edits.toEngineNote({ id: 4, positionTicks: 0, durationTicks: 1, pitch: 60 })).not.toHaveProperty('lensOverride')
   })
 
   it('sameNotes sees an override-only change as a change', () => {
     const a = [{ id: 1, positionTicks: 0, durationTicks: 1, pitch: 60 }]
-    expect(Edits.sameNotes(a, withNoteLensOverride(a, 1, DUMMY))).toBe(false)
-    const b = withNoteLensOverride(a, 1, DUMMY)
+    expect(Edits.sameNotes(a, withNoteLensOverride(a, 1, OV))).toBe(false)
+    const b = withNoteLensOverride(a, 1, OV)
     expect(Edits.sameNotes(b, Edits.moveBy(b, new Set([1]), 0))).toBe(true)
   })
 
   it('survives move, quantize, editing another note, undo/redo, paste, duplicate, delete', async () => {
     const tl = engine.timeline
     // Dev hook: one engine call, one undo entry.
-    const post = await setNoteLensOverride(A, 2, DUMMY)
-    expect(post.lensOverride).toEqual(DUMMY)
-    expect(await getNoteLensOverride(A, 2)).toEqual(DUMMY)
+    const post = await setNoteLensOverride(A, 2, OV)
+    expect(post.lensOverride).toEqual(OV)
+    expect(await getNoteLensOverride(A, 2)).toEqual(OV)
     expect(await withOverride(A)).toEqual([2])
     expect(await withOverride(B)).toEqual([])
 
@@ -130,7 +155,7 @@ describe('per-note Lens override plumbing (P5)', () => {
     await commit(tl, A, Edits.quantizeStarts(await notesOf(A), new Set([1, 2, 3]), 240))
     let n2 = (await notesOf(A)).find((n) => n.id === 2)
     expect(n2.positionTicks).toBe(1920)
-    expect(n2.lensOverride).toEqual(DUMMY)
+    expect(n2.lensOverride).toEqual(OV)
 
     // Edit a DIFFERENT note: the whole list goes back, note 2 untouched.
     await commit(tl, A, Edits.setVelocity(await notesOf(A), new Set([1]), 0.25))
@@ -148,7 +173,7 @@ describe('per-note Lens override plumbing (P5)', () => {
     const afterDup = await commit(tl, A, dup.notes)
     const copy = afterDup[afterDup.length - 1]
     expect(copy.id).toBeGreaterThan(3)
-    expect(copy.lensOverride).toEqual(DUMMY)
+    expect(copy.lensOverride).toEqual(OV)
     expect(await withOverride(A)).toEqual([2, copy.id])
 
     // Delete drops it with the note.
@@ -158,7 +183,7 @@ describe('per-note Lens override plumbing (P5)', () => {
   })
 
   it('Make Unique Copy copies every override to the matching new ids', async () => {
-    await setNoteLensOverride(A, 2, DUMMY)
+    await setNoteLensOverride(A, 2, OV)
     const orig = await engine.timeline.getPattern(A)
     const pid = await engine.timeline.addPattern({ name: 'A (copy)' })
     const ids = await engine.timeline.addNotesBatch(pid, orig.notes.map(Edits.toNewNoteCopy))
@@ -167,7 +192,7 @@ describe('per-note Lens override plumbing (P5)', () => {
     expect(orig.notes.map(Edits.toNewNoteCopy).every((n) => !('id' in n))).toBe(true)
     // Second source note (id 2) -> second new id.
     expect(copied.filter((n) => n.lensOverride).map((n) => n.id)).toEqual([ids[1]])
-    expect(copied[1].lensOverride).toEqual(DUMMY)
+    expect(copied[1].lensOverride).toEqual(OV)
   })
 
   it('installs and removes window.__xlethLensDev', () => {

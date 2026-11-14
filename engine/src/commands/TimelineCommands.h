@@ -1781,3 +1781,92 @@ private:
     RoamParams newRoam_;
     bool       isReset_;
 };
+
+// ─── Lens + Roam P8: per-note overrides and the hit curve ────────────────────
+// docs/XLETH_LENS_ROAM_SPEC.md, "Storage": per note, keyed {patternId,
+// noteId}: lensOverride {mode: Nudge | Own, keys}; absent = Follow. The
+// override lives ON the PatternNote as an immutable shared_ptr, so every
+// command here is a pointer swap per note: execute installs `after`, undo
+// reinstalls `before` (the very same object). The bridge builds a command only
+// when changesAnything(), so a no-op leaves no undo entry.
+
+// The spec's override key: note ids are unique only inside one pattern.
+struct NoteLensRef {
+    int patternId = -1;
+    int noteId    = -1;
+    bool operator==(const NoteLensRef& o) const { return patternId == o.patternId && noteId == o.noteId; }
+};
+
+enum class NoteLensMode : uint8_t { Follow = 0, Nudge = 1, Own = 2 };
+
+// The current override of one note (null = Follow, or no such note).
+LensNoteOverridePtr noteLensOverrideOf(const Timeline& timeline, const NoteLensRef& ref);
+
+class NoteLensOverrideCommand : public Command {
+public:
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override { return label_; }
+    bool changesAnything() const;
+    // The notes this command addresses (unknown and duplicate refs skipped).
+    std::vector<NoteLensRef> notes() const;
+protected:
+    struct Swap {
+        NoteLensRef         ref;
+        LensNoteOverridePtr before;
+        LensNoteOverridePtr after;
+    };
+    // Records `before` (and after = before) for an existing ref not yet
+    // listed and returns its swap; nullptr for an unknown or duplicate ref.
+    Swap* addNote(const Timeline& timeline, const NoteLensRef& ref);
+    std::vector<Swap> swaps_;
+    std::string       label_;
+};
+
+// Follow drops the override. Nudge / Own keep the note's keys under the new
+// mode, or start with none (a Nudge with no keys plays exactly the hit curve;
+// an Own with no keys holds the source's base Lens).
+class SetNoteLensModeCommand : public NoteLensOverrideCommand {
+public:
+    SetNoteLensModeCommand(const std::vector<NoteLensRef>& notes, NoteLensMode mode,
+                           const Timeline& timeline);
+};
+
+// Replaces one note's keys (note anchors Head / Body / Tail). A Follow note
+// becomes Nudge: editing a note's keys is how it starts to differ from the
+// hit curve. A Nudge or Own note keeps its mode.
+class SetNoteLensKeysCommand : public NoteLensOverrideCommand {
+public:
+    SetNoteLensKeysCommand(const NoteLensRef& note, std::vector<LensKey> keys,
+                           const Timeline& timeline);
+};
+
+// Drops the override of every listed note (Follow). Undo restores each one,
+// keys included.
+class RevertNotesToFollowCommand : public NoteLensOverrideCommand {
+public:
+    RevertNotesToFollowCommand(const std::vector<NoteLensRef>& notes, const Timeline& timeline);
+};
+
+// A Pattern Track source's hit curve: TrackInfo::trackLens[regionId].keys and,
+// when `zones` is given, its zones. A source with no entry gets one whose base
+// is what it already renders with (newContentDefault), so only the curve
+// changes the picture; undo erases the entry again. Used by setHitCurve and
+// applyHitPreset (`label` says which).
+class SetHitCurveCommand : public Command {
+public:
+    SetHitCurveCommand(int trackId, int regionId, std::vector<LensKey> keys,
+                       const xleth::keycurve::NoteZones* zones, const Timeline& timeline,
+                       std::string label);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override { return label_; }
+    bool changesAnything() const;
+private:
+    int         trackId_;
+    int         regionId_;
+    bool        hadEntry_ = false;
+    LensTrack   oldEntry_;
+    LensTrack   newEntry_;
+    std::string label_;
+};

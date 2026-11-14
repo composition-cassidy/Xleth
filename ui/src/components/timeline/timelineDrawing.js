@@ -154,10 +154,12 @@ export function resolveTimelinePalette() {
     inkDark:           tokenValue('--ui-g1'),
     select:            tokenValue('--ui-select'),
     // Reel lane ghost clips: neutral ramp steps, no hue (Follow clips are
-    // uncoloured). A selected clip is a step lighter AND outlined.
+    // uncoloured). A selected clip is a step lighter AND outlined. A Nudge /
+    // Own note's badge is a darker chip with a "+" / "O" glyph.
     reelBody:          tokenValue('--ui-g3'),
     reelBodySelected:  tokenValue('--ui-g4'),
-    reelBadgeInk:      tokenValue('--ui-ink-2'),
+    reelBadgeFill:     tokenValue('--ui-g1'),
+    reelBadgeInk:      tokenValue('--ui-ink'),
     // Depth
     wellTopShadow:     tokenValue('--theme-timeline-well-top-shadow'),
     // Track palette — resolved once per redraw, threaded into draw functions

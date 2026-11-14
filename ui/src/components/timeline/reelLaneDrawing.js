@@ -10,13 +10,15 @@
 // lighter AND a 2px outline, so selection is never colour alone. A muted track's
 // lane dims with its track. Above REEL_THUMB_MIN_W px a clip shows a still of its
 // region's first frame at its head; below it, a plain block. The right edge of a
-// clip wide enough to spare it holds the badge slot (P8 draws Nudge "+" and Own "O"
-// there; today every clip is Follow, which draws nothing).
+// clip wide enough to spare it holds the badge slot: a note with a Lens override
+// draws a small neutral chip there, Nudge "+" and Own "O" (P8). A Follow clip draws
+// nothing and stays uncoloured. The glyph, not a colour, carries the state; chip and
+// glyph are theme tokens (palette.reelBadgeFill / reelBadgeInk).
 
 import { pixelToTickExact, tickToPixel } from '../../constants/timeline.js'
 import { MUTE_OPACITY } from './timelineDrawing.js'
 import {
-  REEL_THUMB_MIN_W, REEL_BADGE_W, REEL_BADGE_MIN_CLIP_W, REEL_MODE_FOLLOW,
+  REEL_THUMB_MIN_W, REEL_BADGE_W, REEL_BADGE_MIN_CLIP_W, REEL_MODE_FOLLOW, REEL_MODE_NUDGE,
   forEachReelClipInRange, reelClipAt, reelClipMode, reelSubRowSpan, reelLanePad,
 } from './reelLaneModel.js'
 import { getReelStill } from './reelStills.js'
@@ -31,14 +33,27 @@ export function reelBadgeRect(x, y, w, h) {
   return { x: x + w - REEL_BADGE_W, y, w: REEL_BADGE_W, h }
 }
 
-function paintBadge(ctx, mode, slot, ink) {
-  if (mode === REEL_MODE_FOLLOW || !slot) return
-  // P8: Nudge "+" and Own "O". Text, not colour, carries the state.
-  ctx.fillStyle = ink
-  ctx.font = '10px sans-serif'
-  ctx.textAlign = 'center'
-  ctx.textBaseline = 'middle'
-  ctx.fillText(mode === 'nudge' ? '+' : 'O', slot.x + slot.w / 2, slot.y + slot.h / 2 + 0.5)
+/** The glyph a clip's Lens state draws in its badge slot; null for Follow. */
+export function reelBadgeGlyph(mode) {
+  if (mode === REEL_MODE_FOLLOW) return null
+  return mode === REEL_MODE_NUDGE ? '+' : 'O'
+}
+
+/** A sub-row shorter than this has no room for a legible glyph. */
+const BADGE_MIN_H = 8
+
+// Nudge "+" and Own "O" on a neutral chip. The glyph, not colour, carries the
+// state. Leaves ctx.fillStyle as `bodyFill`: the caller's pass sets the body
+// colour ONCE and keeps filling clips with it.
+function paintBadge(ctx, mode, slot, palette, bodyFill) {
+  const glyph = reelBadgeGlyph(mode)
+  if (!glyph || !slot || slot.h < BADGE_MIN_H) return
+  const inset = slot.h >= 12 ? 2 : 1
+  ctx.fillStyle = palette.reelBadgeFill
+  ctx.fillRect(slot.x + 1, slot.y + inset, slot.w - 2, slot.h - inset * 2)
+  ctx.fillStyle = palette.reelBadgeInk
+  ctx.fillText(glyph, slot.x + slot.w / 2, slot.y + slot.h / 2 + 0.5)
+  ctx.fillStyle = bodyFill
 }
 
 function paintThumb(ctx, img, x, y, w, h, reserveRight) {
@@ -90,6 +105,10 @@ export function drawReelLanes(view, data) {
     ctx.rect(0, row.y, w, row.height)
     ctx.clip()
     if (muted) ctx.globalAlpha = MUTE_OPACITY
+    // Badge text state, set once per lane (restored with the lane).
+    ctx.font = '10px sans-serif'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
 
     const stillByRegion = reel.stillByRegion
     const subRows = row.subRows
@@ -98,7 +117,8 @@ export function drawReelLanes(view, data) {
     // Two passes so each fillStyle is set once: unselected bodies, then selected.
     for (let pass = 0; pass < 2; pass++) {
       const wantSelected = pass === 1
-      ctx.fillStyle = wantSelected ? palette.reelBodySelected : palette.reelBody
+      const bodyFill = wantSelected ? palette.reelBodySelected : palette.reelBody
+      ctx.fillStyle = bodyFill
       forEachReelClipInRange(track, loTick, hiTick, (i) => {
         const set = selection[track.patternIds[i]]
         const selected = set !== undefined && set.has(track.noteIds[i])
@@ -125,8 +145,7 @@ export function drawReelLanes(view, data) {
           }
         }
         if (cw >= REEL_BADGE_MIN_CLIP_W) {
-          paintBadge(ctx, reelClipMode(track.patternIds[i], track.noteIds[i]),
-            reelBadgeRect(x0, y0, cw, ch), palette.reelBadgeInk)
+          paintBadge(ctx, reelClipMode(track, i), reelBadgeRect(x0, y0, cw, ch), palette, bodyFill)
         }
 
         if (wantSelected) {
@@ -138,7 +157,7 @@ export function drawReelLanes(view, data) {
             // Too small for an outline: the whole sliver takes the selection colour.
             ctx.fillStyle = palette.select
             ctx.fillRect(x0, y0, cw, ch)
-            ctx.fillStyle = palette.reelBodySelected
+            ctx.fillStyle = bodyFill
           }
         }
       })

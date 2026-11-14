@@ -184,3 +184,36 @@ describe('2,000-note pattern', () => {
     expect(visits).toBeLessThan(60)
   })
 })
+
+describe('buildReelModel: per-note Lens state (P8)', () => {
+  it('carries each clip’s Follow / Nudge / Own from the note’s lensOverride', async () => {
+    const { reelClipMode, REEL_MODE_FOLLOW, REEL_MODE_NUDGE, REEL_MODE_OWN } = await import('./reelLaneModel.js')
+    const notes = [
+      note(1, 0, 240),
+      note(2, 480, 240, { lensOverride: { mode: 'Nudge', keys: [] } }),
+      note(3, 960, 240, { lensOverride: { mode: 'Own', keys: [{ channel: 'zoom', anchor: 'Head', pos: 0, value: 2 }] } }),
+      note(4, 1440, 240, { lensOverride: null }),
+    ]
+    const m = build([block(1, 1, 1, 0, 1920)], { 1: pattern(1, 100, 1920, notes) })
+    const t = m.byTrack.get(1)
+    const byNote = {}
+    for (let i = 0; i < t.count; i++) byNote[t.noteIds[i]] = reelClipMode(t, i)
+    expect(byNote).toEqual({ 1: REEL_MODE_FOLLOW, 2: REEL_MODE_NUDGE, 3: REEL_MODE_OWN, 4: REEL_MODE_FOLLOW })
+  })
+
+  it('one override lights up every placement and loop pass of its note', async () => {
+    const { reelClipMode, REEL_MODE_OWN } = await import('./reelLaneModel.js')
+    const notes = [note(1, 0, 240, { lensOverride: { mode: 'Own', keys: [] } }), note(2, 480, 240)]
+    // A looping block 3 pattern-lengths long, plus a second block of the same pattern.
+    const m = build([block(1, 1, 1, 0, 2880), block(2, 1, 1, 3840, 960)], { 1: pattern(1, 100, 960, notes) })
+    const t = m.byTrack.get(1)
+    let own = 0
+    for (let i = 0; i < t.count; i++) if (t.noteIds[i] === 1) { expect(reelClipMode(t, i)).toBe(REEL_MODE_OWN); own++ }
+    expect(own).toBe(4)
+  })
+
+  it('an empty track reads as Follow', async () => {
+    const { reelClipMode, REEL_MODE_FOLLOW, emptyReelTrack } = await import('./reelLaneModel.js')
+    expect(reelClipMode(emptyReelTrack(), 0)).toBe(REEL_MODE_FOLLOW)
+  })
+})

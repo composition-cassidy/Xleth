@@ -92,6 +92,53 @@ export function resetTrackRoam(trackId) {
   return call('resetTrackRoam', `track=${trackId}`, [trackId], { write: true })
 }
 
+// ── Per-note overrides (P8) ──────────────────────────────────────────────────
+// A note is addressed by the spec's override key { patternId, noteId } (note ids
+// are unique only inside one pattern), so one call can carry a Reel-lane
+// selection that spans patterns and still be ONE undo step. Each resolves to
+//   { changed, notes: [{ patternId, noteId, mode: 'Follow'|'Nudge'|'Own', lensOverride|null }] }
+// and, when something changed, fires 'timeline-patterns-changed' (the override
+// lives on the note, so the piano roll and the Reel lane refetch the pattern).
+
+export const NOTE_LENS_MODES = ['Follow', 'Nudge', 'Own']
+
+async function noteCall(name, label, args) {
+  const res = await call(name, label, args, { write: false })
+  if (res?.changed) timelineEvents.dispatchEvent(new Event('timeline-patterns-changed'))
+  return res
+}
+
+/** Set notes to Follow, Nudge or Own. Nudge <-> Own keeps each note's keys. */
+export function setNoteLensMode(notes, mode) {
+  return noteCall('setNoteLensMode', `${show(notes)} -> ${mode}`, [notes, mode])
+}
+
+/** Replace one note's keys (Head / Body / Tail anchors). A Follow note becomes Nudge. */
+export function setNoteLensKeys(note, keys) {
+  return noteCall('setNoteLensKeys', `${show(note)} ${keys?.length ?? 0} keys`, [note, keys])
+}
+
+/** Drop the override of every listed note (undo restores them, keys included). */
+export function revertNotesToFollow(notes) {
+  return noteCall('revertNotesToFollow', show(notes), [notes])
+}
+
+// ── Hit curve (P8) ───────────────────────────────────────────────────────────
+// A Pattern Track source's note animation. Resolves to
+//   { trackId, regionId, changed, explicit, lens, hitCurve, zones, preset? }
+
+/** Replace a source's hit curve: { keys: [...], zones?: { headTicks?, tailTicks?, shortNote? } }. */
+export function setHitCurve(trackId, regionId, curve) {
+  return call('setHitCurve', `track=${trackId} region=${regionId} ${curve?.keys?.length ?? 0} keys`,
+    [trackId, regionId, curve], { write: true })
+}
+
+/** Apply a named preset ('Still' | 'Punch' | 'Punch + drift' | 'Zoom pulse'); the keys live in the engine. */
+export function applyHitPreset(trackId, regionId, name) {
+  return call('applyHitPreset', `track=${trackId} region=${regionId} '${name}'`,
+    [trackId, regionId, name], { write: true })
+}
+
 // ── Getter ───────────────────────────────────────────────────────────────────
 
 /**

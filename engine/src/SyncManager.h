@@ -104,6 +104,14 @@ struct VideoEvent {
     double startTick   = 0.0;
     double lengthTicks = 0.0;
     bool   hasTickSpan = false;
+
+    // The note this event plays, for its per-note Lens override (spec Ruling
+    // 6: overrides are keyed {patternId, noteId}; note ids are unique only
+    // inside one pattern). Set on Pattern Track note events; -1 everywhere
+    // else (clips, arp steps), which reads as Follow. Kept after the tick
+    // span for the same positional-initializer reason.
+    int lensPatternId = -1;
+    int lensNoteId    = -1;
 };
 
 // An event's start and clamped length in ticks: the exact span when the

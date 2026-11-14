@@ -21,6 +21,7 @@
 #include "model/Pattern.h"
 #include "model/TimelineSnapshot.h"
 #include "render/VideoEventBuilder.h"
+#include "model/LensHitPresets.h"
 
 #include <algorithm>
 #include <atomic>
@@ -1631,6 +1632,675 @@ static void test_p7_seek_and_live_vs_export() {
     std::cout << "    lookup allocations: " << (after - before) << " (checksum " << sink << ")\n";
 }
 
+
+// ─── [19..22] P8: Follow / Nudge / Own, hit-curve edits, presets ─────────────
+// The per-note override layers on the source's base exactly as the hit curve
+// does (zoom multiplies; centre and rotation add): Follow = base x hit,
+// Nudge = base x hit x note, Own = base x note. Every command is one undo
+// step and round-trips through save/load.
+
+using NoteRef = LensRoamSnapshot::NoteRef;
+
+// Pattern B's notes A..D (addHitNotes) in time order: id, note-on, CLAMPED length.
+struct HitNote { int id; double start; double len; };
+static std::vector<HitNote> hitNotes(const Fixture& f) {
+    std::vector<const PatternNote*> ns;
+    for (const auto& n : f.tl.getPattern(f.patternB)->notes) ns.push_back(&n);
+    std::sort(ns.begin(), ns.end(),
+              [](const PatternNote* a, const PatternNote* b) { return a->position.ticks < b->position.ticks; });
+    const double start[] = { 3840, 4800, 5760, 7440 };
+    const double len[]   = { 960, 180, 300, 240 };
+    std::vector<HitNote> out;
+    for (std::size_t i = 0; i < ns.size() && i < 4; ++i) out.push_back({ ns[i]->id, start[i], len[i] });
+    return out;
+}
+
+// A Nudge layer touching three channels in all three zones.
+static std::vector<LensKey> nudgeKeys() {
+    return {
+        lensKey(LensChannel::CenterX,     KeyAnchor::Head, 0,   0.05),
+        lensKey(LensChannel::CenterX,     KeyAnchor::Head, 120, 0.0),
+        lensKey(LensChannel::RotationDeg, KeyAnchor::Body, 0.0, 0.0),
+        lensKey(LensChannel::RotationDeg, KeyAnchor::Body, 1.0, 10.0),
+        lensKey(LensChannel::Zoom,        KeyAnchor::Tail, 240, 1.10),
+        lensKey(LensChannel::Zoom,        KeyAnchor::Tail, 0,   1.00),
+    };
+}
+
+// An Own curve: its own punch, nothing from the hit curve.
+static std::vector<LensKey> ownKeys() {
+    return {
+        lensKey(LensChannel::Zoom,    KeyAnchor::Head, 0,   2.0, Interp::EaseOut),
+        lensKey(LensChannel::Zoom,    KeyAnchor::Head, 120, 1.5),
+        lensKey(LensChannel::CenterY, KeyAnchor::Body, 0.5, -0.1),
+    };
+}
+
+static LensNoteOverridePtr makeOverride(LensOverrideMode mode, std::vector<LensKey> keys) {
+    auto o = std::make_shared<LensNoteOverride>();
+    o->mode = mode;
+    o->keys = std::move(keys);
+    return o;
+}
+
+// The source Lens used by the P8 tests: base zoom 1.2 / centerX 0.4 (Cover),
+// hit curve = Punch + drift on zoom plus a centerX nudge on the head.
+static LensTrack p8Source() {
+    LensTrack src;
+    src.base.fit = LensFit::Cover;
+    src.base.zoom = 1.2f;
+    src.base.centerX = 0.4f;
+    src.keys = punchDriftCurve();
+    src.keys.push_back(lensKey(LensChannel::CenterX, KeyAnchor::Head, 0,   0.1));
+    src.keys.push_back(lensKey(LensChannel::CenterX, KeyAnchor::Head, 120, 0.0));
+    return src;
+}
+
+static LensParams evalNote(const LensRoamSnapshot& s, const Fixture& f, const HitNote& n, double t,
+                           bool withRef = true) {
+    LensRoamSnapshot::EventClock c;
+    c.frameTick = n.start + t; c.eventStartTick = n.start; c.eventLenTicks = n.len;
+    NoteRef r;
+    if (withRef) { r.patternId = f.patternB; r.noteId = n.id; }
+    return s.lensForEventAt(f.patTrack, -1, f.regB, c, r);
+}
+
+// The expected Lens, from the generic curve engine, combined in the evaluator's
+// exact order (layer = hit (op) note, then base (op) layer, one rounding).
+// Zones: the source's for Follow / Nudge, the spec defaults for Own.
+static LensParams expectLens(const LensTrack& src, const std::vector<LensKey>* hit,
+                             const std::vector<LensKey>* note, double L, double t) {
+    const NoteZones z = hit ? src.zones : NoteZones{};
+    auto lay = [&](const std::vector<LensKey>* k, LensChannel ch, double id) {
+        return k ? hitLayer(*k, ch, z, L, t, id) : id;
+    };
+    LensParams p = src.base;
+    p.zoom        = static_cast<float>(static_cast<double>(p.zoom)
+                  * (lay(hit, LensChannel::Zoom, 1.0) * lay(note, LensChannel::Zoom, 1.0)));
+    p.centerX     = static_cast<float>(static_cast<double>(p.centerX)
+                  + (lay(hit, LensChannel::CenterX, 0.0) + lay(note, LensChannel::CenterX, 0.0)));
+    p.centerY     = static_cast<float>(static_cast<double>(p.centerY)
+                  + (lay(hit, LensChannel::CenterY, 0.0) + lay(note, LensChannel::CenterY, 0.0)));
+    p.rotationDeg = static_cast<float>(static_cast<double>(p.rotationDeg)
+                  + (lay(hit, LensChannel::RotationDeg, 0.0) + lay(note, LensChannel::RotationDeg, 0.0)));
+    return p;
+}
+
+static void test_p8_blend_modes() {
+    std::cout << "[19] P8 blend math: Follow = base x hit, Nudge = base x hit x note, Own = base x note\n";
+    Fixture f;
+    buildFixture(f);
+    addHitNotes(f);
+    const LensTrack src = p8Source();
+    f.tl.getTrackMutable(f.patTrack)->trackLens[f.regB] = src;
+    const std::vector<HitNote> hn = hitNotes(f);
+    CHECK(hn.size() == 4, "fixture: four notes in pattern B");
+    if (hn.size() != 4) return;
+
+    const std::vector<LensKey> nk = nudgeKeys(), ok = ownKeys();
+    // A: Follow (no override). B: Nudge. C: Own. D: Nudge with NO keys.
+    Pattern* pb = f.tl.getPatternMutable(f.patternB);
+    for (auto& n : pb->notes) {
+        if (n.id == hn[1].id) n.lensOverride = makeOverride(LensOverrideMode::Nudge, nk);
+        if (n.id == hn[2].id) n.lensOverride = makeOverride(LensOverrideMode::Own, ok);
+        if (n.id == hn[3].id) n.lensOverride = makeOverride(LensOverrideMode::Nudge, {});
+    }
+    const auto snap = buildLensRoamSnapshot(f.tl);
+    const auto c = snap->counts();
+    CHECK(c.noteNudge == 2 && c.noteOwn == 1, "snapshot compiled 2 Nudge + 1 Own overrides");
+
+    // Exact (bitwise) against the generic engine, at every tick of every note,
+    // with each note evaluated under ALL three modes (the note's length drives
+    // Squash for B and C, so every zone geometry is covered).
+    bool follow = true, nudge = true, own = true, p7 = true;
+    int samples = 0;
+    for (const HitNote& n : hn) {
+        for (double t = 0; t < n.len; t += 7) {
+            ++samples;
+            const LensParams wantF = expectLens(src, &src.keys, nullptr, n.len, t);
+            const LensParams wantN = expectLens(src, &src.keys, &nk, n.len, t);
+            const LensParams wantO = expectLens(src, nullptr, &ok, n.len, t);
+            // P7 formula for Follow: base (op) hit, no note layer at all.
+            LensParams p7Want = src.base;
+            p7Want.zoom    = static_cast<float>(static_cast<double>(src.base.zoom)
+                           * hitLayer(src.keys, LensChannel::Zoom, src.zones, n.len, t, 1.0));
+            p7Want.centerX = static_cast<float>(static_cast<double>(src.base.centerX)
+                           + hitLayer(src.keys, LensChannel::CenterX, src.zones, n.len, t, 0.0));
+
+            const LensParams gotF = evalNote(*snap, f, n, t, /*withRef=*/false);
+            follow = follow && gotF == wantF;
+            p7 = p7 && gotF == p7Want;
+            if (n.id == hn[0].id) follow = follow && evalNote(*snap, f, n, t) == wantF;
+            if (n.id == hn[1].id) nudge = nudge && evalNote(*snap, f, n, t) == wantN;
+            if (n.id == hn[2].id) own = own && evalNote(*snap, f, n, t) == wantO;
+            if (n.id == hn[3].id) nudge = nudge && evalNote(*snap, f, n, t) == wantF;   // no keys = hit curve
+        }
+    }
+    CHECK(follow, "Follow: base x hit curve, bit for bit (and a note with no override == no note ref)");
+    CHECK(p7, "Follow is bit-identical to the P7 evaluator's formula");
+    CHECK(nudge, "Nudge: base x hit curve x note keys, bit for bit; Nudge with no keys == Follow");
+    CHECK(own, "Own: base x note keys only, bit for bit");
+    std::cout << "    " << samples << " samples per mode compared\n";
+
+    // Spot values, by hand, so the blend RULE is visible here.
+    const LensParams b0 = evalNote(*snap, f, hn[1], 0);   // B (Nudge, 180, squashed) at note-on
+    // Its zoom layer's first key is Tail 240 (1.10), held from note-on.
+    CHECK(feq(b0.zoom, 1.2f * 1.35f * 1.10f) && feq(b0.centerX, 0.4f + 0.1f + 0.05f),
+          "Nudge note-on: zoom 1.2 x 1.35 x 1.10 (multiplies), centerX 0.4 + 0.1 + 0.05 (adds)");
+    const LensParams c0 = evalNote(*snap, f, hn[2], 0);   // C (Own) at note-on
+    CHECK(feq(c0.zoom, 1.2f * 2.0f) && feq(c0.centerX, 0.4f),
+          "Own note-on: zoom 1.2 x 2.0, the hit curve's punch and centre offset are NOT applied");
+    CHECK(c0.fit == LensFit::Cover && c0.flip == LensFlip::FollowTrack, "Own keeps the base fit / flip");
+
+    // Own with no keys holds the base exactly; an override on a NEW source
+    // (no trackLens entry: no hit curve, default zones) still plays.
+    {
+        Pattern* p = f.tl.getPatternMutable(f.patternB);
+        for (auto& n : p->notes) if (n.id == hn[2].id) n.lensOverride = makeOverride(LensOverrideMode::Own, {});
+        const auto s2 = buildLensRoamSnapshot(f.tl);
+        bool held = true;
+        for (double t = 0; t < hn[2].len; t += 5) held = held && evalNote(*s2, f, hn[2], t) == src.base;
+        CHECK(held, "Own with no keys == the base, at every tick");
+
+        f.tl.getTrackMutable(f.patTrack)->trackLens.erase(f.regB);
+        const auto s3 = buildLensRoamSnapshot(f.tl);
+        const LensParams fb = LensParams::newContentDefault();
+        CHECK(evalNote(*s3, f, hn[0], 0) == fb, "new source, Follow: the fallback base, no hit curve");
+        const LensParams nb = evalNote(*s3, f, hn[1], 0);
+        CHECK(feq(nb.centerX, 0.55f) && feq(nb.zoom, 1.10f),
+              "new source, Nudge: the note keys still play on the fallback base");
+    }
+
+    // Through the real path: VideoEvent carries {patternId, noteId}, the
+    // collector hands it to the evaluator.
+    f.tl.getTrackMutable(f.patTrack)->trackLens[f.regB] = src;
+    {
+        Pattern* p = f.tl.getPatternMutable(f.patternB);
+        for (auto& n : p->notes) if (n.id == hn[2].id) n.lensOverride = makeOverride(LensOverrideMode::Own, ok);
+    }
+    const auto built = xleth::videoevents::build(f.tl, 140.0, 48000.0);
+    bool keyed = true;
+    int noteEvents = 0;
+    for (const auto& e : built.events) {
+        if (e.trackId != f.patTrack) continue;
+        ++noteEvents;
+        keyed = keyed && e.lensPatternId == f.patternB && e.lensNoteId > 0;
+    }
+    for (const auto& e : built.events)
+        if (e.trackId == f.clipTrack) keyed = keyed && e.lensPatternId == -1 && e.lensNoteId == -1;
+    CHECK(keyed && noteEvents == 4, "note events carry {patternId, noteId}; clip events carry none");
+    FrameCollector col;
+    const auto s4 = buildLensRoamSnapshot(f.tl);
+    col.setLensRoamSnapshot(s4);
+    auto lensAt = [&](double tick) -> LensParams {
+        auto& reqs = col.collectRequests(static_cast<int64_t>(tick), f.tl, 48000, kTickFps, built.events);
+        const CellFrameRequest* r = reqFor(reqs, f.patTrack);
+        return r ? r->lens : LensParams{};
+    };
+    CHECK(lensAt(hn[0].start + 30) == evalNote(*s4, f, hn[0], 30), "collector: Follow note");
+    CHECK(lensAt(hn[1].start + 30) == evalNote(*s4, f, hn[1], 30)
+          && !(lensAt(hn[1].start + 30) == evalNote(*s4, f, hn[1], 30, false)), "collector: Nudge note (differs from Follow)");
+    CHECK(lensAt(hn[2].start + 30) == evalNote(*s4, f, hn[2], 30)
+          && !(lensAt(hn[2].start + 30) == evalNote(*s4, f, hn[2], 30, false)), "collector: Own note (differs from Follow)");
+
+    // Same pattern id + note id on ANOTHER pattern does not pick it up:
+    // pattern A plays on the same track, its note ids collide with B's.
+    {
+        LensRoamSnapshot::EventClock clk;
+        clk.frameTick = 30; clk.eventStartTick = 0; clk.eventLenTicks = 960;
+        NoteRef ra; ra.patternId = f.patternA; ra.noteId = hn[2].id;
+        CHECK(!s4->overrideFor(f.patTrack, f.patternA, hn[2].id), "no override entry for pattern A's same note id");
+        CHECK(s4->lensForEventAt(f.patTrack, -1, f.regB, clk, ra) == s4->lensForEventAt(f.patTrack, -1, f.regB, clk),
+              "a colliding note id in another pattern stays Follow");
+    }
+
+    // Lookups with overrides still never allocate.
+    double sink = 0.0;
+    const long long before = g_allocs.load();
+    for (int i = 0; i < 20000; ++i) {
+        const HitNote& n = hn[i % 4];
+        sink += evalNote(*s4, f, n, i % static_cast<int>(n.len)).zoom;
+    }
+    CHECK(g_allocs.load() == before, "lensForEventAt with overrides: zero allocations over 20k lookups");
+    std::cout << "    checksum " << sink << "\n";
+
+    // Old data: a note with no real id (<= 0) has no address, so it plays
+    // Follow even if it carries an override; a duplicated id resolves to the
+    // FIRST note with it (the one the edit commands address).
+    {
+        Pattern* p = f.tl.getPatternMutable(f.patternB);
+        for (auto& n : p->notes) {
+            if (n.id == hn[2].id) n.id = 0;                      // C: Own override, id 0
+            else if (n.id == hn[3].id) {                         // D: duplicate of B's id, Own
+                n.id = hn[1].id;
+                n.lensOverride = makeOverride(LensOverrideMode::Own, ownKeys());
+            }
+        }
+        const auto s5 = buildLensRoamSnapshot(f.tl);
+        const auto ev5 = xleth::videoevents::build(f.tl, 140.0, 48000.0);
+        bool cZero = false;
+        for (const auto& e : ev5.events)
+            if (e.trackId == f.patTrack && e.startTick == hn[2].start) cZero = e.lensNoteId == -1;
+        CHECK(cZero, "a note with id 0 carries no note key on its event");
+        CHECK(s5->counts().noteOwn == 0 && s5->counts().noteNudge == 1,
+              "id-0 note skipped; the duplicate id compiles once (B's Nudge, not D's Own)");
+        const auto* dup = s5->overrideFor(f.patTrack, f.patternB, hn[1].id);
+        CHECK(dup && dup->mode == LensOverrideMode::Nudge, "a duplicated id resolves to the first note (B, Nudge)");
+    }
+}
+
+// Every note's override, by id (for state comparisons).
+static std::vector<std::pair<int, LensNoteOverridePtr>> overridesOf(const Timeline& tl, int patternId) {
+    std::vector<std::pair<int, LensNoteOverridePtr>> out;
+    if (const Pattern* p = tl.getPattern(patternId))
+        for (const auto& n : p->notes) out.push_back({ n.id, n.lensOverride });
+    std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    return out;
+}
+
+static bool sameOverrides(const std::vector<std::pair<int, LensNoteOverridePtr>>& a,
+                          const std::vector<std::pair<int, LensNoteOverridePtr>>& b) {
+    if (a.size() != b.size()) return false;
+    for (std::size_t i = 0; i < a.size(); ++i)
+        if (a[i].first != b[i].first || !sameLensOverride(a[i].second, b[i].second)) return false;
+    return true;
+}
+
+static bool sameSourceLens(const Timeline& a, const Timeline& b, int trackId, int regionId) {
+    const TrackInfo* ta = a.getTrack(trackId);
+    const TrackInfo* tb = b.getTrack(trackId);
+    if (!ta || !tb) return false;
+    const auto ia = ta->trackLens.find(regionId);
+    const auto ib = tb->trackLens.find(regionId);
+    if ((ia == ta->trackLens.end()) != (ib == tb->trackLens.end())) return false;
+    if (ia == ta->trackLens.end()) return true;
+    return ia->second.base == ib->second.base && ia->second.keys == ib->second.keys
+        && ia->second.zones == ib->second.zones;
+}
+
+// Save through ProjectManager, load back, and compare everything P8 edits.
+static bool roundTripsP8(const Fixture& f, const char* tag, int extraPattern = -1) {
+    const fs::path dir = freshDir(tag);
+    ProjectManager pm;
+    if (!pm.createProject(dir.string(), tag) || !pm.saveProject(f.tl)) return false;
+    ProjectManager pm2;
+    auto loaded = pm2.loadProject(dir.string());
+    if (!loaded) return false;
+    if (extraPattern >= 0
+        && !sameOverrides(overridesOf(f.tl, extraPattern), overridesOf(*loaded, extraPattern)))
+        return false;
+    return sameOverrides(overridesOf(f.tl, f.patternA), overridesOf(*loaded, f.patternA))
+        && sameOverrides(overridesOf(f.tl, f.patternB), overridesOf(*loaded, f.patternB))
+        && sameSourceLens(f.tl, *loaded, f.patTrack, f.regA)
+        && sameSourceLens(f.tl, *loaded, f.patTrack, f.regB);
+}
+
+static void test_p8_note_commands() {
+    std::cout << "[20] P8 note commands: setNoteLensMode / setNoteLensKeys / revertNotesToFollow, undo/redo, save/load\n";
+    Fixture f;
+    buildFixture(f);
+    addHitNotes(f);
+    f.tl.getTrackMutable(f.patTrack)->trackLens[f.regB] = p8Source();
+    const std::vector<HitNote> hn = hitNotes(f);
+    if (hn.size() != 4) { CHECK(false, "fixture"); return; }
+    const NoteLensRef A{ f.patternB, hn[0].id }, B{ f.patternB, hn[1].id }, C{ f.patternB, hn[2].id };
+    UndoManager um;
+    auto state = [&]() { return overridesOf(f.tl, f.patternB); };
+
+    // setNoteLensMode: B, C -> Nudge (one command, one undo step).
+    const auto s0 = state();
+    {
+        auto cmd = std::make_unique<SetNoteLensModeCommand>(std::vector<NoteLensRef>{ B, C },
+                                                            NoteLensMode::Nudge, f.tl);
+        CHECK(cmd->changesAnything() && cmd->notes().size() == 2, "mode Nudge on 2 Follow notes is a change");
+        um.execute(std::move(cmd), f.tl);
+    }
+    CHECK(noteLensOverrideOf(f.tl, B) && noteLensOverrideOf(f.tl, B)->mode == LensOverrideMode::Nudge
+          && noteLensOverrideOf(f.tl, B)->keys.empty(), "B is Nudge, no keys");
+    CHECK(noteLensOverrideOf(f.tl, C) && !noteLensOverrideOf(f.tl, A), "C is Nudge, A stays Follow");
+    CHECK(roundTripsP8(f, "p8_cmd_mode"), "save/load after setNoteLensMode");
+    const auto s1 = state();
+
+    // No-ops build no change: Nudge again, an unknown note, a duplicate ref.
+    CHECK(!SetNoteLensModeCommand({ B, C }, NoteLensMode::Nudge, f.tl).changesAnything(), "same mode again: no change");
+    CHECK(SetNoteLensModeCommand({ NoteLensRef{ f.patternB, 9999 } }, NoteLensMode::Own, f.tl).notes().empty(),
+          "unknown note id is skipped");
+    CHECK(SetNoteLensModeCommand({ B, B }, NoteLensMode::Own, f.tl).notes().size() == 1, "duplicate ref counted once");
+    CHECK(!RevertNotesToFollowCommand({ A }, f.tl).changesAnything(), "revert a Follow note: no change");
+
+    // setNoteLensKeys on B (Nudge keeps Nudge) and on A (Follow becomes Nudge).
+    um.execute(std::make_unique<SetNoteLensKeysCommand>(B, nudgeKeys(), f.tl), f.tl);
+    CHECK(noteLensOverrideOf(f.tl, B)->mode == LensOverrideMode::Nudge
+          && noteLensOverrideOf(f.tl, B)->keys == nudgeKeys(), "B keys set, still Nudge");
+    CHECK(!SetNoteLensKeysCommand(B, nudgeKeys(), f.tl).changesAnything(), "same keys again: no change");
+    CHECK(roundTripsP8(f, "p8_cmd_keys"), "save/load after setNoteLensKeys");
+    const auto s2 = state();
+    um.execute(std::make_unique<SetNoteLensKeysCommand>(A, ownKeys(), f.tl), f.tl);
+    CHECK(noteLensOverrideOf(f.tl, A) && noteLensOverrideOf(f.tl, A)->mode == LensOverrideMode::Nudge,
+          "keys on a Follow note make it Nudge");
+    const auto s3 = state();
+
+    // Nudge -> Own keeps the keys; Own -> Nudge too.
+    um.execute(std::make_unique<SetNoteLensModeCommand>(std::vector<NoteLensRef>{ B }, NoteLensMode::Own, f.tl), f.tl);
+    CHECK(noteLensOverrideOf(f.tl, B)->mode == LensOverrideMode::Own
+          && noteLensOverrideOf(f.tl, B)->keys == nudgeKeys(), "Nudge -> Own keeps B's keys");
+    CHECK(roundTripsP8(f, "p8_cmd_own"), "save/load after a Nudge -> Own switch");
+    const auto s4 = state();
+
+    // revertNotesToFollow drops overrides (keys too); undo brings the SAME object back.
+    const LensNoteOverridePtr bBefore = noteLensOverrideOf(f.tl, B);
+    um.execute(std::make_unique<RevertNotesToFollowCommand>(std::vector<NoteLensRef>{ A, B, C }, f.tl), f.tl);
+    CHECK(!noteLensOverrideOf(f.tl, A) && !noteLensOverrideOf(f.tl, B) && !noteLensOverrideOf(f.tl, C),
+          "revert: A, B, C all Follow");
+    CHECK(roundTripsP8(f, "p8_cmd_revert"), "save/load after revertNotesToFollow");
+    um.undo(f.tl);
+    CHECK(noteLensOverrideOf(f.tl, B) == bBefore, "undo revert: B's override is back (same object, keys intact)");
+    CHECK(sameOverrides(state(), s4), "undo revert == state before it");
+
+    // Walk the whole history back and forward.
+    um.undo(f.tl); CHECK(sameOverrides(state(), s3), "undo Own switch");
+    um.undo(f.tl); CHECK(sameOverrides(state(), s2), "undo keys on A");
+    um.undo(f.tl); CHECK(sameOverrides(state(), s1), "undo keys on B");
+    um.undo(f.tl); CHECK(sameOverrides(state(), s0), "undo mode: all Follow again");
+    CHECK(roundTripsP8(f, "p8_cmd_undone"), "save/load after undoing everything");
+    um.redo(f.tl); CHECK(sameOverrides(state(), s1), "redo mode");
+    um.redo(f.tl); CHECK(sameOverrides(state(), s2), "redo keys on B");
+    um.redo(f.tl); CHECK(sameOverrides(state(), s3), "redo keys on A");
+    um.redo(f.tl); CHECK(sameOverrides(state(), s4), "redo Own switch");
+    um.redo(f.tl); CHECK(!noteLensOverrideOf(f.tl, B), "redo revert");
+    CHECK(roundTripsP8(f, "p8_cmd_redone"), "save/load after redoing everything");
+
+    // Commands touch exactly the addressed {patternId, noteId}: pattern A has
+    // notes with the SAME ids and none of them changed.
+    CHECK(overrideCount(f.tl, f.patternA) == 0, "pattern A (colliding ids) untouched throughout");
+}
+
+static void test_p8_hit_curve_edits() {
+    std::cout << "[21] P8 hit-curve edits reach Follow and Nudge, never Own; presets; undo/redo, save/load\n";
+    Fixture f;
+    buildFixture(f);
+    addHitNotes(f);
+    LensTrack src = p8Source();
+    src.zones.rule = ShortNoteRule::Cut;                      // a user's rule: presets keep it
+    src.zones.headTicks = 60;
+    f.tl.getTrackMutable(f.patTrack)->trackLens[f.regB] = src;
+    const std::vector<HitNote> hn = hitNotes(f);
+    if (hn.size() != 4) { CHECK(false, "fixture"); return; }
+    UndoManager um;
+    um.execute(std::make_unique<SetNoteLensKeysCommand>(NoteLensRef{ f.patternB, hn[1].id }, nudgeKeys(), f.tl), f.tl);
+    um.execute(std::make_unique<SetNoteLensKeysCommand>(NoteLensRef{ f.patternB, hn[2].id }, ownKeys(), f.tl), f.tl);
+    um.execute(std::make_unique<SetNoteLensModeCommand>(std::vector<NoteLensRef>{ NoteLensRef{ f.patternB, hn[2].id } },
+                                                         NoteLensMode::Own, f.tl), f.tl);
+    // A Follow (960), B Nudge (180), C Own (300). Sample each at several ticks.
+    struct Probe { int note; double t; };
+    const std::vector<Probe> probes = { {0, 0}, {0, 30}, {0, 500}, {0, 900}, {1, 0}, {1, 40}, {1, 150},
+                                        {2, 0}, {2, 30}, {2, 200} };
+    auto sample = [&]() {
+        const auto s = buildLensRoamSnapshot(f.tl);
+        std::vector<LensParams> v;
+        for (const Probe& p : probes) v.push_back(evalNote(*s, f, hn[p.note], p.t));
+        return v;
+    };
+    auto changedFor = [&](const std::vector<LensParams>& a, const std::vector<LensParams>& b, int note) {
+        bool any = false;
+        for (std::size_t i = 0; i < probes.size(); ++i)
+            if (probes[i].note == note && !(a[i] == b[i])) any = true;
+        return any;
+    };
+    auto sameFor = [&](const std::vector<LensParams>& a, const std::vector<LensParams>& b, int note) {
+        bool same = true;
+        for (std::size_t i = 0; i < probes.size(); ++i)
+            if (probes[i].note == note) same = same && a[i] == b[i];
+        return same;
+    };
+    const auto v0 = sample();
+
+    // setHitCurve: a different curve (zoom pulse on rotation instead).
+    std::vector<LensKey> pulse = {
+        lensKey(LensChannel::Zoom,        KeyAnchor::Head, 0,   1.6, Interp::EaseOut),
+        lensKey(LensChannel::Zoom,        KeyAnchor::Head, 60,  1.0),
+        lensKey(LensChannel::RotationDeg, KeyAnchor::Body, 0.0, -5.0),
+        lensKey(LensChannel::RotationDeg, KeyAnchor::Tail, 0,   5.0),
+    };
+    {
+        auto cmd = std::make_unique<SetHitCurveCommand>(f.patTrack, f.regB, pulse, nullptr, f.tl, "Set hit curve");
+        CHECK(cmd->changesAnything(), "a new curve is a change");
+        um.execute(std::move(cmd), f.tl);
+    }
+    const auto v1 = sample();
+    CHECK(changedFor(v0, v1, 0), "hit-curve edit changes the Follow note");
+    CHECK(changedFor(v0, v1, 1), "hit-curve edit changes the Nudge note");
+    CHECK(sameFor(v0, v1, 2), "hit-curve edit does NOT reach the Own note (bit for bit)");
+    CHECK(f.tl.getTrack(f.patTrack)->trackLens.at(f.regB).base == src.base, "the base is untouched");
+    CHECK(f.tl.getTrack(f.patTrack)->trackLens.at(f.regB).zones == src.zones, "zones untouched without a zones arg");
+    CHECK(!SetHitCurveCommand(f.patTrack, f.regB, pulse, nullptr, f.tl, "x").changesAnything(),
+          "the same curve again: no change");
+    CHECK(roundTripsP8(f, "p8_hit_set"), "save/load after setHitCurve");
+
+    // Zones patch.
+    NoteZones z2 = src.zones; z2.tailTicks = 120;
+    um.execute(std::make_unique<SetHitCurveCommand>(f.patTrack, f.regB, pulse, &z2, f.tl, "zones"), f.tl);
+    CHECK(f.tl.getTrack(f.patTrack)->trackLens.at(f.regB).zones == z2, "zones set");
+    const auto v2 = sample();
+    CHECK(changedFor(v1, v2, 1), "a zones edit reaches the Nudge note (B is short: its tail moved)");
+    CHECK(sameFor(v1, v2, 2), "a zones edit does NOT reach the Own note (it plays on the default zones)");
+    CHECK(roundTripsP8(f, "p8_hit_zones"), "save/load after a zones edit");
+
+    // Presets: the data file.
+    CHECK(lensroam::kHitPresetCount == 4, "exactly four presets");
+    const char* names[] = { "Still", "Punch", "Punch + drift", "Zoom pulse" };
+    bool order = true;
+    for (int i = 0; i < 4; ++i) order = order && std::string(lensroam::kHitPresets[i].name) == names[i];
+    CHECK(order, "named and ordered as in the spec");
+    CHECK(!lensroam::findHitPreset("punch") && !lensroam::findHitPreset("Pulse") && !lensroam::findHitPreset(nullptr),
+          "names are exact");
+    auto keysOf = [](const char* n) { return lensroam::hitPresetKeys(*lensroam::findHitPreset(n)); };
+    CHECK(keysOf("Still").empty(), "Still: no keys");
+    CHECK((keysOf("Punch") == std::vector<LensKey>{
+              lensKey(LensChannel::Zoom, KeyAnchor::Head, 0,   1.35, Interp::EaseOut),
+              lensKey(LensChannel::Zoom, KeyAnchor::Head, 120, 1.00) }),
+          "Punch: Head 0 zoom 1.35 -> Head 120 zoom 1.00 (ease out)");
+    CHECK(keysOf("Punch + drift") == punchDriftCurve(),
+          "Punch + drift: Head 0 1.35 -> Head 120 1.08 -> Tail 240 1.20 -> Tail 0 1.00");
+    CHECK((keysOf("Zoom pulse") == std::vector<LensKey>{
+              lensKey(LensChannel::Zoom, KeyAnchor::Head, 0,   1.00),
+              lensKey(LensChannel::Zoom, KeyAnchor::Body, 0.5, 1.15),
+              lensKey(LensChannel::Zoom, KeyAnchor::Tail, 0,   1.00) }),
+          "Zoom pulse: Head 0 1.00 -> Body 0.5 1.15 -> Tail 0 1.00");
+    const NoteZones pz = lensroam::hitPresetZones(z2);
+    CHECK(pz.headTicks == 120 && pz.tailTicks == 240 && pz.rule == ShortNoteRule::Cut,
+          "preset zones: head 120, tail 240, the user's Cut rule kept");
+
+    // Apply Punch (what timeline_applyHitPreset runs).
+    um.execute(std::make_unique<SetHitCurveCommand>(f.patTrack, f.regB, keysOf("Punch"), &pz, f.tl,
+                                                    "Apply hit preset 'Punch'"), f.tl);
+    const auto v3 = sample();
+    {
+        const auto s = buildLensRoamSnapshot(f.tl);
+        const LensParams a0 = evalNote(*s, f, hn[0], 0), a120 = evalNote(*s, f, hn[0], 120);
+        CHECK(feq(a0.zoom, 1.2f * 1.35f) && feq(a120.zoom, 1.2f) && feq(a0.centerX, 0.4f),
+              "Punch on the Follow note: 1.35x at note-on, back to the base at Head 120");
+    }
+    CHECK(changedFor(v2, v3, 0) && changedFor(v2, v3, 1) && sameFor(v2, v3, 2),
+          "applying a preset: Follow and Nudge change, Own does not");
+    CHECK(roundTripsP8(f, "p8_hit_preset"), "save/load after applyHitPreset");
+    um.execute(std::make_unique<SetHitCurveCommand>(f.patTrack, f.regB, keysOf("Still"), &pz, f.tl,
+                                                    "Apply hit preset 'Still'"), f.tl);
+    {
+        const auto s = buildLensRoamSnapshot(f.tl);
+        CHECK(evalNote(*s, f, hn[0], 30) == src.base, "Still: a Follow note holds the base");
+    }
+
+    // Undo / redo the hit-curve history.
+    um.undo(f.tl); CHECK(sample() == v3, "undo Still -> Punch values");
+    um.undo(f.tl); CHECK(sample() == v2, "undo Punch -> zones edit values");
+    um.undo(f.tl); CHECK(sample() == v1, "undo zones edit");
+    um.undo(f.tl); CHECK(sample() == v0, "undo setHitCurve -> the original curve, every note");
+    CHECK(f.tl.getTrack(f.patTrack)->trackLens.at(f.regB).keys == src.keys
+          && f.tl.getTrack(f.patTrack)->trackLens.at(f.regB).zones == src.zones, "original keys and zones restored");
+    um.redo(f.tl); um.redo(f.tl); um.redo(f.tl);
+    CHECK(sample() == v3, "redo x3 -> Punch again");
+
+    // A source with NO entry: the command materialises one at the base it
+    // already rendered with (newContentDefault); undo erases it again.
+    f.tl.getTrackMutable(f.patTrack)->trackLens.erase(f.regA);
+    {
+        const auto before = buildLensRoamSnapshot(f.tl);
+        UndoManager um2;
+        um2.execute(std::make_unique<SetHitCurveCommand>(f.patTrack, f.regA, keysOf("Punch"), &pz, f.tl, "p"), f.tl);
+        const TrackInfo* t = f.tl.getTrack(f.patTrack);
+        CHECK(t->trackLens.count(f.regA) && t->trackLens.at(f.regA).base == LensParams::newContentDefault(),
+              "absent source: entry materialised at newContentDefault");
+        const auto after = buildLensRoamSnapshot(f.tl);
+        CHECK(after->lensForSource(f.patTrack, f.regA) == before->lensForSource(f.patTrack, f.regA),
+              "...so its base Lens did not change");
+        CHECK(roundTripsP8(f, "p8_hit_new_source"), "save/load of the materialised entry");
+        um2.undo(f.tl);
+        CHECK(!f.tl.getTrack(f.patTrack)->trackLens.count(f.regA), "undo erases it (absent again)");
+    }
+}
+
+static void test_p8_survival_real_overrides() {
+    std::cout << "[22] P5 survival re-run with REAL overrides (set by the P8 commands, evaluated)\n";
+    Fixture f;
+    buildFixture(f);
+    addHitNotes(f);
+    f.tl.getTrackMutable(f.patTrack)->trackLens[f.regB] = p8Source();
+    const std::vector<HitNote> hn = hitNotes(f);
+    if (hn.size() != 4) { CHECK(false, "fixture"); return; }
+    const int nudgeId = hn[1].id, ownId = hn[2].id, otherId = hn[0].id;
+    UndoManager um;
+    um.execute(std::make_unique<SetNoteLensKeysCommand>(NoteLensRef{ f.patternB, nudgeId }, nudgeKeys(), f.tl), f.tl);
+    um.execute(std::make_unique<SetNoteLensKeysCommand>(NoteLensRef{ f.patternB, ownId }, ownKeys(), f.tl), f.tl);
+    um.execute(std::make_unique<SetNoteLensModeCommand>(std::vector<NoteLensRef>{ NoteLensRef{ f.patternB, ownId } },
+                                                         NoteLensMode::Own, f.tl), f.tl);
+    const LensNoteOverridePtr nudgeO = noteLensOverrideOf(f.tl, { f.patternB, nudgeId });
+    const LensNoteOverridePtr ownO   = noteLensOverrideOf(f.tl, { f.patternB, ownId });
+
+    // What each note looks like, through the real build + collector, at a tick
+    // `t` after ITS OWN note-on (wherever the note currently sits).
+    auto lookOf = [&](int patternId, int noteId, double t) -> std::pair<bool, LensParams> {
+        const auto built = xleth::videoevents::build(f.tl, 140.0, 48000.0);
+        const VideoEvent* ev = nullptr;
+        for (const auto& e : built.events)
+            if (e.trackId == f.patTrack && e.lensPatternId == patternId && e.lensNoteId == noteId) { ev = &e; break; }
+        if (!ev) return { false, LensParams{} };
+        FrameCollector col;
+        col.setLensRoamSnapshot(buildLensRoamSnapshot(f.tl));
+        auto& reqs = col.collectRequests(static_cast<int64_t>(ev->startTick + t), f.tl, 48000, kTickFps, built.events);
+        const CellFrameRequest* r = reqFor(reqs, f.patTrack);
+        return { r != nullptr, r ? r->lens : LensParams{} };
+    };
+    const auto nudgeLook = lookOf(f.patternB, nudgeId, 30);
+    const auto ownLook   = lookOf(f.patternB, ownId, 30);
+    CHECK(nudgeLook.first && ownLook.first, "both overridden notes are on screen");
+    auto stillLooks = [&](int patternId, const char* what) {
+        const auto n = lookOf(patternId, nudgeId, 30), o = lookOf(patternId, ownId, 30);
+        CHECK(n.first && n.second == nudgeLook.second, (std::string(what) + ": Nudge note renders the same").c_str());
+        CHECK(o.first && o.second == ownLook.second, (std::string(what) + ": Own note renders the same").c_str());
+    };
+    auto kept = [&](int patternId, const char* what) {
+        CHECK(noteLensOverrideOf(f.tl, { patternId, nudgeId }) == nudgeO
+              && noteLensOverrideOf(f.tl, { patternId, ownId }) == ownO,
+              (std::string(what) + ": both overrides kept (same objects)").c_str());
+    };
+
+    // Piano roll: move (per-id), batch move, quantize, an edit of another note.
+    // Note lengths stay put, so the animation at +30 must not change.
+    um.execute(std::make_unique<MoveNoteCommand>(f.patternB, nudgeId, TickTime{ 1080 }, 70, f.tl), f.tl);
+    kept(f.patternB, "move"); stillLooks(f.patternB, "move");
+    um.execute(std::make_unique<MoveNotesBatchCommand>(f.patternB,
+        std::vector<MoveNotesBatchCommand::Move>{ { nudgeId, TickTime{ 1100 }, 71 }, { ownId, TickTime{ 2000 }, 62 } },
+        f.tl), f.tl);
+    kept(f.patternB, "batch move"); stillLooks(f.patternB, "batch move");
+    {
+        auto notes = f.tl.getPattern(f.patternB)->notes;
+        for (auto& n : notes) n.position.ticks = (n.position.ticks + 60) / 120 * 120;
+        um.execute(std::make_unique<EditPatternNotesCommand>(f.patternB, viaJson(notes), f.tl), f.tl);
+    }
+    CHECK(sameLensOverride(noteLensOverrideOf(f.tl, { f.patternB, nudgeId }), nudgeO)
+          && sameLensOverride(noteLensOverrideOf(f.tl, { f.patternB, ownId }), ownO),
+          "quantize (whole-list edit through the JS converters): both overrides kept");
+    stillLooks(f.patternB, "quantize");
+    {
+        auto notes = f.tl.getPattern(f.patternB)->notes;
+        for (auto& n : notes) if (n.id == otherId) n.velocity = 0.5f;
+        um.execute(std::make_unique<EditPatternNotesCommand>(f.patternB, viaJson(notes), f.tl), f.tl);
+    }
+    CHECK(!noteLensOverrideOf(f.tl, { f.patternB, otherId }), "the edited other note is still Follow");
+    stillLooks(f.patternB, "edit of another note");
+
+    // Copy / paste: the pasted copies get new ids and the SAME look.
+    {
+        auto notes = f.tl.getPattern(f.patternB)->notes;
+        std::vector<PatternNote> copies;
+        for (const auto& n : notes)
+            if (n.id == nudgeId || n.id == ownId) { PatternNote c = n; c.id = 0; c.position.ticks += 480; copies.push_back(c); }
+        for (auto& c : copies) notes.push_back(c);
+        um.execute(std::make_unique<EditPatternNotesCommand>(f.patternB, viaJson(notes), f.tl), f.tl);
+    }
+    int pastedNudge = -1, pastedOwn = -1;
+    for (const auto& n : f.tl.getPattern(f.patternB)->notes) {
+        if (n.id == nudgeId || n.id == ownId || !n.lensOverride) continue;
+        if (n.lensOverride->mode == LensOverrideMode::Own) pastedOwn = n.id; else pastedNudge = n.id;
+    }
+    CHECK(pastedNudge > 0 && pastedOwn > 0, "paste: both copies carry an override under new ids");
+    {
+        const auto pn = lookOf(f.patternB, pastedNudge, 30), po = lookOf(f.patternB, pastedOwn, 30);
+        CHECK(pn.first && pn.second == nudgeLook.second, "paste: the Nudge copy renders like the original");
+        CHECK(po.first && po.second == ownLook.second, "paste: the Own copy renders like the original");
+    }
+    um.undo(f.tl);
+
+    // Delete drops the override with the note; undo brings both back.
+    um.execute(std::make_unique<RemoveNoteCommand>(f.patternB, ownId, f.tl), f.tl);
+    CHECK(!lookOf(f.patternB, ownId, 30).first, "delete: the Own note is gone");
+    um.undo(f.tl);
+    CHECK(sameLensOverride(noteLensOverrideOf(f.tl, { f.patternB, ownId }), ownO), "undo delete: override back");
+    stillLooks(f.patternB, "undo delete");
+
+    // Make Unique Copy: a new pattern, the notes batch-added under fresh ids
+    // (list order), and the block re-pointed at it.
+    Pattern np;
+    np.name = "B (unique)";
+    np.regionId = f.regB;
+    np.length = f.tl.getPattern(f.patternB)->length;
+    const int uniqueId = f.tl.addPattern(np);
+    std::vector<PatternNote> batch = viaJson(f.tl.getPattern(f.patternB)->notes);
+    std::vector<int> srcIds;
+    for (auto& n : batch) { srcIds.push_back(n.id); n.id = 0; }
+    um.execute(std::make_unique<AddNotesBatchCommand>(uniqueId, batch), f.tl);
+    int uNudge = -1, uOwn = -1;
+    {
+        const auto& dst = f.tl.getPattern(uniqueId)->notes;
+        for (std::size_t i = 0; i < dst.size() && i < srcIds.size(); ++i) {
+            if (srcIds[i] == nudgeId) uNudge = dst[i].id;
+            if (srcIds[i] == ownId)   uOwn   = dst[i].id;
+        }
+    }
+    CHECK(uNudge > 0 && uOwn > 0, "unique copy: the overridden notes exist in the copy");
+    CHECK(sameLensOverride(noteLensOverrideOf(f.tl, { uniqueId, uNudge }), nudgeO)
+          && sameLensOverride(noteLensOverrideOf(f.tl, { uniqueId, uOwn }), ownO),
+          "unique copy: each override on its matching new id");
+    for (const PatternBlock* b : f.tl.getPatternBlocksOnTrack(f.patTrack)) {
+        if (b->patternId != f.patternB) continue;
+        PatternBlock nb = *b;
+        f.tl.removePatternBlock(b->id);
+        nb.patternId = uniqueId;
+        f.tl.addPatternBlock(nb);
+        break;
+    }
+    {
+        const auto un = lookOf(uniqueId, uNudge, 30), uo = lookOf(uniqueId, uOwn, 30);
+        CHECK(un.first && un.second == nudgeLook.second, "unique copy: the Nudge note renders the same on the new block");
+        CHECK(uo.first && uo.second == ownLook.second, "unique copy: the Own note renders the same on the new block");
+    }
+
+    // Save / load keeps all of it.
+    CHECK(overrideCount(f.tl, uniqueId) == 2, "unique copy: exactly the two overrides");
+    CHECK(roundTripsP8(f, "p8_survival", uniqueId), "save/load: pattern B and the unique copy keep every override");
+}
+
 int main() {
     std::cout << "[LensRoam] Lens + Roam P1 tests\n";
     test_defaults();
@@ -1651,6 +2321,10 @@ int main() {
     test_p7_roam_keys();
     test_p7_hit_curve();
     test_p7_seek_and_live_vs_export();
+    test_p8_blend_modes();
+    test_p8_note_commands();
+    test_p8_hit_curve_edits();
+    test_p8_survival_real_overrides();
     std::cout << "[LensRoam] " << g_pass << " passed, " << g_fail << " failed\n";
     return g_fail == 0 ? 0 : 1;
 }

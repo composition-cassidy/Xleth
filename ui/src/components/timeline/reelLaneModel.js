@@ -34,7 +34,7 @@ export const REEL_MAX_SUB_ROWS = 3
 /** A clip narrower than this (CSS px) is a plain block: no thumbnail. */
 export const REEL_THUMB_MIN_W = 28
 
-/** Width of the badge slot reserved at a clip's right edge (P8 fills it). */
+/** Width of the badge slot at a clip's right edge (Nudge "+", Own "O"). */
 export const REEL_BADGE_W = 12
 /** A clip narrower than this has no badge slot; the slot would be the whole clip. */
 export const REEL_BADGE_MIN_CLIP_W = 40
@@ -88,10 +88,26 @@ export function reelSubRowSpan(laneY, laneHeight, subRows, row, trackHeight = DE
   return { y0, y1 }
 }
 
-/** All clips are Follow (uncoloured) until the per-note override UI lands (P8). */
+// A clip's per-note Lens state (spec: Follow / Nudge / Own), from its note's
+// `lensOverride` (absent = Follow). One override covers EVERY placement and loop
+// pass of its note (it lives on the pattern note), so all of that note's ghost
+// clips carry the same badge. Stored per clip as a code in the `modes` array.
 export const REEL_MODE_FOLLOW = 'follow'
-export function reelClipMode(/* patternId, noteId */) {
-  return REEL_MODE_FOLLOW
+export const REEL_MODE_NUDGE = 'nudge'
+export const REEL_MODE_OWN = 'own'
+const MODE_BY_CODE = [REEL_MODE_FOLLOW, REEL_MODE_NUDGE, REEL_MODE_OWN]
+
+/** The mode code (0 Follow, 1 Nudge, 2 Own) of an engine note. */
+export function noteLensModeCode(note) {
+  const mode = note?.lensOverride?.mode
+  if (mode === 'Nudge') return 1
+  if (mode === 'Own') return 2
+  return 0
+}
+
+/** The Lens state of clip `i`: REEL_MODE_FOLLOW | REEL_MODE_NUDGE | REEL_MODE_OWN. */
+export function reelClipMode(track, i) {
+  return MODE_BY_CODE[track?.modes?.[i] ?? 0] ?? REEL_MODE_FOLLOW
 }
 
 const EMPTY_TRACK = Object.freeze({
@@ -101,6 +117,7 @@ const EMPTY_TRACK = Object.freeze({
   noteIds: new Int32Array(0),
   patternIds: new Int32Array(0),
   regionIds: new Int32Array(0),
+  modes: new Uint8Array(0),
   rows: new Uint8Array(0),
   subRows: 1,
   maxLen: 0,
@@ -156,6 +173,7 @@ export function buildReelModel({ tracks, patternBlocks, patterns, regions, sourc
     const noteIds = []
     const patternIds = []
     const regionIds = []
+    const modes = []
     let hasVideo = false
 
     for (const block of blocks) {
@@ -196,12 +214,13 @@ export function buildReelModel({ tracks, patternBlocks, patterns, regions, sourc
           noteIds.push(note.id)
           patternIds.push(pattern.id)
           regionIds.push(pattern.regionId)
+          modes.push(noteLensModeCode(note))
         }
       }
     }
 
     if (!hasVideo) continue
-    byTrack.set(track.id, packTrack(starts, ends, noteIds, patternIds, regionIds))
+    byTrack.set(track.id, packTrack(starts, ends, noteIds, patternIds, regionIds, modes))
   }
 
   return { byTrack, stillByRegion }
@@ -224,7 +243,7 @@ function registerStill(map, region, sources) {
 // Matches SampleThumbnail's STILL_FRAME_OFFSET_S.
 export const STILL_FRAME_OFFSET_S = 0.04
 
-function packTrack(startsIn, endsIn, noteIdsIn, patternIdsIn, regionIdsIn) {
+function packTrack(startsIn, endsIn, noteIdsIn, patternIdsIn, regionIdsIn, modesIn) {
   const n = startsIn.length
   if (n === 0) return EMPTY_TRACK
 
@@ -241,6 +260,7 @@ function packTrack(startsIn, endsIn, noteIdsIn, patternIdsIn, regionIdsIn) {
   const noteIds = new Int32Array(n)
   const patternIds = new Int32Array(n)
   const regionIds = new Int32Array(n)
+  const modes = new Uint8Array(n)
   const rows = new Uint8Array(n)
 
   // Greedy interval colouring in start order: a clip joins the first sub-row
@@ -256,6 +276,7 @@ function packTrack(startsIn, endsIn, noteIdsIn, patternIdsIn, regionIdsIn) {
     noteIds[k] = noteIdsIn[i]
     patternIds[k] = patternIdsIn[i]
     regionIds[k] = regionIdsIn[i]
+    modes[k] = modesIn?.[i] ?? 0
     const len = ends[k] - starts[k]
     if (len > maxLen) maxLen = len
 
@@ -271,7 +292,7 @@ function packTrack(startsIn, endsIn, noteIdsIn, patternIdsIn, regionIdsIn) {
 
   return {
     count: n,
-    starts, ends, noteIds, patternIds, regionIds, rows,
+    starts, ends, noteIds, patternIds, regionIds, modes, rows,
     subRows: Math.max(1, rowEnds.length),
     maxLen,
   }

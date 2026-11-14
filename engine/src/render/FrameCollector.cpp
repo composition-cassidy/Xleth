@@ -680,7 +680,11 @@ std::vector<CellFrameRequest>& FrameCollector::collectRequests(
             clock.frameTick      = frameTick;
             clock.eventStartTick = videoEventStartTick(*ev);
             clock.eventLenTicks  = videoEventLengthTicks(*ev);
-            req.lens = lr->lensForEventAt(trackId, ev->clipId, ev->regionId, clock);
+            // The note's override (P8): Follow / Nudge / Own.
+            LensRoamSnapshot::NoteRef note;
+            note.patternId = ev->lensPatternId;
+            note.noteId    = ev->lensNoteId;
+            req.lens = lr->lensForEventAt(trackId, ev->clipId, ev->regionId, clock, note);
             req.roam = lr->roamAt(trackId, frameTick);
         }
 

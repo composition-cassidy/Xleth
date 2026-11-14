@@ -10,6 +10,9 @@
 
 import { timelineEvents } from '../timelineEvents.js'
 import { toEngineNote } from '../components/pianoRoll/pianoRollEdits.js'
+import {
+  setNoteLensMode, setNoteLensKeys, revertNotesToFollow, setHitCurve, applyHitPreset,
+} from './lensRoamApi.js'
 
 const TAG = '[LensNote]'
 
@@ -66,8 +69,15 @@ export async function getNoteLensOverride(patternId, noteId) {
   return note?.lensOverride ?? null
 }
 
-/** Installs window.__xlethLensDev; returns the uninstaller. */
+/**
+ * Installs window.__xlethLensDev; returns the uninstaller. P8 adds the real edit
+ * commands (one UndoManager entry each) so they can be driven end to end before
+ * the Lens panel has controls for them.
+ */
 export function installNoteLensDevHook(win) {
-  win.__xlethLensDev = { setNoteLensOverride, getNoteLensOverride }
+  win.__xlethLensDev = {
+    setNoteLensOverride, getNoteLensOverride,
+    setNoteLensMode, setNoteLensKeys, revertNotesToFollow, setHitCurve, applyHitPreset,
+  }
   return () => { delete win.__xlethLensDev }
 }

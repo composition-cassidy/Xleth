@@ -45,6 +45,7 @@
 #include "commands/ImportMidiCommand.h"
 #include "commands/UndoManager.h"
 #include "commands/TimelineCommands.h"
+#include "model/LensHitPresets.h"
 #include "commands/QuantizeClipsBatchCommand.h"
 #include "commands/AddNotesBatchCommand.h"
 #include "commands/AddClipsBatchCommand.h"
@@ -1571,8 +1572,9 @@ static void publishLensRoamSnapshot(const char* reason) {
     g_lensRoamEverLogged = true;
     std::fprintf(stderr,
         "[Lens] snapshot (%s): %d clip lens(es), %d non-identity; "
-        "%d pattern source lens(es), %d non-identity\n",
-        reason, c.clips, c.clipLensNonIdentity, c.sources, c.sourceLensNonIdentity);
+        "%d pattern source lens(es), %d non-identity; note overrides %d Nudge, %d Own\n",
+        reason, c.clips, c.clipLensNonIdentity, c.sources, c.sourceLensNonIdentity,
+        c.noteNudge, c.noteOwn);
     std::fprintf(stderr,
         "[Roam] snapshot (%s): %d track(s), %d non-identity\n",
         reason, c.tracks, c.roamNonIdentity);
@@ -16511,6 +16513,14 @@ JsonApi::Value Timeline_GetLensRoam(const JsonApi::CallbackInfo& info)
         e.Set("explicit", JsonApi::Boolean::New(env, t->trackLens.count(regionId) != 0));
         e.Set("lens", opaqueJsonToValue(env, lensroam::lensParamsToJson(
             lensroam::resolveSourceLens(*t, regionId))));
+        // P8: the hit curve and its zones (an absent entry: none, the defaults).
+        {
+            const auto it = t->trackLens.find(regionId);
+            const LensTrack entry = it != t->trackLens.end() ? it->second : LensTrack{};
+            e.Set("hitCurve", opaqueJsonToValue(env,
+                lensroam::lensTrackToJson(entry, "hitCurve").at("hitCurve")));
+            e.Set("zones", opaqueJsonToValue(env, lensroam::noteZonesToJson(entry.zones)));
+        }
         sources.Set(ns++, e);
     }
 
@@ -16536,6 +16546,374 @@ JsonApi::Value Timeline_GetLensRoam(const JsonApi::CallbackInfo& info)
     out.Set("tracks", tracks);
     out.Set("missing", missing);
     return out;
+}
+
+// ─── Lens + Roam P8: per-note overrides, hit curve, presets ──────────────────
+// docs/XLETH_LENS_ROAM_SPEC.md. Same contract as the P3 setters above: one
+// UndoManager command per call, built only when something changes; STRICT
+// parsing (unknown field, wrong type, non-finite number, unknown enum string
+// or an id that does not resolve rejects the whole call, so the four-layer
+// bridge cannot swallow a typo); the post-state comes back so the caller
+// never refetches.
+//
+// Notes are addressed by the spec's override key {patternId, noteId} (note
+// ids are unique only inside one pattern), so one call can span several
+// patterns (a Reel lane selection) and still be ONE undo step.
+
+namespace {
+
+const char* noteLensModeOf(const LensNoteOverridePtr& o) {
+    if (!o) return "Follow";
+    return o->mode == LensOverrideMode::Own ? "Own" : "Nudge";
+}
+
+bool isIntegral(const nlohmann::json& v) {
+    return v.is_number_integer() || v.is_number_unsigned()
+        || (v.is_number_float() && std::isfinite(v.get<double>())
+            && v.get<double>() == std::floor(v.get<double>()));
+}
+
+// [{patternId, noteId}, ...] -> refs. Every ref must name an existing note.
+bool parseNoteRefs(const nlohmann::json& arr, std::vector<NoteLensRef>& out, std::string& err) {
+    if (!arr.is_array()) { err = "notes must be an array of {patternId, noteId}"; return false; }
+    for (std::size_t i = 0; i < arr.size(); ++i) {
+        const nlohmann::json& e = arr[i];
+        const std::string at = "notes[" + std::to_string(i) + "]";
+        if (!e.is_object()) { err = at + " must be {patternId, noteId}"; return false; }
+        for (auto it = e.begin(); it != e.end(); ++it) {
+            if (it.key() != "patternId" && it.key() != "noteId") {
+                err = at + ": unknown field '" + it.key() + "' (patternId, noteId)";
+                return false;
+            }
+        }
+        if (!e.contains("patternId") || !isIntegral(e["patternId"])
+            || !e.contains("noteId") || !isIntegral(e["noteId"])) {
+            err = at + ": patternId and noteId must be integers";
+            return false;
+        }
+        NoteLensRef r;
+        r.patternId = static_cast<int>(e["patternId"].get<double>());
+        r.noteId    = static_cast<int>(e["noteId"].get<double>());
+        if (r.noteId <= 0) {   // not an address (old data); the renderer never plays it
+            err = at + ": noteId must be > 0";
+            return false;
+        }
+        const Pattern* p = g_timeline->getPattern(r.patternId);
+        bool found = false;
+        if (p) for (const PatternNote& n : p->notes) if (n.id == r.noteId) { found = true; break; }
+        if (!found) {
+            err = at + ": no note " + std::to_string(r.noteId) + " in pattern "
+                + std::to_string(r.patternId);
+            return false;
+        }
+        out.push_back(r);
+    }
+    if (out.empty()) { err = "notes is empty"; return false; }
+    return true;
+}
+
+// One note-anchored key {channel, anchor, pos, value, interp?}. Hit curves and
+// note overrides hold note anchors only (Head ticks | Body fraction | Tail ticks).
+bool parseNoteKey(const nlohmann::json& e, const std::string& at, LensKey& k, std::string& err) {
+    if (!e.is_object()) { err = at + " must be an object"; return false; }
+    for (auto it = e.begin(); it != e.end(); ++it) {
+        const std::string& f = it.key();
+        if (f != "channel" && f != "anchor" && f != "pos" && f != "value" && f != "interp") {
+            err = at + ": unknown field '" + f + "' (channel, anchor, pos, value, interp)";
+            return false;
+        }
+    }
+    const std::string ch = e.contains("channel") && e["channel"].is_string() ? e["channel"].get<std::string>() : "";
+    if      (ch == "centerX")     k.channel = LensChannel::CenterX;
+    else if (ch == "centerY")     k.channel = LensChannel::CenterY;
+    else if (ch == "zoom")        k.channel = LensChannel::Zoom;
+    else if (ch == "rotationDeg") k.channel = LensChannel::RotationDeg;
+    else { err = at + ": channel must be centerX | centerY | zoom | rotationDeg"; return false; }
+    const std::string an = e.contains("anchor") && e["anchor"].is_string() ? e["anchor"].get<std::string>() : "";
+    if      (an == "Head") k.anchor = KeyAnchor::Head;
+    else if (an == "Body") k.anchor = KeyAnchor::Body;
+    else if (an == "Tail") k.anchor = KeyAnchor::Tail;
+    else { err = at + ": anchor must be Head | Body | Tail"; return false; }
+    if (!e.contains("pos") || !e["pos"].is_number() || !std::isfinite(e["pos"].get<double>())) {
+        err = at + ": pos must be a finite number"; return false;
+    }
+    if (!e.contains("value") || !e["value"].is_number() || !std::isfinite(e["value"].get<double>())) {
+        err = at + ": value must be a finite number"; return false;
+    }
+    k.pos   = e["pos"].get<double>();
+    k.value = e["value"].get<double>();
+    if (k.pos < 0.0) { err = at + ": pos must be >= 0"; return false; }
+    if (k.anchor == KeyAnchor::Body && k.pos > 1.0) { err = at + ": a Body pos is a fraction 0..1"; return false; }
+    if (k.channel == LensChannel::Zoom && !(k.value > 0.0)) { err = at + ": a zoom value must be > 0"; return false; }
+    k.interp = xleth::keycurve::Interp::Linear;
+    if (e.contains("interp")) {
+        const std::string in = e["interp"].is_string() ? e["interp"].get<std::string>() : "";
+        if      (in == "Hold")    k.interp = xleth::keycurve::Interp::Hold;
+        else if (in == "Linear")  k.interp = xleth::keycurve::Interp::Linear;
+        else if (in == "EaseOut") k.interp = xleth::keycurve::Interp::EaseOut;
+        else { err = at + ": interp must be Hold | Linear | EaseOut"; return false; }
+    }
+    return true;
+}
+
+bool parseNoteKeys(const nlohmann::json& arr, const char* what, std::vector<LensKey>& out,
+                   std::string& err) {
+    if (!arr.is_array()) { err = std::string(what) + " must be an array of keys"; return false; }
+    for (std::size_t i = 0; i < arr.size(); ++i) {
+        LensKey k;
+        if (!parseNoteKey(arr[i], std::string(what) + "[" + std::to_string(i) + "]", k, err))
+            return false;
+        out.push_back(k);
+    }
+    return true;
+}
+
+// A zones PATCH {headTicks?, tailTicks?, shortNote?} over `z`.
+bool parseZonesPatch(const nlohmann::json& j, xleth::keycurve::NoteZones& z, std::string& err) {
+    if (!j.is_object()) { err = "zones must be an object"; return false; }
+    for (auto it = j.begin(); it != j.end(); ++it) {
+        const std::string& f = it.key();
+        if (f == "headTicks" || f == "tailTicks") {
+            if (!it->is_number() || !std::isfinite(it->get<double>()) || it->get<double>() < 0.0) {
+                err = "zones." + f + " must be a finite number >= 0"; return false;
+            }
+            (f == "headTicks" ? z.headTicks : z.tailTicks) = it->get<double>();
+        } else if (f == "shortNote") {
+            const std::string s = it->is_string() ? it->get<std::string>() : "";
+            if      (s == "Squash") z.rule = xleth::keycurve::ShortNoteRule::Squash;
+            else if (s == "Cut")    z.rule = xleth::keycurve::ShortNoteRule::Cut;
+            else { err = "zones.shortNote must be Squash | Cut"; return false; }
+        } else {
+            err = "zones: unknown field '" + f + "' (headTicks, tailTicks, shortNote)";
+            return false;
+        }
+    }
+    return true;
+}
+
+JsonApi::Value noteLensResult(JsonApi::Env env, const std::vector<NoteLensRef>& refs, bool changed) {
+    JsonApi::Object r = JsonApi::Object::New(env);
+    r.Set("changed", JsonApi::Boolean::New(env, changed));
+    JsonApi::Array notes = JsonApi::Array::New(env);
+    uint32_t i = 0;
+    for (const NoteLensRef& ref : refs) {
+        const LensNoteOverridePtr o = noteLensOverrideOf(*g_timeline, ref);
+        JsonApi::Object n = JsonApi::Object::New(env);
+        n.Set("patternId", JsonApi::Number::New(env, ref.patternId));
+        n.Set("noteId",    JsonApi::Number::New(env, ref.noteId));
+        n.Set("mode",      JsonApi::String::New(env, noteLensModeOf(o)));
+        n.Set("lensOverride", o ? opaqueJsonToValue(env, lensroam::lensNoteOverrideToJson(*o))
+                                : env.Null());
+        notes.Set(i++, n);
+    }
+    r.Set("notes", notes);
+    return r;
+}
+
+// Runs a note command (already built) when it changes anything.
+JsonApi::Value runNoteLensCommand(JsonApi::Env env, std::unique_ptr<NoteLensOverrideCommand> cmd,
+                                  BridgeCallLog& log) {
+    const std::vector<NoteLensRef> refs = cmd->notes();
+    const bool changed = cmd->changesAnything();
+    const std::string what = cmd->describe();
+    if (changed) {
+        g_undoManager->execute(std::move(cmd), *g_timeline);
+        g_previewDirty = true;
+    }
+    log.done(what + (changed ? "" : " (unchanged)"));
+    return noteLensResult(env, refs, changed);
+}
+
+JsonApi::Value hitCurveResult(JsonApi::Env env, int trackId, int regionId, bool changed,
+                              const char* preset) {
+    JsonApi::Object r = JsonApi::Object::New(env);
+    r.Set("trackId",  JsonApi::Number::New(env, trackId));
+    r.Set("regionId", JsonApi::Number::New(env, regionId));
+    r.Set("changed",  JsonApi::Boolean::New(env, changed));
+    const TrackInfo* t = g_timeline->getTrack(trackId);
+    const auto it = t ? t->trackLens.find(regionId) : std::map<int, LensTrack>::const_iterator{};
+    const bool explicitEntry = t && it != t->trackLens.end();
+    r.Set("explicit", JsonApi::Boolean::New(env, explicitEntry));
+    r.Set("lens", opaqueJsonToValue(env, lensroam::lensParamsToJson(
+        t ? lensroam::resolveSourceLens(*t, regionId) : LensParams{})));
+    const LensTrack entry = explicitEntry ? it->second : LensTrack{};
+    const nlohmann::json j = lensroam::lensTrackToJson(entry, "hitCurve");
+    r.Set("hitCurve", opaqueJsonToValue(env, j.at("hitCurve")));
+    r.Set("zones", opaqueJsonToValue(env, lensroam::noteZonesToJson(entry.zones)));
+    if (preset) r.Set("preset", JsonApi::String::New(env, preset));
+    return r;
+}
+
+// Validates {trackId, regionId} as a Pattern Track source; throws otherwise.
+bool checkPatternSource(JsonApi::Env env, int trackId, int regionId, const char* logName) {
+    const TrackInfo* t = g_timeline->getTrack(trackId);
+    std::string err;
+    if (!t)                                       err = "no track " + std::to_string(trackId);
+    else if (t->type != TrackInfo::Type::Pattern) err = "track " + std::to_string(trackId) + " is not a Pattern track";
+    else if (!g_timeline->getRegion(regionId))    err = "no region " + std::to_string(regionId);
+    if (err.empty()) return true;
+    JsonApi::Error::New(env, std::string(logName) + ": " + err).ThrowAsJavaScriptException();
+    return false;
+}
+
+JsonApi::Value runHitCurveCommand(JsonApi::Env env, int trackId, int regionId,
+                                  std::vector<LensKey> keys, const xleth::keycurve::NoteZones* zones,
+                                  std::string label, const char* preset, BridgeCallLog& log) {
+    auto cmd = std::make_unique<SetHitCurveCommand>(trackId, regionId, std::move(keys), zones,
+                                                    *g_timeline, label);
+    const bool changed = cmd->changesAnything();
+    if (changed) {
+        g_undoManager->execute(std::move(cmd), *g_timeline);
+        g_previewDirty = true;
+    }
+    log.done(label + (changed ? "" : " (unchanged)"));
+    return hitCurveResult(env, trackId, regionId, changed, preset);
+}
+
+void throwType(JsonApi::Env env, const std::string& msg) {
+    JsonApi::TypeError::New(env, msg).ThrowAsJavaScriptException();
+}
+
+} // namespace
+
+// timeline_setNoteLensMode(notes: [{patternId, noteId}], mode: 'Follow'|'Nudge'|'Own')
+//   -> { changed, notes: [{ patternId, noteId, mode, lensOverride|null }] }
+// Switching between Nudge and Own keeps the note's keys; Follow drops them
+// (undo brings them back).
+JsonApi::Value Timeline_SetNoteLensMode(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!lensRoamReady(env)) return env.Undefined();
+    const char* sig = "timeline_setNoteLensMode(notes: {patternId, noteId}[], mode: 'Follow'|'Nudge'|'Own')";
+    if (info.Length() < 2 || !info[0].IsArray() || !info[1].IsString()) { throwType(env, sig); return env.Undefined(); }
+    BridgeCallLog log("timeline.setNoteLensMode");
+    std::vector<NoteLensRef> refs;
+    std::string err;
+    if (!parseNoteRefs(valueToJson(info[0]), refs, err)) { throwType(env, std::string(sig) + ": " + err); return env.Undefined(); }
+    const std::string m = info[1].As<JsonApi::String>().Utf8Value();
+    NoteLensMode mode;
+    if      (m == "Follow") mode = NoteLensMode::Follow;
+    else if (m == "Nudge")  mode = NoteLensMode::Nudge;
+    else if (m == "Own")    mode = NoteLensMode::Own;
+    else { throwType(env, std::string(sig) + ": unknown mode '" + m + "'"); return env.Undefined(); }
+    return runNoteLensCommand(env, std::make_unique<SetNoteLensModeCommand>(refs, mode, *g_timeline), log);
+}
+
+// timeline_setNoteLensKeys(note: {patternId, noteId}, keys: [{channel, anchor, pos, value, interp?}])
+//   -> { changed, notes: [one] }
+// Replaces the note's keys (note anchors only). A Follow note becomes Nudge.
+JsonApi::Value Timeline_SetNoteLensKeys(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!lensRoamReady(env)) return env.Undefined();
+    const char* sig = "timeline_setNoteLensKeys(note: {patternId, noteId}, keys: object[])";
+    if (info.Length() < 2 || !info[0].IsObject() || !info[1].IsArray()) { throwType(env, sig); return env.Undefined(); }
+    BridgeCallLog log("timeline.setNoteLensKeys");
+    std::vector<NoteLensRef> refs;
+    std::vector<LensKey> keys;
+    std::string err;
+    nlohmann::json one = nlohmann::json::array();
+    one.push_back(valueToJson(info[0]));
+    if (!parseNoteRefs(one, refs, err) || !parseNoteKeys(valueToJson(info[1]), "keys", keys, err)) {
+        throwType(env, std::string(sig) + ": " + err);
+        return env.Undefined();
+    }
+    return runNoteLensCommand(env, std::make_unique<SetNoteLensKeysCommand>(refs[0], std::move(keys),
+                                                                             *g_timeline), log);
+}
+
+// timeline_revertNotesToFollow(notes: [{patternId, noteId}]) -> { changed, notes }
+JsonApi::Value Timeline_RevertNotesToFollow(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!lensRoamReady(env)) return env.Undefined();
+    const char* sig = "timeline_revertNotesToFollow(notes: {patternId, noteId}[])";
+    if (info.Length() < 1 || !info[0].IsArray()) { throwType(env, sig); return env.Undefined(); }
+    BridgeCallLog log("timeline.revertNotesToFollow");
+    std::vector<NoteLensRef> refs;
+    std::string err;
+    if (!parseNoteRefs(valueToJson(info[0]), refs, err)) { throwType(env, std::string(sig) + ": " + err); return env.Undefined(); }
+    return runNoteLensCommand(env, std::make_unique<RevertNotesToFollowCommand>(refs, *g_timeline), log);
+}
+
+// timeline_setHitCurve(trackId, regionId, curve: { keys: [...], zones?: {headTicks?, tailTicks?, shortNote?} })
+//   -> { trackId, regionId, changed, explicit, lens, hitCurve, zones }
+// Replaces the source's hit curve (and patches its zones). Follow and Nudge
+// notes play it; Own notes never do.
+JsonApi::Value Timeline_SetHitCurve(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!lensRoamReady(env)) return env.Undefined();
+    const char* sig = "timeline_setHitCurve(trackId: number, regionId: number, curve: { keys: object[], zones?: object })";
+    if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsNumber() || !info[2].IsObject()) {
+        throwType(env, sig); return env.Undefined();
+    }
+    const int trackId  = info[0].As<JsonApi::Number>().Int32Value();
+    const int regionId = info[1].As<JsonApi::Number>().Int32Value();
+    BridgeCallLog log("timeline.setHitCurve");
+    if (!checkPatternSource(env, trackId, regionId, "timeline.setHitCurve")) return env.Undefined();
+    const nlohmann::json curve = valueToJson(info[2]);
+    std::string err;
+    for (auto it = curve.begin(); it != curve.end(); ++it) {
+        if (it.key() != "keys" && it.key() != "zones") {
+            throwType(env, std::string(sig) + ": unknown field '" + it.key() + "' (keys, zones)");
+            return env.Undefined();
+        }
+    }
+    std::vector<LensKey> keys;
+    if (!curve.contains("keys") || !parseNoteKeys(curve["keys"], "keys", keys, err)) {
+        throwType(env, std::string(sig) + ": " + (err.empty() ? "keys is required" : err));
+        return env.Undefined();
+    }
+    const TrackInfo* t = g_timeline->getTrack(trackId);
+    const auto entry = t->trackLens.find(regionId);
+    xleth::keycurve::NoteZones zones = entry != t->trackLens.end() ? entry->second.zones
+                                                                     : xleth::keycurve::NoteZones{};
+    const bool hasZones = curve.contains("zones");
+    if (hasZones && !parseZonesPatch(curve["zones"], zones, err)) {
+        throwType(env, std::string(sig) + ": " + err);
+        return env.Undefined();
+    }
+    const std::string label = "Set hit curve (track=" + std::to_string(trackId)
+                            + ", region=" + std::to_string(regionId) + ", "
+                            + std::to_string(keys.size()) + " keys)";
+    return runHitCurveCommand(env, trackId, regionId, std::move(keys), hasZones ? &zones : nullptr,
+                              label, nullptr, log);
+}
+
+// timeline_applyHitPreset(trackId, regionId, name: 'Still'|'Punch'|'Punch + drift'|'Zoom pulse')
+//   -> { trackId, regionId, changed, explicit, lens, hitCurve, zones, preset }
+// The preset's keys come from model/LensHitPresets.h (the one data file); the
+// source's head/tail lengths are set to the ones its keys are written in.
+JsonApi::Value Timeline_ApplyHitPreset(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!lensRoamReady(env)) return env.Undefined();
+    const char* sig = "timeline_applyHitPreset(trackId: number, regionId: number, name: string)";
+    if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsNumber() || !info[2].IsString()) {
+        throwType(env, sig); return env.Undefined();
+    }
+    const int trackId  = info[0].As<JsonApi::Number>().Int32Value();
+    const int regionId = info[1].As<JsonApi::Number>().Int32Value();
+    const std::string name = info[2].As<JsonApi::String>().Utf8Value();
+    BridgeCallLog log("timeline.applyHitPreset");
+    if (!checkPatternSource(env, trackId, regionId, "timeline.applyHitPreset")) return env.Undefined();
+    const lensroam::HitPreset* preset = lensroam::findHitPreset(name.c_str());
+    if (!preset) {
+        std::string names;
+        for (const auto& p : lensroam::kHitPresets) names += std::string(names.empty() ? "" : ", ") + p.name;
+        JsonApi::Error::New(env, std::string("timeline.applyHitPreset: unknown preset '") + name
+                                 + "' (" + names + ")").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const TrackInfo* t = g_timeline->getTrack(trackId);
+    const auto entry = t->trackLens.find(regionId);
+    const xleth::keycurve::NoteZones zones = lensroam::hitPresetZones(
+        entry != t->trackLens.end() ? entry->second.zones : xleth::keycurve::NoteZones{});
+    const std::string label = std::string("Apply hit preset '") + preset->name + "' (track="
+                            + std::to_string(trackId) + ", region=" + std::to_string(regionId) + ")";
+    return runHitCurveCommand(env, trackId, regionId, lensroam::hitPresetKeys(*preset), &zones,
+                              label, preset->name, log);
 }
 
 // timeline_setTrackSlideNoteEffect(trackId, sObj)
