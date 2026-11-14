@@ -66,10 +66,17 @@ const PIN = { x: WIDTH / 2, y: HEIGHT / 2 }
 const END = { x: WIDTH - PAD, y: PAD }
 const HALF_WIDTH = PIN.x - START.x
 const HALF_HEIGHT = START.y - PIN.y
+const FULL_WIDTH = END.x - START.x
+const FULL_HEIGHT = START.y - END.y
 
+// 'whole' is the single-curve mode (a Landing's one curve, Start to Pin): the
+// same editor with one cubic across the full graph instead of two halves.
 function controlPoint(side, point, curve) {
   const x = point === 1 ? curve.x1 : curve.x2
   const y = point === 1 ? curve.y1 : curve.y2
+  if (side === 'whole') {
+    return { x: START.x + FULL_WIDTH * x, y: START.y - FULL_HEIGHT * y }
+  }
   if (side === 'startToPin') {
     return { x: START.x + HALF_WIDTH * x, y: START.y - HALF_HEIGHT * y }
   }
@@ -77,6 +84,11 @@ function controlPoint(side, point, curve) {
 }
 
 function curvePath(easing) {
+  if (easing.whole) {
+    const w1 = controlPoint('whole', 1, easing.whole)
+    const w2 = controlPoint('whole', 2, easing.whole)
+    return `M ${START.x} ${START.y} C ${w1.x} ${w1.y}, ${w2.x} ${w2.y}, ${END.x} ${END.y}`
+  }
   const a1 = controlPoint('startToPin', 1, easing.startToPin)
   const a2 = controlPoint('startToPin', 2, easing.startToPin)
   const b1 = controlPoint('pinToEnd', 1, easing.pinToEnd)
@@ -90,6 +102,12 @@ function pointFromPointer(side, clientX, clientY, svg) {
   const scaleY = HEIGHT / Math.max(1, rect.height)
   const x = (clientX - rect.left) * scaleX
   const y = (clientY - rect.top) * scaleY
+  if (side === 'whole') {
+    return {
+      x: clampUnit((x - START.x) / FULL_WIDTH),
+      y: clampUnit((START.y - y) / FULL_HEIGHT),
+    }
+  }
   if (side === 'startToPin') {
     return {
       x: clampUnit((x - START.x) / HALF_WIDTH),
@@ -102,8 +120,23 @@ function pointFromPointer(side, clientX, clientY, svg) {
   }
 }
 
-export default function SnapshotTransitionBezierEditor({ easing, onChange }) {
-  const normalized = normalizeTransitionEasing(easing)
+// Two modes, one editor.
+//   default   `easing` is { startToPin, pinToEnd }: a transition's two halves
+//             around the pin; onChange gets the same shape.
+//   single    `easing` is ONE curve { x1, y1, x2, y2 } running Start -> Pin (a
+//             Landing's move ends on the pin); onChange gets one curve.
+//             `resetCurve` is what Reset restores; the caller offers the presets.
+export default function SnapshotTransitionBezierEditor({
+  easing, onChange, single = false,
+  resetCurve = LINEAR_TRANSITION_CURVE, resetLabel, summaryHint, summaryLabel = 'Easing',
+  graphLabel = 'Snapshot transition easing curves',
+}) {
+  const normalize = useCallback((value) => (
+    single
+      ? { whole: normalizeTransitionCurve(value && value.whole ? value.whole : value) }
+      : normalizeTransitionEasing(value)
+  ), [single])
+  const normalized = normalize(easing)
   const [expanded, setExpanded] = useState(false)
   const [draft, setDraft] = useState(normalized)
   const draftRef = useRef(normalized)
@@ -111,11 +144,11 @@ export default function SnapshotTransitionBezierEditor({ easing, onChange }) {
   const draggingRef = useRef(null)
 
   const replaceDraft = useCallback((next) => {
-    const safe = normalizeTransitionEasing(next)
+    const safe = normalize(next)
     draftRef.current = safe
     setDraft(safe)
     return safe
-  }, [])
+  }, [normalize])
 
   useEffect(() => {
     if (!draggingRef.current) replaceDraft(easing)
@@ -123,8 +156,8 @@ export default function SnapshotTransitionBezierEditor({ easing, onChange }) {
 
   const commit = useCallback((next) => {
     const safe = replaceDraft(next)
-    onChange?.(safe)
-  }, [onChange, replaceDraft])
+    onChange?.(single ? safe.whole : safe)
+  }, [onChange, replaceDraft, single])
 
   const startDrag = useCallback((side, point) => (event) => {
     if (event.button !== 0) return
@@ -174,12 +207,18 @@ export default function SnapshotTransitionBezierEditor({ easing, onChange }) {
     commit({ ...draftRef.current, [side]: { ...preset.curve } })
   }, [commit])
 
-  const points = {
+  const points = single ? {
+    w1: controlPoint('whole', 1, draft.whole),
+    w2: controlPoint('whole', 2, draft.whole),
+  } : {
     a1: controlPoint('startToPin', 1, draft.startToPin),
     a2: controlPoint('startToPin', 2, draft.startToPin),
     b1: controlPoint('pinToEnd', 1, draft.pinToEnd),
     b2: controlPoint('pinToEnd', 2, draft.pinToEnd),
   }
+  const sideLabel = (side) => (
+    side === 'whole' ? 'Curve' : side === 'startToPin' ? 'Start to pin' : 'Pin to end'
+  )
 
   const renderHandle = (key, side, point, anchor) => {
     const cp = points[key]
@@ -196,7 +235,7 @@ export default function SnapshotTransitionBezierEditor({ easing, onChange }) {
           r={key === 'a2' ? 7 : key === 'b1' ? 4 : 5}
           role="slider"
           tabIndex="0"
-          aria-label={`${side === 'startToPin' ? 'Start to pin' : 'Pin to end'} control point ${point}`}
+          aria-label={`${sideLabel(side)} control point ${point}`}
           aria-valuemin="0"
           aria-valuemax="1"
           aria-valuenow={curve[`x${point}`]}
@@ -214,10 +253,10 @@ export default function SnapshotTransitionBezierEditor({ easing, onChange }) {
         type="button"
         className={`vmt-easing-summary ${styles.easingSummary}`}
         aria-expanded={expanded}
-        data-hint="Easing: the curve of the blend before and after the pin"
+        data-hint={summaryHint || 'Easing: the curve of the blend before and after the pin'}
         onClick={() => setExpanded((value) => !value)}
       >
-        <span>Easing</span>
+        <span>{summaryLabel}</span>
         <svg className="vmt-easing-mini" viewBox={`0 0 ${WIDTH} ${HEIGHT}`} aria-hidden="true">
           <path d={curvePath(draft)} />
         </svg>
@@ -231,7 +270,7 @@ export default function SnapshotTransitionBezierEditor({ easing, onChange }) {
             className={`vmt-easing-graph ${styles.easingGraph}`}
             viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
             role="group"
-            aria-label="Snapshot transition easing curves"
+            aria-label={graphLabel}
             onPointerMove={handlePointerMove}
             onPointerUp={finishDrag}
             onPointerCancel={finishDrag}
@@ -240,18 +279,49 @@ export default function SnapshotTransitionBezierEditor({ easing, onChange }) {
             <line className="vmt-easing-grid" x1={PAD} y1={PIN.y} x2={WIDTH - PAD} y2={PIN.y} />
             <line className="vmt-easing-linear" x1={START.x} y1={START.y} x2={END.x} y2={END.y} />
             <path className="vmt-easing-path" d={curvePath(draft)} />
-            {renderHandle('a1', 'startToPin', 1, START)}
-            {renderHandle('a2', 'startToPin', 2, PIN)}
-            {renderHandle('b1', 'pinToEnd', 1, PIN)}
-            {renderHandle('b2', 'pinToEnd', 2, END)}
-            <circle className="vmt-easing-anchor" cx={START.x} cy={START.y} r="3" />
-            <circle className="vmt-easing-anchor is-pin" cx={PIN.x} cy={PIN.y} r="2" />
-            <circle className="vmt-easing-anchor" cx={END.x} cy={END.y} r="3" />
-            <text className="vmt-easing-label" fontSize={LABEL_SIZE} x={START.x} y={HEIGHT - 1}>Start</text>
-            <text className="vmt-easing-label" fontSize={LABEL_SIZE} x={PIN.x} y={HEIGHT - 1} textAnchor="middle">Pin</text>
-            <text className="vmt-easing-label" fontSize={LABEL_SIZE} x={END.x} y={HEIGHT - 1} textAnchor="end">End</text>
+            {single ? (
+              <>
+                {renderHandle('w1', 'whole', 1, START)}
+                {renderHandle('w2', 'whole', 2, END)}
+                <circle className="vmt-easing-anchor" cx={START.x} cy={START.y} r="3" />
+                <circle className="vmt-easing-anchor is-pin" cx={END.x} cy={END.y} r="3" />
+                <text className="vmt-easing-label" fontSize={LABEL_SIZE} x={START.x} y={HEIGHT - 1}>Start</text>
+                <text className="vmt-easing-label" fontSize={LABEL_SIZE} x={END.x} y={HEIGHT - 1} textAnchor="end">Pin</text>
+              </>
+            ) : (
+              <>
+                {renderHandle('a1', 'startToPin', 1, START)}
+                {renderHandle('a2', 'startToPin', 2, PIN)}
+                {renderHandle('b1', 'pinToEnd', 1, PIN)}
+                {renderHandle('b2', 'pinToEnd', 2, END)}
+                <circle className="vmt-easing-anchor" cx={START.x} cy={START.y} r="3" />
+                <circle className="vmt-easing-anchor is-pin" cx={PIN.x} cy={PIN.y} r="2" />
+                <circle className="vmt-easing-anchor" cx={END.x} cy={END.y} r="3" />
+                <text className="vmt-easing-label" fontSize={LABEL_SIZE} x={START.x} y={HEIGHT - 1}>Start</text>
+                <text className="vmt-easing-label" fontSize={LABEL_SIZE} x={PIN.x} y={HEIGHT - 1} textAnchor="middle">Pin</text>
+                <text className="vmt-easing-label" fontSize={LABEL_SIZE} x={END.x} y={HEIGHT - 1} textAnchor="end">End</text>
+              </>
+            )}
           </svg>
 
+          {/* Single mode: the caller offers the named curves next to the editor
+              (a Landing row's Easing select), so only Reset lives here. */}
+          {single && (
+            <>
+              <Button
+                size="sm"
+                className="vmt-easing-reset"
+                glyph={<IcArrowCounterClockwise size={14} />}
+                onClick={() => commit({ whole: { ...resetCurve } })}
+                hint="Reset the curve to its default"
+              >
+                {resetLabel || 'Reset curve'}
+              </Button>
+            </>
+          )}
+
+          {!single && (
+          <>
           <div className={`vmt-easing-presets ${styles.presets}`}>
             <label className={styles.presetRow}>
               <span>Start → pin</span>
@@ -285,6 +355,8 @@ export default function SnapshotTransitionBezierEditor({ easing, onChange }) {
           >
             Reset both to linear
           </Button>
+          </>
+          )}
         </div>
       )}
     </div>

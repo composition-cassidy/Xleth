@@ -4751,6 +4751,9 @@ export default function TimelineView({
                 onRemoveCue={snapshotCues.removeCue}
                 onRepointCue={snapshotCues.repointCue}
                 onSetCueTransition={snapshotCues.setCueTransition}
+                tracks={tracks}
+                onSetCueLandings={snapshotCues.setCueLandings}
+                onReflowCueLandings={snapshotCues.reflowCueLandings}
               />
               <div
                 className="timeline-canvas-scroll"

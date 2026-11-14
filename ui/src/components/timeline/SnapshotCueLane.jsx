@@ -20,7 +20,17 @@ import SnapshotTransitionBezierEditor, {
   normalizeTransitionEasing,
 } from './SnapshotTransitionBezierEditor.jsx'
 import LineSweepDirectionControl, { normalizeLineSweepAngle } from './LineSweepDirectionControl.jsx'
+import CueLandingsSection from './CueLandingsSection.jsx'
+import LandingTails, { tailTickToPixel } from './LandingTails.jsx'
+import {
+  buildCueLandings, hitLandingTail, landingTails, leadInFloorTick, tailLeadInTicks,
+} from './cueLandings.js'
 import { iconComponent } from '../../ui-kit/icons'
+
+// Landings (docs/XLETH_LANDING_SPEC.md): the payload builder lives with the rest
+// of the landing model and is re-exported here beside buildCueTransition, the
+// function it mirrors.
+export { buildCueLandings }
 
 const IcCheckFill = iconComponent('check', 'fill')
 const IcPlus = iconComponent('plus')
@@ -234,6 +244,7 @@ function TransitionParameterControl({ label, value, min, max, step, kind, onChan
 function CueMarker({
   cue, x, laneWidth, snapshots, selected, onSelect, onClose, onMoveCue, onRemoveCue, onRepointCue,
   onSetCueTransition, pixelsPerBeatRef, scrollOffsetRef, containerRef,
+  cues, defaultSnapshotId, tracks, snapGranularity, onSetCueLandings, onReflowCueLandings,
 }) {
   const markerRef = useRef(null)
 
@@ -551,6 +562,18 @@ function CueMarker({
               </div>
             )}
           </div>
+          {/* Landings: per-track moves that end on this pin. Their lead-ins are
+              the tails drawn left of the pin on the lane. */}
+          <CueLandingsSection
+            cue={cue}
+            cues={cues}
+            snapshots={snapshots}
+            defaultSnapshotId={defaultSnapshotId}
+            tracks={tracks}
+            snapGranularity={snapGranularity}
+            onSetCueLandings={onSetCueLandings}
+            onReflowCueLandings={onReflowCueLandings}
+          />
         </div>
       )}
     </div>
@@ -659,12 +682,88 @@ export function CueLane({
   top, width, cues, snapshots, defaultSnapshotId, totalBeats,
   pixelsPerBeatRef, scrollOffsetRef, snapGranularityRef, containerRef,
   onMoveCue, onRemoveCue, onRepointCue, onSetCueTransition,
+  tracks = [], onSetCueLandings, onReflowCueLandings,
 }) {
   const [selectedTick, setSelectedTick] = useState(null)
   const names = new Map(snapshots.map((snapshot) => [snapshot.id, snapshot.name]))
   const sorted = [...cues].sort((a, b) => a.tick - b.tick)
   const lastCueTick = sorted.length > 0 ? sorted[sorted.length - 1].tick : 0
   const endTick = Math.max(beatsToTicks(totalBeats), lastCueTick)
+
+  // ── Lead-in tails (Landings) ──────────────────────────────────────────────
+  // One entry per cue that has landings: where each landing starts (its lead-in
+  // clamped at the previous cue, as the engine clamps it) and its row.
+  const tailsRef = useRef(null)
+  const suppressClickRef = useRef(false)
+  const tailItems = sorted
+    .filter((cue) => Array.isArray(cue.landings) && cue.landings.length > 0)
+    .map((cue) => {
+      const floorTick = leadInFloorTick(sorted, cue.tick, snapshots)
+      return {
+        cueTick: cue.tick, floorTick, selected: selectedTick === cue.tick,
+        ...landingTails(cue, floorTick),
+      }
+    })
+
+  // Dragging a tail's left end edits that landing's lead-in. Only the selected
+  // cue's tails are grabbable (like its transition grips), and only where the
+  // press landed on the lane itself: a pin, a grip or the editor stops the
+  // event before it gets here, so a tail never takes their hit area. The drag
+  // repaints the tails canvas directly; ONE setCueLandings is written on release.
+  const handleLanePointerDown = (e) => {
+    if (e.button !== 0 || e.target !== e.currentTarget) return
+    if (selectedTick === null || typeof onSetCueLandings !== 'function') return
+    const item = tailItems.find((entry) => entry.cueTick === selectedTick)
+    const rect = containerRef.current?.getBoundingClientRect()
+    if (!item || !rect) return
+    const tickToX = (tick) => tailTickToPixel(tick, scrollOffsetRef.current, pixelsPerBeatRef.current)
+    const hit = hitLandingTail(item.tails, e.clientX - rect.left, e.clientY - rect.top, tickToX)
+    if (!hit) return
+    e.preventDefault()
+    e.stopPropagation()
+
+    const cue = sorted.find((entry) => entry.tick === item.cueTick)
+    let leadInTicks = hit.leadInTicks
+    const onMove = (moveEvent) => {
+      const box = containerRef.current?.getBoundingClientRect()
+      if (!box) return
+      const localX = Math.max(0, Math.min(width, moveEvent.clientX - box.left))
+      const modifiers = { alt: moveEvent.altKey, shift: moveEvent.shiftKey, ctrl: moveEvent.ctrlKey || moveEvent.metaKey }
+      leadInTicks = tailLeadInTicks(
+        localX, scrollOffsetRef.current, pixelsPerBeatRef.current, modifiers,
+        snapGranularityRef.current, item.cueTick, item.floorTick,
+      )
+      tailsRef.current?.setDraft({ cueTick: item.cueTick, trackId: hit.trackId, leadInTicks })
+    }
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      tailsRef.current?.setDraft(null)
+      // The click that follows this release must not deselect the cue. It is
+      // dispatched before any timer, so the flag cannot outlive it.
+      suppressClickRef.current = true
+      setTimeout(() => { suppressClickRef.current = false }, 0)
+      if (leadInTicks !== hit.leadInTicks) {
+        onSetCueLandings(item.cueTick, buildCueLandings(cue?.landings, { trackId: hit.trackId, leadInTicks }))
+      }
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp, { once: true })
+  }
+
+  // The resize cursor over a grabbable tail end. A cursor is not motion.
+  const handleLanePointerMove = (e) => {
+    if (e.buttons !== 0 || e.target !== e.currentTarget) return
+    const lane = e.currentTarget
+    const item = selectedTick === null ? null : tailItems.find((entry) => entry.cueTick === selectedTick)
+    const rect = containerRef.current?.getBoundingClientRect()
+    const over = !!item && !!rect && typeof onSetCueLandings === 'function' && !!hitLandingTail(
+      item.tails, e.clientX - rect.left, e.clientY - rect.top,
+      (tick) => tailTickToPixel(tick, scrollOffsetRef.current, pixelsPerBeatRef.current),
+    )
+    const want = over ? 'ew-resize' : ''
+    if (lane.style.cursor !== want) lane.style.cursor = want
+  }
 
   useEffect(() => {
     if (selectedTick !== null && !cues.some((cue) => cue.tick === selectedTick)) {
@@ -689,7 +788,10 @@ export function CueLane({
       className={`vmt-cue-lane ${styles.cueLane}`}
       style={{ top, height: CUE_LANE_HEIGHT }}
       onMouseDown={(e) => e.stopPropagation()}
+      onPointerDown={handleLanePointerDown}
+      onPointerMove={handleLanePointerMove}
       onClick={(e) => {
+        if (suppressClickRef.current) { suppressClickRef.current = false; return }
         if (e.target === e.currentTarget) setSelectedTick(null)
       }}
     >
@@ -709,6 +811,18 @@ export function CueLane({
           )
         })}
       </div>
+      {/* Lead-in tails: one canvas, under everything else in the lane. Not
+          mounted at all while no cue has a landing. */}
+      {tailItems.length > 0 && (
+        <LandingTails
+          ref={tailsRef}
+          items={tailItems}
+          width={width}
+          height={CUE_LANE_HEIGHT}
+          pixelsPerBeatRef={pixelsPerBeatRef}
+          scrollOffsetRef={scrollOffsetRef}
+        />
+      )}
       {/* Transition windows (visualization for every enabled cue; the selected
           cue also gets draggable Start/End handles). Rendered under the markers
           so the fixed pin stays on top. */}
@@ -748,6 +862,12 @@ export function CueLane({
             pixelsPerBeatRef={pixelsPerBeatRef}
             scrollOffsetRef={scrollOffsetRef}
             containerRef={containerRef}
+            cues={sorted}
+            defaultSnapshotId={defaultSnapshotId}
+            tracks={tracks}
+            snapGranularity={snapGranularityRef.current}
+            onSetCueLandings={onSetCueLandings}
+            onReflowCueLandings={onReflowCueLandings}
           />
         )
       })}
@@ -858,9 +978,28 @@ export function useSnapshotCues(playheadBeatRef) {
     })
   ), [mutateCue])
 
+  // Landings. setCueLandings replaces the cue's whole list, so callers pass the
+  // complete list (buildCueLandings); reflow asks the engine to add a "Where it
+  // was" landing for every track that changes place. Both return the cue list,
+  // and like every cue mutation each finishes by re-reading listCues.
+  const setCueLandings = useCallback((tick, landings) => (
+    mutateCue('setCueLandings', (timeline) => {
+      if (typeof timeline.setCueLandings !== 'function') return false
+      return timeline.setCueLandings(tick, landings)
+    })
+  ), [mutateCue])
+
+  const reflowCueLandings = useCallback((tick, leadInTicks) => (
+    mutateCue('reflowCueLandings', (timeline) => {
+      if (typeof timeline.reflowCueLandings !== 'function') return false
+      return timeline.reflowCueLandings(tick, leadInTicks)
+    })
+  ), [mutateCue])
+
   return {
     cues, snapshots, defaultSnapshotId, activeSnapshotId,
     addCueAtPlayhead, repointCue, moveCue, removeCue, setCueTransition,
+    setCueLandings, reflowCueLandings,
   }
 }
 
@@ -873,6 +1012,7 @@ const SnapshotCueLane = forwardRef(function SnapshotCueLane({
   pixelsPerBeatRef, scrollOffsetRef, cues = [], snapshots = [], defaultSnapshotId = '',
   totalBeats = 0, snapGranularity = '1/16',
   onMoveCue, onRemoveCue, onRepointCue, onSetCueTransition,
+  tracks = [], onSetCueLandings, onReflowCueLandings,
 }, ref) {
   const containerRef = useRef(null)
   const snapGranularityRef = useRef(snapGranularity)
@@ -919,6 +1059,9 @@ const SnapshotCueLane = forwardRef(function SnapshotCueLane({
         onRemoveCue={onRemoveCue}
         onRepointCue={onRepointCue}
         onSetCueTransition={onSetCueTransition}
+        tracks={tracks}
+        onSetCueLandings={onSetCueLandings}
+        onReflowCueLandings={onReflowCueLandings}
       />
     </div>
   )

@@ -1455,6 +1455,26 @@ macro lanes' DOM geometry, the curve canvases).
   shapes. The loop bar is value-coloured while armed and grey when not, and its toggle is a 14px chip with a 24px hit
   area (an inverted chip, `aria-pressed`, when armed). Macro lane curves wear the parameter signal hue, a looped clip is
   dashed, selection is an outline; the curve stays an SVG polyline and the points positioned buttons.
+- **Landings** (`CueLandingsSection`, `LandingTails`, `cueLandings.js`; `docs/XLETH_LANDING_SPEC.md`). A Landing is one
+  track's move into its slot in the cue's snapshot, ending on the pin. The cue editor gains a **Landings** section under
+  Transition: a head row (the count as `3 / 16`, **Reflow**, an **Add landing** IconButton that opens a kit `Menu` of the
+  tracks with a slot in the cue's snapshot and no landing yet), then **master and detail**: one 24px row per landing
+  (track name, `Where it was · 1 beat`, remove) in a list that scrolls past eight rows, and the open landing's controls
+  in a pane under it at the editor's full width. A row's own body was tried first and a 16px scrollbar clipped every
+  208px value field, so the list scrolls and the controls do not. Controls are kit: a **From** Select (Edge, Grow,
+  Where it was, Custom; "Where it was" is disabled, with the reason in its hint, when the outgoing snapshot does not
+  place the track), the direction compass for Edge, four `%` NumberBoxes for a Custom rectangle, **Lead-in** in beats
+  (`1 beat`, `0.5 beats`, snapped to the grid), **From opacity** in `%`, an **Easing** Select (Land, Glide, Linear) and
+  the two-curve editor in its **single-curve mode** (`single`: one cubic from Start to Pin, Reset to Land). Each
+  gesture writes **one** complete `setCueLandings`; nothing animates. The selected row is a `--ui-select` outline and a
+  turned caret, never colour alone. **Lead-in tails:** every cue with landings draws one 2px bar per landing left of its
+  pin, from where that landing starts (its lead-in clamped at the previous cue, as the engine clamps it) to the pin, in
+  up to four rows on a 3px pitch, with `+N` for the rest. They are **one canvas** under the transition band, its grips
+  and the pins, neutral ink like the rest of the lane, and the canvas never takes the pointer: the lane hit-tests the
+  tail ends of the *selected* cue itself, on presses no pin or grip claimed, so a tail cannot steal their hit area. A
+  drag repaints the canvas directly (no React render per move) and writes one `setCueLandings` on release, snapped to
+  the grid (Alt frees the snap, still whole ticks). The tail end's hit reach is 12px by the row; it is below the 24px
+  floor by construction (four rows in a 24px lane), and the Lead-in NumberBox is the same edit without a drag.
 - **Popovers and the dialog.** The track colour popover is a kit `Menu`: Auto, the 16 swatches (24px, two rows of
   eight, each **named in the hint bar and its accessible name**, "Slot 9: Orange", by `trackColorNames.js` from the
   colour's OKLCH hue) and a custom colour; the display popover is a `Menu` of eight labelled SegmentedControls in
