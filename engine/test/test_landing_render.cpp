@@ -19,6 +19,8 @@
 //   [7] degenerate rects Grow at p == 0 and Edge before its start draw nothing
 //   [8] fromOpacity      fades in while moving
 //   [9] seek             a frame does not depend on the frames before it
+//   [10] target cap      a landing that changes size does not strand a render
+//                        target per frame (RTPool::beginPass)
 
 #include "render/GridCompositor.h"
 #include "render/GpuDeviceManager.h"
@@ -1026,6 +1028,84 @@ void testSeek(ID3D11Device* device, GridCompositor& compositor)
     note("[9] PASSED");
 }
 
+// ─── [10] render-target cap ──────────────────────────────────────────────────
+
+void testTargetCap(ID3D11Device* device, GridCompositor& compositor)
+{
+    note("--- [10] a size-changing landing does not strand a render target per frame ---");
+
+    // Lens fit Cover is the default for new content and runs a framing pass
+    // into a target sized from the cell, so it is the stage every track pays.
+    const Tweak cover = [](std::vector<CellFrameRequest>& reqs) {
+        for (auto& q : reqs) q.lens.fit = LensFit::Cover;
+    };
+
+    for (const bool withTransition : { false, true }) {
+        Rig r(device, compositor);
+        // Chords and bass shrink from a half screen to a small cell over four
+        // bars, Linear: a different pixel size on every frame.
+        TrackLanding c = makeLanding(r.chords, TrackLanding::From::WhereItWas, 960 * 16);
+        TrackLanding b = makeLanding(r.bass,   TrackLanding::From::WhereItWas, 960 * 16);
+        c.easing = SnapshotTransitionEasingCurve{};
+        b.easing = SnapshotTransitionEasingCurve{};
+        r.tl.setCueLandings(r.pin, { c, b });
+        if (withTransition) r.setTransition(SnapshotTransition::Type::Crossfade, 960 * 16, 960);
+        // A track effect too: its chain target is sized from the cell as well,
+        // and unlike the Lens tweak it also reaches the carry that is drawn
+        // over a transition (those requests are collected inside the helper).
+        for (const int trackId : { r.chords, r.bass }) {
+            VisualEffect neutral;
+            neutral.type = VisualEffect::Type::BrightnessContrast;
+            neutral.params[0] = 0.0f;   // brightness
+            neutral.params[1] = 1.0f;   // contrast
+            r.tl.getTrackMutable(trackId)->visualEffectChain.push_back(neutral);
+        }
+
+        const int64_t fStart = frameOfSample(r.tickSample(r.pin.ticks - 960 * 16)) + 1;
+        const int64_t fPin   = frameOfSample(r.pinSample());
+        assert(fPin - fStart > 150 && "the lead-in spans a few hundred frames");
+
+        // Settle: a few ordinary frames first, so the pool holds only what an
+        // ordinary frame needs.
+        for (int64_t f = fStart - 6; f < fStart - 1; ++f) renderSeamFrame(r, f, 0, cover);
+        const size_t before = compositor.renderTargetPairCount();
+
+        size_t peak = 0;
+        int distinctSizes = 0, lastW = -1;
+        for (int64_t f = fStart; f < fPin; ++f) {
+            renderSeamFrame(r, f, 0, cover);
+            peak = std::max(peak, compositor.renderTargetPairCount());
+            const auto pose = poseAt(r, r.chords, sampleOfFrame(f));
+            const int w = static_cast<int>(pose.w * kW);
+            if (w != lastW) { ++distinctSizes; lastW = w; }
+        }
+        std::fprintf(stderr,
+            "[TEST:Landing] transition=%d: %lld landing frames, %d distinct cell widths, "
+            "pool %zu pairs before, peak %zu\n",
+            int(withTransition), (long long)(fPin - fStart), distinctSizes, before, peak);
+        assert(distinctSizes > 40 && "the move really passes through many sizes");
+        // Two landing tracks x one stage x the few passes a transient pair is
+        // kept, on top of what an ordinary frame holds. Without the cap the
+        // pool would hold one pair per distinct size.
+        assert(peak <= before + 24 && "passing sizes must be released after a few passes");
+        assert(peak < static_cast<size_t>(distinctSizes) && "the pool must not grow with the move");
+
+        // Still the right picture, and still B's picture at the pin.
+        const ReadbackBuffer mid = renderSeamFrame(r, (fStart + fPin) / 2, 0, cover);
+        const auto pc = poseAt(r, r.chords, sampleOfFrame((fStart + fPin) / 2));
+        const Color midChords = pixelAtUV(mid, pc.x + pc.w * 0.5f, pc.y + pc.h * 0.5f);
+        assert(midChords.r > 150 && midChords.g < 90 && midChords.b < 90
+               && "chords are still drawn, through their effect, at the in-flight rect");
+        if (!withTransition) assertSeam(r, cover, "Lens Cover on every track, after a long size-changing move");
+
+        // After the window the pool returns to an ordinary frame's needs.
+        for (int64_t f = fPin + 40; f < fPin + 50; ++f) renderSeamFrame(r, f, 0, cover);
+        assert(compositor.renderTargetPairCount() <= before + 8
+               && "nothing a landing passed through is left behind");
+    }
+    note("[10] PASSED");
+}
+
 } // namespace
 
 int main()
@@ -1057,6 +1137,7 @@ int main()
     testDegenerateRects(device, compositor);
     testFromOpacity(device, compositor);
     testSeek(device, compositor);
+    testTargetCap(device, compositor);
 
     compositor.shutdown();
     note("ALL TESTS PASSED");

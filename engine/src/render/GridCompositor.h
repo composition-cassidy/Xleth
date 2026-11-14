@@ -180,6 +180,10 @@ struct RTPool {
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srvA, srvB;
         int width = 0, height = 0;
         std::chrono::steady_clock::time_point lastTouched = std::chrono::steady_clock::now();
+        // Landing (see beginPass): created for a cell that is in flight and
+        // not yet asked for by any ordinary cell.
+        bool     transient = false;
+        uint64_t lastPass  = 0;
     };
 
     // Key = (slot << 48) | (width << 32) | height — both dimensions masked to
@@ -200,6 +204,27 @@ struct RTPool {
      *  grid sizes/effect combinations otherwise strands a texture pair per
      *  combination for the rest of the session. */
     void pruneIdle(double idleSeconds = 10.0);
+
+    // ── Transient pairs (Landing) ────────────────────────────────────────────
+    // A landing that changes size draws its cell at a different pixel size on
+    // every frame, and every content stage sizes its target from that. Left to
+    // the 10 s idle sweep, each of those sizes would keep a texture pair alive
+    // (hundreds of megabytes for a long move of a large cell). So a pair that
+    // is created while an in-flight landing cell is being drawn is marked
+    // transient, and beginPass() evicts transient pairs that no pass has
+    // touched for kTransientKeepPasses passes. A pair an ORDINARY cell asks for
+    // is never transient (and stops being transient the moment one does), so
+    // nothing changes for a frame without landings.
+    //
+    // Counted in composite passes, not wall time, so it behaves the same in a
+    // fast export as in the live preview. Eviction cannot change a pixel: every
+    // stage clears or fully overwrites its target before reading it.
+    static constexpr uint64_t kTransientKeepPasses = 4;
+    bool     transientMode = false;   // set per request by the compositor
+    uint64_t pass          = 0;
+
+    /** Call once at the start of a composite pass, before any acquire. */
+    void beginPass();
 };
 
 // ---------------------------------------------------------------------------
@@ -519,6 +544,10 @@ public:
     /** Acquire the cached whole-frame pair used for snapshot A and snapshot B.
      *  Requires a successfully initialized compositor. */
     RTPool::RTPair& acquireTransitionTargets();
+
+    /** How many render-target pairs the pool holds right now. Diagnostics and
+     *  tests (the Landing cap on passing sizes, RTPool::beginPass). */
+    size_t renderTargetPairCount() const { return rtPool_.pairs.size(); }
 
     /** Blend two whole-frame snapshot SRVs into the compositor's readback target. */
     void transitionPass(ID3D11ShaderResourceView* srvA,

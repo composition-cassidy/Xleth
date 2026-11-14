@@ -640,6 +640,8 @@ void GridCompositor::compositeRequests(const std::vector<CellFrameRequest>& requ
     // the one call common to every preview and export frame, so no caller
     // needs to remember to invoke it. Cheap when nothing is idle.
     rtPool_.pruneIdle();
+    // Sizes a landing passed through a few passes ago go now (see beginPass).
+    rtPool_.beginPass();
 
     // Echo rings are swept on the same tick and for the same reason, but on a
     // much shorter fuse: one ring can be tens of megabytes, against a few
@@ -778,6 +780,9 @@ void GridCompositor::compositeRequests(const std::vector<CellFrameRequest>& requ
         const char* band   = isGrid ? "grid"
                            : (req.layerKind == CellLayerKind::FullscreenBehind) ? "behind"
                                                                                 : "front";
+
+        // Targets acquired for a cell in flight are transient (RTPool::beginPass).
+        rtPool_.transientMode = req.hasCanvasRect;
 
         // A landing in flight can have no area yet (From: Grow at its first
         // frame). Nothing to draw, and no stage may size a target from it.
@@ -1258,6 +1263,8 @@ void GridCompositor::compositeRequests(const std::vector<CellFrameRequest>& requ
         drawCell(cellSRV, rx, ry, rw, rh,
                  req.opacity, xf.orientation, cellCornerRad, &xf);
     }
+
+    rtPool_.transientMode = false;
 
     // Unbind render target to allow subsequent SRV reads
     ID3D11RenderTargetView* nullRTV = nullptr;
@@ -1968,6 +1975,10 @@ RTPool::RTPair& RTPool::acquire(ID3D11Device* device, int width, int height, int
     auto it = pairs.find(key);
     if (it != pairs.end() && it->second.width == width && it->second.height == height) {
         it->second.lastTouched = std::chrono::steady_clock::now();
+        it->second.lastPass    = pass;
+        // An ordinary cell wants this size too: it is no longer a landing's
+        // passing size, so it lives by the ordinary idle rule from here on.
+        if (!transientMode) it->second.transient = false;
         return it->second;
     }
 
@@ -2006,6 +2017,8 @@ RTPool::RTPair& RTPool::acquire(ID3D11Device* device, int width, int height, int
         "[RTPool] Created RT pair %dx%d slot=%d\n", width, height, slot));
 
     pair.lastTouched = std::chrono::steady_clock::now();
+    pair.lastPass    = pass;
+    pair.transient   = transientMode;
     pairs[key] = std::move(pair);
     return pairs[key];
 }
@@ -2356,6 +2369,18 @@ void GridCompositor::drawEchoTaps(const CellFrameRequest& req,
 void RTPool::clear()
 {
     pairs.clear();
+}
+
+void RTPool::beginPass()
+{
+    ++pass;
+    transientMode = false;
+    for (auto it = pairs.begin(); it != pairs.end(); ) {
+        if (it->second.transient && pass - it->second.lastPass > kTransientKeepPasses)
+            it = pairs.erase(it);
+        else
+            ++it;
+    }
 }
 
 void RTPool::pruneIdle(double idleSeconds)
