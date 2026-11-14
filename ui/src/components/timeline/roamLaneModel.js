@@ -57,12 +57,14 @@ export function lanePointAt(row, range, channel, localX, localY, scrollOffset, p
  * @param {object} args.trackLayout   buildTrackLayout's result (roamRowAtY)
  * @param {(trackId:number)=>({base:object, keys:object[]}|undefined)} args.dataOf   the lane's data (draft applied)
  * @param {(trackId:number)=>string} args.channelOf   the parameter each lane shows
+ * @param {'roam'|'sweep'} [args.kind]   which lane: the Roam lane (default) or the Sweep
+ *   lane (P11), the same graph over Lens channels
  * @returns {null | { row, trackId, channel, range, key: object|null, tick: number, value: number }}
  *   null when the point is not in a Roam lane. `key` is the nearest key of the
  *   lane's channel within the hit radius (the later one wins a tie, like the engine).
  */
-export function hitTestRoamLane({ trackLayout, dataOf, channelOf }, localX, localY, scrollOffset, ppb) {
-  const row = trackLayout?.roamRowAtY?.(localY)
+export function hitTestRoamLane({ trackLayout, dataOf, channelOf, kind = 'roam' }, localX, localY, scrollOffset, ppb) {
+  const row = (kind === 'sweep' ? trackLayout?.sweepRowAtY : trackLayout?.roamRowAtY)?.(localY)
   if (!row) return null
   const trackId = row.parentTrackId
   const channel = channelOf(trackId)

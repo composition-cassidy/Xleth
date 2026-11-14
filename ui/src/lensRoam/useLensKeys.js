@@ -12,7 +12,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import useNoteSelectionStore from '../stores/useNoteSelectionStore.js'
 import {
   applyHitPreset, getHitPresets, getLensRoam, revertNotesToFollow, setClipLensKeys, setHitCurve,
-  setNoteLensMode, setNotesLensKeys,
+  setNoteLensMode, setNotesLensKeys, setTrackSweepKeys,
 } from './lensRoamApi.js'
 import { REFRESH_EVENTS, useRefreshOn } from './useLensRoam.js'
 import { applyKeyOp } from './lensKeyModel.js'
@@ -110,6 +110,42 @@ export function useClipKeys(clipId) {
     else refresh()
     return res
   }, [clipId, refresh])
+
+  return { keys, ready: keys !== null, write }
+}
+
+// ── A track's Sweep keys (P11) ───────────────────────────────────────────────
+
+/**
+ * The Sweep keys of one track (a timeline-absolute Lens layer), read through
+ * getLensRoam and written as ONE command. The Lens panel only READS them (its layer
+ * stack's Sweep row); the lane under the track's Reel lane is where they are edited.
+ * @returns {{ keys: object[]|null, ready: boolean, write(keys): Promise }}
+ */
+export function useSweepKeys(trackId) {
+  const [keys, setKeys] = useState(null)
+  const token = useRef(0)
+
+  const refresh = useCallback(async () => {
+    if (trackId == null) { setKeys(null); return }
+    const mine = ++token.current
+    const res = await getLensRoam({ trackIds: [trackId] })
+    if (mine !== token.current) return
+    const hit = res?.tracks?.[0]
+    setKeys(hit ? (hit.sweep ?? []) : null)
+  }, [trackId])
+
+  useEffect(() => { setKeys(null); refresh() }, [refresh])
+  useRefreshOn(REFRESH_EVENTS, refresh)
+
+  const write = useCallback(async (next) => {
+    token.current++
+    setKeys(next)
+    const res = await setTrackSweepKeys(trackId, next)
+    if (res?.keys) setKeys(res.keys)
+    else refresh()
+    return res
+  }, [trackId, refresh])
 
   return { keys, ready: keys !== null, write }
 }

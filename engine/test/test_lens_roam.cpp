@@ -2495,6 +2495,278 @@ static void test_p10_roam_keys_command() {
     CHECK(f.tl.getTrack(f.clipTrack)->roam.keys == keys, "undo the clear");
 }
 
+// ─── [26] P11: the Sweep lane ────────────────────────────────────────────────
+// A track's timeline-absolute Lens offset, evaluated after the note animation
+// and before flip. Zoom multiplies; centre and rotation add; an unkeyed channel
+// is the layer identity.
+
+static SweepTrack sweepOf(std::vector<LensKey> keys) {
+    SweepTrack s;
+    s.keys = std::move(keys);
+    return s;
+}
+
+static void test_p11_sweep() {
+    std::cout << "[26] P11 Sweep: a zoom bump across two notes is one continuous move; live == export\n";
+    Fixture f;
+    buildFixture(f);
+    UndoManager um;
+
+    // Two back-to-back notes on pattern B (block B plays at [3840, 7680)):
+    // note 1 [3840, 4800), note 2 [4800, 5760). Nothing after, so a held
+    // gap follows from 5760.
+    for (int i = 0; i < 2; ++i) {
+        PatternNote n;
+        n.position = TickTime{ i * 960 };
+        n.duration = TickTime{ 960 };
+        n.pitch = 60 + i;
+        f.tl.addNoteToPattern(f.patternB, n);
+    }
+    for (const PatternBlock* b : f.tl.getPatternBlocksOnTrack(f.patTrack))
+        if (b->patternId == f.patternB) f.tl.resizePatternBlock(b->id, TickTime{ 3840 });
+
+    LensTrack src;
+    src.base.fit = LensFit::Cover;
+    src.base.zoom = 1.2f;
+    src.base.centerX = 0.4f;
+    f.tl.getTrackMutable(f.patTrack)->trackLens[f.regB] = src;
+    TrackInfo* pt = f.tl.getTrackMutable(f.patTrack);
+    pt->videoHoldLastFrame = true;   // threshold defaults to unlimited
+
+    auto built = xleth::videoevents::build(f.tl, 140.0, 48000.0);
+    FrameCollector col;
+    auto lensAt = [&](const Timeline& tl, FrameCollector& c, const std::vector<VideoEvent>& ev,
+                      int64_t tick) -> LensParams {
+        auto& reqs = c.collectRequests(tick, tl, 48000, kTickFps, ev);
+        const CellFrameRequest* r = reqFor(reqs, f.patTrack);
+        return r ? r->lens : LensParams{};
+    };
+
+    // ── no Sweep: bit-identical to before the layer existed ──
+    col.setLensRoamSnapshot(buildLensRoamSnapshot(f.tl));
+    const LensParams before = lensAt(f.tl, col, built.events, 4500);
+    CHECK(before.zoom == 1.2f && before.centerX == 0.4f && before.rotationDeg == 0.0f,
+          "no Sweep keys: the source's base, untouched");
+    {
+        auto snap = buildLensRoamSnapshot(f.tl);
+        LensRoamSnapshot::EventClock c;
+        c.frameTick = 4500; c.eventStartTick = 3840; c.eventLenTicks = 960;
+        CHECK(snap->counts().sweepTracks == 0, "counts: no swept track");
+        CHECK(snap->lensForEventAt(f.patTrack, -1, f.regB, c) == snap->lensBeforeSweep(f.patTrack, -1, f.regB, c),
+              "an unswept track: lensForEventAt == lensBeforeSweep, bit for bit");
+        CHECK(snap->applySweep(f.patTrack, before, 4500) == before, "applySweep on an unswept track returns its input");
+    }
+
+    // ── the bump: zoom 1.0 at tick 4320 (inside note 1) -> 1.5 at 4800 (the
+    // note 1 / note 2 boundary) -> 1.0 at 5280 (inside note 2). centerX and
+    // rotation ride along on other keys; centerY is unkeyed.
+    const std::vector<LensKey> bump = {
+        lensKey(LensChannel::Zoom,        KeyAnchor::Origin, 4320, 1.0),
+        lensKey(LensChannel::Zoom,        KeyAnchor::Origin, 4800, 1.5),
+        lensKey(LensChannel::Zoom,        KeyAnchor::Origin, 5280, 1.0),
+        lensKey(LensChannel::CenterX,     KeyAnchor::Origin, 4320, 0.0),
+        lensKey(LensChannel::CenterX,     KeyAnchor::Origin, 4800, 0.2),
+        lensKey(LensChannel::RotationDeg, KeyAnchor::Origin, 4320, 0.0),
+        lensKey(LensChannel::RotationDeg, KeyAnchor::Origin, 5280, 12.0),
+        // a zoom <= 0 never reaches the snapshot (the compile drops it)
+        lensKey(LensChannel::Zoom,        KeyAnchor::Origin, 6000, 0.0),
+    };
+    {
+        SetTrackSweepKeysCommand same(f.patTrack, {}, f.tl);
+        CHECK(!same.changesAnything(), "an empty key set on an unswept track is not a change");
+        SetTrackSweepKeysCommand cmd(f.patTrack, bump, f.tl);
+        CHECK(cmd.changesAnything(), "new Sweep keys are a change");
+    }
+    um.execute(std::make_unique<SetTrackSweepKeysCommand>(f.patTrack, bump, f.tl), f.tl);
+    CHECK(f.tl.getTrack(f.patTrack)->sweep.keys == bump, "keys stored in order");
+    CHECK(f.tl.getTrack(f.patTrack)->trackLens.at(f.regB).base == src.base,
+          "the source's Lens base is untouched");
+    col.setLensRoamSnapshot(buildLensRoamSnapshot(f.tl));
+    CHECK(col.lensRoamSnapshot()->counts().sweepTracks == 1, "counts: one swept track");
+
+    auto sweepZoom = [](double t) {      // the bump, by hand (Linear segments)
+        if (t <= 4320) return 1.0;
+        if (t <= 4800) return 1.0 + 0.5 * (t - 4320) / 480.0;
+        if (t <= 5280) return 1.5 - 0.5 * (t - 4800) / 480.0;
+        return 1.0;
+    };
+    auto sweepCx = [](double t) {
+        if (t <= 4320) return 0.0;
+        if (t <= 4800) return 0.2 * (t - 4320) / 480.0;
+        return 0.2;
+    };
+    auto sweepRot = [](double t) {
+        if (t <= 4320) return 0.0;
+        if (t <= 5280) return 12.0 * (t - 4320) / 960.0;
+        return 12.0;
+    };
+
+    // Zoom multiplies, centre and rotation add, on the base; centerY (unkeyed) is untouched.
+    bool values = true;
+    for (int64_t t = 3900; t < 5700; t += 37) {
+        const LensParams p = lensAt(f.tl, col, built.events, t);
+        values = values
+            && feq(p.zoom, static_cast<float>(1.2 * sweepZoom(static_cast<double>(t))))
+            && feq(p.centerX, static_cast<float>(0.4 + sweepCx(static_cast<double>(t))))
+            && feq(p.rotationDeg, static_cast<float>(sweepRot(static_cast<double>(t))))
+            && p.centerY == 0.5f && p.fit == LensFit::Cover;
+    }
+    CHECK(values, "zoom x, centre +, rotation +, centerY unkeyed: every sampled tick across both notes");
+    CHECK(feq(lensAt(f.tl, col, built.events, 4800).zoom, 1.2f * 1.5f),
+          "the peak lands exactly on note 2's note-on");
+
+    // One continuous move: the note 1 -> note 2 hand-over has no jump. Tick by
+    // tick over the whole bump, the zoom never steps by more than the ramp's
+    // own slope, and it rises then falls once.
+    float prev = lensAt(f.tl, col, built.events, 4320).zoom;
+    float maxStep = 0.0f;
+    int rises = 0, falls = 0;
+    for (int64_t t = 4321; t <= 5280; ++t) {
+        const float z = lensAt(f.tl, col, built.events, t).zoom;
+        maxStep = std::max(maxStep, std::fabs(z - prev));
+        if (z > prev + 1e-6f) ++rises;
+        if (z < prev - 1e-6f) ++falls;
+        prev = z;
+    }
+    CHECK(maxStep < 1.2f * 0.5f / 480.0f * 1.01f,
+          "no tick-to-tick jump anywhere in the bump, boundary included (max step = the ramp's slope)");
+    CHECK(rises == 480 && falls == 480, "it rises for 480 ticks and falls for 480: one bump, two notes");
+    const float bAt = lensAt(f.tl, col, built.events, 4799).zoom;
+    const float cAt = lensAt(f.tl, col, built.events, 4800).zoom;
+    CHECK(std::fabs(cAt - bAt) < 0.002f, "last tick of note 1 vs first tick of note 2: continuous");
+
+    // The same bump WITHOUT a per-track layer would restart on each note; with a hit
+    // curve on top the layers stack (base x hit x sweep), Order of operations kept.
+    {
+        LensTrack withHit = src;
+        withHit.keys = punchDriftCurve();
+        f.tl.getTrackMutable(f.patTrack)->trackLens[f.regB] = withHit;
+        col.setLensRoamSnapshot(buildLensRoamSnapshot(f.tl));
+        const double t = 4800 + 60;                           // note 2, +60: mid punch
+        const double hit = hitLayer(withHit.keys, LensChannel::Zoom, withHit.zones, 960, 60, 1.0);
+        const LensParams p = lensAt(f.tl, col, built.events, static_cast<int64_t>(t));
+        CHECK(feq(p.zoom, static_cast<float>(1.2 * hit * sweepZoom(t))),
+              "base x hit curve x Sweep: the note animation first, Sweep after");
+        f.tl.getTrackMutable(f.patTrack)->trackLens[f.regB] = src;
+        col.setLensRoamSnapshot(buildLensRoamSnapshot(f.tl));
+    }
+
+    // A Clip Track is swept the same way (the layer belongs to the track).
+    um.execute(std::make_unique<SetTrackSweepKeysCommand>(f.clipTrack, std::vector<LensKey>{
+        lensKey(LensChannel::Zoom, KeyAnchor::Origin, 0,    1.0),
+        lensKey(LensChannel::Zoom, KeyAnchor::Origin, 1920, 2.0),
+    }, f.tl), f.tl);
+    {
+        auto snap = buildLensRoamSnapshot(f.tl);
+        LensRoamSnapshot::EventClock c;
+        c.frameTick = 960; c.eventStartTick = 0; c.eventLenTicks = 3840;
+        const LensParams p = snap->lensForEventAt(f.clipTrack, f.clip1, f.regA, c);
+        CHECK(feq(p.zoom, 1.5f), "a Clip Track's Sweep layers onto the clip's Lens too");
+    }
+    um.undo(f.tl);
+    col.setLensRoamSnapshot(buildLensRoamSnapshot(f.tl));
+
+    // ── held gap: the frozen picture stays, the Sweep keeps running ──
+    {
+        const std::vector<LensKey> tail = {
+            lensKey(LensChannel::Zoom, KeyAnchor::Origin, 5760, 1.0),
+            lensKey(LensChannel::Zoom, KeyAnchor::Origin, 6720, 1.3),
+        };
+        um.execute(std::make_unique<SetTrackSweepKeysCommand>(f.patTrack, tail, f.tl), f.tl);
+        FrameCollector held;
+        held.setLensRoamSnapshot(buildLensRoamSnapshot(f.tl));
+        auto b2 = xleth::videoevents::build(f.tl, 140.0, 48000.0);
+        lensAt(f.tl, held, b2.events, 5700);                  // note 2 on screen: the hold remembers it
+        const auto& reqs = held.collectRequests(6240, f.tl, 48000, kTickFps, b2.events);
+        const CellFrameRequest* r = reqFor(reqs, f.patTrack);
+        CHECK(r != nullptr, "tick 6240 is a gap the hold fills");
+        if (r) {
+            CHECK(feq(r->lens.zoom, 1.2f * 1.15f),
+                  "the held picture keeps its framing (zoom 1.2) and the Sweep keeps moving (x1.15 at 6240)");
+            const LensParams later = lensAt(f.tl, held, b2.events, 6720);
+            CHECK(feq(later.zoom, 1.2f * 1.3f), "...and reaches 1.3 at 6720, still held");
+        }
+        um.undo(f.tl);
+    }
+    CHECK(f.tl.getTrack(f.patTrack)->sweep.keys == bump, "undo restores the bump keys");
+
+    // ── preview == export: the live timeline against the frozen copy ──
+    {
+        const auto liveEvents = xleth::videoevents::build(f.tl, 140.0, 48000.0);
+        const FrozenTimelineCopy frozen = makeFrozenTimelineCopy(f.tl);
+        const Timeline& ex = *frozen.timeline;
+        const auto exEvents = xleth::videoevents::build(ex, 140.0, 48000.0);
+        const std::unordered_map<int, std::string> plan;
+        FrameCollector preview, exporter;
+        preview.setLensRoamSnapshot(buildLensRoamSnapshot(f.tl));
+        exporter.setLensRoamSnapshot(buildLensRoamSnapshot(ex));
+        int cells = 0, swept = 0;
+        bool same = true;
+        for (int64_t tick = 3840; tick < 6400; tick += 53) {
+            const std::vector<CellFrameRequest> pr =
+                preview.collectRequests(tick, f.tl, 48000, kTickFps, liveEvents.events);
+            const std::vector<CellFrameRequest> er =
+                exporter.collectRequests(tick, ex, 48000, kTickFps, exEvents.events,
+                                         /*allowProxy=*/false, /*projectStartSample=*/0,
+                                         /*posterMode=*/false, &plan);
+            const CellFrameRequest* a = reqFor(pr, f.patTrack);
+            const CellFrameRequest* b = reqFor(er, f.patTrack);
+            if (!a || !b) continue;
+            ++cells;
+            same = same && a->lens == b->lens;
+            if (a->lens.zoom != 1.2f) ++swept;
+        }
+        CHECK(cells > 40 && swept > 15 && same, "preview == export, bit for bit, on every sampled tick");
+    }
+
+    // ── threading: a lookup allocates nothing and locks nothing ──
+    {
+        auto snap = buildLensRoamSnapshot(f.tl);
+        LensRoamSnapshot::EventClock c;
+        c.frameTick = 4500; c.eventStartTick = 3840; c.eventLenTicks = 960;
+        const long long before = g_allocs.load();
+        float sink = 0.0f;
+        for (int i = 0; i < 20000; ++i) {
+            c.frameTick = 3840 + (i % 1900);
+            sink += snap->lensForEventAt(f.patTrack, -1, f.regB, c).zoom;
+        }
+        CHECK(g_allocs.load() == before && sink > 0.0f, "lensForEventAt with a Sweep: zero allocations over 20k lookups");
+    }
+
+    // ── save / load; a project without a Sweep saves without the key ──
+    {
+        const fs::path dir = freshDir("p11_sweep");
+        ProjectManager pm;
+        bool ok = pm.createProject(dir.string(), "p11_sweep") && pm.saveProject(f.tl);
+        ProjectManager pm2;
+        auto loaded = pm2.loadProject(dir.string());
+        const TrackInfo* lt = (ok && loaded) ? loaded->getTrack(f.patTrack) : nullptr;
+        CHECK(lt && lt->sweep.keys == bump, "save/load keeps the keys, order, anchors and interp");
+        const nlohmann::json withKeys = *f.tl.getTrack(f.patTrack);
+        const nlohmann::json without  = *f.tl.getTrack(f.clipTrack);
+        CHECK(withKeys.contains("sweep") && !without.contains("sweep"),
+              "an unswept track writes no 'sweep' key (old projects re-save byte-identically)");
+        const SweepTrack round = lensroam::sweepTrackFromJson(lensroam::sweepTrackToJson(sweepOf(bump)));
+        CHECK(round.keys == bump, "sweepTrackToJson / FromJson round trip");
+        CHECK(lensroam::sweepTrackFromJson(nlohmann::json(7)).keys.empty()
+              && lensroam::sweepTrackFromJson(nlohmann::json::object()).keys.empty(),
+              "a malformed or empty sweep object loads as no Sweep");
+    }
+
+    // ── undo / redo / clear ──
+    um.undo(f.tl);
+    CHECK(f.tl.getTrack(f.patTrack)->sweep.keys.empty()
+          && buildLensRoamSnapshot(f.tl)->counts().sweepTracks == 0, "undo restores an unswept track");
+    um.redo(f.tl);
+    CHECK(f.tl.getTrack(f.patTrack)->sweep.keys == bump, "redo restores the bump");
+    um.execute(std::make_unique<SetTrackSweepKeysCommand>(f.patTrack, std::vector<LensKey>{}, f.tl), f.tl);
+    col.setLensRoamSnapshot(buildLensRoamSnapshot(f.tl));
+    CHECK(f.tl.getTrack(f.patTrack)->sweep.keys.empty()
+          && lensAt(f.tl, col, built.events, 4800).zoom == 1.2f, "clearing the keys removes the Sweep");
+    um.undo(f.tl);
+    CHECK(f.tl.getTrack(f.patTrack)->sweep.keys == bump, "undo the clear");
+}
+
 int main() {
     std::cout << "[LensRoam] Lens + Roam P1 tests\n";
     test_defaults();
@@ -2522,6 +2794,7 @@ int main() {
     test_p9_clip_keys_command();
     test_p9_batch_note_keys();
     test_p10_roam_keys_command();
+    test_p11_sweep();
     std::cout << "[LensRoam] " << g_pass << " passed, " << g_fail << " failed\n";
     return g_fail == 0 ? 0 : 1;
 }

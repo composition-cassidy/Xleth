@@ -21,7 +21,8 @@
 import { timelineEvents } from '../timelineEvents.js'
 
 const TAG = '[LensBridge]'
-// (P9 adds setNotesLensKeys, setClipLensKeys, getHitPresets below; P10 adds setTrackRoamKeys.)
+// (P9 adds setNotesLensKeys, setClipLensKeys, getHitPresets below; P10 adds setTrackRoamKeys;
+// P11 adds setTrackSweepKeys.)
 
 export const LENS_FIELDS = ['fit', 'centerX', 'centerY', 'zoom', 'rotationDeg', 'flip']
 export const ROAM_FIELDS = ['offsetX', 'offsetY', 'scale', 'rotationDeg', 'bounds', 'layer']
@@ -101,6 +102,17 @@ export function resetTrackRoam(trackId) {
  */
 export function setTrackRoamKeys(trackId, keys) {
   return call('setTrackRoamKeys', `track=${trackId} ${keys?.length ?? 0} keys`, [trackId, keys], { write: true })
+}
+
+/**
+ * Replace a track's Sweep keys (P11) as ONE undo step, whatever the gesture changed.
+ * keys: [{ channel: 'zoom'|'centerX'|'centerY'|'rotationDeg', anchor: 'Origin',
+ * pos: timeline ticks, value, interp }]. A Sweep key is a LAYER on the track's Lens,
+ * evaluated after each note's own animation: zoom multiplies, centre and rotation add,
+ * an unkeyed channel adds nothing. Resolves to { trackId, changed, keys }.
+ */
+export function setTrackSweepKeys(trackId, keys) {
+  return call('setTrackSweepKeys', `track=${trackId} ${keys?.length ?? 0} keys`, [trackId, keys], { write: true })
 }
 
 // ── Per-note overrides (P8) ──────────────────────────────────────────────────

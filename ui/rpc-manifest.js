@@ -799,6 +799,15 @@ const METHODS = [
     returns: 'value',
     binary: null,
   },
+  // ── Lens + Roam P11: Track Sweep keys (TimelineTicks, a Lens layer) ──
+  {
+    method: 'timeline_setTrackSweepKeys',
+    channels: ['xleth:timeline:setTrackSweepKeys'],
+    api: { 'timeline.setTrackSweepKeys': 'xleth:timeline:setTrackSweepKeys' },
+    handler: 'Timeline_SetTrackSweepKeys',
+    returns: 'value',
+    binary: null,
+  },
   // ── Lens + Roam P9: Clip Track event Lens keys (EventTicks) ──
   {
     method: 'timeline_setClipLensKeys',

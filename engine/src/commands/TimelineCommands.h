@@ -1815,6 +1815,23 @@ private:
     std::vector<RoamKey> newKeys_;
 };
 
+// Track Sweep keys (P11): TrackInfo::sweep.keys, Lens channels on TimelineTicks
+// (anchor Origin, pos = timeline ticks). Same shape as SetTrackRoamKeysCommand:
+// a whole-vector swap, ONE command = ONE undo step per gesture, built only when
+// changesAnything().
+class SetTrackSweepKeysCommand : public Command {
+public:
+    SetTrackSweepKeysCommand(int trackId, std::vector<LensKey> keys, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+    bool changesAnything() const { return oldKeys_ != newKeys_; }
+private:
+    int                  trackId_;
+    std::vector<LensKey> oldKeys_;
+    std::vector<LensKey> newKeys_;
+};
+
 // ─── Lens + Roam P8: per-note overrides and the hit curve ────────────────────
 // docs/XLETH_LENS_ROAM_SPEC.md, "Storage": per note, keyed {patternId,
 // noteId}: lensOverride {mode: Nudge | Own, keys}; absent = Follow. The

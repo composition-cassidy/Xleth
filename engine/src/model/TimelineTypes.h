@@ -1833,6 +1833,10 @@ struct TrackInfo {
     // on load. Unused on a Clip track (each clip carries its own lens).
     RoamTrack                       roam;
     std::map<int, LensTrack>        trackLens;
+    // sweep (P11): this track's timeline-absolute Lens offset, a layer on the
+    // framing after the note animation (zoom multiplies; centre and rotation add).
+    // Missing / empty = no Sweep.
+    SweepTrack                      sweep;
 
     // Sub-column subdivision used when placing this track in the grid. 1 =
     // full column (default), 2 = half, 4 = quarter, 8 = eighth. Drives the

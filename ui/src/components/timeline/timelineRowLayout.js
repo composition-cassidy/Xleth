@@ -122,6 +122,7 @@ export function buildTimelineRows({
   automationGroupHeaderHeight = AUTOMATION_GROUP_HEADER_HEIGHT,
   reelLanes = null,
   roamLanes = null,
+  sweepLanes = null,
 } = {}) {
   const rows = []
   if (!Array.isArray(tracks)) return rows
@@ -186,6 +187,28 @@ export function buildTimelineRows({
         label: 'Reel',
       })
       y += reelHeight
+    }
+
+    // Sweep lane (P11; a Pattern track with a Reel lane, the lane switched on): the
+    // child row directly under the Reel lane. A graph of ONE Lens parameter on the
+    // arrangement's ticks: the track's timeline-absolute Lens offset.
+    if (sweepLanes?.[String(trackId)]) {
+      const sweepHeight = roamLaneHeight(trackHeight)
+      rows.push({
+        id: `sweep:${trackId}`,
+        rowType: 'sweep',
+        laneKind: 'sweep',
+        trackId: null,
+        trackIndex: null,
+        parentTrackId: trackId,
+        parentTrackIndex: trackIndex,
+        y,
+        height: sweepHeight,
+        trackHeight,
+        visible: true,
+        label: 'Sweep',
+      })
+      y += sweepHeight
     }
 
     // Roam key lane (a track with a cell, the lane switched on): the next child row,
@@ -279,13 +302,14 @@ export function buildTimelineRows({
 // shifted geometry is identical everywhere.
 export function buildTrackLayout({
   tracks, graphStates = {}, collapsed = null, folderLayout = null, trackHeight = TRACK_HEIGHT,
-  automationGroups = null, reelLanes = null, roamLanes = null,
+  automationGroups = null, reelLanes = null, roamLanes = null, sweepLanes = null,
 } = {}) {
-  const rows = buildTimelineRows({ tracks, graphStates, collapsed, folderLayout, trackHeight, automationGroups, reelLanes, roamLanes })
+  const rows = buildTimelineRows({ tracks, graphStates, collapsed, folderLayout, trackHeight, automationGroups, reelLanes, roamLanes, sweepLanes })
   const trackRows = rows.filter((r) => r.rowType === 'track')
   const macroRows = rows.filter((r) => r.rowType === 'macroAutomation')
   const reelRows = rows.filter((r) => r.rowType === 'reel')
   const roamRows = rows.filter((r) => r.rowType === 'roam')
+  const sweepRows = rows.filter((r) => r.rowType === 'sweep')
   const folderRows = rows.filter((r) => r.rowType === 'folder')
   const automationGroupRows = rows.filter((r) => r.rowType === 'automationGroupHeader')
   const automationLaneRows = rows.filter((r) => r.rowType === 'automationLane')
@@ -318,7 +342,7 @@ export function buildTrackLayout({
     if (y < 0) return 0
     for (const r of rows) {
       if (y >= r.y && y < r.y + r.height) {
-        if (r.rowType === 'folder' || r.rowType === 'automationGroupHeader' || r.rowType === 'automationLane' || r.rowType === 'reel' || r.rowType === 'roam') return -1
+        if (r.rowType === 'folder' || r.rowType === 'automationGroupHeader' || r.rowType === 'automationLane' || r.rowType === 'reel' || r.rowType === 'roam' || r.rowType === 'sweep') return -1
         return r.rowType === 'track' ? r.trackIndex : r.parentTrackIndex
       }
     }
@@ -338,6 +362,15 @@ export function buildTrackLayout({
   // fall through to the parent track's blocks.
   function roamRowAtY(y) {
     for (const r of roamRows) {
+      if (y >= r.y && y < r.y + r.height) return r
+    }
+    return null
+  }
+
+  // Returns the Sweep lane row whose band contains Y, else null. Like the Roam lane
+  // it resolves to no track (-1): a click in it never reaches the parent's blocks.
+  function sweepRowAtY(y) {
+    for (const r of sweepRows) {
       if (y >= r.y && y < r.y + r.height) return r
     }
     return null
@@ -367,6 +400,7 @@ export function buildTrackLayout({
     macroRows,
     reelRows,
     roamRows,
+    sweepRows,
     folderRows,
     automationGroupRows,
     automationLaneRows,
@@ -380,6 +414,8 @@ export function buildTrackLayout({
     getReelRows: () => reelRows,
     roamRowAtY,
     getRoamRows: () => roamRows,
+    sweepRowAtY,
+    getSweepRows: () => sweepRows,
     automationLaneRowAtY,
     folderRowAtY: (y) => folderRows.find(r => y >= r.y && y < r.y + r.height) ?? null,
     automationGroupRowAtY: (y) => automationGroupRows.find(r => y >= r.y && y < r.y + r.height) ?? null,

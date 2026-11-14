@@ -3209,6 +3209,28 @@ std::string SetTrackRoamKeysCommand::describe() const {
          + std::to_string(newKeys_.size()) + " keys)";
 }
 
+// ─── SetTrackSweepKeysCommand (P11) ──────────────────────────────────────────
+
+SetTrackSweepKeysCommand::SetTrackSweepKeysCommand(int trackId, std::vector<LensKey> keys,
+                                                   const Timeline& timeline)
+    : trackId_(trackId), newKeys_(std::move(keys))
+{
+    if (const TrackInfo* t = timeline.getTrack(trackId)) oldKeys_ = t->sweep.keys;
+}
+
+void SetTrackSweepKeysCommand::execute(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(trackId_)) t->sweep.keys = newKeys_;
+}
+
+void SetTrackSweepKeysCommand::undo(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(trackId_)) t->sweep.keys = oldKeys_;
+}
+
+std::string SetTrackSweepKeysCommand::describe() const {
+    return "Set Track Sweep keys (track=" + std::to_string(trackId_) + ", "
+         + std::to_string(newKeys_.size()) + " keys)";
+}
+
 // ─── Lens + Roam P8: per-note overrides ──────────────────────────────────────
 
 namespace {

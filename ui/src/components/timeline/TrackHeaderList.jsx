@@ -1,8 +1,10 @@
 import { useCallback, useMemo, useRef, useState, useEffect } from 'react'
-import { IconButton, isHeard } from '../../ui-kit'
+import { IconButton, Toggle, isHeard } from '../../ui-kit'
 import Disclosure from '../browser/Disclosure.jsx'
 import TrackHeader from './TrackHeader.jsx'
 import RoamLaneHeader from './RoamLaneHeader.jsx'
+import SweepLaneHeader from './SweepLaneHeader.jsx'
+import useSweepKeysStore from '../../stores/useSweepKeysStore.js'
 import TrackColorPopover from './TrackColorPopover.jsx'
 import TrackContextMenu from './TrackContextMenu.jsx'
 import { RULER_HEIGHT, HEADER_WIDTH, ADD_TRACK_ROW_HEIGHT, TIMELINE_HSCROLL_HEIGHT } from '../../constants/timeline.js'
@@ -46,6 +48,8 @@ export default function TrackHeaderList({
   onToggleReelLane,
   // Roam key lane (a track with a cell, the lane switched on): one row per such track.
   roamRows = [],
+  // Sweep lane (a Pattern track with a Reel lane, the lane switched on): one row per such track.
+  sweepRows = [],
   onHideMacroLane,
   automationGroupRows = [],
   automationLaneRows = [],
@@ -85,6 +89,15 @@ export default function TrackHeaderList({
     for (const row of roamRows) map.set(row.parentTrackId, row)
     return map
   }, [roamRows])
+
+  const sweepByTrack = useMemo(() => {
+    const map = new Map()
+    for (const row of sweepRows) map.set(row.parentTrackId, row)
+    return map
+  }, [sweepRows])
+  // Which Sweep lanes are open: the Reel header carries the switch (the lane sits under it).
+  const sweepLaneOpen = useSweepKeysStore((s) => s.laneOpen)
+  const toggleSweepLane = useSweepKeysStore((s) => s.toggleLane)
 
   const lanesByTrack = useMemo(() => {
     const map = new Map()
@@ -224,6 +237,7 @@ export default function TrackHeaderList({
     const laneRows = lanesByTrack.get(track.id) ?? []
     const reelRow = reelByTrack.get(track.id)
     const roamRow = roamByTrack.get(track.id)
+    const sweepRow = sweepByTrack.get(track.id)
     return (
       <div key={track.id} className="track-header-group">
         <TrackHeader
@@ -270,8 +284,17 @@ export default function TrackHeaderList({
             <span className={styles.reelLabel}>Reel</span>
             <IcLock size={12} className={styles.groupIcon} aria-hidden="true" />
             <span className={styles.reelHint}>Timing comes from notes</span>
+            <Toggle
+              size="sm" on={sweepLaneOpen.has(track.id)} onChange={() => toggleSweepLane(track.id)}
+              aria-label={`Sweep lane for ${track.name ?? 'track'}`}
+              hint="Show the Sweep lane: a Lens offset that runs across several notes."
+              hintMods="Keys sit on the timeline, not on a note. Zoom multiplies each note's framing; centre and rotation add."
+            >
+              Sweep
+            </Toggle>
           </div>
         )}
+        {sweepRow && <SweepLaneHeader key={sweepRow.id} row={sweepRow} color={color} trackName={track.name} />}
         {roamRow && <RoamLaneHeader key={roamRow.id} row={roamRow} color={color} trackName={track.name} />}
         {renderAutomationGroup(track.id)}
         {laneRows.map(lane => (

@@ -189,7 +189,7 @@ export default function LensPanel({ target, cellTrackId, context, frameRef, clip
       </div>
       {target.kind === 'source' && <SourceLensExtras target={target} lens={value} advanced={advanced} />}
       {target.kind === 'clip' && advanced && (
-        <ClipLensAdvanced clipId={target.clipId} lens={value} clipTiming={clipTiming} />
+        <ClipLensAdvanced clipId={target.clipId} trackId={cellTrackId} lens={value} clipTiming={clipTiming} />
       )}
     </section>
   )

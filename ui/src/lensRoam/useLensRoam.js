@@ -321,7 +321,12 @@ export function useRoamLaneData(trackIds) {
     for (const l of layout?.fullscreenLayers ?? []) placed.add(l.trackId)
     const byTrack = new Map()
     for (const t of res?.tracks ?? []) {
-      byTrack.set(t.trackId, { base: t.roam ?? ROAM_IDENTITY, keys: Array.isArray(t.keys) ? t.keys : NO_KEYS })
+      byTrack.set(t.trackId, {
+        base: t.roam ?? ROAM_IDENTITY,
+        keys: Array.isArray(t.keys) ? t.keys : NO_KEYS,
+        // P11: the track's Sweep keys (Lens channels, timeline ticks).
+        sweep: Array.isArray(t.sweep) ? t.sweep : NO_KEYS,
+      })
     }
     // `placed` keeps its identity while its members do not change, so the arrangement's
     // row layout (which depends on it) is not rebuilt by every refetch.
@@ -340,7 +345,20 @@ export function useRoamLaneData(trackIds) {
     token.current++
     setState((s) => {
       const byTrack = new Map(s.byTrack)
-      byTrack.set(trackId, { base: base ?? byTrack.get(trackId)?.base ?? ROAM_IDENTITY, keys })
+      byTrack.set(trackId, {
+        base: base ?? byTrack.get(trackId)?.base ?? ROAM_IDENTITY, keys,
+        sweep: byTrack.get(trackId)?.sweep ?? NO_KEYS,
+      })
+      return { placed: s.placed, byTrack }
+    })
+  }, [])
+  // The same for a Sweep write (the lane, the Lens panel): the engine's post-state at once.
+  const applySweepKeys = useCallback((trackId, sweep) => {
+    token.current++
+    setState((s) => {
+      const byTrack = new Map(s.byTrack)
+      const cur = byTrack.get(trackId)
+      byTrack.set(trackId, { base: cur?.base ?? ROAM_IDENTITY, keys: cur?.keys ?? NO_KEYS, sweep })
       return { placed: s.placed, byTrack }
     })
   }, [])
@@ -355,7 +373,10 @@ export function useRoamLaneData(trackIds) {
     timelineEvents.addEventListener('lens-roam-changed', on)
     return () => timelineEvents.removeEventListener('lens-roam-changed', on)
   }, [applyKeys])
-  return useMemo(() => ({ placed: state.placed, byTrack: state.byTrack, applyKeys }), [state, applyKeys])
+  return useMemo(
+    () => ({ placed: state.placed, byTrack: state.byTrack, applyKeys, applySweepKeys }),
+    [state, applyKeys, applySweepKeys],
+  )
 }
 
 // ── Grid layout and the track list (geometry for both) ───────────────────────

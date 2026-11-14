@@ -675,6 +675,10 @@ std::vector<CellFrameRequest>& FrameCollector::collectRequests(
         // way Note Fade runs), Roam on the timeline tick, so a seek into a
         // note lands mid-animation and the export, sampling the same tick,
         // gets the same value.
+        // P11: the Lens WITHOUT the track's Sweep is what a held gap keeps (the
+        // frozen picture); the Sweep itself runs on the timeline tick, so it is
+        // applied per frame, live or held.
+        LensParams lensPreSweep = req.lens;
         if (const LensRoamSnapshot* lr = lensRoam_.get()) {
             LensRoamSnapshot::EventClock clock;
             clock.frameTick      = frameTick;
@@ -684,7 +688,9 @@ std::vector<CellFrameRequest>& FrameCollector::collectRequests(
             LensRoamSnapshot::NoteRef note;
             note.patternId = ev->lensPatternId;
             note.noteId    = ev->lensNoteId;
-            req.lens = lr->lensForEventAt(trackId, ev->clipId, ev->regionId, clock, note);
+            // Order (spec): Lens base -> note animation -> Sweep -> chain / flip.
+            lensPreSweep = lr->lensBeforeSweep(trackId, ev->clipId, ev->regionId, clock, note);
+            req.lens = lr->applySweep(trackId, lensPreSweep, frameTick);
             req.roam = lr->roamAt(trackId, frameTick);
         }
 
@@ -711,7 +717,7 @@ std::vector<CellFrameRequest>& FrameCollector::collectRequests(
             s.lastFrame            = req.sourceFrameIndex;
             s.lastPath             = req.sourcePath;
             s.lastOrientation      = req.orientation;
-            s.lastLens             = req.lens;
+            s.lastLens             = lensPreSweep;
             s.lastSourcePixelW     = req.sourcePixelW;
             s.lastSourcePixelH     = req.sourcePixelH;
             s.suppressAfterFadeOut = ev->fadeOutPercent > 0.0f
@@ -783,13 +789,17 @@ std::vector<CellFrameRequest>& FrameCollector::collectRequests(
         req.zOrder           = zOrder;
         req.orientation      = hold.lastOrientation;
         req.trackId          = trackId;
-        req.lens             = hold.lastLens;   // the picture as last drawn
+        req.lens             = hold.lastLens;   // the picture as last drawn (no Sweep: see below)
         req.sourcePixelW     = hold.lastSourcePixelW;
         req.sourcePixelH     = hold.lastSourcePixelH;
         // Roam belongs to the track, not the event: its keys keep running on
         // the timeline tick through a held gap.
-        if (const LensRoamSnapshot* lr = lensRoam_.get())
+        // Sweep too (P11): it is timeline-absolute, so a move that spans a gap
+        // between notes carries on through the held picture.
+        if (const LensRoamSnapshot* lr = lensRoam_.get()) {
             req.roam = lr->roamAt(trackId, frameTick);
+            req.lens = lr->applySweep(trackId, hold.lastLens, frameTick);
+        }
 
         // A held frame is the SAME picture the live path was drawing an
         // instant ago, so it has to carry the same look. The compositor runs

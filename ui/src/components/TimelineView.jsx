@@ -9,7 +9,8 @@ import { buildReelModel } from './timeline/reelLaneModel.js'
 import useReelLaneStore from '../stores/useReelLaneStore.js'
 import useRoamKeysStore from '../stores/useRoamKeysStore.js'
 import { useRoamLaneData } from '../lensRoam/useLensRoam.js'
-import { setTrackRoamKeys } from '../lensRoam/lensRoamApi.js'
+import useSweepKeysStore from '../stores/useSweepKeysStore.js'
+import { setTrackRoamKeys, setTrackSweepKeys } from '../lensRoam/lensRoamApi.js'
 import { drawLengthForSnap, adoptDrawLength, resetDrawLength } from './timeline/drawLength.js'
 import { sourceTicksForTimelineTicks } from './timeline/clipSourceDomain.js'
 import { tokenValue } from '../theming/tokenValue.ts'
@@ -599,9 +600,45 @@ export default function TimelineView({
     },
   }), [roamData.byTrack, applyRoamKeys])
 
+  // ── Sweep lanes (P11) ──────────────────────────────────────────────────────
+  // A lane directly under the Reel lane of a Pattern track: the track's timeline-
+  // absolute Lens offset for moves that span several notes. Switched on per track
+  // (the Reel header's Sweep toggle); a track that arrives with Sweep keys shows its
+  // lane once, so keys are never hidden by default. Only a track with a Reel lane
+  // (a Pattern track with a video source) can have one.
+  const sweepLaneOpen = useSweepKeysStore((s) => s.laneOpen)
+  const sweepSeenKeyed = useRef(new Set())
+  useEffect(() => {
+    for (const [id, d] of roamData.byTrack) {
+      if (d.sweep?.length > 0 && !sweepSeenKeyed.current.has(id)) {
+        sweepSeenKeyed.current.add(id)
+        useSweepKeysStore.getState().setLaneOpen(id, true)
+      }
+    }
+  }, [roamData.byTrack])
+  const sweepLanes = useMemo(() => {
+    const lanes = {}
+    for (const id of sweepLaneOpen) if (reelLanes[String(id)]) lanes[id] = true
+    return lanes
+  }, [sweepLaneOpen, reelLanes])
+  const { applySweepKeys } = roamData
+  const sweepCanvas = useMemo(() => {
+    const byTrack = new Map()
+    for (const [id, d] of roamData.byTrack) byTrack.set(id, { base: {}, keys: d.sweep ?? [] })
+    return {
+      byTrack,
+      commitKeys: async (trackId, keys) => {
+        const res = await setTrackSweepKeys(trackId, keys)
+        if (Array.isArray(res?.keys)) applySweepKeys(trackId, res.keys)
+        useSweepKeysStore.getState().clearDraft()
+        return res
+      },
+    }
+  }, [roamData.byTrack, applySweepKeys])
+
   const trackLayout = useMemo(
-    () => buildTrackLayout({ tracks, graphStates, folderLayout: normalizedFolderLayout, trackHeight, automationGroups, reelLanes, roamLanes }),
-    [tracks, graphStates, normalizedFolderLayout, trackHeight, automationGroups, reelLanes, roamLanes],
+    () => buildTrackLayout({ tracks, graphStates, folderLayout: normalizedFolderLayout, trackHeight, automationGroups, reelLanes, roamLanes, sweepLanes }),
+    [tracks, graphStates, normalizedFolderLayout, trackHeight, automationGroups, reelLanes, roamLanes, sweepLanes],
   )
   const [selectedBlockIds, setSelectedBlockIds] = useState(new Set())
 
@@ -4654,6 +4691,7 @@ export default function TimelineView({
               macroRows={trackLayout.macroRows}
               reelRows={trackLayout.reelRows}
               roamRows={trackLayout.roamRows}
+              sweepRows={trackLayout.sweepRows}
               onToggleReelLane={handleToggleReelLane}
               onHideMacroLane={(trackId, macroNodeId) =>
                 useEffectChainStore.getState().hideMacroAutomationLaneForTrack?.(trackId, macroNodeId)}
@@ -4804,6 +4842,7 @@ export default function TimelineView({
                   trackLayout={trackLayout}
                   reel={reelModel}
                   roam={roamCanvas}
+                  sweep={sweepCanvas}
                   setSelectedClipIds={setSelectedClipIds}
                   onFocusTrack={setFocusedTrackId}
                   pencilTemplateRef={pencilTemplateRef}

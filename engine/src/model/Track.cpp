@@ -437,6 +437,9 @@ void to_json(nlohmann::json& j, const TrackInfo& t) {
     // Always written; a missing key can only mean a pre-v8 file.
     j["roam"]      = lensroam::roamTrackToJson(t.roam);
     j["trackLens"] = lensroam::trackLensToJson(t.trackLens);
+    // Sweep (P11): written only when keyed, so a project with no Sweep saves
+    // exactly as it did before the lane existed.
+    if (!t.sweep.keys.empty()) j["sweep"] = lensroam::sweepTrackToJson(t.sweep);
 
     // ── Track color (Pass 6D + 6F) ──────────────────────────────────────
     // Always emit mode; emit slot only for PaletteSlot mode and trackColorCustom
@@ -671,6 +674,8 @@ void from_json(const nlohmann::json& j, TrackInfo& t) {
                                      : RoamTrack{};
     t.trackLens = j.contains("trackLens") ? lensroam::trackLensFromJson(j.at("trackLens"))
                                           : std::map<int, LensTrack>{};
+    t.sweep     = j.contains("sweep") ? lensroam::sweepTrackFromJson(j.at("sweep"))
+                                      : SweepTrack{};
 
     // ── Track color (Pass 6D + 6F) ──────────────────────────────────────
     // Old projects (no fields) → Auto. Invalid mode / slot / custom-hex

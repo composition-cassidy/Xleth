@@ -22,6 +22,11 @@
 // and the hit curve is edited (SetHitCurveCommand, presets in
 // model/LensHitPresets.h).
 //
+// P11: the Sweep lane. A Pattern Track's timeline-absolute Lens offset for moves
+// that span several notes (TrackInfo::sweep). It is a LAYER on the track's
+// Lens, applied after the note animation and before flip: zoom multiplies,
+// centre and rotation add, an unkeyed channel is the layer identity.
+//
 // Storage (spec "Storage"):
 //   Clip Track event          Clip::lens            LensTrack {base, keys}
 //   Pattern Track source      TrackInfo::trackLens  regionId -> LensTrack {base, hitCurve}
@@ -199,6 +204,22 @@ struct KeyedParams {
 using LensTrack = KeyedParams<LensParams, LensKey>;
 using RoamTrack = KeyedParams<RoamParams, RoamKey>;
 
+// ─── Sweep (P11, spec "Sweep lane") ──────────────────────────────────────────
+// A track's timeline-absolute Lens offset. Keys are Lens channels (centerX,
+// centerY, zoom, rotationDeg) on TimelineTicks (anchor Origin, pos = ticks from
+// timeline tick 0). There is no base: Sweep is a LAYER, like the hit curve.
+// An unkeyed channel is the layer identity (zoom x1, centre +0, rotation +0),
+// and a keyed channel's value blends with the note's Lens per the spec
+// ("Blend"): zoom multiplies; centre and rotation add. So a zoom bump keyed
+// across two notes multiplies each note's own framing and one continuous move
+// plays through both.
+//
+// Order of operations (spec, unchanged): Lens base -> note animation (Follow /
+// Nudge / Own) -> Sweep -> the existing chain (flip mirrors the framed result).
+struct SweepTrack {
+    std::vector<LensKey> keys;
+};
+
 // ─── Per-note Lens override (spec "Storage", Ruling 6) ───────────────────────
 // Stored ON the PatternNote (PatternNote::lensOverride), so the spec's
 // {patternId, noteId} key is the note's own address: it rides every note
@@ -292,6 +313,10 @@ nlohmann::json lensTrackToJson(const LensTrack& t, const char* keysField = "keys
 LensTrack      lensTrackFromJson(const nlohmann::json& j, const char* keysField = "keys");
 nlohmann::json roamTrackToJson(const RoamTrack& t);
 RoamTrack      roamTrackFromJson(const nlohmann::json& j);
+// TrackInfo::sweep as {keys: [...]} (Lens channels, Origin anchors). Saved only
+// when it has keys, so a project with no Sweep is byte-identical to before P11.
+nlohmann::json sweepTrackToJson(const SweepTrack& t);
+SweepTrack     sweepTrackFromJson(const nlohmann::json& j);
 
 // TrackInfo::trackLens as an array of {regionId, base, hitCurve, zones},
 // ascending regionId. zones = {headTicks, tailTicks, shortNote: Squash|Cut};
@@ -366,6 +391,8 @@ struct LensRoamSnapshot {
         LensParams  sourceFallback;
         ChannelRuns roamKeys{};            // TimelineTicks, absolute values
         bool        roamKeyed = false;
+        ChannelRuns sweepKeys{};           // TimelineTicks, a LAYER (P11)
+        bool        swept = false;
     };
     struct ClipEntry {
         int         clipId = -1;
@@ -437,8 +464,20 @@ struct LensRoamSnapshot {
     //   Follow (no override)  base x hit curve
     //   Nudge                 base x hit curve x note keys
     //   Own                   base x note keys          (hit-curve edits never reach it)
+    // = applySweep(lensBeforeSweep(...)): the track's Sweep (P11) goes on last.
     LensParams lensForEventAt(int trackId, int clipId, int regionId, const EventClock& clock,
                               const NoteRef& note = NoteRef{}) const;
+
+    // The Lens with the note animation applied and NO Sweep: what lensForEventAt
+    // returned before P11, bit for bit. A held gap stores this, so its Sweep keeps
+    // running on the timeline tick while the frozen picture does not move.
+    LensParams lensBeforeSweep(int trackId, int clipId, int regionId, const EventClock& clock,
+                               const NoteRef& note = NoteRef{}) const;
+
+    // The track's Sweep (P11) at the timeline tick, blended onto `p` (zoom
+    // multiplies; centre and rotation add). A track with no Sweep keys returns
+    // `p` untouched, bit for bit. Double math, one rounding, like the note layers.
+    LensParams applySweep(int trackId, const LensParams& p, double frameTick) const;
 
     // The override entry for one note on one track, or null (Follow).
     const OverrideEntry* overrideFor(int trackId, int patternId, int noteId) const;
@@ -452,11 +491,13 @@ struct LensRoamSnapshot {
         int sources = 0, sourceLensNonIdentity = 0;
         int keys = 0;   // compiled keys across every curve
         int noteNudge = 0, noteOwn = 0;   // per-note overrides (per track placement)
+        int sweepTracks = 0;              // tracks with at least one Sweep key (P11)
         bool operator==(const Counts& o) const {
             return tracks == o.tracks && roamNonIdentity == o.roamNonIdentity
                 && clips == o.clips && clipLensNonIdentity == o.clipLensNonIdentity
                 && sources == o.sources && sourceLensNonIdentity == o.sourceLensNonIdentity
-                && keys == o.keys && noteNudge == o.noteNudge && noteOwn == o.noteOwn;
+                && keys == o.keys && noteNudge == o.noteNudge && noteOwn == o.noteOwn
+                && sweepTracks == o.sweepTracks;
         }
         bool operator!=(const Counts& o) const { return !(*this == o); }
     };

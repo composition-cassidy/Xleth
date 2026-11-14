@@ -1,4 +1,5 @@
-// Roam key lane: canvas painter.
+// Roam key lane: canvas painter. The Sweep lane (P11) is this same painter over the
+// Lens channels (data.kind === 'sweep'): same axes, curve and keys, its own rows.
 //
 // Drawn on the arrangement's content canvas (never DOM: a node per key would drift
 // on scroll and zoom). One lane graphs ONE Roam parameter against the timeline's own
@@ -59,11 +60,13 @@ function traceSegment(ctx, a, b, range, inner, scrollOffset, ppb, log) {
  *
  * @param {object} view   { ctx, w, h, scrollOffset, ppb, trackLayout, palette, trackColorById, mutedTrackIds }
  * @param {object} data   { dataOf(trackId) -> {base, keys}|undefined (a gesture's draft applied),
- *                          channelOf(trackId) -> channel, selected: {trackId, channel, pos}|null }
+ *                          channelOf(trackId) -> channel, selected: {trackId, channel, pos}|null,
+ *                          kind?: 'roam' | 'sweep' }
  */
 export function drawRoamLanes(view, data) {
   const { ctx, w, h, scrollOffset, ppb, trackLayout, palette, trackColorById, mutedTrackIds } = view
-  const rows = trackLayout?.getRoamRows?.()
+  const sweep = data?.kind === 'sweep'
+  const rows = sweep ? trackLayout?.getSweepRows?.() : trackLayout?.getRoamRows?.()
   if (!rows || rows.length === 0 || !data) return
   const { dataOf, channelOf, selected } = data
 
@@ -116,7 +119,11 @@ export function drawRoamLanes(view, data) {
       ctx.setLineDash([])
       ctx.fillStyle = palette.roamLabel
       ctx.textAlign = 'left'
-      ctx.fillText('No keys. Click to add one. The cell holds its base value.', 56, inner.top + inner.height / 2)
+      ctx.fillText(
+        sweep ? 'No keys. Click to add one. Sweep changes nothing until it has keys.'
+          : 'No keys. Click to add one. The cell holds its base value.',
+        56, inner.top + inner.height / 2,
+      )
       ctx.restore()
       continue
     }

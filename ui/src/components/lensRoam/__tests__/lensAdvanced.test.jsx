@@ -8,6 +8,7 @@ import { timelineEvents } from '../../../timelineEvents.js'
 import { resetHitPresetsCache } from '../../../lensRoam/lensRoamApi.js'
 import useLensPanelMode, { LENS_PANEL_MODE_KEY } from '../../../lensRoam/lensPanelMode.js'
 import useNoteSelectionStore from '../../../stores/useNoteSelectionStore.js'
+import useSweepKeysStore from '../../../stores/useSweepKeysStore.js'
 import LensPanel from '../LensPanel.jsx'
 
 // The panel's logic, with the lanes canvas replaced by a recorder of its props: what
@@ -69,6 +70,7 @@ beforeEach(() => {
     hit: [...PUNCH],
     zones: { headTicks: 120, tailTicks: 240, shortNote: 'Squash' },
     clipKeys: [],
+    sweep: [],
     notes: [noteOf(1), noteOf(2, { mode: 'Nudge', keys: [key('zoom', 'Body', 0.5, 1.2)] }), noteOf(3, { mode: 'Own', keys: [key('rotationDeg', 'Tail', 0, 10)] })],
   }
   const sourceState = (changed = true, extra = {}) => ({
@@ -86,7 +88,8 @@ beforeEach(() => {
     getLensRoam: vi.fn(async () => ({
       clips: [{ clipId: 5, lens: LENS, keys: store.clipKeys }],
       sources: [{ trackId: 7, regionId: 3, explicit: true, lens: LENS, hitCurve: store.hit, zones: store.zones }],
-      tracks: [], missing: { clipIds: [], sources: [], trackIds: [] },
+      tracks: [{ trackId: 7, roam: {}, keys: [], sweep: store.sweep }],
+      missing: { clipIds: [], sources: [], trackIds: [] },
     })),
     getHitPresets: vi.fn(async () => PRESETS),
     applyHitPreset: vi.fn(async (t, r, name) => {
@@ -127,6 +130,7 @@ beforeEach(() => {
   root = createRoot(container)
   useLensPanelMode.setState({ mode: 'simple' })
   useNoteSelectionStore.getState().clear()
+  useSweepKeysStore.setState({ laneOpen: new Set() })
   try { window.localStorage.clear() } catch { /* */ }
 })
 
@@ -406,6 +410,61 @@ describe('Advanced, multi-select (piano roll or Reel lane)', () => {
     expect(timeline.setNoteLensMode).toHaveBeenCalledWith(refsOf(1, 2, 3), 'Own')
     await click([...container.querySelectorAll('button')].find((b) => b.textContent === 'Revert to Follow'))
     expect(timeline.revertNotesToFollow).toHaveBeenCalledWith(refsOf(1, 2, 3))
+  })
+})
+
+describe('Advanced: the Sweep layer (P11)', () => {
+  beforeEach(() => { useLensPanelMode.setState({ mode: 'advanced' }) })
+  const cell = (row, col) => container.querySelector(`[data-testid="lens-layer-stack"] [data-row="${row}"] [data-col="${col}"]`).textContent
+  // zoom 1 at tick 0 -> 2 at tick 1920; centre X 0 -> +0.2 over the same ticks
+  const SWEEP = [
+    { channel: 'zoom', anchor: 'Origin', pos: 0, value: 1, interp: 'Linear' },
+    { channel: 'zoom', anchor: 'Origin', pos: 1920, value: 2, interp: 'Linear' },
+    { channel: 'centerX', anchor: 'Origin', pos: 0, value: 0, interp: 'Linear' },
+    { channel: 'centerX', anchor: 'Origin', pos: 1920, value: 0.2, interp: 'Linear' },
+  ]
+
+  it('no Sweep keys: the row says none and adds nothing to the resolved value', async () => {
+    await mountSource()
+    await select({ 1: new Set([1]) })
+    expect(container.querySelector('[data-testid="lens-layer-status-sweep"]').textContent).toBe('none')
+    expect(cell('sweep', 'zoom')).toBe('\u2014')
+    expect(cell('sweep', 'centerX')).toBe('\u2014')
+    expect(cell('resolved', 'zoom')).toContain('1.35')           // base 1.0 x the Punch's first tick, nothing else
+  })
+
+  it('a keyed Sweep is a live row: read at the note\'s own tick, and folded into Resolved (zoom x, centre +)', async () => {
+    store.sweep = SWEEP
+    await mountSource()
+    // Note 1 plays [960, 1920); the playhead is before it, so the readout is its first frame: tick 960.
+    await select({ 1: new Set([1]) })
+    expect(container.querySelector('[data-testid="lens-layer-status-sweep"]')).toBeNull()   // not inert
+    expect(cell('sweep', 'zoom')).toContain('1.50')            // 1 + (2 - 1) x 960 / 1920
+    expect(cell('sweep', 'centerX')).toContain('+10.0')        // 0.1 as a signed percent
+    expect(cell('sweep', 'centerY')).toContain('0.0')          // unkeyed: the layer identity
+    // base 1.0 x hit curve (Punch, 1.35 at the note's first tick) x Sweep 1.5
+    expect(cell('resolved', 'zoom')).toContain('2.03')
+    expect(cell('resolved', 'centerX')).toBe('60.0\u2009%')    // 0.5 + 0.1
+  })
+
+  it('the lane switch is one click and opens the Sweep lane of THIS track', async () => {
+    await mountSource()
+    const btn = () => container.querySelector('[data-testid="lens-sweep-lane-toggle"]')
+    expect(btn().textContent).toBe('Edit Sweep in the lane')
+    expect(useSweepKeysStore.getState().laneOpen.has(7)).toBe(false)
+    await click(btn())
+    expect(useSweepKeysStore.getState().laneOpen.has(7)).toBe(true)
+    expect(btn().textContent).toBe('Hide Sweep lane')
+    await click(btn())
+    expect(useSweepKeysStore.getState().laneOpen.has(7)).toBe(false)
+  })
+
+  it('a Clip Track event reads the same layer at its own tick (clip start + t)', async () => {
+    store.sweep = SWEEP
+    await mountClip()
+    // The clip starts at tick 1920 and the playhead is at 0: the readout is its first frame, tick 1920.
+    expect(cell('sweep', 'zoom')).toContain('2.00')
+    expect(cell('resolved', 'zoom')).toContain('2.00')
   })
 })
 

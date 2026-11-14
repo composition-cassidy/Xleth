@@ -6,7 +6,11 @@ import {
 } from '../../lensRoam/lensKeyModel.js'
 import { noteTimeAtPlayhead } from '../../lensRoam/lensNoteTarget.js'
 import { noteValueLabel, ticksFmt } from '../../lensRoam/lensFormats.js'
-import { clearNoteSelection, useClipKeys, useHitPresets, useSelectedNotes, useSourceCurve } from '../../lensRoam/useLensKeys.js'
+import {
+  clearNoteSelection, useClipKeys, useHitPresets, useSelectedNotes, useSourceCurve, useSweepKeys,
+} from '../../lensRoam/useLensKeys.js'
+import { applySweepLayer, sweepLayerAt } from '../../lensRoam/roamKeyModel.js'
+import useSweepKeysStore from '../../stores/useSweepKeysStore.js'
 import styles from '../inspector/Inspector.module.css'
 import lens from './lensRoam.module.css'
 import LensHitControls from './LensHitControls.jsx'
@@ -46,6 +50,40 @@ function usePlayhead() {
   return { subscribe, ticks }
 }
 
+/**
+ * The Sweep row of the layer stack (P11): the track's timeline-absolute Lens layer.
+ * `status` is what an empty row says; `stackRow` is the row itself; `lane` is the
+ * switch for the arrangement's Sweep lane, where the keys are edited.
+ */
+function useSweepLayer(trackId) {
+  const { keys } = useSweepKeys(trackId)
+  const laneOpen = useSweepKeysStore((s) => (trackId != null ? s.laneOpen.has(trackId) : false))
+  const toggleLane = useSweepKeysStore((s) => s.toggleLane)
+  const count = keys?.length ?? 0
+  return {
+    keys: keys ?? [],
+    stackRow: { id: 'sweep', label: 'Sweep', layer: true, status: count === 0 ? 'none' : null },
+    laneOpen,
+    toggleLane: () => { if (trackId != null) toggleLane(trackId) },
+    count,
+  }
+}
+
+/** The Sweep lane's switch, under the layer stack that reports its row. */
+function SweepLaneButton({ sweep }) {
+  return (
+    <div className={lens.actions}>
+      <Button
+        size="sm" onClick={sweep.toggleLane} aria-pressed={sweep.laneOpen}
+        data-testid="lens-sweep-lane-toggle"
+        hint="Show the Sweep lane under this track's Reel lane. A Sweep is a move that runs across several notes: zoom multiplies each note's framing, centre and rotation add to it."
+      >
+        {sweep.laneOpen ? 'Hide Sweep lane' : 'Edit Sweep in the lane'}
+      </Button>
+    </div>
+  )
+}
+
 /** A function that always calls the latest closure, with one stable identity. */
 function useLatest(fn) {
   const ref = useRef(fn)
@@ -74,6 +112,7 @@ function SourceAdvanced({ target, base, source }) {
   const [referenceTicks, setReferenceTicks] = useState(960)
   const playhead = usePlayhead()
   const hasNotes = notes.count > 0
+  const sweep = useSweepLayer(target.trackId)
   const primaryId = notes.primary ? `${notes.primary.patternId}:${notes.primary.noteId}` : null
 
   // A different note (or none) starts with no key selected.
@@ -103,12 +142,18 @@ function SourceAdvanced({ target, base, source }) {
     const res = resolveNoteLens({
       base, hitKeys, zones: zonesRaw, mode, noteKeys: notes.primary.keys, noteLen: r?.len ?? noteLen, t,
     })
+    // Sweep is timeline-absolute: read it at the note's own tick (the playhead inside
+    // the note, else the edge the readout is showing).
+    const place = notes.placements[0]
+    const sweepTick = r && !r.inside && place ? place.start + r.t : playhead.ticks()
+    const sweepLayer = sweepLayerAt(sweep.keys, sweepTick)
+    const resolved = applySweepLayer(res.resolved, sweepLayer)
     let note = null
     if (!r) note = 'This note is not on the timeline yet, so there is no playhead position in it.'
     else if (r.inside) note = `Playhead ${Math.round(t)} ticks into the note.`
     else note = `Playhead is ${r.edge === 'start' ? 'before' : 'after'} this note: showing its ${r.edge === 'start' ? 'first' : 'last'} frame.`
     if (notes.count > 1) note += ` Showing the first of ${notes.count} selected notes.`
-    return { values: { base: res.base, hit: res.hit, note: res.note, resolved: res.resolved }, note }
+    return { values: { base: res.base, hit: res.hit, note: res.note, sweep: sweepLayer, resolved }, note }
   })
 
   const rows = [
@@ -121,7 +166,7 @@ function SourceAdvanced({ target, base, source }) {
       id: 'note', label: 'This note', layer: true,
       status: mode === 'Follow' ? 'Follow: none' : notes.primary?.keys.length ? null : 'no keys',
     },
-    { id: 'sweep', label: 'Sweep', layer: true, status: 'none' },
+    sweep.stackRow,
     { id: 'resolved', label: 'Resolved', layer: false },
   ]
 
@@ -167,6 +212,7 @@ function SourceAdvanced({ target, base, source }) {
           rows={rows} compute={compute} subscribePlayhead={playhead.subscribe}
           label="Lens layers: base, hit curve, this note, sweep, and the resolved value at the playhead"
         />
+        <SweepLaneButton sweep={sweep} />
 
         <LensKeyLanes
           kind="note" zones={noteZones} lengthTicks={noteLen}
@@ -194,6 +240,7 @@ function SourceAdvanced({ target, base, source }) {
   return (
     <div className={lens.advanced} data-testid="lens-advanced" data-advanced-kind="hit">
       <div className={lens.subhead}><span>Hit curve</span></div>
+      <SweepLaneButton sweep={sweep} />
       <Row label="Preview note">
         <NumberBox
           label="Preview note length" hideLabel width={104}
@@ -246,8 +293,9 @@ function SourceAdvanced({ target, base, source }) {
  * @param {object} props.lens          the event's static lens (what an unkeyed channel holds)
  * @param {{startTick:number, lengthTicks:number}} props.clipTiming
  */
-export function ClipLensAdvanced({ clipId, lens: base, clipTiming }) {
+export function ClipLensAdvanced({ clipId, trackId = null, lens: base, clipTiming }) {
   const { keys, ready, write } = useClipKeys(clipId)
+  const sweep = useSweepLayer(trackId)
   const [selected, setSelected] = useState(null)
   const playhead = usePlayhead()
   useEffect(() => { setSelected(null) }, [clipId])
@@ -266,12 +314,15 @@ export function ClipLensAdvanced({ clipId, lens: base, clipTiming }) {
   const compute = useLatest(() => {
     const r = rel()
     const res = resolveClipLens({ base, keys: keys ?? [], t: r.t })
+    // Sweep: timeline-absolute, so the event's own tick (start + t) reads it.
+    const sweepLayer = sweepLayerAt(sweep.keys, start + r.t)
+    const resolvedWithSweep = applySweepLayer(res.resolved, sweepLayer)
     const keyed = {}
     for (const ch of ['zoom', 'centerX', 'centerY', 'rotationDeg']) {
       keyed[ch] = keysOfChannel(keys ?? [], ch).length ? res.resolved[ch] : null
     }
     return {
-      values: { base: res.base, event: keyed, resolved: res.resolved },
+      values: { base: res.base, event: keyed, sweep: sweepLayer, resolved: resolvedWithSweep },
       note: r.inside ? `Playhead ${Math.round(r.t)} ticks into the event.`
         : `Playhead is ${r.before ? 'before' : 'after'} this event: showing its ${r.before ? 'first' : 'last'} frame.`,
     }
@@ -286,7 +337,7 @@ export function ClipLensAdvanced({ clipId, lens: base, clipTiming }) {
   const rows = [
     { id: 'base', label: 'Base', layer: false },
     { id: 'event', label: 'This event', layer: false, status: keys.length ? null : 'no keys' },
-    { id: 'sweep', label: 'Sweep', layer: true, status: 'none' },
+    sweep.stackRow,
     { id: 'resolved', label: 'Resolved', layer: false },
   ]
 

@@ -33,6 +33,22 @@ export const ROAM_CHANNEL_LABELS = {
 export const ROAM_CHANNEL_OPTIONS = ROAM_CHANNELS.map((c) => ({ value: c, label: ROAM_CHANNEL_LABELS[c] }))
 export const INTERPS = ['Hold', 'Linear', 'EaseOut']
 
+// The Sweep lane (P11) is this same lane over the LENS channels: a track's
+// timeline-absolute Lens offset. A Sweep key is a LAYER on the framing, not an
+// absolute value: zoom multiplies, centre and rotation add, and an unkeyed channel
+// is the layer identity (x1, +0, +0). The lane code is shared, so the model knows
+// both channel families; `rotationDeg` means the same in both.
+export const SWEEP_CHANNELS = ['zoom', 'centerX', 'centerY', 'rotationDeg']
+export const SWEEP_CHANNEL_LABELS = {
+  zoom: 'Zoom', centerX: 'Center X', centerY: 'Center Y', rotationDeg: 'Rotate',
+}
+export const SWEEP_CHANNEL_OPTIONS = SWEEP_CHANNELS.map((c) => ({ value: c, label: SWEEP_CHANNEL_LABELS[c] }))
+// Every channel the lane can draw, in lane order (Roam's, then Sweep's own).
+const LANE_CHANNELS = [...ROAM_CHANNELS, 'zoom', 'centerX', 'centerY']
+
+/** A multiplier channel (identity 1, drawn on a log lane): Roam's scale, Sweep's zoom. */
+export const isMultiplierChannel = (channel) => channel === 'scale' || channel === 'zoom'
+
 // The most a key may hold. The engine accepts any finite number (a scale > 0); the
 // UI keeps keys on the lane. A cell can leave the picture from the far corner of an
 // 8 x 8 grid, so offsets reach eight cells.
@@ -41,13 +57,18 @@ export const KEY_LIMITS = {
   offsetY: [-8, 8],
   scale: [SCALE_MIN, SCALE_MAX],
   rotationDeg: [-720, 720],
+  // Sweep layers (source-normalized centre offsets, a zoom multiplier): the same
+  // bounds lensKeyModel's VALUE_MIN / VALUE_MAX give the Lens keys.
+  zoom: [SCALE_MIN, SCALE_MAX],
+  centerX: [-2, 2],
+  centerY: [-2, 2],
 }
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v))
 const ROAM_FIELD_SET = new Set(ROAM_CHANNELS)
 
 /** The identity of a channel: where the cell sits with no Roam. */
-export const roamIdentityOf = (channel) => (channel === 'scale' ? 1 : 0)
+export const roamIdentityOf = (channel) => (isMultiplierChannel(channel) ? 1 : 0)
 
 export function clampKeyValue(channel, value) {
   const [lo, hi] = KEY_LIMITS[channel] ?? [-Infinity, Infinity]
@@ -83,6 +104,37 @@ export function keyedChannels(keys) {
   return set
 }
 
+// ── Sweep layer (LensRoamSnapshot::applySweep) ───────────────────────────────
+
+/**
+ * A track's Sweep LAYER at a timeline tick: { zoom, centerX, centerY, rotationDeg },
+ * or null when it has no keys (it adds nothing). A keyed channel follows its keys
+ * (holding the first value before and the last after, like every key lane); an
+ * unkeyed one is the layer identity (x1, +0, +0). Display only: the engine is the
+ * one evaluator of what renders.
+ */
+export function sweepLayerAt(keys, tick) {
+  if (!keys || keys.length === 0) return null
+  const out = {}
+  for (const ch of SWEEP_CHANNELS) {
+    const ck = sortEventKeys(keysOfChannel(keys, ch))
+    out[ch] = ck.length > 0 ? valueAtEvent(ck, tick, roamIdentityOf(ch)) : roamIdentityOf(ch)
+  }
+  return out
+}
+
+/** A resolved Lens with the Sweep layer applied: zoom multiplies; centre and rotation add. */
+export function applySweepLayer(lensValue, layer) {
+  if (!layer) return lensValue
+  return {
+    ...lensValue,
+    zoom: lensValue.zoom * layer.zoom,
+    centerX: lensValue.centerX + layer.centerX,
+    centerY: lensValue.centerY + layer.centerY,
+    rotationDeg: lensValue.rotationDeg + layer.rotationDeg,
+  }
+}
+
 // ── Formatting (value, thin space, unit; true minus) ─────────────────────────
 
 /** A key's value as the UI prints it. `short` drops the unit (a lane's axis labels). */
@@ -91,8 +143,15 @@ export function formatRoamValue(channel, value, { short = false } = {}) {
     const t = (Math.abs(v) < 0.5 * 10 ** -d ? 0 : v).toFixed(d)
     return t.startsWith('-') ? `${MINUS}${t.slice(1)}` : t
   }
-  if (channel === 'scale') return short ? `\u00d7${num(value, 2)}` : `${num(value, 2)}${THIN_SPACE}\u00d7`
+  if (isMultiplierChannel(channel)) return short ? `\u00d7${num(value, 2)}` : `${num(value, 2)}${THIN_SPACE}\u00d7`
   if (channel === 'rotationDeg') return short ? `${num(value, 0)}\u00b0` : `${num(value, 1)}${THIN_SPACE}\u00b0`
+  // A Sweep centre offset is a fraction of the SOURCE frame, printed as a signed percent.
+  if (channel === 'centerX' || channel === 'centerY') {
+    const pct = (Math.abs(value) < 0.5e-3 ? 0 : value) * 100
+    const t = Math.abs(pct).toFixed(short ? 0 : 1)
+    const sign = pct > 0 && Number(t) !== 0 ? '+' : pct < 0 && Number(t) !== 0 ? MINUS : ''
+    return short ? `${sign}${t}%` : `${sign}${t}${THIN_SPACE}%`
+  }
   return short ? num(value, 1) : `${num(value, 2)}${THIN_SPACE}cells`
 }
 
@@ -116,6 +175,7 @@ export function formatBarBeat(tick) {
 // ── Lane scale ───────────────────────────────────────────────────────────────
 
 const OFFSET_STEPS = [1, 2, 3, 4, 6, 8]
+const CENTER_STEPS = [0.25, 0.5, 1, 2]
 const ROTATION_STEPS = [45, 90, 180, 360, 720]
 
 function niceCeil(x, steps) {
@@ -132,7 +192,7 @@ export function roamLaneRange(channel, keys, base) {
   const values = keysOfChannel(keys, channel).map((k) => k.value).filter(Number.isFinite)
   const b = base?.[channel]
   if (Number.isFinite(b)) values.push(b)
-  if (channel === 'scale') {
+  if (isMultiplierChannel(channel)) {
     const lo = Math.min(1, ...values)
     const hi = Math.max(1, ...values)
     // Octave steps around 1, at least 1/2 .. 2.
@@ -143,7 +203,9 @@ export function roamLaneRange(channel, keys, base) {
     }
   }
   const peak = Math.max(0, ...values.map((v) => Math.abs(v)))
-  const half = channel === 'rotationDeg' ? niceCeil(peak, ROTATION_STEPS) : niceCeil(peak, OFFSET_STEPS)
+  const half = channel === 'rotationDeg' ? niceCeil(peak, ROTATION_STEPS)
+    : (channel === 'centerX' || channel === 'centerY') ? niceCeil(peak, CENTER_STEPS)
+      : niceCeil(peak, OFFSET_STEPS)
   return { min: -half, max: half, log: false }
 }
 
@@ -200,7 +262,7 @@ export function moveKey(keys, match, { pos, value }) {
 
 /** The keys in time order per channel, channels in lane order (a stable display order). */
 export function sortedForDisplay(keys) {
-  return ROAM_CHANNELS.flatMap((ch) => sortEventKeys(keysOfChannel(keys, ch)))
+  return LANE_CHANNELS.flatMap((ch) => sortEventKeys(keysOfChannel(keys, ch)))
 }
 
 // ── Auto-key and the edit router ─────────────────────────────────────────────

@@ -364,7 +364,8 @@ private:
         // snapshot transitions all agree.
         double      lastClipEndBeat = 0.0;
         // Lens of the event that produced lastFrame: a held frame is the same
-        // picture, so it keeps the same framing.
+        // picture, so it keeps the same framing. Stored WITHOUT the track's
+        // Sweep (P11): that layer is timeline-absolute and keeps running.
         LensParams  lastLens;
         int         lastSourcePixelW = 0;
         int         lastSourcePixelH = 0;

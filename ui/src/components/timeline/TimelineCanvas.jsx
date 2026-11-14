@@ -10,6 +10,7 @@ import { drawRoamLanes } from './roamLaneDrawing.js'
 import { hitTestRoamLane } from './roamLaneModel.js'
 import { beginRoamLaneGesture, removeKeyAt } from './roamLaneGesture.js'
 import useRoamKeysStore, { DEFAULT_ROAM_CHANNEL } from '../../stores/useRoamKeysStore.js'
+import useSweepKeysStore, { DEFAULT_SWEEP_CHANNEL } from '../../stores/useSweepKeysStore.js'
 import useInspectorStore from '../../stores/useInspectorStore.js'
 import { TRACK_HEIGHT, beatToPixel, beatToPlayheadPixel, tickToPixel } from '../../constants/timeline.js'
 import { clipHasFxIntent } from './clipGeometry.js'
@@ -88,6 +89,8 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     reel,
     // Roam key lanes (P10): { byTrack: Map<trackId, {base, keys}>, commitKeys(trackId, keys) }.
     roam,
+    // Sweep lanes (P11): the same shape over the Lens channels, { byTrack, commitKeys }.
+    sweep,
     // Automation clips (Phase B)
     automationClips, automationEnvelopesById, automationBindingLabelsById,
     selectedAutomationClipIds, setSelectedAutomationClipIds,
@@ -160,6 +163,21 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   }, [])
   const roamChannelOf = useCallback(
     (trackId) => useRoamKeysStore.getState().channelByTrack[trackId] ?? DEFAULT_ROAM_CHANNEL,
+    [],
+  )
+  // Sweep lanes: the same two accessors over the Sweep store.
+  const sweepRef = useRef(sweep)
+  sweepRef.current = sweep
+  const sweepDataOf = useCallback((trackId) => {
+    const committed = sweepRef.current?.byTrack?.get(trackId)
+    const draft = useSweepKeysStore.getState().draft
+    return {
+      base: committed?.base ?? {},
+      keys: draft && draft.trackId === trackId ? draft.keys : (committed?.keys ?? []),
+    }
+  }, [])
+  const sweepChannelOf = useCallback(
+    (trackId) => useSweepKeysStore.getState().channelByTrack[trackId] ?? DEFAULT_SWEEP_CHANNEL,
     [],
   )
   const noteSelection = useNoteSelectionStore((s) => s.byPattern)
@@ -395,6 +413,10 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     drawReelLanes(view, { reel: reelRef.current, selection: noteSelectionRef.current })
     drawRoamLanes(view, {
       dataOf: roamDataOf, channelOf: roamChannelOf, selected: useRoamKeysStore.getState().selected,
+    })
+    drawRoamLanes(view, {
+      kind: 'sweep', dataOf: sweepDataOf, channelOf: sweepChannelOf,
+      selected: useSweepKeysStore.getState().selected,
     })
     if (automationClipsRef.current?.length) {
       const laneRows = trackLayoutRef.current?.getAutomationLaneRows?.() ?? []
@@ -690,6 +712,15 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       requestContentRedraw('roam-state')
     }
   }), [])
+  // The Sweep lanes redraw on the same three things.
+  useEffect(() => {
+    requestContentRedraw('sweep')
+  }, [sweep])
+  useEffect(() => useSweepKeysStore.subscribe((s, prev) => {
+    if (s.draft !== prev.draft || s.selected !== prev.selected || s.channelByTrack !== prev.channelByTrack) {
+      requestContentRedraw('sweep-state')
+    }
+  }), [])
 
   // ── Redraw when notation ghost clips change ───────────────────────────────
   useEffect(() => {
@@ -780,32 +811,37 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     const pos = getLocalXY(e)
     if (!pos) return
 
-    // ── Roam key lane: its own gestures, whatever tool is active. A left-click adds
-    // a key or grabs one (drag to move: local preview, ONE commit on mouseup); a
-    // right-click on a key deletes it. Like the Reel lane it never falls through to the
-    // parent track's blocks.
+    // ── Roam and Sweep key lanes: their own gestures, whatever tool is active. A
+    // left-click adds a key or grabs one (drag to move: local preview, ONE commit on
+    // mouseup); a right-click on a key deletes it. Like the Reel lane they never fall
+    // through to the parent track's blocks. The Sweep lane (P11) is the Roam lane's
+    // gesture over the Lens channels, on its own store and its own commit.
     if (e.button === 0 || e.button === 2) {
-      const roamHit = hitTestRoamLane(
-        { trackLayout: trackLayoutRef.current, dataOf: roamDataOf, channelOf: roamChannelOf },
-        pos.localX, pos.localY, scrollOffsetRef.current, pixelsPerBeatRef.current,
-      )
-      if (roamHit) {
+      for (const kind of ['roam', 'sweep']) {
+        const lane = kind === 'sweep'
+          ? { ref: sweepRef, dataOf: sweepDataOf, channelOf: sweepChannelOf, store: useSweepKeysStore }
+          : { ref: roamRef, dataOf: roamDataOf, channelOf: roamChannelOf, store: useRoamKeysStore }
+        const laneHit = hitTestRoamLane(
+          { trackLayout: trackLayoutRef.current, dataOf: lane.dataOf, channelOf: lane.channelOf, kind },
+          pos.localX, pos.localY, scrollOffsetRef.current, pixelsPerBeatRef.current,
+        )
+        if (!laneHit) continue
         e.preventDefault()
-        onFocusTrack?.(roamHit.trackId)
-        const committed = roamRef.current?.byTrack?.get(roamHit.trackId) ?? { base: {}, keys: [] }
+        onFocusTrack?.(laneHit.trackId)
+        const committed = lane.ref.current?.byTrack?.get(laneHit.trackId) ?? { base: {}, keys: [] }
         if (e.button === 2) {
-          const next = roamHit.key ? removeKeyAt(committed.keys, roamHit.key) : null
+          const next = laneHit.key ? removeKeyAt(committed.keys, laneHit.key) : null
           if (next) {
-            useRoamKeysStore.getState().select(null)
-            roamRef.current?.commitKeys?.(roamHit.trackId, next)
+            lane.store.getState().select(null)
+            lane.ref.current?.commitKeys?.(laneHit.trackId, next)
           }
           return
         }
-        useInspectorStore.getState().requestTrackSelection(roamHit.trackId)
+        useInspectorStore.getState().requestTrackSelection(laneHit.trackId)
         const rect = containerRef.current?.getBoundingClientRect()
         beginRoamLaneGesture({
           event: e,
-          hit: roamHit,
+          hit: laneHit,
           data: committed,
           view: () => ({ scrollOffset: scrollOffsetRef.current, ppb: pixelsPerBeatRef.current }),
           localOf: (ev) => {
@@ -813,10 +849,10 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
             return { localX: ev.clientX - (r?.left ?? 0), localY: ev.clientY - (r?.top ?? 0) }
           },
           granularity: () => snapGranularityRef.current,
-          setDraft: (keys) => useRoamKeysStore.getState().setDraft(roamHit.trackId, keys),
-          clearDraft: () => useRoamKeysStore.getState().clearDraft(),
-          commit: (keys) => roamRef.current?.commitKeys?.(roamHit.trackId, keys),
-          select: (sel) => useRoamKeysStore.getState().select(sel),
+          setDraft: (keys) => lane.store.getState().setDraft(laneHit.trackId, keys),
+          clearDraft: () => lane.store.getState().clearDraft(),
+          commit: (keys) => lane.ref.current?.commitKeys?.(laneHit.trackId, keys),
+          select: (sel) => lane.store.getState().select(sel),
         })
         return
       }
@@ -1063,7 +1099,10 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     const pos = getLocalXY(e)
     if (!pos) return
     // A right-click in a Roam key lane is a verb (delete a key, done on mousedown), not a menu.
-    if (trackLayoutRef.current?.roamRowAtY?.(pos.localY)) { e.preventDefault(); return }
+    if (trackLayoutRef.current?.roamRowAtY?.(pos.localY) || trackLayoutRef.current?.sweepRowAtY?.(pos.localY)) {
+      e.preventDefault()
+      return
+    }
     // Focus shift before any menu opens — keeps right-click paste consistent
     if (onFocusTrack) {
       const tks = tracksRef.current

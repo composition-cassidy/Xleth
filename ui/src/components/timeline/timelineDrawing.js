@@ -328,7 +328,7 @@ export function drawGrid(ctx, w, h, scrollOffset, ppb, trackCount, tracks = null
   if (trackLayout && Array.isArray(trackLayout.rows)) {
     ctx.fillStyle = withAlpha(p.laneSeparator, 0.10)
     for (const r of trackLayout.rows) {
-      if (r.rowType !== 'macroAutomation' && r.rowType !== 'reel' && r.rowType !== 'roam') continue
+      if (r.rowType !== 'macroAutomation' && r.rowType !== 'reel' && r.rowType !== 'roam' && r.rowType !== 'sweep') continue
       if (r.y >= h) break
       ctx.fillRect(0, r.y, w, r.height)
     }

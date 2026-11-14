@@ -275,6 +275,19 @@ RoamTrack roamTrackFromJson(const json& j) {
     return t;
 }
 
+json sweepTrackToJson(const SweepTrack& t) {
+    json j = json::object();
+    j["keys"] = keysToJson(t.keys);
+    return j;
+}
+
+SweepTrack sweepTrackFromJson(const json& j) {
+    SweepTrack t;
+    if (!j.is_object()) return t;
+    t.keys = keysFromJson<LensChannel>(j, "keys");
+    return t;
+}
+
 const char* lensOverrideModeToString(LensOverrideMode m) {
     return m == LensOverrideMode::Own ? "Own" : "Nudge";
 }
@@ -478,6 +491,31 @@ const LensRoamSnapshot::OverrideEntry* LensRoamSnapshot::overrideFor(int trackId
 
 LensParams LensRoamSnapshot::lensForEventAt(int trackId, int clipId, int regionId,
                                             const EventClock& clock, const NoteRef& note) const {
+    return applySweep(trackId, lensBeforeSweep(trackId, clipId, regionId, clock, note),
+                      clock.frameTick);
+}
+
+LensParams LensRoamSnapshot::applySweep(int trackId, const LensParams& p, double frameTick) const {
+    const TrackEntry* e = findTrack(tracks, trackId);
+    if (!e || !e->swept) return p;
+    // A layer on the framing (spec "Blend"): an unkeyed channel is the layer
+    // identity, which leaves the double unchanged.
+    const auto& r = e->sweepKeys;
+    auto layer = [&](LensChannel ch, double identity) {
+        const KeyRun& run = r[static_cast<int>(ch)];
+        if (run.count == 0) return identity;
+        return xleth::keycurve::valueAt(keys.data() + run.first, run.count, frameTick, identity);
+    };
+    LensParams out = p;
+    out.zoom        = static_cast<float>(static_cast<double>(p.zoom) * layer(LensChannel::Zoom, 1.0));
+    out.centerX     = static_cast<float>(static_cast<double>(p.centerX) + layer(LensChannel::CenterX, 0.0));
+    out.centerY     = static_cast<float>(static_cast<double>(p.centerY) + layer(LensChannel::CenterY, 0.0));
+    out.rotationDeg = static_cast<float>(static_cast<double>(p.rotationDeg) + layer(LensChannel::RotationDeg, 0.0));
+    return out;
+}
+
+LensParams LensRoamSnapshot::lensBeforeSweep(int trackId, int clipId, int regionId,
+                                             const EventClock& clock, const NoteRef& note) const {
     const double t = clock.frameTick - clock.eventStartTick;
 
     if (clipId >= 0) {
@@ -552,6 +590,7 @@ LensRoamSnapshot::Counts LensRoamSnapshot::counts() const {
     c.sources = static_cast<int>(sources.size());
     c.keys    = static_cast<int>(keys.size());
     for (const auto& t : tracks)  if (!t.roam.isIdentity()) ++c.roamNonIdentity;
+    for (const auto& t : tracks)  if (t.swept) ++c.sweepTracks;
     for (const auto& e : clips)   if (!e.lens.isIdentity()) ++c.clipLensNonIdentity;
     for (const auto& e : sources) if (!e.lens.isIdentity()) ++c.sourceLensNonIdentity;
     for (const auto& o : overrides) {
@@ -674,6 +713,13 @@ std::shared_ptr<const LensRoamSnapshot> buildLensRoamSnapshot(const Timeline& ti
             e.roamKeyed = compileChannelRuns(t->roam.keys, TimeBase::TimelineTicks,
                                              CurveKind::Time, t->roam.zones,
                                              snap->keys, scratch, e.roamKeys);
+        // Sweep keys (P11): timeline ticks, a layer. The dev hook forces static
+        // values on its track, so that track's Sweep is not compiled either.
+        if (!devTrack) {
+            e.swept = compileChannelRuns(t->sweep.keys, TimeBase::TimelineTicks,
+                                         CurveKind::Time, xleth::keycurve::NoteZones{},
+                                         snap->keys, scratch, e.sweepKeys);
+        }
         snap->tracks.push_back(e);
         for (const auto& [regionId, lens] : t->trackLens) {
             LensRoamSnapshot::SourceEntry s;

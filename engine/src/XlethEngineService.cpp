@@ -16251,6 +16251,18 @@ JsonApi::Value trackRoamResult(JsonApi::Env env, int trackId, bool changed)
     return r;
 }
 
+// P11: the track's Sweep keys (Lens channels, TimelineTicks), so a keys write
+// needs no refetch.
+JsonApi::Value trackSweepResult(JsonApi::Env env, int trackId, bool changed)
+{
+    JsonApi::Object r = JsonApi::Object::New(env);
+    r.Set("trackId", JsonApi::Number::New(env, trackId));
+    r.Set("changed", JsonApi::Boolean::New(env, changed));
+    const TrackInfo* t = g_timeline->getTrack(trackId);
+    r.Set("keys", opaqueJsonToValue(env, lensroam::sweepTrackToJson(t ? t->sweep : SweepTrack{}).at("keys")));
+    return r;
+}
+
 // Shared body of setClipLens / resetClipLens. `patch` null = reset.
 JsonApi::Value applyClipLens(JsonApi::Env env, int clipId, const JsonApi::Object* patch,
                              const char* logName)
@@ -16539,6 +16551,8 @@ JsonApi::Value Timeline_GetLensRoam(const JsonApi::CallbackInfo& info)
         e.Set("trackId", JsonApi::Number::New(env, t->id));
         e.Set("roam", opaqueJsonToValue(env, lensroam::roamParamsToJson(t->roam.base)));
         e.Set("keys", opaqueJsonToValue(env, lensroam::roamTrackToJson(t->roam).at("keys")));
+        // P11: the track's Sweep keys (Lens channels, TimelineTicks).
+        e.Set("sweep", opaqueJsonToValue(env, lensroam::sweepTrackToJson(t->sweep).at("keys")));
         tracks.Set(nt++, e);
     }
 
@@ -17113,6 +17127,67 @@ JsonApi::Value Timeline_SetTrackRoamKeys(const JsonApi::CallbackInfo& info)
     }
     log.done(what + (changed ? "" : " (unchanged)"));
     return trackRoamResult(env, trackId, changed);
+}
+
+// timeline_setTrackSweepKeys(trackId, keys: [{channel, anchor: 'Origin', pos, value, interp?}])
+//   -> { trackId, changed, keys }
+// P11 (spec "Sweep lane"). Replaces a track's Sweep keys: a timeline-absolute
+// Lens OFFSET for moves that span several notes. Channels are the Lens ones
+// (centerX, centerY, zoom, rotationDeg); the keys are a LAYER on the track's
+// Lens (an unkeyed channel is the layer identity: zoom x1, centre +0, rotation
+// +0), blended after the note animation: zoom multiplies, centre and rotation
+// add. They sit on TimelineTicks: pos = ticks from timeline tick 0. Same
+// contract as every setter: strict parse (unknown field, unknown channel /
+// interp, non-finite number, a zoom <= 0, a negative pos, an anchor other than
+// Origin), ONE UndoManager command only when something changes, the post-state
+// returned. A drag in the UI previews locally and calls this once.
+JsonApi::Value Timeline_SetTrackSweepKeys(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!lensRoamReady(env)) return env.Undefined();
+    const char* sig = "timeline_setTrackSweepKeys(trackId: number, keys: {channel, anchor:'Origin', pos, value, interp?}[])";
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsArray()) { throwType(env, sig); return env.Undefined(); }
+    BridgeCallLog log("timeline.setTrackSweepKeys");
+    const int trackId = info[0].As<JsonApi::Number>().Int32Value();
+    if (!g_timeline->getTrack(trackId)) {
+        JsonApi::Error::New(env, "timeline.setTrackSweepKeys: no track " + std::to_string(trackId))
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const nlohmann::json arr = valueToJson(info[1]);
+    std::vector<LensKey> keys;
+    std::string err;
+    for (std::size_t i = 0; i < arr.size(); ++i) {
+        const nlohmann::json& e = arr[i];
+        const std::string at = "keys[" + std::to_string(i) + "]";
+        // Same trick as setClipLensKeys: the note-key parser (strict on fields,
+        // channel, numbers, interp, zoom > 0) on a copy with an anchor it
+        // accepts, after insisting the real anchor was Origin.
+        if (!e.is_object() || !e.contains("anchor") || !e["anchor"].is_string()
+            || e["anchor"].get<std::string>() != "Origin") {
+            throwType(env, std::string(sig) + ": " + at + ": anchor must be 'Origin' (a Sweep key is timeline ticks)");
+            return env.Undefined();
+        }
+        if (!e.contains("pos") || !e["pos"].is_number() || !std::isfinite(e["pos"].get<double>())
+            || e["pos"].get<double>() < 0.0) {
+            throwType(env, std::string(sig) + ": " + at + ": pos must be a finite number >= 0"); return env.Undefined();
+        }
+        nlohmann::json asHead = e;
+        asHead["anchor"] = "Head";
+        LensKey k;
+        if (!parseNoteKey(asHead, at, k, err)) { throwType(env, std::string(sig) + ": " + err); return env.Undefined(); }
+        k.anchor = KeyAnchor::Origin;
+        keys.push_back(k);
+    }
+    auto cmd = std::make_unique<SetTrackSweepKeysCommand>(trackId, std::move(keys), *g_timeline);
+    const bool changed = cmd->changesAnything();
+    const std::string what = cmd->describe();
+    if (changed) {
+        g_undoManager->execute(std::move(cmd), *g_timeline);
+        g_previewDirty = true;
+    }
+    log.done(what + (changed ? "" : " (unchanged)"));
+    return trackSweepResult(env, trackId, changed);
 }
 
 // timeline_setTrackSlideNoteEffect(trackId, sObj)
