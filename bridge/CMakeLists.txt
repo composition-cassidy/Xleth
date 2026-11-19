@@ -120,7 +120,6 @@ target_include_directories(xleth_native PRIVATE
 )
 
 target_compile_definitions(xleth_native PRIVATE
-    XLETH_DEBUG                       # enable structured debug logging to stderr
     # Disable C++ exception wrappers — use Napi::Error throw pattern instead
     NAPI_DISABLE_CPP_EXCEPTIONS
     NODE_ADDON_API_DISABLE_DEPRECATED

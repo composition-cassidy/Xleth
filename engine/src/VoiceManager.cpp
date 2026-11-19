@@ -93,11 +93,3 @@ void VoiceManager::processBlock(juce::AudioBuffer<float>& outputBuffer,
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-int VoiceManager::getActiveVoiceCount() const
-{
-    int count = 0;
-    for (const auto& v : voices_)
-        if (v.active) ++count;
-    return count;
-}

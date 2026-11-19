@@ -114,12 +114,6 @@ void GranularShifter::setGrainSizeMs(double ms) noexcept
     grainSamplesTarget_.store(n, std::memory_order_relaxed);
 }
 
-double GranularShifter::getGrainSizeMs() const noexcept
-{
-    if (! prepared_) return 0.0;
-    return 1000.0 * (double) grainSamplesTarget_.load(std::memory_order_relaxed) / sampleRate_;
-}
-
 float GranularShifter::windowAt(double phase) const noexcept
 {
     // phase is in [0, 1). Linear interpolation of a 4096-point Hann is accurate

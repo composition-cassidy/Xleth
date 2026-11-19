@@ -34,12 +34,6 @@ void AudioPumpThread::run()
 
     while (!stop_.load(std::memory_order_acquire))
     {
-        if (!visible_.load(std::memory_order_acquire))
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            continue;
-        }
-
         if (ring_->tryRead(chans, blockSize, /*timeoutMs*/ 10))
         {
             // Re-fetch pointers in case the AudioBuffer internally rebased

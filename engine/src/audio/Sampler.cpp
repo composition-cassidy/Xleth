@@ -54,14 +54,6 @@ void Sampler::setSlotPreparedBuffer(int slotIndex,
     s.publish(prepared ? prepared : s.raw);
 }
 
-void Sampler::clearSlotSample(int slotIndex)
-{
-    if (slotIndex < 0 || slotIndex >= MAX_SAMPLE_SLOTS) return;
-    auto& s = slots_[static_cast<size_t>(slotIndex)];
-    s.publish(nullptr);
-    s.raw.reset();
-}
-
 void Sampler::setSlotTuning(int slotIndex, int octave, int semitone,
                             float fineCents, int coarse)
 {
@@ -252,16 +244,7 @@ void Sampler::setLoopPoints(bool enabled, int64_t loopStart, int64_t loopEnd)
 }
 
 void Sampler::setRootNote(int note)      { slots_[0].rootNote  = note; }
-void Sampler::setSmpStart(int64_t start) { slots_[0].smpStart  = std::max<int64_t>(0, start); }
-void Sampler::setSmpLength(int64_t len)  { slots_[0].smpLength = std::max<int64_t>(0, len); }
 void Sampler::setDeclickMs(float ms)     { slots_[0].declickMs = std::max(0.0f, ms); }
-void Sampler::setFadeIn(float ms)        { slots_[0].fadeInMs  = std::max(0.0f, ms); }
-void Sampler::setFadeOut(float ms)       { slots_[0].fadeOutMs = std::max(0.0f, ms); }
-
-void Sampler::setCrossfadeSamples(int64_t samples)
-{
-    slots_[0].crossfadeSamples = std::max<int64_t>(0, samples);
-}
 
 void Sampler::setMonoMode(bool enabled)
 {
@@ -685,13 +668,6 @@ int Sampler::activeVoiceCount() const
     return n;
 }
 
-int Sampler::countActiveVoices() const
-{
-    int n = 0;
-    for (const auto& v : voices_) if (v.active) ++n;
-    return n;
-}
-
 int Sampler::countHeldVoices() const
 {
     int n = 0;
@@ -794,50 +770,6 @@ float Sampler::debugModVoiceSlotVolume(int voiceIdx, int slotIdx) const
                       + voices_[static_cast<size_t>(voiceIdx)]
                             .modOffsets.volume[static_cast<size_t>(slotIdx)],
                       0.0f, 2.0f);
-}
-
-float Sampler::debugModVoiceSlotPan(int voiceIdx, int slotIdx) const
-{
-    if (voiceIdx < 0 || voiceIdx >= MAX_VOICES) return 0.0f;
-    if (slotIdx < 0 || slotIdx >= MAX_SAMPLE_SLOTS) return 0.0f;
-    return std::clamp(slots_[static_cast<size_t>(slotIdx)].pan
-                      + voices_[static_cast<size_t>(voiceIdx)]
-                            .modOffsets.pan[static_cast<size_t>(slotIdx)],
-                      -1.0f, 1.0f);
-}
-
-float Sampler::debugModVoiceMasterVolume(int voiceIdx) const
-{
-    if (voiceIdx < 0 || voiceIdx >= MAX_VOICES) return 1.0f;
-    return voices_[static_cast<size_t>(voiceIdx)].modMasterGain;
-}
-
-int Sampler::debugModEvalPosition(int sourceIdx) const
-{
-    const ModGraphPtr g = modGraph_.load(std::memory_order_acquire);
-    if (!g || sourceIdx < 0 || sourceIdx >= xleth::sampmod::kNumSources) return -1;
-    return g->evalPos[static_cast<size_t>(sourceIdx)];
-}
-
-bool Sampler::debugModRouteDeferred(int routeIdx) const
-{
-    const ModGraphPtr g = modGraph_.load(std::memory_order_acquire);
-    if (!g || routeIdx < 0 || routeIdx >= g->numRoutes) return false;
-    return g->routes[static_cast<size_t>(routeIdx)].deferred;
-}
-
-bool Sampler::debugModHasCycle() const
-{
-    const ModGraphPtr g = modGraph_.load(std::memory_order_acquire);
-    return g && g->anyCycle;
-}
-
-int Sampler::debugModEnvStage(int voiceIdx, int envIdx) const
-{
-    if (voiceIdx < 0 || voiceIdx >= MAX_VOICES) return -1;
-    if (envIdx < 0 || envIdx >= xleth::sampmod::kNumEnvs) return -1;
-    return voices_[static_cast<size_t>(voiceIdx)]
-               .modBank.envs[static_cast<size_t>(envIdx)].stage;
 }
 
 // ─── Voice allocation ────────────────────────────────────────────────────────

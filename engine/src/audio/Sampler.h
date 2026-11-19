@@ -69,7 +69,6 @@ public:
     void loadSlotSample(int slotIndex,
                         const juce::AudioBuffer<float>& audioData,
                         double sourceSampleRate, int rootNote);
-    void clearSlotSample(int slotIndex);
 
     // Combined tuning. Stored pre-summed as semitones (fine is in cents) —
     // mirrors SampleSlot::tuningSemitones() so engine and model agree.
@@ -145,12 +144,7 @@ public:
     // existing single-sample call sites keep compiling and behaving identically.
     void setLoopPoints(bool enabled, int64_t loopStart, int64_t loopEnd);
     void setRootNote(int note);
-    void setSmpStart(int64_t start);          // playback start offset (source samples)
-    void setSmpLength(int64_t length);        // 0 = full remaining from smpStart
     void setDeclickMs(float ms);              // Hann fade width at trim edges (ms, default 1.5)
-    void setFadeIn(float ms);                 // linear fade-in duration (user-controlled)
-    void setFadeOut(float ms);                // linear fade-out duration (user-controlled)
-    void setCrossfadeSamples(int64_t samples);// FL-style loop crossfade width (0 = off)
 
     // ── Playback modes ──────────────────────────────────────────────────────
     void setMonoMode(bool enabled);
@@ -284,8 +278,7 @@ public:
 
     // ── Introspection (main-thread) ──────────────────────────────────────────
     int  activeVoiceCount() const;
-    int  countActiveVoices() const;      // audio-thread-safe read-only scan; same as activeVoiceCount
-    int  countHeldVoices() const;        // voices where active && noteHeld
+    int  countHeldVoices() const;       // voices where active && noteHeld
     int  countReleasingVoices() const;   // voices where active && !noteHeld
 
     // ── Test-only introspection ──────────────────────────────────────────────
@@ -314,13 +307,6 @@ public:
     // Resolved modulated value the render loop is currently using.
     float  debugModVoiceSlotSemis(int voiceIdx, int slotIdx) const;
     float  debugModVoiceSlotVolume(int voiceIdx, int slotIdx) const;
-    float  debugModVoiceSlotPan(int voiceIdx, int slotIdx) const;
-    float  debugModVoiceMasterVolume(int voiceIdx) const;
-    // Compiled-graph shape.
-    int    debugModEvalPosition(int sourceIdx) const;
-    bool   debugModRouteDeferred(int routeIdx) const;
-    bool   debugModHasCycle() const;
-    int    debugModEnvStage(int voiceIdx, int envIdx) const;
 
 private:
     // ── Slot ─────────────────────────────────────────────────────────────────

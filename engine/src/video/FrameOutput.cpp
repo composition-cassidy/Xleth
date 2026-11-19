@@ -11,11 +11,6 @@
 #  include <windows.h>
 #endif
 
-extern "C" {
-#include <libswscale/swscale.h>
-#include <libavutil/pixfmt.h>
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 
 FrameOutput::~FrameOutput()
@@ -169,12 +164,6 @@ bool FrameOutput::initSharedMemory(const char* name, int width, int height,
 
 void FrameOutput::shutdown()
 {
-    if (swsCtx_) {
-        sws_freeContext(swsCtx_);
-        swsCtx_ = nullptr;
-    }
-    lastSrcW_ = lastSrcH_ = 0;
-
     // indexPtr_ points into data, no delete needed (placement new)
     indexPtr_ = nullptr;
     ownedData_.clear();
@@ -192,57 +181,6 @@ void FrameOutput::shutdown()
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Writer API
-// ─────────────────────────────────────────────────────────────────────────────
-
-void FrameOutput::writeFrameYUV(const uint8_t* yPlane, const uint8_t* uPlane, const uint8_t* vPlane,
-                                int yStride, int uStride, int vStride,
-                                int srcWidth, int srcHeight)
-{
-    if (!isInitialized()) return;
-
-    // Lazily create/recreate swscale context if source dimensions changed
-    if (!swsCtx_ || srcWidth != lastSrcW_ || srcHeight != lastSrcH_) {
-        if (swsCtx_) sws_freeContext(swsCtx_);
-        swsCtx_ = sws_getContext(srcWidth, srcHeight, AV_PIX_FMT_YUV420P,
-                                  width_, height_, AV_PIX_FMT_RGBA,
-                                  SWS_BILINEAR, nullptr, nullptr, nullptr);
-        lastSrcW_ = srcWidth;
-        lastSrcH_ = srcHeight;
-
-        if (!swsCtx_) {
-            std::cerr << "[FrameOutput] Failed to create swscale context\n";
-            return;
-        }
-    }
-
-    uint8_t* dst = getBackBuffer();
-    const uint8_t* srcSlice[3] = { yPlane, uPlane, vPlane };
-    int srcStride[3] = { yStride, uStride, vStride };
-    uint8_t* dstSlice[1] = { dst };
-    int dstStride[1] = { width_ * 4 };
-
-    sws_scale(swsCtx_, srcSlice, srcStride, 0, srcHeight, dstSlice, dstStride);
-
-    swapBuffers();
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-
-void FrameOutput::writeFrameRGBA(const uint8_t* rgba, size_t size)
-{
-    if (!isInitialized()) return;
-
-    const size_t copySize = std::min(size, static_cast<size_t>(bufferSize()));
-    uint8_t* dst = getBackBuffer();
-    std::memcpy(dst, rgba, copySize);
-
-    // Zero any remaining bytes if source is smaller
-    if (copySize < static_cast<size_t>(bufferSize()))
-        std::memset(dst + copySize, 0, static_cast<size_t>(bufferSize()) - copySize);
-
-    swapBuffers();
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 
 uint8_t* FrameOutput::getBackBuffer()

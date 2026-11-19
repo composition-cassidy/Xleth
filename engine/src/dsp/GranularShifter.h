@@ -141,8 +141,7 @@ public:
     int getLatencySamples() const noexcept { return latencySamples_; }
 
     double getPitchRatio()  const noexcept { return ratioTarget_.load(std::memory_order_relaxed); }
-    double getGrainSizeMs() const noexcept;
-    int    getNumStreams()  const noexcept { return numStreams_; }
+    int    getNumStreams() const noexcept { return numStreams_; }
     bool   isPrepared()     const noexcept { return prepared_; }
 
     // In-place. `block` must have at most the prepared channel count and at

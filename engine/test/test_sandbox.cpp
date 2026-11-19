@@ -2352,55 +2352,6 @@ static void testExtractSelection() {
 }
 
 // ---------------------------------------------------------------------------
-// Restoration/pitch trio — deliverable fixtures
-// ---------------------------------------------------------------------------
-// Not correctness checks (CHECK-free by design): "no chipmunk", "peaks look
-// reconstructed", "hiss down but the music is intact" are judgment calls a
-// listener makes by ear, which a numeric assertion cannot stand in for. Every
-// buffer here is produced by SandboxRenderer::applyOp — the exact function
-// the DSP-correctness tests above already exercise — so what gets written is
-// provably the same code path a real op stack runs, not a hand-rolled stand-in.
-
-// A crude "vocal" proxy: a handful of harmonics of a low fundamental with a
-// hand-picked amplitude profile roughly peaking where the first two formants
-// of a spoken vowel would sit. Real singing has far more structure than this,
-// but it is enough spectral shape for formant-locked vs. unlocked pitch shift
-// to sound audibly different, which is the whole point of the fixture.
-static SandboxBuffer makeVocalLike(int samples, double f0, double sampleRate) {
-    SandboxBuffer b(1, samples);
-    b.clear();
-    float* d = b.getWritePointer(0);
-    struct Harmonic { int n; float amp; };
-    static const Harmonic kHarmonics[] = {
-        { 1, 0.50f }, { 2, 0.35f }, { 3, 0.55f }, { 4, 0.60f }, { 5, 0.40f },
-        { 6, 0.25f }, { 7, 0.15f }, { 8, 0.50f }, { 9, 0.35f }, { 10, 0.15f },
-    };
-    for (int i = 0; i < samples; ++i) {
-        const double t = static_cast<double>(i) / sampleRate;
-        double s = 0.0;
-        for (const auto& h : kHarmonics)
-            s += h.amp * std::sin(2.0 * 3.14159265358979323846 * f0 * h.n * t);
-        d[i] = static_cast<float>(s * 0.12);
-    }
-    return b;
-}
-
-static juce::File writeFixtureWav(const juce::File& dir, const juce::String& name,
-                                  const SandboxBuffer& buf, double sampleRate) {
-    juce::File file = dir.getChildFile(name + ".wav");
-    file.deleteFile();
-    auto outStream = std::unique_ptr<juce::FileOutputStream>(file.createOutputStream());
-    if (outStream == nullptr) return {};
-    juce::WavAudioFormat wavFmt;
-    std::unique_ptr<juce::AudioFormatWriter> writer(wavFmt.createWriterFor(
-        outStream.get(), sampleRate, static_cast<unsigned int>(buf.getNumChannels()), 16, {}, 0));
-    if (writer == nullptr) return {};
-    outStream.release();   // writer takes ownership
-    writer->writeFromAudioSampleBuffer(buf, 0, buf.getNumSamples());
-    return file;
-}
-
-// ---------------------------------------------------------------------------
 // Spectrogram (P3-1) — STFT analysis of the rendered buffer, content-hash cache
 // ---------------------------------------------------------------------------
 static void testSpectrogram() {
@@ -2804,106 +2755,6 @@ static void testAutotuneOp() {
     }
 }
 
-static void generateFixtures() {
-    std::cout << "\n[Sample Sandbox -- restoration/pitch trio fixtures]\n";
-
-    juce::File dir(
-        "C:\\Users\\Krasen\\AppData\\Local\\Temp\\claude\\C--Users-Krasen-Desktop-XLETH"
-        "\\bd799a1b-0364-45ce-8d84-9cd89e799215\\scratchpad\\sandbox_fixtures");
-    dir.createDirectory();
-
-    // ── 1. Pitched vocal — with and without formant lock ──
-    {
-        const int N = static_cast<int>(kTestRate * 2.0);
-        const SandboxBuffer vocal = makeVocalLike(N, 140.0, kTestRate);
-        writeFixtureWav(dir, "1_vocal_source", vocal, kTestRate);
-
-        const SandboxBuffer chipmunk = SandboxRenderer::applyOp(
-            vocal, makeOp(1, SandboxOpType::Pitch, PitchParams{ 700.0, false }), kTestRate);
-        writeFixtureWav(dir, "1_vocal_pitch_up_NO_formant_lock_chipmunky", chipmunk, kTestRate);
-
-        const SandboxBuffer natural = SandboxRenderer::applyOp(
-            vocal, makeOp(1, SandboxOpType::Pitch, PitchParams{ 700.0, true }), kTestRate);
-        writeFixtureWav(dir, "1_vocal_pitch_up_WITH_formant_lock_natural", natural, kTestRate);
-        std::cout << "    wrote 1_vocal_source / _NO_formant_lock_chipmunky / _WITH_formant_lock_natural\n";
-    }
-
-    // ── 2. Clipped, square-ish recording, before/after DECLIP ──
-    {
-        const int N = static_cast<int>(kTestRate * 1.5);
-        SandboxBuffer clipped = makeSine(1, N, 220.0, kTestRate, 1.0f);
-        float* d = clipped.getWritePointer(0);
-        for (int i = 0; i < N; ++i) d[i] = std::clamp(d[i], -0.35f, 0.35f);   // hard clip -> near-square
-        writeFixtureWav(dir, "2_clipped_before", clipped, kTestRate);
-
-        const SandboxBuffer declipped = SandboxRenderer::applyOp(
-            clipped, makeOp(1, SandboxOpType::Declip, DeclipParams{ 0, -1, 0.35, 80 }), kTestRate);
-        writeFixtureWav(dir, "2_declipped_after", declipped, kTestRate);
-        std::cout << "    wrote 2_clipped_before / 2_declipped_after\n";
-    }
-
-    // ── 3. "YouTube rip with hiss" — tone + broadband noise, before/after DENOISE ──
-    {
-        const int N = static_cast<int>(kTestRate * 3.0);
-        SandboxBuffer mix(1, N);
-        uint32_t seed = 777u;
-        auto nextNoise = [&]() {
-            seed = seed * 1664525u + 1013904223u;
-            return (static_cast<float>(seed) / static_cast<float>(0xFFFFFFFFu)) * 2.0f - 1.0f;
-        };
-        for (int i = 0; i < N; ++i) {
-            const double t = static_cast<double>(i) / kTestRate;
-            const float music =
-                0.30f * static_cast<float>(std::sin(2.0 * 3.14159265358979323846 * 330.0 * t))
-              + 0.15f * static_cast<float>(std::sin(2.0 * 3.14159265358979323846 * 660.0 * t));
-            mix.setSample(0, i, music + 0.08f * nextNoise());
-        }
-        // A genuinely noise-only tail, appended after the "song" — the region
-        // the fixture's DENOISE op learns its profile from.
-        const int noiseLen = static_cast<int>(kTestRate * 1.0);
-        SandboxBuffer withTail(1, N + noiseLen);
-        for (int i = 0; i < N; ++i) withTail.setSample(0, i, mix.getSample(0, i));
-        for (int i = 0; i < noiseLen; ++i) withTail.setSample(0, N + i, 0.08f * nextNoise());
-        writeFixtureWav(dir, "3_hiss_before", withTail, kTestRate);
-
-        const SandboxBuffer denoised = SandboxRenderer::applyOp(
-            withTail,
-            makeOp(1, SandboxOpType::Denoise, DenoiseParams{ N, N + noiseLen, 18.0, 1.5 }),
-            kTestRate);
-        writeFixtureWav(dir, "3_hiss_after", denoised, kTestRate);
-        std::cout << "    wrote 3_hiss_before / 3_hiss_after\n";
-    }
-
-    // ── 4. Music + a narrowband whine, before/after SPECTRAL PAINT ──
-    {
-        const int N = static_cast<int>(kTestRate * 3.0);
-        const double whineHz = 3500.0;
-        SandboxBuffer mix(1, N);
-        for (int i = 0; i < N; ++i) {
-            const double t = static_cast<double>(i) / kTestRate;
-            const float music =
-                0.28f * static_cast<float>(std::sin(2.0 * 3.14159265358979323846 * 220.0 * t))
-              + 0.14f * static_cast<float>(std::sin(2.0 * 3.14159265358979323846 * 440.0 * t));
-            const float whine = 0.12f * static_cast<float>(std::sin(2.0 * 3.14159265358979323846 * whineHz * t));
-            mix.setSample(0, i, music + whine);
-        }
-        writeFixtureWav(dir, "4_whine_before", mix, kTestRate);
-
-        // A single feathered dab spanning the whole buffer's time and a narrow
-        // band around the whine — exactly what one long, steady paint stroke
-        // on the SPC canvas would commit as.
-        const SandboxBuffer painted = SandboxRenderer::applyOp(
-            mix,
-            makeOp(1, SandboxOpType::SpectralPaint,
-                   SpectralPaintParams{ { SpectralPaintDab{ N / 2, N, whineHz, 60.0, -30.0, 0.0, 60.0 } } }),
-            kTestRate);
-        writeFixtureWav(dir, "4_whine_after", painted, kTestRate);
-        std::cout << "    wrote 4_whine_before / 4_whine_after\n";
-    }
-
-    std::cout << "    fixtures written to: " << dir.getFullPathName() << "\n";
-}
-
 // ---------------------------------------------------------------------------
 
 int main() {
@@ -2934,8 +2785,6 @@ int main() {
     testSpectrogram();
     testPitchTrack();
     testAutotuneOp();
-
-    generateFixtures();
 
     std::cout << "\n";
     if (g_failures == 0) {

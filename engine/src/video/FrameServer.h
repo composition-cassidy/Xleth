@@ -38,7 +38,6 @@ public:
 
     void closeSource(int sourceId);
     void closeAll();
-    bool isSourceOpen(int sourceId) const;
 
     // Get a JPEG-encoded frame. Returns empty vector on failure.
     // maxWidth/maxHeight: output is scaled to fit within these bounds

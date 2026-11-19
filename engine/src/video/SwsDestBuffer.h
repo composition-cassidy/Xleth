@@ -22,12 +22,6 @@
  * of this — av_frame_get_buffer has the slack. This is for the cases that convert
  * into a plain byte container before handing the pixels somewhere else (a D3D11
  * staging texture, a JPEG encoder, a cell composite).
- *
- * Not covered here: FrameOutput::writeFrameYUV scales straight into the
- * double-buffer's back half, where a same-shaped overwrite lands in the sibling
- * buffer or in the 64-byte control region holding the atomic front/back index.
- * Fixing that means moving the index (it sits at exactly 2*bufferSize, a value
- * reported to JS as indexOffset), so it is deliberately left alone.
  */
 
 #include <cstddef>

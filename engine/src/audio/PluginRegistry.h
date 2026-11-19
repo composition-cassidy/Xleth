@@ -191,7 +191,6 @@ public:
     // Removes the entry. True if one was removed.
     bool unquarantine(const juce::String& format, const juce::String& uniqueIdHex,
                       const juce::String& deprecatedUidHex);
-    std::vector<QuarantineEntry> getQuarantine() const;
 
     // The breadcrumb of the load crash recovered at startup that the UI has not
     // been told about yet, or void. Consuming it deletes plugin-load-crash.json.

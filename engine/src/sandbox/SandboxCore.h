@@ -205,9 +205,6 @@ public:
     // stack has been published. Clears every op's dirty flag on that layer.
     void markLayerRendered(int layerId);
 
-    // Force a full re-render of a layer (source buffer replaced underneath us).
-    void markLayerDirty(int layerId);
-
     // ── Post-load rebinding (SB-6) ───────────────────────────────────────────
     // Drops every layer's sourceBufferId to -1 and marks its whole stack dirty.
     //

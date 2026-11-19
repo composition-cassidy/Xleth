@@ -335,11 +335,6 @@ void AudioPerformanceTelemetry::incrementChainSnapshotMissing() noexcept
     chainSnapshotMissingCount_.fetch_add(1, std::memory_order_relaxed);
 }
 
-void AudioPerformanceTelemetry::incrementMasterChainSkipped() noexcept
-{
-    masterChainSkippedCount_.fetch_add(1, std::memory_order_relaxed);
-}
-
 void AudioPerformanceTelemetry::incrementTrackChainSkipped(std::uint64_t amount) noexcept
 {
     trackChainSkippedCount_.fetch_add(amount, std::memory_order_relaxed);
@@ -688,12 +683,6 @@ void AudioPerformanceTelemetry::clearRing() noexcept
 {
     readPos_.store(0, std::memory_order_relaxed);
     writePos_.store(0, std::memory_order_relaxed);
-}
-
-std::uint32_t AudioPerformanceTelemetry::elapsedNsToUs(std::uint64_t elapsedNs) noexcept
-{
-    const std::uint64_t us = (elapsedNs + 999u) / 1000u;
-    return us > UINT32_MAX ? UINT32_MAX : static_cast<std::uint32_t>(us);
 }
 
 std::uint32_t AudioPerformanceTelemetry::deadlineUsFor(

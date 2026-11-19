@@ -304,13 +304,6 @@ void SandboxCore::markLayerRendered(int layerId) {
     // back, not an edit. Firing here would loop the renderer into itself.
 }
 
-void SandboxCore::markLayerDirty(int layerId) {
-    SandboxLayer* layer = findLayer(layerId);
-    if (layer == nullptr) return;
-    dirtyFrom(*layer, 0);
-    fireChange(layerId);
-}
-
 // ─── SandboxCore — serialization ──────────────────────────────────────────────
 
 nlohmann::json SandboxCore::toJson() const {

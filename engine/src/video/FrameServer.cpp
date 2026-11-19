@@ -84,10 +84,6 @@ void FrameServer::closeAll() {
     for (int id : ids) closeSource(id);
 }
 
-bool FrameServer::isSourceOpen(int sourceId) const {
-    return sources_.count(sourceId) > 0;
-}
-
 FrameServer::SourceInfo FrameServer::getSourceInfo(int sourceId) const {
     auto it = sources_.find(sourceId);
     if (it == sources_.end()) return {};

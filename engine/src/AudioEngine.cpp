@@ -108,7 +108,7 @@ AudioEngine::AudioEngine()
 AudioEngine::~AudioEngine() { shutdown(); }
 
 // ─────────────────────────────────────────────────────────────────────────────
-bool AudioEngine::initialize(bool recordToFile)
+bool AudioEngine::initialize()
 {
     if (initialized_) return true;
 
@@ -217,28 +217,6 @@ bool AudioEngine::initialize(bool recordToFile)
     bufferSize_ = device->getCurrentBufferSizeSamples();
     cacheCurrentDeviceOutputLatency();
     refreshLivePresentationLatency();
-
-    // ── Optional WAV capture ──────────────────────────────────────────────────
-    if (recordToFile)
-    {
-        recordingFile_ = juce::File::getCurrentWorkingDirectory().getChildFile("xleth_test_output.wav");
-        recordingFile_.deleteFile();
-
-        auto outStream = std::unique_ptr<juce::FileOutputStream>(recordingFile_.createOutputStream());
-        if (outStream != nullptr)
-        {
-            juce::WavAudioFormat wavFmt;
-            auto* writer = wavFmt.createWriterFor(outStream.get(), sampleRate_, 2, 16, {}, 0);
-            if (writer != nullptr)
-            {
-                outStream.release();
-                writerThread_.startThread(juce::Thread::Priority::low);
-                wavWriter_.reset(new juce::AudioFormatWriter::ThreadedWriter(writer, writerThread_, 32768));
-                std::cout << "[AudioEngine] Recording to: "
-                          << recordingFile_.getFullPathName().toStdString() << "\n" << std::flush;
-            }
-        }
-    }
 
     dm.addAudioCallback(this);
     initialized_ = true;
@@ -504,9 +482,6 @@ void AudioEngine::shutdown()
     deviceManager_.closeAudioDevice();
     livePresentationDeviceOutputLatencySamples_.store(0, std::memory_order_release);
     refreshLivePresentationLatency();
-
-    wavWriter_.reset();
-    writerThread_.stopThread(2000);
 
     initialized_ = false;
 }
@@ -1095,10 +1070,6 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     // f) Source preview (Sample Picker)
     sourcePlayer_.processBlock(outBuf, numSamples);
 
-    // Optional WAV capture (ThreadedWriter is lock-free)
-    if (wavWriter_ != nullptr)
-        wavWriter_->write(outputChannelData, numSamples);
-
     // [StartLatencyTrace] TEMP/DIAGNOSTIC — (b) first audio block produced.
     // Guarded by isPlaying() so silent blocks during the pre-play rebuild
     // barrier are NOT counted. Lock-free single atomic store, RT-safe; the
@@ -1134,55 +1105,4 @@ void AudioEngine::audioDeviceStopped()
 {
     livePresentationDeviceOutputLatencySamples_.store(0, std::memory_order_release);
     refreshLivePresentationLatency();
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-bool AudioEngine::analyzeRecording(const juce::File& wavFile) const
-{
-    if (!wavFile.existsAsFile())
-    {
-        std::cerr << "[Analyze] WAV file not found: " << wavFile.getFullPathName().toStdString() << "\n";
-        return false;
-    }
-
-    juce::AudioFormatManager afm;
-    afm.registerBasicFormats();
-
-    std::unique_ptr<juce::AudioFormatReader> rdr(afm.createReaderFor(wavFile));
-    if (rdr == nullptr) { std::cerr << "[Analyze] Could not open WAV file.\n"; return false; }
-
-    const int    total           = static_cast<int>(rdr->lengthInSamples);
-    const double sr              = rdr->sampleRate;
-    const int    blockSize       = 512;
-    const float  silenceThresh   = 0.01f;
-    const int    dropoutMinSmp   = static_cast<int>(sr * 0.002);
-
-    std::cout << "\n[Analyze] File     : " << wavFile.getFileName().toStdString() << "\n"
-              << "[Analyze] Duration : " << (total / sr) << " s  |  "
-              << total << " samples  @  " << sr << " Hz\n";
-
-    juce::AudioBuffer<float> buf(2, blockSize);
-    int   dropouts = 0, silenceRun = 0, pos = 0;
-    bool  inDropout = false;
-    float peak = 0.0f;
-
-    while (pos < total)
-    {
-        const int n = std::min(blockSize, total - pos);
-        buf.clear();
-        rdr->read(&buf, 0, n, pos, true, true);
-        for (int s = 0; s < n; ++s)
-        {
-            const float v = std::abs(buf.getSample(0, s));
-            if (v > peak) peak = v;
-            if (v < silenceThresh) { ++silenceRun; if (!inDropout && silenceRun >= dropoutMinSmp) { inDropout = true; ++dropouts; } }
-            else                   { silenceRun = 0; inDropout = false; }
-        }
-        pos += n;
-    }
-
-    std::cout << "[Analyze] Peak     : " << peak << "  |  Dropouts: " << dropouts << "\n";
-    const bool pass = (dropouts == 0 && peak > 0.25f && peak < 0.35f);
-    std::cout << "[Analyze] " << (pass ? "PASS" : "FAIL") << "\n";
-    return pass;
 }
