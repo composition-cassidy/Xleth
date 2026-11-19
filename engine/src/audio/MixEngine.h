@@ -102,8 +102,30 @@ public:
     ~MixEngine();
 
     // ── Configuration (main thread) ──────────────────────────────────────────
+    // Also publishes the new timeline's snapshot (refreshTimelineSnapshot).
     void setTimeline(const Timeline* timeline);
     void setSampleBank(const SampleBank* bank);
+
+    // Copy what the audio thread plays from out of the Timeline (tracks,
+    // clips, pattern blocks, patterns, region syllables) and publish it as the
+    // snapshot processBlock reads (timelineSnapshot_). Main thread. Call after
+    // ANY edit of those: the UndoManager post-mutation hook covers every
+    // command and undo/redo, setTimeline calls it, and the few live edits that
+    // bypass UndoManager (clip gain/fade drag preview, send gain) call it
+    // themselves. An edit not followed by this call is not heard.
+    void refreshTimelineSnapshot();
+
+    // The same, after an edit that changed ONLY clipId's non-placement fields
+    // (gain, fades: the clip gain/fade drag preview, which republishes at drag
+    // rate). Copies that one track's clips and shares everything else with the
+    // current snapshot; anything else falls back to refreshTimelineSnapshot().
+    void refreshTimelineSnapshotForClip(int clipId);
+
+    // Debug check (main thread): rebuild the snapshot from the live timeline
+    // and compare it with the published one, on the fields the audio thread
+    // reads. Empty when they agree, else the first difference. A difference
+    // after an edit means that edit path does not republish.
+    std::string verifyTimelineSnapshot() const;
 
     // Map a region ID to a sample bank slot. Must be called from main thread
     // before playback of clips referencing that region.
@@ -192,9 +214,10 @@ public:
     // straight off the Sampler. { playback: [...], preview: [...] }.
     nlohmann::json describeSamplers() const;
 
-    // Main-thread pump: frees samplers a rebuild replaced while a block was
-    // still rendering from them, now that the block is over. Cheap (usually an
-    // empty list); call from any regular main-thread poll.
+    // Main-thread pump: frees samplers a rebuild replaced, and timeline
+    // snapshots an edit replaced, while a block was still rendering from them,
+    // now that the block is over. Cheap (usually an empty list); call from any
+    // regular main-thread poll.
     void reclaimRetiredSamplers();
 
     // ── Per-slot PREP bake (main thread) ─────────────────────────────────────
@@ -1241,15 +1264,41 @@ private:
         return regionToSampleMap_.load(std::memory_order_acquire);
     }
 
-    // ── Per-block track snapshot cache (Finding 2b) ─────────────────────────
-    // Mirrors timeline_->getAllTracks() (same pointers, same order) without
-    // paying its allocation + stable_sort every audio callback. Rebuilt only
-    // when Timeline's track topology generation has advanced since the last
-    // rebuild — i.e. on an actual track add/remove/reorder, not every block.
-    const TrackInfo* cachedTrackSnapshot_[kMaxTracks] = {};
-    int              cachedTrackSnapshotCount_ = 0;
-    uint64_t         cachedTrackTopologyGeneration_ = ~static_cast<uint64_t>(0);
-    void refreshTrackSnapshotIfNeeded();
+    // ── Published timeline ──────────────────────────────────────────────────
+    // The audio thread never reads timeline_. The main thread edits it in
+    // place, and an edit frees std::map nodes and std::vector buffers a
+    // reader may be walking (a block removed mid-walk, a note list
+    // reallocated). What processBlock needs is copied instead into one
+    // immutable TimelineSnapshot after every commit (refreshTimelineSnapshot)
+    // and published; processBlock pins it for the whole block (rtTimeline_),
+    // so every Clip / PatternBlock / Pattern / TrackInfo pointer it and the
+    // RealtimeWorkerPool helpers take stays valid until the block ends. A
+    // replaced snapshot is freed on the main thread (the next publish, or
+    // reclaimRetiredSamplers), never on the audio thread.
+    struct TimelineSnapshot
+    {
+        uint64_t serial = 0;                  // unique per publish, never reused
+        // Shared, unchanged, by the snapshots a clip-only publish derives.
+        std::shared_ptr<const std::vector<TrackInfo>>    tracks;     // getAllTracks() order
+        std::shared_ptr<const std::vector<PatternBlock>> blocks;     // by id
+        std::shared_ptr<const std::vector<Pattern>>      patterns;   // by id
+        // Each syllable's startTime (s), for regions that have syllables; by region id.
+        std::shared_ptr<const std::vector<std::pair<int, std::vector<double>>>> syllableStarts;
+        // Clips are owned per track (ascending track id), so a clip-only edit
+        // copies one track's clips; `clips` is what the audio thread walks.
+        std::vector<int> clipTrackIds;
+        std::vector<std::shared_ptr<const std::vector<Clip>>> clipTracks;
+        std::vector<const Clip*> clips;       // every clip, by (position, id)
+
+        const Pattern* findPattern(int id) const noexcept;
+        const std::vector<double>* findSyllableStarts(int regionId) const noexcept;
+    };
+    std::shared_ptr<TimelineSnapshot> buildTimelineSnapshot() const;   // timeline_ non-null
+    xleth::util::RtPublished<TimelineSnapshot> timelineSnapshot_;
+    uint64_t timelineSnapshotSerial_ = 0;     // main thread
+    // The snapshot this block is rendering from. Audio thread, valid only
+    // inside processBlock (set and cleared by its pin guard).
+    const TimelineSnapshot* rtTimeline_ = nullptr;
 
     // Pre-allocated stereo track buffers (one per track slot, up to kMaxTracks)
     std::vector<juce::AudioBuffer<float>> trackBuffers_;
@@ -1913,30 +1962,26 @@ private:
     std::vector<ActiveClip> activeClips_;
 
     // ── Incremental active-clip scan (Finding 2c) ───────────────────────────
-    // sortedClipsByStart_ mirrors every Clip in the project, sorted ascending
-    // by tick position (order by ticks == order by samples for any fixed bpm,
-    // so this ordering stays valid across a live tempo change). Rebuilt only
-    // when Timeline's clip topology generation advances — i.e. on an actual
-    // add/remove/move/resize, not every block.
+    // The snapshot's clips are sorted ascending by tick position (order by
+    // ticks == order by samples for any fixed bpm, so this ordering stays
+    // valid across a live tempo change).
     //
     // During uninterrupted sequential playback, findActiveClips() no longer
     // rescans every clip in the project: clipScanCursor_ walks forward
-    // through sortedClipsByStart_ exactly once, activating each clip as its
+    // through rtTimeline_->clips exactly once, activating each clip as its
     // start sample enters the window, while already-active clips are
     // refreshed (not rescanned from the full list) each block so a live bpm
     // change or a live region→sample remap still lands on the next block,
-    // exactly as the old full rescan produced. A topology change or a seek
-    // (bufferStart not contiguous with the last call) forces one full
+    // exactly as the old full rescan produced. A new snapshot (any edit) or a
+    // seek (bufferStart not contiguous with the last call) forces one full
     // rebuild — the same cost the old code paid every single block.
-    std::vector<const Clip*> sortedClipsByStart_;
     int      clipScanCursor_ = 0;
     int64_t  clipScanLastBufferEnd_ = -1;
-    uint64_t cachedClipTopologyGeneration_ = ~static_cast<uint64_t>(0);
+    uint64_t clipScanSerial_ = 0;            // snapshot the cursor indexes into
     // Double-buffer scratch for refreshing the previous block's active set
     // without a per-block allocation (same swap-not-copy idiom prevActiveBlocks_
     // uses below for pattern blocks).
     std::vector<ActiveClip> prevActiveClipsScratch_;
-    void rebuildSortedClipsByStart();
 
     // Per-{track,region} Sampler instances (main-thread owned, audio-thread
     // read). Keyed by {trackId, regionId}: each pattern track is sample-
@@ -2176,6 +2221,9 @@ private:
         Sampler*            sampler;
         int64_t             blockStartSample;
         int64_t             blockEndSample;
+        // Compared across blocks instead of `block`: last block's pointer may
+        // name a snapshot that has since been freed.
+        int                 blockId = -1;
     };
     std::vector<ActivePatternBlock> activeBlocks_;
 

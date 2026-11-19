@@ -338,6 +338,7 @@ static Result runScenario(const SampleSet& ss, const Scenario& sc)
         const int n = std::min(512, kRenderSamples - pos);
         juce::AudioBuffer<float> block(2, n);
         block.clear();
+        engine->refreshTimelineSnapshot();   // the bridge publishes after every edit
         engine->processBlock(block, n, t);
         for (int ch = 0; ch < 2; ++ch)
             r.master.copyFrom(ch, pos, block, ch, 0, n);

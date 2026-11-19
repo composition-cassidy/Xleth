@@ -107,6 +107,12 @@ Since the 1.3.0-beta build (last commit in it: `752aa00`, 2026-11-11). 34 commit
 
 ### Fixed
 
+- **Undoing or editing during playback no longer crashes the audio engine.** The
+  audio callback read the live timeline (tracks, clips, pattern blocks, notes)
+  while undo/redo and edits freed the very nodes and note lists it was walking.
+  It now plays from a copy published after every commit and pinned per block;
+  old copies are freed off the audio thread. A clip gain/fade drag republishes
+  only that clip's track (about 0.05 ms on a 5,000-clip project).
 - **Web pages can no longer read files off the PC through the media server.** The
   local server behind `<video>`/`<audio>` previews served any path to anyone who
   found its port, with a wildcard CORS header. It now needs a per-session token,

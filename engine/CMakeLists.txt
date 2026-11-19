@@ -2685,6 +2685,38 @@ target_compile_definitions(test_sampler_set_handoff PRIVATE
 
 target_link_options(test_sampler_set_handoff PRIVATE /STACK:8388608)
 
+# Timeline reads on the audio thread: a second thread adds, removes and moves
+# blocks, clips and notes and undoes/redoes them while blocks render.
+add_executable(test_timeline_read_lifetime
+    test/test_timeline_read_lifetime.cpp
+)
+
+target_link_libraries(test_timeline_read_lifetime PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_timeline_read_lifetime PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+target_link_options(test_timeline_read_lifetime PRIVATE /STACK:8388608)
+
 add_executable(test_distortion
     test/test_distortion.cpp
 )
@@ -4103,6 +4135,7 @@ set(XLETH_ENGINE_TESTS
     test_device_watchdog
     test_source_player_unload
     test_sampler_set_handoff
+    test_timeline_read_lifetime
     test_distortion
     test_phanjer
     test_reverb
