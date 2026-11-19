@@ -27998,9 +27998,31 @@ XlethEngineService& XlethEngineService::getInstance()
     return instance;
 }
 
+// XLETH_VERIFY_TIMELINE_SNAPSHOT=1: after every RPC, check that the timeline
+// copy the audio thread plays from still matches the live timeline. A
+// mismatch names an edit path that changed the timeline without republishing
+// (MixEngine::refreshTimelineSnapshot), i.e. an edit the audio never hears.
+static void verifyTimelineSnapshotAfter(const std::string& method)
+{
+    static const bool enabled = [] {
+        const char* v = std::getenv("XLETH_VERIFY_TIMELINE_SNAPSHOT");
+        return v != nullptr && v[0] == '1';
+    }();
+    if (!enabled || !audioEngine) return;
+    const std::string diff = audioEngine->getMixEngine().verifyTimelineSnapshot();
+    if (!diff.empty())
+        std::fprintf(stderr, "[TimelineSnapshotVerify] MISMATCH after %s: %.600s\n",
+                     method.c_str(), diff.c_str());
+}
+
 nlohmann::json XlethEngineService::dispatch(const std::string& method,
                                             const nlohmann::json& args)
 {
+    struct VerifyAfter {
+        const std::string& method;
+        ~VerifyAfter() { verifyTimelineSnapshotAfter(method); }
+    } verifyAfter { method };
+
     JsonApi::CallbackInfo info(args);
 
     // ── Manifest-generated dispatch (AUDIT.md S1) ────────────────────────────

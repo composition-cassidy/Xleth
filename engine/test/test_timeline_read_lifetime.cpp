@@ -543,6 +543,7 @@ void testPublishCost()
     std::sort(ms.begin(), ms.end());
     std::cerr << "  " << clips << " clips, " << notes << " notes: publish median "
               << ms[ms.size() / 2] << " ms, max " << ms.back() << " ms\n";
+    CHECK(engine.verifyTimelineSnapshot().empty(), "the published snapshot matches the timeline");
 
     // The clip gain/fade drag preview: one clip's gain per message.
     const int dragged = tl.getAllClips()[2500]->id;
@@ -558,6 +559,8 @@ void testPublishCost()
     std::sort(dragMs.begin(), dragMs.end());
     std::cerr << "  drag preview (one clip's gain): publish median "
               << dragMs[dragMs.size() / 2] << " ms, max " << dragMs.back() << " ms\n";
+    const std::string diff = engine.verifyTimelineSnapshot();
+    CHECK(diff.empty(), "a clip-only publish matches the timeline: " << diff);
 }
 
 } // namespace

@@ -121,6 +121,12 @@ public:
     // current snapshot; anything else falls back to refreshTimelineSnapshot().
     void refreshTimelineSnapshotForClip(int clipId);
 
+    // Debug check (main thread): rebuild the snapshot from the live timeline
+    // and compare it with the published one, on the fields the audio thread
+    // reads. Empty when they agree, else the first difference. A difference
+    // after an edit means that edit path does not republish.
+    std::string verifyTimelineSnapshot() const;
+
     // Map a region ID to a sample bank slot. Must be called from main thread
     // before playback of clips referencing that region.
     void mapRegionToSample(int regionId, int sampleBankId);

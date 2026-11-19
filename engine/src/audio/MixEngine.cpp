@@ -2067,6 +2067,71 @@ void MixEngine::refreshTimelineSnapshotForClip(int clipId)
     timelineSnapshot_.publish(std::move(snap));
 }
 
+namespace {
+// The track fields the audio thread reads (processBlock, the route plan,
+// sidechain taps, the diagnostic tap). Volume, pan and spread reach it through
+// the track slots instead, so a fader move need not republish.
+nlohmann::json audioTrackFields(const TrackInfo& t)
+{
+    nlohmann::json sends = nlohmann::json::array();
+    for (const auto& s : t.sends)
+        sends.push_back({ s.targetTrackId, s.gain, s.enabled });
+    nlohmann::json sc = nlohmann::json::array();
+    for (const auto& r : t.sidechainRoutes)
+        sc.push_back({ r.routeId, r.targetTrackId, r.targetEffectInstanceId,
+                       r.gain, r.preFader, r.enabled });
+    return { {"id", t.id}, {"name", t.name}, {"type", static_cast<int>(t.type)},
+             {"muted", t.muted}, {"solo", t.solo}, {"visualOnly", t.visualOnly},
+             {"output", t.outputRoute.targetTrackId}, {"sends", sends}, {"sidechain", sc} };
+}
+
+// Lens and grade are video-only; the preview edits them live, unpublished.
+nlohmann::json audioClipFields(const Clip* c)
+{
+    nlohmann::json j = *c;
+    j.erase("lens");
+    j.erase("colorGrade");
+    return j;
+}
+
+template <class T, class Fn>
+std::string firstDifference(const char* what, const std::vector<T>& published,
+                            const std::vector<T>& live, Fn&& fields)
+{
+    if (published.size() != live.size())
+        return std::string(what) + ": " + std::to_string(published.size())
+             + " published, " + std::to_string(live.size()) + " live";
+    for (size_t i = 0; i < live.size(); ++i)
+    {
+        const nlohmann::json a = fields(published[i]);
+        const nlohmann::json b = fields(live[i]);
+        if (a != b)
+            return std::string(what) + "[" + std::to_string(i) + "]: published "
+                 + a.dump() + " live " + b.dump();
+    }
+    return {};
+}
+} // namespace
+
+std::string MixEngine::verifyTimelineSnapshot() const
+{
+    const auto published = timelineSnapshot_.load();
+    if (timeline_ == nullptr)
+        return published ? "a snapshot is published for no timeline" : std::string{};
+    if (!published)
+        return "no snapshot published";
+    const auto live = buildTimelineSnapshot();
+
+    std::string d = firstDifference("track", *published->tracks, *live->tracks, audioTrackFields);
+    if (d.empty()) d = firstDifference("clip", published->clips, live->clips, audioClipFields);
+    if (d.empty()) d = firstDifference("block", *published->blocks, *live->blocks,
+                                       [](const PatternBlock& b) { return nlohmann::json(b); });
+    if (d.empty()) d = firstDifference("pattern", *published->patterns, *live->patterns,
+                                       [](const Pattern& p) { return nlohmann::json(p); });
+    if (d.empty() && *published->syllableStarts != *live->syllableStarts)
+        d = "syllable starts differ";
+    return d;
+}
 
 void MixEngine::setSampleBank(const SampleBank* bank)
 {
