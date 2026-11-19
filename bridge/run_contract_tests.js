@@ -42,7 +42,10 @@ const OUTPUT_CAP = 1 << 20; // keep the last 1 MB of each test's output for clas
 
 // Whole-script skips. Partial skips inside a passing script ("SKIP  live
 // section") are not matched here; they are only counted as a note.
-const SKIP_RE     = /SKIPPING|\[SKIP\]|\(skipped\)/;
+// These are the shapes the scripts use today: "SKIPPING", "[SKIP]", "(skipped)",
+// a line starting "SKIP:" (ffmpeg missing) and "Test audio missing" (fixture).
+// Detection is text-based, so a new skip wording needs a new pattern here.
+const SKIP_RE     = /SKIPPING|\[SKIP\]|\(skipped\)|^SKIP:|^Test audio missing/m;
 const SKIP_LINE   = /^\s*(\[SKIP\]|SKIP\b)/gm;
 // initialize() only fails when no audio device could be opened
 // (XlethEngineService.cpp: "AudioEngine::initialize() failed").
@@ -120,6 +123,7 @@ function skipReason(out) {
   if (/audio device|engine init(ialize)? failed|initialize\(\) (threw|failed)/i.test(out)) return 'no audio device';
   if (/GPU|D3D11/.test(out)) return 'no GPU';
   if (/ffmpeg/i.test(out)) return 'no ffmpeg';
+  if (/missing|not found/i.test(out)) return 'missing fixture';
   return 'other';
 }
 

@@ -22,6 +22,9 @@ const FAKES = {
   test_skip:      'console.log("SKIPPING - this test needs an audio device."); process.exit(0)',
   test_nodev:     'console.error(new Error("AudioEngine::initialize() failed — no audio device?")); process.exit(1)',
   test_hang:      'setInterval(() => {}, 1000)',
+  // exit-0 early outs seen in the real scripts: must be SKIP, never PASS
+  test_skip_colon:   'console.log("SKIP: vendor/ffmpeg/bin/ffmpeg.exe not found"); process.exit(0)',
+  test_skip_fixture: 'console.log("Test audio missing: x.wav"); process.exit(0)',
   // fails the first time it ever runs, passes afterwards
   test_flaky:     'const f = require("path").join(__dirname, ".flaky-seen"), fs = require("fs");' +
                   'if (fs.existsSync(f)) process.exit(0); fs.writeFileSync(f, "1"); process.exit(1)',
@@ -65,6 +68,11 @@ r = run(['test_nodev'], null);
 check(r.code === 1, 'init failure is a FAIL by default (a dev box has a device)');
 r = run(['test_nodev'], null, { env: { XLETH_CI_NO_AUDIO: '1' } });
 check(r.code === 0 && /1 SKIPPED/.test(r.out) && /0 passed/.test(r.out), 'init failure is a SKIP with XLETH_CI_NO_AUDIO=1, never a pass');
+
+// 4b. early exit-0 outs with other wordings are skips, with their own reason
+r = run(['test_skip_colon', 'test_skip_fixture']);
+check(r.code === 0 && /0 passed/.test(r.out) && /2 SKIPPED/.test(r.out), 'SKIP: and "Test audio missing" exit-0 scripts are SKIP, not PASS');
+check(/1 no ffmpeg, 1 missing fixture/.test(r.out), 'skip reasons are told apart');
 
 // 5. malformed allowlist entry is a config error
 r = run(['test_ok'], [{ test: 'test_ok', reason: 'no date' }]);
