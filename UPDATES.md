@@ -102,6 +102,11 @@ Since the 1.3.0-beta build (last commit in it: `752aa00`, 2026-11-11). 34 commit
 
 ### Fixed
 
+- **Switching Sample Picker sources while one is previewing no longer reads freed
+  audio.** `unloadSource` freed the decoded buffer while the audio callback could
+  still be mixing it, so clicking source B during A's preview could burst noise or
+  crash the engine. The callback now pins the buffer it reads and the unload waits
+  for that pin (at most one block's mix) before freeing; the audio thread never frees.
 - **Renaming or relabelling a sample no longer wipes the rest of it.**
   `timeline_modifyRegion` replaced the stored region with a partly-parsed default,
   so a Browser rename dropped the swapped audio/video, proxy state, custom label and
