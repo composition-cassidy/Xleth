@@ -2405,13 +2405,81 @@ void MixEngine::unloadSamplersForRegion(int regionId)
     unmapAllRegionSlots(regionId);
 }
 
+// ── Sampler events (main thread -> audio thread) ─────────────────────────────
+
+void MixEngine::postSamplerEvent(const SamplerEvent& e)
+{
+    if (samplerEvents_.push(e)) return;
+    // Ring full: the audio thread is not draining (device stalled). A note-on
+    // nobody will hear is dropped; anything that RELEASES must not be lost.
+    if (e.kind != SamplerEvent::Kind::PreviewNoteOn
+        && e.kind != SamplerEvent::Kind::SnapVolumeSmoothers)
+        samplerPanic_.store(true, std::memory_order_release);
+}
+
 void MixEngine::silenceAllSamplers()
 {
-    const auto set = samplerSet_.load();
-    for (auto& [key, sampler] : set->playback)
-        if (sampler) sampler->allNotesOff();
-    for (auto& [id, slot] : set->preview)
-        if (slot && slot->sampler) slot->sampler->allNotesOff();
+    postSamplerEvent({ SamplerEvent::Kind::AllNotesOff });
+}
+
+void MixEngine::previewNoteOn(int regionId, int pitch, float velocity)
+{
+    postSamplerEvent({ SamplerEvent::Kind::PreviewNoteOn, regionId, pitch, velocity });
+}
+
+void MixEngine::previewNoteOff(int regionId, int pitch)
+{
+    postSamplerEvent({ SamplerEvent::Kind::PreviewNoteOff, regionId, pitch });
+}
+
+void MixEngine::previewAllNotesOff(int regionId)
+{
+    postSamplerEvent({ SamplerEvent::Kind::PreviewAllNotesOff, regionId });
+}
+
+// AUDIO THREAD. The one place a sampler's voices are touched on behalf of the
+// main thread, so they have a single writer.
+void MixEngine::applySamplerEvents(const SamplerEvent* events, int count, bool releaseAll)
+{
+    const SamplerSet& set = *rtSamplers_;
+
+    const auto allNotesOffEverywhere = [&set] {
+        for (auto& kv : set.playback)
+            if (kv.second) kv.second->allNotesOff();
+        for (auto& kv : set.preview)
+            if (kv.second && kv.second->sampler) kv.second->sampler->allNotesOff();
+    };
+
+    // In arrival order: a Stop followed by a preview key must leave the key sounding.
+    for (int i = 0; i < count; ++i)
+    {
+        const SamplerEvent& e = events[i];
+        switch (e.kind)
+        {
+            case SamplerEvent::Kind::AllNotesOff:
+                allNotesOffEverywhere();
+                break;
+
+            case SamplerEvent::Kind::SnapVolumeSmoothers:
+                for (int s = 0; s < std::min(e.value, static_cast<int>(kMaxTracks)); ++s)
+                    volumeSmoothed_[s].setCurrentAndTargetValue(
+                        trackParams_[s].volume.load(std::memory_order_relaxed));
+                break;
+
+            default:
+            {
+                auto it = set.preview.find(e.regionId);
+                if (it == set.preview.end() || !it->second || !it->second->sampler) break;
+                Sampler& s = *it->second->sampler;
+                if      (e.kind == SamplerEvent::Kind::PreviewNoteOn)  s.noteOn(e.value, e.velocity);
+                else if (e.kind == SamplerEvent::Kind::PreviewNoteOff) s.noteOff(e.value);
+                else                                                   s.allNotesOff();
+                break;
+            }
+        }
+    }
+
+    if (releaseAll) allNotesOffEverywhere();
 }
 
 void MixEngine::rebuildAllSamplers(int onlyRegionId)
@@ -2507,8 +2575,8 @@ void MixEngine::rebuildSamplers(SamplerRebuild mode, int regionId)
     current.reset();
     samplerSet_.publish(std::make_shared<const SamplerSet>(std::move(next)));
 
-    // 4. Sync slot mapping, slot-owned atomics, and the non-thread-safe
-    //    smoothers (still snapped in place — see the note in MixEngine.h).
+    // 4. Sync slot mapping and slot-owned atomics; the smoother snap is queued
+    //    to the audio thread, which owns the smoothers.
     syncTrackSlotsFromTimeline(true);
 }
 
@@ -2973,10 +3041,13 @@ void MixEngine::syncTrackSlotsFromTimeline(bool snapVolumeSmoothers)
         trackParams_[i].volume.store(t->volume, std::memory_order_relaxed);
         trackParams_[i].pan.store(t->pan, std::memory_order_relaxed);
         trackParams_[i].spread.store(t->stereoSpread, std::memory_order_relaxed);
-
-        if (snapVolumeSmoothers)
-            volumeSmoothed_[i].setCurrentAndTargetValue(t->volume);
     }
+
+    // The smoothers belong to the audio thread (SmoothedValue is not
+    // thread-safe), so the snap to the volumes just stored is sent to it.
+    if (snapVolumeSmoothers)
+        postSamplerEvent({ SamplerEvent::Kind::SnapVolumeSmoothers, -1,
+                           std::min(static_cast<int>(allTracks.size()), static_cast<int>(kMaxTracks)) });
 
     // Envelope gates are muted/soloed with the track they follow, so the snapshot
     // has to be rebuilt whenever the slot params are resynced (which is what every
@@ -3088,7 +3159,7 @@ void MixEngine::silenceAllPreviewSamplers()
 {
     const auto set = samplerSet_.load();
     for (auto& [id, slot] : set->preview)
-        if (slot && slot->sampler) slot->sampler->allNotesOff();
+        previewAllNotesOff(id);
 }
 
 // ── Preview effect routing (main thread) ─────────────────────────────────────
@@ -6647,6 +6718,20 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         rtDiagEnabled ? steadyNowNs() : 0
     };
 
+    // ── Sampler events, then the sampler set ─────────────────────────────────
+    // Events are taken off the ring BEFORE the set is pinned. The main thread
+    // publishes a sampler and only then queues the note for it, so any event
+    // seen here was queued after its sampler was published, and the pin taken
+    // next is at least that new. The other order could pin an old set, then
+    // pop the note and find no sampler to play it on.
+    SamplerEvent samplerEvents[kMaxSamplerEventsPerBlock];
+    int numSamplerEvents = 0;
+    while (numSamplerEvents < kMaxSamplerEventsPerBlock
+           && samplerEvents_.pop(samplerEvents[numSamplerEvents]))
+        ++numSamplerEvents;
+    const bool samplerPanic = samplerPanic_.load(std::memory_order_relaxed)
+                           && samplerPanic_.exchange(false, std::memory_order_acq_rel);
+
     // Pinned for the whole block: every Sampler* derived below stays alive
     // until this returns. Never the last owner (see RtPublished), so letting
     // go of it here frees nothing on this thread.
@@ -6658,6 +6743,9 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         { engine.rtSamplers_ = held.get(); }
         ~SamplerSetPin() { engine.rtSamplers_ = nullptr; }
     } samplerSetPin { *this };
+
+    if (numSamplerEvents > 0 || samplerPanic)
+        applySamplerEvents(samplerEvents, numSamplerEvents, samplerPanic);
 
     // Early out: no timeline
     if (timeline_ == nullptr)

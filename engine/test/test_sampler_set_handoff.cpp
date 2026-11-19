@@ -1,21 +1,24 @@
-// test_sampler_set_handoff.cpp -- sampler lifetime across the main-thread /
-// audio-thread boundary.
+// test_sampler_set_handoff.cpp -- sampler lifetime and note events across the
+// main-thread / audio-thread boundary.
 //
-// The bridge thread used to edit MixEngine's sampler maps in place while the
-// audio callback was rendering from them. A sampler knob during playback
+// The bridge thread used to edit MixEngine's sampler maps in place and call
+// noteOn/noteOff/allNotesOff directly, while the audio callback was rendering
+// from the same maps and the same voices. A sampler knob during playback
 // destroyed every sampler in the project under the callback.
 //
-// Now the samplers are one immutable snapshot (RtPublished). This covers:
+// Now the samplers are one immutable snapshot (RtPublished) and everything the
+// main thread wants done to a voice is a queued event (SpscRing). This covers:
 //
 //   T1  RtPublished: a superseded snapshot is parked while a reader holds it,
 //       freed once it lets go, and drain() gives up at its deadline rather
 //       than free it early.
 //   T2  SpscRing: capacity, FIFO order, full/empty.
+//   T3  Preview note events land at the next block, in order; a lost note-off
+//       releases everything rather than leave a note stuck.
 //   T4  A region-scoped rebuild leaves other regions' samplers (and voices)
-//       alone, unless their settings or audio changed since; stale samplers
-//       and samplers of a deleted region are replaced / dropped.
-//   T5  Churn: one thread rebuilds and replaces samplers as fast as it can
-//       while the other renders blocks. Before the fix this is a
+//       alone, unless their audio was remapped since.
+//   T5  Churn: one thread rebuilds, replaces and plays samplers as fast as it
+//       can while the other renders blocks. Before the fix this is a
 //       use-after-free on every iteration.
 //
 // Blocks render on the MAIN thread (it has the big stack processBlock wants);
@@ -217,6 +220,60 @@ struct Rig
     }
 };
 
+// ── T3 ───────────────────────────────────────────────────────────────────────
+
+void testPreviewEvents()
+{
+    std::cout << "[T3] preview note events land at the next block\n";
+    Rig rig;                                   // transport stopped: audition path
+    MixEngine& e = *rig.engine;
+
+    e.ensurePreviewSampler(rig.regionA);
+    Sampler* pv = e.getPreviewSamplerPtr(rig.regionA);
+    CHECK(pv != nullptr, "preview sampler exists");
+    if (pv == nullptr) return;
+
+    e.previewNoteOn(rig.regionA, kRoot, 1.0f);
+    CHECK(pv->countHeldVoices() == 0, "note-on is queued, not applied on the calling thread");
+    CHECK(rig.block() > 1.0e-3f, "the next block plays it");
+    CHECK(pv->countHeldVoices() == 1, "one held voice after the block");
+
+    e.previewNoteOff(rig.regionA, kRoot);
+    rig.block();
+    CHECK(pv->countHeldVoices() == 0, "note-off releases it at the next block");
+
+    e.previewNoteOn(rig.regionA, kRoot, 1.0f);
+    rig.block();
+    e.silenceAllSamplers();
+    CHECK(pv->countHeldVoices() == 1, "silenceAllSamplers is queued too");
+    rig.block();
+    CHECK(pv->countHeldVoices() == 0, "and releases everything at the next block");
+
+    // Stop, then a key, inside one block: the key must survive the stop.
+    e.silenceAllSamplers();
+    e.previewNoteOn(rig.regionA, kRoot + 2, 1.0f);
+    rig.block();
+    CHECK(pv->countHeldVoices() == 1, "events apply in arrival order");
+
+    e.previewNoteOn(987654, kRoot, 1.0f);      // no such region
+    CHECK(rig.block() >= 0.0f, "an event for a missing preview sampler is dropped");
+
+    // A sampler published and then played in the same breath is found.
+    e.ensurePreviewSampler(rig.regionB);
+    e.previewNoteOn(rig.regionB, kRoot, 1.0f);
+    rig.block();
+    Sampler* pvB = e.getPreviewSamplerPtr(rig.regionB);
+    CHECK(pvB != nullptr && pvB->countHeldVoices() == 1, "note for a just-published sampler plays");
+
+    // Overflow: far more note-offs (for a pitch nobody holds) than the ring
+    // takes. The ones that do not fit must still end in "release everything".
+    CHECK(pv->countHeldVoices() == 1, "a note is still held before the flood");
+    for (int i = 0; i < 600; ++i) e.previewNoteOff(rig.regionA, 1);
+    rig.block();
+    CHECK(pv->countHeldVoices() == 0 && pvB->countHeldVoices() == 0,
+          "a lost note-off releases every voice instead of sticking");
+}
+
 // ── T4 ───────────────────────────────────────────────────────────────────────
 
 void testRegionScopedRebuild()
@@ -323,9 +380,11 @@ void testChurn()
             switch (it % 6)
             {
                 case 0: e.rebuildAllSamplers(rig.regionA); break;      // a sampler knob
-                case 1: e.ensurePreviewSampler(rig.regionA); break;
+                case 1: e.ensurePreviewSampler(rig.regionA);
+                        e.previewNoteOn(rig.regionA, kRoot + it % 12, 0.5f); break;
                 case 2: e.rebuildAllSamplers(); break;                  // undo / redo
-                case 3: e.refreshStaleSamplers(); break;                // an audio remap
+                case 3: e.previewNoteOff(rig.regionA, kRoot + (it - 2) % 12);
+                        e.silenceAllSamplers(); break;                  // Stop
                 case 4: e.unloadSamplersForTrack(rig.trackB);
                         e.loadSamplerForTrackRegion(rig.trackB, rig.regionB); break;
                 case 5: e.unloadPreviewSampler(rig.regionA);
@@ -376,6 +435,7 @@ int main()
 
     testRtPublished();
     testSpscRing();
+    testPreviewEvents();
     testRegionScopedRebuild();
     testChurn();
 

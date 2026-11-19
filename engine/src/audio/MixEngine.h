@@ -20,6 +20,7 @@
 #include "audio/SourceTransformTable.h"
 #include "dsp/LoudnessAnalyzer.h"
 #include "util/RtPublished.h"
+#include "util/SpscRing.h"
 
 #include <algorithm>
 #include <atomic>
@@ -178,8 +179,7 @@ public:
     // THREADING: main thread, safe while the audio callback runs. The new set
     // is published as one immutable snapshot (samplerSet_); replaced samplers
     // are freed here, later, once no block still holds them. The volume
-    // smoother snap at the end is still done in place (SmoothedValue is not
-    // thread-safe, so it can race the audio thread's getNextValue()).
+    // smoother snap is queued to the audio thread rather than done in place.
     void rebuildAllSamplers(int onlyRegionId = -1);
 
     // Rebuild only what no longer matches its region, and nothing else: the
@@ -244,11 +244,20 @@ public:
     // Main-thread only.
     Sampler* getSamplerPtr(int trackId, int regionId);
 
-    // Main-thread bulk: fire allNotesOff() on every loaded sampler (both
-    // per-track playback samplers and preview samplers). Used by bridge
-    // Stop/Pause handlers as a main-thread safety net alongside the audio-
-    // thread transition handler in processBlock.
+    // Main-thread bulk: allNotesOff() on every loaded sampler (both per-track
+    // playback samplers and preview samplers). Used by bridge Stop/Pause
+    // handlers as a safety net alongside the audio-thread transition handler
+    // in processBlock. Queued: it lands at the start of the next processBlock,
+    // because a sampler's voices have exactly one writer (see SamplerEvent).
     void silenceAllSamplers();
+
+    // ── Preview note events (main thread) ────────────────────────────────────
+    // Piano-roll / MiniKeyboard key audition. Queued to the audio thread and
+    // applied at the start of the next block; a region with no preview sampler
+    // by then simply drops the event. Call ensurePreviewSampler() first.
+    void previewNoteOn(int regionId, int pitch, float velocity);
+    void previewNoteOff(int regionId, int pitch);
+    void previewAllNotesOff(int regionId);
 
     // ── Preview samplers (main thread; piano roll / MiniKeyboard audition) ──
     // Separate from per-track playback samplers so auditioning a note in the
@@ -1994,9 +2003,10 @@ private:
     // ends, however many rebuilds land meanwhile; a replaced Sampler is freed
     // on the main thread once no block holds the set that owned it.
     //
-    // The Sampler objects themselves are mutable: their voice state belongs to
-    // the audio thread, and the atomically published parts (PREP buffers,
-    // route atomics) are all the main thread may safely touch.
+    // The Sampler objects themselves are mutable, with one writer: their voice
+    // state belongs to the audio thread. The main thread only touches the
+    // atomically published parts (PREP buffers, route atomics) and otherwise
+    // sends a SamplerEvent.
     struct SamplerSet
     {
         std::unordered_map<TrackRegionKey, std::shared_ptr<Sampler>, TrackRegionKeyHash> playback;
@@ -2038,6 +2048,34 @@ private:
     // running audition does not drop it back to dry.
     std::shared_ptr<PreviewSamplerSlot> makePreviewSlot(const SampleRegion& region,
                                                         const PreviewSamplerSlot* previous);
+
+    // ── Sampler events (main thread -> audio thread) ─────────────────────────
+    // Anything the main thread wants done to a sampler's voices, or to another
+    // audio-thread-owned value, travels here and is applied at the top of the
+    // next processBlock. Addressed by regionId, never by pointer, and resolved
+    // against the set that block pinned.
+    //
+    // Single producer: the bridge/main thread. A full ring drops a note-on
+    // (nobody is listening that fast) but turns a lost note-off into
+    // samplerPanic_, which releases everything, so a note can never stick.
+    struct SamplerEvent
+    {
+        enum class Kind : uint8_t {
+            PreviewNoteOn, PreviewNoteOff, PreviewAllNotesOff,
+            AllNotesOff,            // every playback and preview sampler
+            SnapVolumeSmoothers     // value = number of track slots to snap
+        };
+        Kind  kind     = Kind::AllNotesOff;
+        int   regionId = -1;
+        int   value    = 0;         // pitch, or slot count
+        float velocity = 0.0f;
+    };
+    static constexpr int kMaxSamplerEventsPerBlock = 64;
+    xleth::util::SpscRing<SamplerEvent> samplerEvents_ { 256 };
+    std::atomic<bool> samplerPanic_ { false };
+    void postSamplerEvent(const SamplerEvent& e);
+    // Audio thread. rtSamplers_ must be pinned.
+    void applySamplerEvents(const SamplerEvent* events, int count, bool releaseAll);
 
     // Audition routing preference (main thread writes, main thread reads during
     // route resolution). selectedTrackId is only meaningful in Selected mode.

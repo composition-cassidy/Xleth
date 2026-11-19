@@ -78,6 +78,11 @@ Since the 1.3.0-beta build (last commit in it: `752aa00`, 2026-11-11). 34 commit
 
 ### Changed
 
+- **Preview notes start at the next audio block.** Piano-roll and keyboard audition
+  notes, and the all-notes-off sent on Stop and Pause, are now queued to the audio
+  thread instead of changing a sampler's voices from the UI thread in the middle
+  of a block. They land at most one buffer later (about 10 ms), and a preview key
+  or a Stop can no longer tear a voice or leave a note stuck.
 - **Compose is the default layout.** Preview sits at the top of the Browser's 304px
   column, there is no top row, and the Inspector docks right at 280 when opened.
   The old shell stays as "Tiled (preview row)". Arrangement chrome goes from 95

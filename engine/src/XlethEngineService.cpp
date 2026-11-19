@@ -16157,13 +16157,13 @@ void Timeline_PreviewNote(const JsonApi::CallbackInfo& info)
 
     auto& mix = audioEngine->getMixEngine();
     if (!mix.hasPreviewSampler(regionId)) mix.ensurePreviewSampler(regionId);
-    Sampler* s = mix.getPreviewSamplerPtr(regionId);
-    if (s == nullptr) return;
+    if (mix.getPreviewSamplerPtr(regionId) == nullptr) return;
     // Resolve the audition's effect route here, at note-on: the arrangement may
     // have changed since the last preview, and this is the one point where a
     // fresh answer is always cheap and always correct.
     mix.refreshPreviewRoute(regionId);
-    s->noteOn(pitch, velocity);
+    // Queued: the audio thread is the only writer of a sampler's voices.
+    mix.previewNoteOn(regionId, pitch, velocity);
 }
 
 // sampler_getPreviewRouting() → { mode, selectedTrackId }
@@ -16249,9 +16249,7 @@ void Timeline_PreviewNoteOff(const JsonApi::CallbackInfo& info)
 
     auto& mix = audioEngine->getMixEngine();
     if (!mix.hasPreviewSampler(regionId)) return;
-    Sampler* s = mix.getPreviewSamplerPtr(regionId);
-    if (s == nullptr) return;
-    s->noteOff(pitch);
+    mix.previewNoteOff(regionId, pitch);
 }
 
 // timeline_previewAllNotesOff(regionId) — releases every held preview note on
@@ -16273,9 +16271,7 @@ void Timeline_PreviewAllNotesOff(const JsonApi::CallbackInfo& info)
 
     auto& mix = audioEngine->getMixEngine();
     if (!mix.hasPreviewSampler(regionId)) return;
-    Sampler* s = mix.getPreviewSamplerPtr(regionId);
-    if (s == nullptr) return;
-    s->allNotesOff();
+    mix.previewAllNotesOff(regionId);
 }
 
 // timeline_startPatternAudition(patternId, loop) → boolean
