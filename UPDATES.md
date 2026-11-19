@@ -107,6 +107,13 @@ Since the 1.3.0-beta build (last commit in it: `752aa00`, 2026-11-11). 34 commit
 
 ### Fixed
 
+- **Opening or reloading a project with automation clips no longer crashes.**
+  For a few milliseconds after a load the audio callback could still run the
+  old automation plan against the new effect chains, and when the new effect
+  landed at the old one's address it wrote through a freed parameter
+  (0xC0000005, about 1 in 9 runs of the automation bridge test). Each chain's
+  graph now carries a serial that is never reused, and a plan only writes into
+  the graph it was resolved against.
 - **Undoing or editing during playback no longer crashes the audio engine.** The
   audio callback read the live timeline (tracks, clips, pattern blocks, notes)
   while undo/redo and edits freed the very nodes and note lists it was walking.

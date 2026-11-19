@@ -5470,6 +5470,8 @@ void MixEngine::refreshAutomationPlan()
         rt.nodeId = chain->getNodeIdForEffectInstance(target.effectInstanceId);
         rt.effect = chain->getEffect(rt.nodeId);
         if (rt.effect == nullptr) { rt.raw = nullptr; rt.param = nullptr; continue; }
+        const auto view = chain->realtimeView();
+        rt.graphSerial = view ? view->graphSerial : 0;
         ++runtime->resolvedCount;
     }
 
@@ -5572,13 +5574,13 @@ void MixEngine::applyAutomationForBlock(const ChainSnapshot& chains, int64_t tic
         AutomationRuntimeTarget& rt = runtime->targets[static_cast<std::size_t>(i)];
         if (rt.raw == nullptr || rt.param == nullptr) continue;   // dead clip / VST3
 
-        // Liveness: re-derive the effect from this snapshot's view of its chain
-        // and confirm it is the same object the plan resolved. A removed effect
-        // yields nullptr (or a different pointer, since node ids are monotonic
-        // and never reused), and the target is skipped rather than written
-        // through a stale pointer. The view is immutable and holds a strong
-        // reference to every processor it names, so the comparison itself can
-        // never race a removal or read freed memory.
+        // Liveness: the view must describe the same juce graph the plan resolved
+        // against (node uids restart in every new graph, and a rebuilt chain's
+        // effect can sit at the freed one's address), then re-derive the effect
+        // by nodeId and confirm it is the same object. Anything else is skipped
+        // rather than written through a stale pointer. The view is immutable and
+        // holds a strong reference to every processor it names, so the
+        // comparison itself can never race a removal or read freed memory.
         const EffectChainManager* chain =
             (rt.trackId < 0) ? chains.master.get()
                              : (chains.find(rt.trackId) != nullptr
@@ -5586,7 +5588,7 @@ void MixEngine::applyAutomationForBlock(const ChainSnapshot& chains, int64_t tic
                                     : nullptr);
         if (chain == nullptr) continue;
         const auto view = chain->realtimeView();
-        if (!view) continue;
+        if (!view || view->graphSerial != rt.graphSerial) continue;
         if (AudioGraph::effectFor(*view, rt.nodeId) != rt.effect) continue;
 
         const double v = xleth::automation::evaluateTarget(*plan, i, tick);

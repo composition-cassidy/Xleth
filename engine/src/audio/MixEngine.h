@@ -1794,24 +1794,27 @@ private:
     // One entry per AutomationPlan target, in the same order. Resolution is main
     // thread; the audio thread only stores into `raw`.
     //
-    // `effect` + `nodeId` are a LIVENESS CHECK, not a shortcut: before writing,
-    // the audio thread re-derives the effect from its chain by nodeId and
-    // compares. If the effect was removed (or replaced) since the plan was
-    // built, the lookup returns a different pointer (node ids are monotonic
-    // uids, never reused) and the target is skipped — so a stale plan fails
-    // closed instead of writing through a dangling pointer.
+    // `graphSerial` + `nodeId` + `effect` are a LIVENESS CHECK, not a shortcut:
+    // before writing, the audio thread confirms its chain's view describes the
+    // same juce graph the plan resolved against, then re-derives the effect by
+    // nodeId and compares. Node uids are monotonic only WITHIN one graph: a
+    // chain rebuilt by project load starts again at the same uids, and its new
+    // effect is often allocated at the freed one's address, so nodeId + effect
+    // alone passed and the block wrote through the dead effect's parameter
+    // (0xC0000005 in convertFrom0to1). The serial is never reused, so a stale
+    // plan fails closed.
     //
-    // Finding 9 changed WHAT makes that check safe, not the check itself. The
-    // audio thread no longer holds chainsMutex_, so it re-derives through the
-    // ChainSnapshot's immutable RealtimeView rather than the live node map, and
-    // the snapshot's strong Node::Ptr references keep `effect` alive for as long
-    // as the block can still see it. A runtime is only ever reachable through
-    // the snapshot that resolved it, so a target can never outlive its chain.
+    // A runtime is NOT tied to the chains it resolved against: every publish
+    // attaches the current automationRuntime_, and a chain rebuild publishes
+    // before the envelope applier gets to refresh the plan. What makes reading
+    // `param`/`raw` safe is the check above plus the snapshot's strong Node::Ptr
+    // references, which keep a matching `effect` alive for the whole block.
     struct AutomationRuntimeTarget
     {
         std::atomic<float>*         raw    = nullptr;
         juce::RangedAudioParameter* param  = nullptr;
         XlethEffectBase*            effect = nullptr;
+        std::uint64_t graphSerial = 0;   // GraphRealtimeView::graphSerial at resolve time
         int   nodeId      = -1;
         int   trackId     = -1;     // -1 = master chain
         float lastWritten = 0.0f;   // skip redundant stores
