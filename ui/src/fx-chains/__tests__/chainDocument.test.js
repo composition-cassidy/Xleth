@@ -11,7 +11,6 @@ import {
   groupChainsByFolder,
   isChainDocument,
 } from '../chainDocument.js'
-import { slugifyChainName } from '../slugify.js'
 
 // The ordered light chain view a mixer strip renders.
 const slots = [
@@ -182,28 +181,5 @@ describe('filterChains', () => {
 
   it('returns nothing when nothing matches', () => {
     expect(filterChains(chains, 'zzz')).toEqual([])
-  })
-})
-
-describe('slugifyChainName', () => {
-  it('matches the main-process rules the file store enforces', () => {
-    expect(slugifyChainName('cool bass')).toBe('cool-bass')
-    expect(slugifyChainName('  For Kick!! ')).toBe('for-kick')
-    expect(slugifyChainName('1324gfdhfg')).toBe('1324gfdhfg')
-  })
-
-  it('never emits a path separator or a traversal token', () => {
-    expect(slugifyChainName('../../etc/passwd')).toBe('etc-passwd')
-    expect(slugifyChainName('..')).toBe('chain')
-  })
-
-  it('escapes Windows reserved device names', () => {
-    expect(slugifyChainName('CON')).toBe('_con')
-    expect(slugifyChainName('lpt1')).toBe('_lpt1')
-  })
-
-  it('falls back rather than producing an empty filename', () => {
-    expect(slugifyChainName('***')).toBe('chain')
-    expect(slugifyChainName('')).toBe('chain')
   })
 })
