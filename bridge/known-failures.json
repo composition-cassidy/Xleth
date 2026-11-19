@@ -30,6 +30,16 @@
     "date": "2026-11-20"
   },
   {
+    "test": "test_filter_live_animation",
+    "reason": "needs docs/plans/hall_ab_renders/hall_before_chord.wav, which is not in git; exits 1 on any clean checkout, with or without an audio device",
+    "date": "2026-11-20"
+  },
+  {
+    "test": "test_pdc_live_presentation_refresh",
+    "reason": "needs the diagnostics/pdc-stage7a/NO_MAIL_project_copy fixture, which is not in git; throws 'Stage 7A source duplicate is missing' on any clean checkout",
+    "date": "2026-11-20"
+  },
+  {
     "test": "test_regenerable_lifecycle_contract",
     "reason": "intermittent: failed in one local run and passed in the next on 2026-11-20 with no change in between; cause not diagnosed",
     "date": "2026-11-20",
