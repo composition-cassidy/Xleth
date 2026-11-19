@@ -7,6 +7,7 @@
 #include "audio/MixEngine.h"
 #include "audio/TrackMixer.h"
 #include "audio/XlethEQEffect.h"
+#include "HardwareTier.h"
 #include "model/Timeline.h"
 #include "SampleBank.h"
 #include "Transport.h"
@@ -2385,7 +2386,20 @@ static void testRealtimeDiagnosticsAndResonanceSuppressorSafety()
     CHECK(snapshot.blockCount == 48, "diagnostics should count measured realtime blocks");
     CHECK(snapshot.chainLockMissCount == 0, "realtime chain lock should not miss without contention");
     CHECK(snapshot.pdcRetargetCount == 0, "PDC target should stay stable after warmup");
-    CHECK(snapshot.resonanceSuppressorWolaCallCount > 0,
+
+    // Per-plugin telemetry (plugin calls, RS WOLA sections) is recorded only
+    // when a track's chain runs on the callback thread. With audio helper
+    // threads on, a helper may take the chain in any block, and for a short
+    // run of blocks in all of them, so those counts can be 0. What IS
+    // guaranteed then is per-chain: the chain was processed (it was timed)
+    // and never skipped. ctest runs both: "test_mix" with helpers off (the
+    // exact counts) and "test_mix_parallel" with them on (the guarantees).
+    const bool helperThreads = xleth::hw::audioWorkerThreads() > 0;
+    const auto chainRan = [](const MixEngine::RealtimeDiagnosticsSnapshot& s) {
+        return s.maxTrackChainMs > 0.0 && s.trackChainSkippedCount == 0;
+    };
+
+    CHECK(helperThreads ? chainRan(snapshot) : snapshot.resonanceSuppressorWolaCallCount > 0,
           "RS High Quality WOLA should be timed in realtime diagnostics");
     CHECK(snapshot.resonanceSuppressorAudioThreadReprepareCount == 0,
           "RS High Quality should not reprepare on the audio thread");
@@ -2416,7 +2430,8 @@ static void testRealtimeDiagnosticsAndResonanceSuppressorSafety()
     CHECK(processRealtimeDiagnosticBlocks(engine, transport, blockSize, 8),
           "mix=0 realtime output should stay finite");
     auto dryOnlySnapshot = engine.getRealtimeDiagnosticsSnapshot();
-    CHECK(dryOnlySnapshot.pluginCallCount > 0, "mix=0 should still execute lightweight plugin path");
+    CHECK(helperThreads ? chainRan(dryOnlySnapshot) : dryOnlySnapshot.pluginCallCount > 0,
+          "mix=0 should still execute lightweight plugin path");
     CHECK(dryOnlySnapshot.resonanceSuppressorWolaCallCount == 0,
           "mix=0 should skip heavy RS WOLA processing");
     CHECK(dryOnlySnapshot.nanInfBlockCount == 0,
@@ -2434,7 +2449,8 @@ static void testRealtimeDiagnosticsAndResonanceSuppressorSafety()
     CHECK(processRealtimeDiagnosticBlocks(engine, transport, blockSize, 8),
           "bypassed realtime output should stay finite");
     auto bypassSnapshot = engine.getRealtimeDiagnosticsSnapshot();
-    CHECK(bypassSnapshot.pluginCallCount > 0, "bypass should still execute lightweight plugin path");
+    CHECK(helperThreads ? chainRan(bypassSnapshot) : bypassSnapshot.pluginCallCount > 0,
+          "bypass should still execute lightweight plugin path");
     CHECK(bypassSnapshot.resonanceSuppressorWolaCallCount == 0,
           "fully bypassed RS should skip heavy WOLA processing");
     CHECK(bypassSnapshot.nanInfBlockCount == 0,

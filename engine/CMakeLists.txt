@@ -4163,6 +4163,34 @@ foreach(_xleth_test IN LISTS XLETH_ENGINE_TESTS)
     endif()
 endforeach()
 
+# test_mix runs with the audio helper threads off. Its [RT 1] checks read
+# per-plugin telemetry, which MixEngine only records when a track's chain runs
+# on the callback thread; with helpers on, a helper often takes the chain and
+# "pluginCallCount > 0" over 8 blocks failed about 3 runs in 40.
+#
+# test_mix_parallel is the same binary with helpers forced ON, so the routing,
+# send, sidechain, PDC and tail assertions still run through the parallel track
+# scheduler on any machine. There the three per-plugin checks fall back to what
+# is guaranteed on any thread (the chain ran and was never skipped). The two
+# share temp directories, hence the lock.
+set_tests_properties(test_mix PROPERTIES
+    ENVIRONMENT "XLETH_HW_AUDIO_WORKERS=0"
+    RESOURCE_LOCK test_mix_tempdirs
+)
+add_test(NAME test_mix_parallel
+    COMMAND test_mix
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..
+)
+set_tests_properties(test_mix_parallel PROPERTIES
+    ENVIRONMENT "XLETH_HW_AUDIO_WORKERS=4"
+    RESOURCE_LOCK test_mix_tempdirs
+)
+if(EXISTS "${_VCPKG_INSTALLED}/bin")
+    set_tests_properties(test_mix_parallel PROPERTIES
+        ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_VCPKG_INSTALLED}/bin"
+    )
+endif()
+
 # Live-vs-export timing repro for Pitch-Shifter tracks under PDC. Tool-only:
 # loads a machine-local project copy, so it is not registered with ctest.
 add_executable(xleth_pitch_pdc_timing_repro
