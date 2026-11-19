@@ -1,5 +1,7 @@
 #pragma once
 #include "LensRoam.h"
+#include "Clone.h"
+#include "ColorGrade.h"
 #include "ParamTrack.h"
 #include "SamplerModulationConfig.h"
 
@@ -152,6 +154,11 @@ struct SourceMedia {
     // pool; NOT serialized (rebuilt from disk / regenerated). Touched only by the
     // video thread (drain installs, FrameCollector reads).
     std::unordered_map<int, std::string> thumbnailPaths;
+
+    // Source Color Grade (model/ColorGrade.h): the repair of this footage.
+    // Belongs to the source, so every clip and region cut from it inherits it
+    // and deleting a clip never loses it. Default = neutral, no change.
+    ColorGrade colorGrade;
 };
 
 // ─── SampleSlot ───────────────────────────────────────────────────────────────
@@ -478,6 +485,11 @@ struct SampleRegion {
         for (const auto& s : slots) if (s.solo) return true;
         return false;
     }
+
+    // Clip Color Grade for a Pattern Track (model/ColorGrade.h): this region's
+    // own look wherever a pattern plays it, applied after its source's grade.
+    // The Clip-level counterpart of Clip::colorGrade. Default = neutral.
+    ColorGrade colorGrade;
 };
 
 // ─── StretchMethod ────────────────────────────────────────────────────────────
@@ -701,6 +713,11 @@ struct Clip {
     // Cover; a clip loaded without a "lens" key (pre-v8 project) loads as
     // identity, i.e. Stretch, today's rendering. See model/LensRoam.h.
     LensTrack lens{ LensParams::newContentDefault(), {} };
+
+    // Clip Color Grade (model/ColorGrade.h): this one instance's look, applied
+    // after its source's grade. A struct copy (duplicate, split, paste) carries
+    // it; the copy is then independent. Default = neutral.
+    ColorGrade colorGrade;
 
     bool isSyllableClip() const { return syllableIndex >= 0; }
 };
@@ -1040,6 +1057,54 @@ inline float zprLog2ToZoom(double log2Zoom) {
     return static_cast<float>(std::exp2(log2Zoom));
 }
 
+// Motion blur for TRANSFORM animation (render/MotionBlur.h). A virtual shutter
+// open for `shutterAngleDeg / 360` of each output frame, centred on the frame:
+// the compositor averages the moving cell over that window, so a fast Lens /
+// Roam / Sweep / Zoom-pan-rot move smears along its path instead of strobing.
+// Only the transform is integrated; the video's own pixels are never blurred.
+//
+// Two independent instances exist:
+//   * project-wide (Timeline::getMotionBlur, project.json "motionBlur"):
+//     Lens, Roam and Sweep on every grid cell and fullscreen layer;
+//   * per track on Zoom/pan/rot (ZoomPanRotSettings::motionBlur): the note- and
+//     slide-triggered ZPR animation. Deliberately NOT governed by the
+//     project-wide one, in either direction.
+// Saved as {"enabled": bool, "shutterAngle": degrees}.
+struct MotionBlurSettings {
+    bool  enabled         = false;
+    float shutterAngleDeg = 180.0f;   // 180 = the film-camera default
+
+    static constexpr float kMaxShutterAngleDeg = 360.0f;
+
+    // Garbage (NaN, negative) reads as closed; > 360 is held at a full frame.
+    static float sanitizeShutter(float deg) {
+        if (!std::isfinite(deg) || deg < 0.0f) return 0.0f;
+        return deg > kMaxShutterAngleDeg ? kMaxShutterAngleDeg : deg;
+    }
+    // True when the shutter actually integrates time.
+    bool active() const { return enabled && shutterAngleDeg > 0.0f; }
+
+    bool operator==(const MotionBlurSettings& o) const {
+        return enabled == o.enabled && shutterAngleDeg == o.shutterAngleDeg;
+    }
+    bool operator!=(const MotionBlurSettings& o) const { return !(*this == o); }
+};
+
+inline nlohmann::json motionBlurToJson(const MotionBlurSettings& m) {
+    return nlohmann::json{ {"enabled", m.enabled}, {"shutterAngle", m.shutterAngleDeg} };
+}
+
+// Tolerant: a missing or malformed field keeps its default (off, 180 degrees).
+inline MotionBlurSettings motionBlurFromJson(const nlohmann::json& j) {
+    MotionBlurSettings m;
+    if (!j.is_object()) return m;
+    if (j.contains("enabled") && j.at("enabled").is_boolean())
+        m.enabled = j.at("enabled").get<bool>();
+    if (j.contains("shutterAngle") && j.at("shutterAngle").is_number())
+        m.shutterAngleDeg = MotionBlurSettings::sanitizeShutter(j.at("shutterAngle").get<float>());
+    return m;
+}
+
 struct ZoomPanRotSettings {
     bool   enabled          = false;
     float  startZoom        = 1.0f;
@@ -1078,6 +1143,12 @@ struct ZoomPanRotSettings {
     OnEndMode     onEndMode            = OnEndMode::Hold;
     RetriggerMode retriggerMode        = RetriggerMode::Restart;
     float         retriggerCrossfadeMs = 50.0f; // only meaningful when retriggerMode == Crossfade
+
+    // This track's ZPR motion blur. Independent of the project-wide setting
+    // (see MotionBlurSettings). Read from the TRACK's ZPR only: it blurs the
+    // composed ZPR pose, note channel and slide delta layer alike, so the
+    // copy inside SlideNoteEffectSettings::zoomPanRot is never consulted.
+    MotionBlurSettings motionBlur;
 
     // Named-preset bookkeeping. The preset library is ui/electron-main/fx-presets.js
     // with effectType "xform" (ui/src/fx-presets/effectPresetAdapters.js); this
@@ -1358,6 +1429,12 @@ struct VisualEffect {
     //     • Their spatial radii are in TRUE cell pixels, not the output pixels
     //       ChromaKey's choke/edgeBlur use, because the padded target's real
     //       dimensions are passed down in the constant buffer.
+    // Stable identity inside its track's chain (> 0 once the chain is loaded or the
+    // effect added): it travels with the effect through reorder, remove and undo,
+    // so animation keys (TrackInfo::fxKeys) keep addressing the same effect when
+    // its INDEX changes. Never reused within a session. Saved only for an effect
+    // that has keys.
+    int uid = 0;
     float params[16] = {};
 };
 
@@ -1389,6 +1466,13 @@ struct PatternNote {
     // patternNoteToJs (engine) and toEngineNote (piano roll), or a piano-roll
     // edit silently erases it. Not evaluated until P8.
     LensNoteOverridePtr lensOverride;
+
+    // ── Voice pin (Clones, model/Clone.h) ─────────────────────────────────
+    // Which cell plays this note when its track has Voice clones: -1 = Auto
+    // (the default; absent on disk), 0 = the source cell, k >= 1 = Voice
+    // clone k. Lives on the note like lensOverride (the spec's {patternId,
+    // noteId} key), so every note converter must carry it.
+    int voicePin = kVoicePinAuto;
 };
 
 // ─── Pattern ──────────────────────────────────────────────────────────────────
@@ -1711,25 +1795,36 @@ inline std::string normalizeTrackCustomColor(const std::string& v) {
 }
 
 // ─── Mixer routing model ─────────────────────────────────────────────────────
-// Source track owns its route. targetTrackId = -1 means Master (default).
-// sends and sidechainRoutes are reserved for Prompt 4+ and are always empty
-// in Prompt 2A. All three types are persisted additively (omitted when default).
+// Source track owns its routes. A track's audible destinations are its primary
+// outputRoute (targetTrackId = -1 means Master, the default) PLUS any `sends`
+// (FL-style multi-wiring: extra post-fader audio routes into other tracks, each
+// with its own level). sidechainRoutes are silent key routes. All three are
+// persisted additively (omitted when default).
 
 struct TrackOutputRoute {
     int targetTrackId = -1;  // -1 = Master
 };
 
-// Reserved for Prompt 4+. Not wired to DSP in Prompt 2A.
+// Max extra audio routes per track (RoutePlanSlotInput::kMaxSends mirrors it).
+constexpr int kMaxTrackSends = 8;
+
+// An extra audible route: the source's post-fader/post-pan signal summed into
+// another track's pre-chain input at `gain` (clamped [0,2]). Targets are always
+// real tracks — never Master (Master is reached through outputRoute) — and are
+// unique per source and distinct from outputRoute.targetTrackId.
 struct TrackSend {
-    std::string routeId;
+    std::string routeId;     // unused; kept for forward compat
     int   targetTrackId = -1;
     float gain          = 1.0f;
-    float pan           = 0.0f;
-    bool  preFader      = false;
+    float pan           = 0.0f;  // unused
+    bool  preFader      = false; // unused (always post-fader)
     bool  enabled       = true;
 };
 
-// Silent key route. Reserved for Prompt 4+. Not wired to DSP in Prompt 2A.
+// Silent key route. An empty targetEffectInstanceId is a TRACK-LEVEL route
+// (FL's "Sidechain to this track"): the key reaches every sidechain-capable
+// effect on the target track; each effect's own external switch decides
+// whether it listens.
 struct SidechainRoute {
     std::string routeId;
     int         targetTrackId          = -1;
@@ -1811,6 +1906,18 @@ struct TrackInfo {
     static constexpr double kHoldLastFrameThresholdUnlimited = -1.0;
     double videoHoldLastFrameThresholdBeats = kHoldLastFrameThresholdUnlimited;
 
+    // Smart hold: decide per gap whether to hold, from the track's own rhythm
+    // (model/SmartHold.h). Gaps inside a phrase hold; the long rests between
+    // phrases, and the space after the last clip, go blank. Overrides the
+    // threshold above while on. Only consulted when videoHoldLastFrame is true.
+    bool videoHoldSmart = false;
+
+    // What fills a held gap. false = freeze the clip's last frame (the
+    // original behaviour). true = keep playing the source on from where the
+    // clip stopped, until the next clip/note takes over. Only consulted when
+    // videoHoldLastFrame is true.
+    bool videoHoldKeepPlaying = false;
+
     // ── Visual compositor effect settings ────────────────────────────────
     float                           gapScaleOverride = -1.0f; // -1 = use global, >=0 = override
     float                           cornerRadius     = 0.0f;  // 0.0–1.0
@@ -1823,6 +1930,11 @@ struct TrackInfo {
     // Clip track. See NoteFadeSettings and model/NoteFade.h.
     NoteFadeSettings                noteFade;
     std::vector<VisualEffect>       visualEffectChain;
+
+    // Layer Color Grade (model/ColorGrade.h): the look of this track's cell,
+    // applied after the Source and Clip grades and before the visual effect
+    // chain. Belongs to the track, so it follows whatever the cell shows.
+    ColorGrade                      colorGrade;
 
     // ── Lens + Roam (model/LensRoam.h) ───────────────────────────────────
     // roam: transform of this track's CELL (offset/scale/rotation/bounds/layer).
@@ -1837,6 +1949,36 @@ struct TrackInfo {
     // framing after the note animation (zoom multiplies; centre and rotation add).
     // Missing / empty = no Sweep.
     SweepTrack                      sweep;
+    // Video effect parameter keys (Motion view): timeline-absolute keys on a chain
+    // effect's params[], addressed by VisualEffect::uid + params index. A keyed
+    // param follows its keys, an unkeyed one holds the effect's own value.
+    // Evaluated by LensRoamSnapshot::applyFxKeys, on the request's copy of the chain.
+    std::vector<FxKey>              fxKeys;
+    // The next VisualEffect::uid this track hands out (never lower than the
+    // highest uid in its chain + 1; Timeline::addVisualEffect enforces that).
+    int                             nextFxUid = 1;
+    // Parent (Motion view, docs/XLETH_MOTION_VIEW_DESIGN.md R6-R8, 2.1): the
+    // track whose cell this track's cell follows (Roam only: offset, scale,
+    // rotation). -1 = none. A dangling id (the track is gone) resolves as no
+    // parent everywhere. Edited only through SetTrackParentCommand (which
+    // rejects self, cycles and chains deeper than 4); RemoveTrackCommand
+    // detaches the children of the track it removes.
+    int                             parentTrackId = -1;
+
+    // Clone (docs/XLETH_CLONE_SPEC.md, model/Clone.h). cloneOf = the source
+    // Pattern Track this video-only track belongs to; -1 = an ordinary track
+    // (every field below is then unused and never saved). A Voice clone plays
+    // the notes the source cannot (polyphony) in its own cell; a Trail clone
+    // replays the source's whole cell result trail.delayTicks later. Clones
+    // are Pattern-type, visualOnly tracks with no blocks of their own; a
+    // Trail's added Roam is this track's `roam` (offset only).
+    int                             cloneOf       = -1;
+    CloneKind                       cloneKind     = CloneKind::Voice;
+    CloneLensMode                   cloneLensMode = CloneLensMode::Linked;   // Voice only
+    TrailSettings                   trail;                                   // Trail only
+    bool isClone() const { return cloneOf >= 0; }
+    bool isVoiceClone() const { return cloneOf >= 0 && cloneKind == CloneKind::Voice; }
+    bool isTrailClone() const { return cloneOf >= 0 && cloneKind == CloneKind::Trail; }
 
     // Sub-column subdivision used when placing this track in the grid. 1 =
     // full column (default), 2 = half, 4 = quarter, 8 = eighth. Drives the

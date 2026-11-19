@@ -8,6 +8,7 @@
 #include "dsp/WORLD.h"
 #include "dsp/StretchInputFloor.h"
 #include "model/TimelineTypes.h"
+#include "HardwareTier.h"
 #include "XlethDebug.h"
 
 #include <algorithm>
@@ -596,8 +597,12 @@ namespace {
 // Workers feed a cache with a correct raw-PCM fallback, so a late worker is
 // cheap and a preempting one is not: fewer threads, below-normal priority.
 int clipCacheWorkerCount() {
-    const int hw = (int) std::thread::hardware_concurrency();
-    return juce::jlimit(1, ClipRenderCache::kMaxThreads, hw / 2 - 1);
+    // Historical: clamp(hw/2 - 1, 1, kMaxThreads=4). The ceiling now rises with
+    // the core tier (HardwareTier::backgroundWorkers: 4 below 12 logical cores,
+    // up to 8 but never more than a quarter of the machine), still low priority.
+    const int hw  = xleth::hw::logicalCores();
+    const int cap = xleth::hw::backgroundWorkers(ClipRenderCache::kMaxThreads, 8);
+    return juce::jlimit(1, cap, hw / 2 - 1);
 }
 
 size_t bufferBytes(const CacheEntry& e) noexcept {
@@ -894,10 +899,14 @@ bool ClipRenderCache::hasEntryForKey(int clipId, const CacheKey& key) const {
 void ClipRenderCache::submitJob(int clipId, const CacheKey& key,
                                 const juce::AudioBuffer<float>& srcPcm,
                                 double sampleRate,
-                                double bufferSampleRate)
+                                double bufferSampleRate,
+                                bool quiet)
 {
     if (!threadPool_) return;
     if (clipId < 0 || clipId >= kMaxClipId) return;
+#ifndef XLETH_DEBUG
+    (void) quiet;
+#endif
 
     const bool fx = key.hasFx();
     std::shared_ptr<CacheEntry> entry;
@@ -964,17 +973,20 @@ void ClipRenderCache::submitJob(int clipId, const CacheKey& key,
 
     if (!needsRender) {
 #ifdef XLETH_DEBUG
+        if (!quiet) {
         fprintf(stderr, "[ClipCache] share: clip=%d joined existing entry "
                 "(region=%d stretch=%.3f pitch=%dst+%dc fxMethod=%d) ready=%d\n",
                 clipId, key.regionId, key.stretchRatio,
                 key.pitchOffsetSemis, key.pitchOffsetCents, key.fxMethod,
                 (int)entry->ready.load(std::memory_order_acquire));
         fflush(stderr);
+        }
 #endif
         return;
     }
 
 #ifdef XLETH_DEBUG
+    if (!quiet)
     fprintf(stderr, "[ClipCache] submit: clip=%d key={region=%d syl=%d"
             " pitch=%dst+%dc stretch=%.3f rev=%d method=%d formant=%d"
             " fx=%dst+%dc/%d/%d}\n",

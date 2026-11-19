@@ -26,6 +26,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -33,6 +34,7 @@
 #include "GpuDeviceManager.h"   // NOMINMAX, d3d11_4.h, ComPtr
 #include "FrameCache.h"         // RenderFrameCache, FrameCacheKey, FrameCacheEntry
 #include "FrameCollector.h"     // CellFrameRequest
+#include "MaskMath.h"           // maskmath::kMaskMaxPoints (MaskConstants)
 
 struct VisualEffect;
 
@@ -63,6 +65,43 @@ struct alignas(16) CellConstants {
 static_assert(sizeof(CellConstants) == 96, "CellConstants must be 96 bytes (6 x float4)");
 static constexpr int kXformLens = 1;
 static constexpr int kXformRoam = 2;
+// Motion blur (render/MotionBlur.h): the draw averages MotionConstants.taps
+// samples, each with its own map from the tap's row pair at b3.
+//   kXformMotionLens    the rows replace lensRow0/1 (the Lens framing pass)
+//   kXformMotionScreen  the rows pre-map output UV to the frame-time pose
+//                       before the cell's own mapping (the final draws)
+static constexpr int kXformMotionLens   = 4;
+static constexpr int kXformMotionScreen = 8;
+
+// ---------------------------------------------------------------------------
+// MotionConstants — matches cbuffer MotionConstants (b3) in GridComposite.hlsl.
+// Read only by a draw whose xformFlags carries a kXformMotion* bit, so a stale
+// binding is harmless. Row pair i = tap i's 2x3 map (m00, m01, tx, 0) /
+// (m10, m11, ty, 0).
+// ---------------------------------------------------------------------------
+struct alignas(16) MotionConstants {
+    int   taps = 0;
+    int   pad[3] = { 0, 0, 0 };
+    float row0[motionblur::kMaxTaps][4] = {};
+    float row1[motionblur::kMaxTaps][4] = {};
+};
+static_assert(sizeof(MotionConstants) == 16 + 2 * motionblur::kMaxTaps * 16,
+              "MotionConstants must match the HLSL cbuffer layout");
+
+// ZoomPanRotation pass constants (cbuffer ZPRConstants, b0 of
+// FX_ZoomPanRotation.hlsl). The first row is the pose the pass always had;
+// taps > 1 averages tap[0..taps) = (zoom, panX, panY, rotRad) instead.
+struct alignas(16) ZprConstants {
+    float zoom   = 1.0f;
+    float panX   = 0.0f;
+    float panY   = 0.0f;
+    float rotRad = 0.0f;
+    int   taps   = 0;
+    int   pad[3] = { 0, 0, 0 };
+    float tap[motionblur::kMaxTaps][4] = {};
+};
+static_assert(sizeof(ZprConstants) == 32 + motionblur::kMaxTaps * 16,
+              "ZprConstants must match the HLSL cbuffer layout");
 
 // How the final draws of ONE request (echo taps, drop shadow, the cell) are
 // placed beyond their rect: the orientation to draw with (the track's flip,
@@ -76,6 +115,10 @@ struct CellDrawXform {
     float      rotationRad = 0.0f;   // Roam rotation, clockwise on screen
     bool       scissor     = false;  // Bounds Clip: clip to scissorRect
     D3D11_RECT scissorRect{};        // home cell, output pixels
+    // Roam motion blur: per-tap screen-space pre-maps (taps > 1), shared by
+    // every final draw of the request so the cell, its echo trail and its
+    // shadow move as one object. nullptr = no blur. Not owned.
+    const MotionConstants* motion = nullptr;
 };
 
 // ---------------------------------------------------------------------------
@@ -169,6 +212,96 @@ struct alignas(16) DropShadowConstants {
     float dropShadowPad0;
 };
 static_assert(sizeof(DropShadowConstants) == 64, "DropShadowConstants must be 64 bytes");
+
+// ---------------------------------------------------------------------------
+// Color Grade pass constants (cbuffer GradeConstants, b2 of FX_ColorGrade.hlsl).
+// One GradeLevelConstants per level applied by the draw; field order must
+// match the shader's GradeLevel exactly.
+// ---------------------------------------------------------------------------
+struct alignas(16) GradeLevelConstants {
+    float row0[4];         // xyz = matrix row 0, w = vibrance
+    float row1[4];         // xyz = matrix row 1, w = LUT amount
+    float row2[4];         // xyz = matrix row 2, w = LUT size
+    float flags[4];        // x = has transfer, y = has matrix, z = has LUT
+    float lutMin[4];       // xyz = LUT domain minimum
+    float lutInvRange[4];  // xyz = 1 / (domain maximum - minimum)
+};
+static_assert(sizeof(GradeLevelConstants) == 96, "GradeLevelConstants must be 96 bytes");
+
+struct alignas(16) GradeConstants {
+    int levelCount  = 0;
+    int forceOpaque = 0;
+    int pad0 = 0, pad1 = 0;
+    GradeLevelConstants levels[3] = {};
+};
+static_assert(sizeof(GradeConstants) == 16 + 3 * 96, "GradeConstants must match the HLSL cbuffer");
+
+// ---------------------------------------------------------------------------
+// Mask pass constants (cbuffer MaskConstants, b2 of FX_Mask.hlsl; Motion view
+// R11-R13). Geometry in CELL PIXELS about the drawn cell's centre (render/
+// MaskMath.h flattens the paths), two points per float4 row. Field order and
+// sizes must match the shader exactly.
+// ---------------------------------------------------------------------------
+struct alignas(16) MaskConstants {
+    int   maskCount   = 0;      // masks in use, top to bottom (R12 order)
+    int   orientation = 0;      // the final draw's orientation: coverage is taken at its inverse
+    int   clipFirst   = -1;     // first point of the R9 carried-home clip quad, -1 = none
+    int   pad0        = 0;
+    float cellPx[2]   = { 0.0f, 0.0f };   // the drawn cell, output pixels
+    float aaPx        = 1.0f;
+    float pad1        = 0.0f;
+    int   info[kMaskFrameMasks][4]   = {};   // firstPoint, pointCount, mode, invert
+    float params[kMaskFrameMasks][4] = {};   // featherPx, expansionPx, opacity, 0
+    float points[maskmath::kMaskMaxPoints / 2][4] = {};
+};
+static_assert(sizeof(MaskConstants) == 32 + 2 * kMaskFrameMasks * 16
+                                       + (maskmath::kMaskMaxPoints / 2) * 16,
+              "MaskConstants must match the HLSL cbuffer");
+static_assert(sizeof(MaskConstants) <= 65536, "a constant buffer holds at most 64 KB");
+
+// The R9 carried-home clip of a parented Bounds Clip cell whose parent chain
+// rotates: the home rect as carried, as four corners in the drawn cell's own
+// pixels (about its centre, the cell's rotation removed). Applied by the Mask
+// pass as a hard intersect; an axis-aligned carried home uses the scissor.
+struct MaskClipQuad {
+    bool  active = false;
+    float pts[4][2] = {};
+};
+
+// ---------------------------------------------------------------------------
+// GradeGpuCache — the textures a baked grade needs on the GPU.
+//
+// A BakedGrade is immutable and carries a unique serial, so its transfer table
+// is uploaded ONCE, the first frame a cell uses it, and found by serial after
+// that. A slider drag bakes a new grade per change; the ones it leaves behind
+// are evicted after kKeepPasses composite passes without a use (passes, not
+// wall time, so an export and the preview behave alike). Imported 3D LUTs are
+// keyed by the LUT's own serial, so every grade that uses one file shares one
+// texture.
+// ---------------------------------------------------------------------------
+struct GradeGpuCache {
+    struct Transfer {
+        Microsoft::WRL::ComPtr<ID3D11Texture2D>          tex;
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
+        uint64_t lastPass = 0;
+    };
+    struct Lut {
+        Microsoft::WRL::ComPtr<ID3D11Texture3D>          tex;
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
+        uint64_t lastPass = 0;
+    };
+    static constexpr uint64_t kKeepPasses = 240;
+
+    std::unordered_map<uint64_t, Transfer> transfers;   // by BakedGrade::serial
+    std::unordered_map<uint64_t, Lut>      luts;        // by Lut3D::serial
+    uint64_t pass = 0;
+
+    ID3D11ShaderResourceView* transferFor(ID3D11Device* device, const xleth::grade::BakedGrade& g);
+    ID3D11ShaderResourceView* lutFor(ID3D11Device* device, const xleth::grade::Lut3D& lut);
+    /** Call once per composite pass: advance the clock, evict the unused. */
+    void beginPass();
+    void clear();
+};
 
 // ---------------------------------------------------------------------------
 // RTPool — render target pairs for ping-pong effect chain processing
@@ -319,7 +452,7 @@ struct EffectShaderCache {
     Microsoft::WRL::ComPtr<ID3D11Buffer> tintCB;        // 32 bytes
     Microsoft::WRL::ComPtr<ID3D11Buffer> brightContCB;  // 16 bytes
     Microsoft::WRL::ComPtr<ID3D11Buffer> tvSimCB;       // 32 bytes
-    Microsoft::WRL::ComPtr<ID3D11Buffer> zoomPanRotCB;  // 16 bytes
+    Microsoft::WRL::ComPtr<ID3D11Buffer> zoomPanRotCB;  // ZprConstants (pose + motion taps)
     Microsoft::WRL::ComPtr<ID3D11Buffer> vibratoSwirlCB;     // 32 bytes
     Microsoft::WRL::ComPtr<ID3D11Buffer> scratchWaveSmearCB; // 32 bytes
     Microsoft::WRL::ComPtr<ID3D11Buffer> chromaKeyCB;        // 32 bytes (params[0..7])
@@ -482,6 +615,37 @@ public:
     void setCanvasFit(float x, float y, float w, float h) {
         canvasFitX_ = x; canvasFitY_ = y; canvasFitW_ = w; canvasFitH_ = h;
     }
+
+    // ── Color Grade: Master ────────────────────────────────────────────────
+    /** The Master grade for the frame about to be read back, or nullptr for
+     *  none. Applied by readback() to the FINISHED frame, whatever drew it
+     *  (compositeFrame, a snapshot transition, a landing overlay), so it covers
+     *  the whole output including empty areas and the background. The
+     *  compositor's own render target is left ungraded: reading the same
+     *  picture back twice (a held tail frame) can never grade it twice.
+     *  Persists until changed. Preview and export both set it from
+     *  FrameCollector::masterGrade() once per frame. */
+    void setMasterGrade(std::shared_ptr<const xleth::grade::BakedGrade> grade) {
+        masterGrade_ = std::move(grade);
+    }
+    bool hasMasterGrade() const { return masterGrade_ != nullptr; }
+
+    /** How many Color Grade passes the last composite ran (cells that carried
+     *  at least one grade, plus secondary ping-pong frames). Diagnostics/tests. */
+    int  lastGradePassCount() const { return lastGradePasses_; }
+    /** How many Mask passes (Motion view) the last composite ran. Tests. */
+    int  lastMaskPassCount() const { return lastMaskPasses_; }
+    /** False when FX_Mask could not be created at init (masks then do not
+     *  render; the cell draws unmasked). Tests / diagnostics. */
+    bool maskPassAvailable() const {
+        return maskPS_ != nullptr && maskCB_ != nullptr && maskConstants_ != nullptr;
+    }
+    /** Tests: drop FX_Mask as if it had failed to create at init, so the
+     *  fallbacks for a Mask pass that cannot run can be exercised. A fresh
+     *  init() brings it back. */
+    void dropMaskPassForTest() { maskPS_.Reset(); }
+    /** Baked-grade transfer textures currently held. Diagnostics/tests. */
+    size_t gradeTextureCount() const { return gradeGpu_.transfers.size(); }
 
     // ── Compositing ────────────────────────────────────────────────────────
 
@@ -759,6 +923,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D11SamplerState>      samplerState_;
     Microsoft::WRL::ComPtr<ID3D11Buffer>             constantBuffer_;
     Microsoft::WRL::ComPtr<ID3D11Buffer>             globalConstantBuffer_;
+    Microsoft::WRL::ComPtr<ID3D11Buffer>             motionConstantBuffer_;   // MotionConstants, b3
     Microsoft::WRL::ComPtr<ID3D11RasterizerState>   rasterizerState_;
     Microsoft::WRL::ComPtr<ID3D11DepthStencilState> depthStencilState_;
 
@@ -790,6 +955,83 @@ private:
     // cell and every later stage (chain 0, ZPR 1, ping-pong 2, companion 3,
     // outline 5, shadow 6, echo lerp 7) may still be reading it.
     static constexpr int kLensRtSlot = 8;
+
+    // ── Color Grade ────────────────────────────────────────────────────────
+    // Kept apart from EffectShaderCache on purpose: that cache is all-or-
+    // nothing (one failed shader disables every chain effect), and a grade is
+    // a correction of the footage, not a chain effect.
+    //
+    // Slots 9 and 10 must differ from 0-8. The grade pass reads the Lens
+    // target (8) or the decoded frame and is itself read by every later stage;
+    // the ping-pong secondary frame is graded into its own slot because the
+    // primary's graded target is still live while the crossfade blends them.
+    static constexpr int kGradeRtSlot          = 9;
+    static constexpr int kGradeSecondaryRtSlot = 10;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> gradePS_;
+    Microsoft::WRL::ComPtr<ID3D11Buffer>      gradeCB_;
+    GradeGpuCache                             gradeGpu_;
+    int                                       lastGradePasses_ = 0;
+    // Master: graded copy of the render target, the texture readback() copies
+    // from while a master grade is set. Created on first use.
+    std::shared_ptr<const xleth::grade::BakedGrade>  masterGrade_;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D>          masterTarget_;
+    Microsoft::WRL::ComPtr<ID3D11RenderTargetView>   masterTargetRTV_;
+
+    bool createGradeResources();
+
+    /** Fill the pass constants and bind each level's textures (t1-t6).
+     *  Returns false when a level's texture could not be created. */
+    bool bindGradeLevels(const xleth::grade::BakedGrade* const* levels, int count,
+                         bool forceOpaque);
+    void unbindGradeTextures();
+
+    /** Run `count` (1..3) baked grades over srcSRV, in order, into the pooled
+     *  dstW x dstH target of `rtSlot`. Returns that target's SRV, or srcSRV
+     *  when nothing could run (the picture is then simply ungraded). Alpha is
+     *  carried through untouched. Leaves the caller to restore the main
+     *  pipeline state, like applyLensPass. */
+    ID3D11ShaderResourceView* applyGradePass(ID3D11ShaderResourceView* srcSRV,
+                                             int dstW, int dstH,
+                                             const xleth::grade::BakedGrade* const* levels,
+                                             int count, int rtSlot);
+
+    /** The texture readback() copies from: the render target, or, while a
+     *  master grade is set, the graded copy of it (drawn here). */
+    ID3D11Texture2D* resolveReadbackSource();
+
+    // ── Masks (Motion view, docs/XLETH_MOTION_VIEW_DESIGN.md 3.4) ─────────
+    // Its own shader and constant buffer, created like the grade resources
+    // (failure = warning, masks off). Slot 11 differs from 0-10: the pass reads
+    // whichever earlier stage's target holds the cell (Lens 8, Grade 9, chain
+    // 0, ZPR 1, ping-pong 2, companion 3) and is read by echo, Outline (5) and
+    // Drop Shadow (6).
+    static constexpr int kMaskRtSlot = 11;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> maskPS_;
+    Microsoft::WRL::ComPtr<ID3D11Buffer>      maskCB_;
+    // Per-pass constants, filled in place (8.5 KB, kept off the stack).
+    // Created once with the shader, never per frame; a pointer so the
+    // compositor itself is not over-aligned.
+    std::unique_ptr<MaskConstants>            maskConstants_;
+    int                                       lastMaskPasses_ = 0;
+
+    bool createMaskResources();
+
+    /** Draw srcSRV into the pooled dstW x dstH target of kMaskRtSlot with its
+     *  alpha multiplied by the masks' coverage (R12) and, when clip.active,
+     *  the carried-home clip quad (R9). cellPxW/H = the drawn cell in output
+     *  pixels; orientation = the final draw's. Returns the target's SRV, or
+     *  srcSRV when nothing could run. Leaves the caller to restore the main
+     *  pipeline state, like applyLensPass. */
+    ID3D11ShaderResourceView* applyMaskPass(ID3D11ShaderResourceView* srcSRV,
+                                            int dstW, int dstH,
+                                            const MaskFrame& masks,
+                                            const MaskClipQuad& clip,
+                                            float cellPxW, float cellPxH,
+                                            int orientation,
+                                            float cornerRadius = 0.0f);
+    // cornerRadius (the cell's rounding, a fraction of its shorter side) rounds the Roam
+    // crop rectangle when the frame has one (MaskFrame::cropSlot), so rounded corners
+    // follow the cropped edges.
 
     // Bounds Clip: same as rasterizerState_ plus ScissorEnable. Bound only
     // around a request's final draws (see drawCell).
@@ -881,7 +1123,11 @@ private:
     ID3D11ShaderResourceView* applyLensPass(ID3D11ShaderResourceView* srcSRV,
                                             int dstW, int dstH,
                                             const float lensRow0[4],
-                                            const float lensRow1[4]);
+                                            const float lensRow1[4],
+                                            const MotionConstants* motion = nullptr);
+
+    /** Upload `m` to motionConstantBuffer_ and bind it at PS b3. */
+    void bindMotionConstants(const MotionConstants& m);
 
     /** Blit sourceSRV into the currently bound render target as a fullscreen quad.
      *  Uses the main pixel shader with the supplied orientation applied. */

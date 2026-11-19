@@ -1,0 +1,17 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "pitchshifter",
+  "name": "Octave Up Layer",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "mode": 1,
+      "mix": 0.35,
+      "semitones": 12,
+      "cents": 0,
+      "size": 50,
+      "formant": 1
+    }
+  }
+}

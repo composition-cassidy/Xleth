@@ -112,7 +112,20 @@ struct VideoEvent {
     // span for the same positional-initializer reason.
     int lensPatternId = -1;
     int lensNoteId    = -1;
+
+    // Clones (model/Clone.h): the track whose Track Lens, hit curve and note
+    // overrides this event plays. -1 = trackId (every event but a Voice
+    // clone's). A note routed to a Voice clone has trackId = the clone (its
+    // cell, Roam, Sweep, effects, flip) and lensTrackId = the source when the
+    // clone's Lens is Linked, the clone itself when it is Own. Kept last for
+    // the positional-initializer reason above.
+    int lensTrackId = -1;
 };
+
+// The track whose Track Lens an event plays (see VideoEvent::lensTrackId).
+inline int videoEventLensTrackId(const VideoEvent& ev) {
+    return ev.lensTrackId >= 0 ? ev.lensTrackId : ev.trackId;
+}
 
 // An event's start and clamped length in ticks: the exact span when the
 // builder set it, else derived from the beats (see VideoEvent::startTick).

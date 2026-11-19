@@ -165,12 +165,10 @@ describe('VideoDeviceChain', () => {
 })
 
 describe('ChainHead', () => {
-  it('switches the Devices tab between the audio and the video chain', () => {
-    useVideoDeviceStore.setState({ view: 'audio' })
+  it('names the track and carries no Audio | Video switch (the lanes are both always shown)', () => {
     act(() => root.render(<ChainHead name="Pitch" identityColor="#ff0000" />))
-    const video = container.querySelector('[data-chain-view="video"]')
-    expect(video.getAttribute('aria-pressed')).toBe('false')
-    act(() => video.click())
-    expect(useVideoDeviceStore.getState().view).toBe('video')
+    expect(container.querySelector('[data-testid="xleth-device-chain-head"]').textContent).toBe('Pitch')
+    expect(container.querySelector('[data-chain-view]')).toBeNull()
+    expect(container.querySelector('button')).toBeNull()
   })
 })

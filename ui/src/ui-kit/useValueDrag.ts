@@ -5,7 +5,7 @@
 //   Shift + drag    fine (x0.1); toggling Shift mid-drag never jumps (rebase rule)
 //   Ctrl/Cmd+click  reset to defaultValue
 //   Double-click    inline text entry that parses units ("5k", "-6 dB", "1/8D")
-//   Wheel           one step (Shift = fine)
+//   Wheel           one step (Shift = fine); `wheel: false` leaves it to the container
 //   Arrow keys      nudge one step (Shift x10); PageUp/PageDown x10;
 //                   Enter or F2 opens the editor
 //                   (Home / End are deliberately NOT bound: they are app shortcuts,
@@ -51,6 +51,8 @@ export interface UseValueDragOptions {
   format?: (value: number) => string;
   /** null = not a value (the edit is rejected, the old value stays). */
   parse?: (text: string) => number | null;
+  /** false: the wheel is not handled (no step, no preventDefault), so it scrolls the container. Default true. */
+  wheel?: boolean;
   onChange?: (value: number) => void;
   onCommit?: (value: number) => void;
   onCancel?: (value: number) => void;
@@ -277,6 +279,7 @@ export function useValueDrag(options: UseValueDragOptions) {
   applyRef.current = applyAndCommit;
   const wheelRef = useRef((e: WheelEvent) => {
     const o = optsRef.current;
+    if (o.wheel === false) return; // the container scrolls
     if (o.disabled || editingRef.current || dragRef.current || e.ctrlKey) return;
     const delta = e.deltaY || e.deltaX; // Shift+wheel arrives as deltaX on Windows
     if (!delta) return;

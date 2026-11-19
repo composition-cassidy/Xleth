@@ -23,6 +23,8 @@ import { useToast } from '../Toast.jsx'
 import { DEFAULT_SCALE, nextScalePitch } from './scales.js'
 import * as Edits from './pianoRollEdits.js'
 import { useXlethRootContext } from '../../windowing/contexts/XlethRootContext.jsx'
+import { setNotesVoicePin } from '../../clones/cloneApi.js'
+import { selectedNoteRefs, selectionPin, voicePinSelectOptions } from './voicePin.js'
 
 // Map parsed FSC notes (engine 960-PPQ shape) onto Xleth's PatternNote JS shape.
 // Only the five fields the Piano Roll understands are carried across — marker
@@ -780,8 +782,9 @@ export default function PianoRoll({
             velocity: n.velocity,
           }
           if (n.isSlide) Object.assign(out, { isSlide: true, slideCurveCx: n.slideCurveCx, slideCurveCy: n.slideCurveCy })
-          // Pasted copies get new ids; the Lens override travels with them.
+          // Pasted copies get new ids; the Lens override and voice pin travel with them.
           if (n.lensOverride) out.lensOverride = n.lensOverride
+          if (Number.isInteger(n.voicePin) && n.voicePin >= 0) out.voicePin = n.voicePin
           return out
         }),
       }
@@ -1019,7 +1022,18 @@ export default function PianoRoll({
 
   const notes = pattern?.notes || []
   notesRef.current = notes
-  const { noteColor, ghosts } = usePatternContext(patternId, pattern, { ghostsEnabled: showGhosts })
+  const { noteColor, ghosts, voices } = usePatternContext(patternId, pattern, { ghostsEnabled: showGhosts })
+  // Voice pins (Clones): offered only when a track playing this pattern has Voice
+  // clones. One engine command for the whole selection (one undo step); the roll
+  // refetches on the 'timeline-patterns-changed' it dispatches.
+  const voiceCount = voices?.count ?? 0
+  const voicePinOptions = voiceCount > 0 ? voicePinSelectOptions(voices.tracks, voices.sourceId) : null
+  const voicePinValue = voicePinOptions ? selectionPin(notes, selectedNoteIds) : null
+  const handleVoicePinChange = useCallback(async (pin) => {
+    const refs = selectedNoteRefs(patternId, notesRef.current, selectedNoteIdsRef.current)
+    if (refs.length === 0 || !Number.isInteger(pin)) return
+    await setNotesVoicePin(refs, pin)
+  }, [patternId])
   const currentRegion = regions.find((r) => r.id === pattern?.regionId) || null
   const regionSlots = Array.isArray(currentRegion?.slots) && currentRegion.slots.length ? currentRegion.slots : []
   const refSlot = regionSlots[Math.min(refSlotIndex, Math.max(0, regionSlots.length - 1))] || null
@@ -1145,6 +1159,9 @@ export default function PianoRoll({
         regionSlots={regionSlots}
         refSlotIndex={refSlotIndex}
         onRefSlotChange={setRefSlotIndex}
+        voicePinOptions={voicePinOptions}
+        voicePinValue={voicePinValue}
+        onVoicePinChange={handleVoicePinChange}
       />
       </div>
       {!hasPattern ? (
@@ -1225,6 +1242,7 @@ export default function PianoRoll({
             labelMode={labelMode}
             refSlot={refSlot}
             ghosts={ghosts}
+            voiceCount={voiceCount}
             snap={snap}
             onPan={handlePan}
             timeSel={timeSel}

@@ -35,6 +35,7 @@ import useOptoCompStore from '../../stores/optoCompStore.js'
 import useFetCompStore from '../../stores/fetCompStore.js'
 import useVariMuCompStore from '../../stores/variMuCompStore.js'
 import useFeddaStore from '../../stores/feddaStore.js'
+import useSzkrezhStore from '../../stores/szkrezhStore.js'
 
 // Registry: pluginId -> opener(trackId, nodeId, storeKey)
 // Add one entry per effect that has a dedicated editor panel.
@@ -114,6 +115,9 @@ export const EFFECT_EDITORS = {
   fedda: (trackId, nodeId, storeKey) => {
     useFeddaStore.getState().open(trackId, nodeId, storeKey)
   },
+  szkrezh: (trackId, nodeId, storeKey) => {
+    useSzkrezhStore.getState().open(trackId, nodeId, storeKey)
+  },
   // GLOSS is the one-knob companion skin over the SAME engine effect. It shares
   // the APEX store but tags the target with skin:'gloss' so the GlossPanel (not
   // ApexPanel) renders. Its own EFFECT_EDITOR_STORES entry is already covered by
@@ -153,6 +157,7 @@ const EFFECT_EDITOR_STORES = [
   useFetCompStore,
   useVariMuCompStore,
   useFeddaStore,
+  useSzkrezhStore,
 ]
 
 // Close any open stock-effect editor whose target addresses (storeKey, nodeId).
@@ -208,6 +213,7 @@ export const PLUGIN_NAMES = {
   fet: 'FET Comp',
   varimu: 'Vari-Mu Comp',
   fedda: 'Fedda',
+  szkrezh: 'Szkrezh',
 }
 
 export function resolveTrackId(storeKey) {

@@ -13,9 +13,11 @@ import { moveRowFocus } from './browser/browserFormat.js'
 import { getMediaPort, startPreview } from './samplePreview.js'
 import styles from './browser/Browser.module.css'
 import { iconComponent } from '../ui-kit/icons'
+import { openColorGrade } from '../colorGrade/gradeActions.js'
 
 const IcArrowCounterClockwise = iconComponent('arrow-counter-clockwise')
 const IcExport = iconComponent('export')
+const IcPalette = iconComponent('palette')
 const IcList = iconComponent('list')
 const IcPencilSimpleLine = iconComponent('pencil-simple-line')
 const IcSpeakerSimpleHigh = iconComponent('speaker-simple-high')
@@ -425,6 +427,22 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
       // ── Video (only for regions whose source actually has a video stream) ──
       ...(src?.hasVideo ? [
         { type: 'separator' },
+        // Color Grade: this sample's own grade (its source's grade is one
+        // click away in the window's stack view).
+        {
+          label: 'Color Grade…',
+          icon: IcPalette,
+          onClick: () => {
+            const sourceName = src.fileName ?? src.name ?? 'Source'
+            openColorGrade({ level: 'region', id: region.id }, {
+              name: region.name || 'Sample',
+              stack: {
+                source: { id: src.id, name: sourceName },
+                clip: { level: 'region', id: region.id, name: region.name || 'Sample' },
+              },
+            })
+          },
+        },
         // Export Video
         {
           label: 'Export Video',

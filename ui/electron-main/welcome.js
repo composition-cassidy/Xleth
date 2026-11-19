@@ -77,8 +77,11 @@ function init(deps) {
   ipcMain.on('xleth:welcome:projectReady', (_event, payload) => {
     const dir = payload && typeof payload.dir === 'string' ? payload.dir : null;
     if (!dir) return;
-    if (welcomeWin && !welcomeWin.isDestroyed()) welcomeWin.close();
+    // Hand over BEFORE closing: main.js marks the workspace launch as under
+    // way synchronously, so Welcome's 'closed' event (below, onClosed) can
+    // tell "closed because a project was opened" from "closed to quit".
     deps.onProjectReady?.(dir, payload.name);
+    if (welcomeWin && !welcomeWin.isDestroyed()) welcomeWin.close();
   });
 
   ipcMain.handle('xleth:welcome:createProject', safeHandler(async (_event, form) => {

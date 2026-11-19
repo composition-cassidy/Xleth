@@ -2,8 +2,14 @@
 
 #include <juce_audio_basics/juce_audio_basics.h>
 
+#include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <exception>
 #include <iostream>
+#include <sstream>
+#include <string>
+#include <thread>
 #include <vector>
 
 extern "C" {
@@ -112,31 +118,65 @@ int SampleBank::loadSample(const juce::File& file, double engineSampleRate)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-int SampleBank::loadSampleFromSource(const std::string& filePath,
-                                     double startTimeSec,
-                                     double endTimeSec,
-                                     double engineSampleRate)
+// The whole decode, and nothing else: reads no SampleBank state, so any number of
+// these can run at once on different threads (each has its own FFmpeg contexts).
+// What the sequential path would have printed is appended to `logOut` instead, so
+// a batch can print it in request order rather than in whatever order threads finish.
+std::unique_ptr<SampleBank::LoadedSample>
+SampleBank::decodeFromSource(const std::string& filePath,
+                             double startTimeSec,
+                             double endTimeSec,
+                             double engineSampleRate,
+                             std::string& logOut,
+                             bool toContainerEnd)
 {
-    if (startTimeSec >= endTimeSec || endTimeSec - startTimeSec < 0.001)
+    std::ostringstream log;
+    // Every exit hands its messages back; RAII so the many early returns cannot forget.
+    struct LogFlush {
+        std::ostringstream& src; std::string& dst;
+        ~LogFlush() { dst += src.str(); }
+    } logFlush { log, logOut };
+
+    // With toContainerEnd the end is not known until the file is open; the
+    // range is validated there instead.
+    if (!toContainerEnd && (startTimeSec >= endTimeSec || endTimeSec - startTimeSec < 0.001))
     {
-        std::cout << "[SampleBank] WARNING: invalid time range "
-                  << startTimeSec << "–" << endTimeSec << "s\n" << std::flush;
-        return -1;
+        log << "[SampleBank] WARNING: invalid time range "
+                  << startTimeSec << "–" << endTimeSec << "s\n";
+        return nullptr;
     }
 
     // ── 1. Open container ────────────────────────────────────────────────────
     AVFormatContext* fmtCtx = nullptr;
     if (avformat_open_input(&fmtCtx, filePath.c_str(), nullptr, nullptr) < 0)
     {
-        std::cout << "[SampleBank] WARNING: could not open: " << filePath << "\n" << std::flush;
-        return -1;
+        log << "[SampleBank] WARNING: could not open: " << filePath << "\n";
+        return nullptr;
     }
 
     if (avformat_find_stream_info(fmtCtx, nullptr) < 0)
     {
-        std::cout << "[SampleBank] WARNING: no stream info: " << filePath << "\n" << std::flush;
+        log << "[SampleBank] WARNING: no stream info: " << filePath << "\n";
         avformat_close_input(&fmtCtx);
-        return -1;
+        return nullptr;
+    }
+
+    if (toContainerEnd)
+    {
+        // The container's own duration, or an hour when it reports none — the
+        // exact end a caller gets from probing the file first and passing
+        // `duration > 0 ? duration : 3600`.
+        double containerSec = 0.0;
+        if (fmtCtx->duration != AV_NOPTS_VALUE)
+            containerSec = static_cast<double>(fmtCtx->duration) / AV_TIME_BASE;
+        endTimeSec = containerSec > 0.0 ? containerSec : 3600.0;
+        if (startTimeSec >= endTimeSec || endTimeSec - startTimeSec < 0.001)
+        {
+            log << "[SampleBank] WARNING: invalid time range "
+                << startTimeSec << "–" << endTimeSec << "s\n";
+            avformat_close_input(&fmtCtx);
+            return nullptr;
+        }
     }
 
     // ── 2. Find best audio stream ────────────────────────────────────────────
@@ -144,9 +184,9 @@ int SampleBank::loadSampleFromSource(const std::string& filePath,
     int streamIdx = av_find_best_stream(fmtCtx, AVMEDIA_TYPE_AUDIO, -1, -1, &codec, 0);
     if (streamIdx < 0 || codec == nullptr)
     {
-        std::cout << "[SampleBank] WARNING: no audio stream in: " << filePath << "\n" << std::flush;
+        log << "[SampleBank] WARNING: no audio stream in: " << filePath << "\n";
         avformat_close_input(&fmtCtx);
-        return -1;
+        return nullptr;
     }
 
     AVStream* stream = fmtCtx->streams[streamIdx];
@@ -156,16 +196,16 @@ int SampleBank::loadSampleFromSource(const std::string& filePath,
     if (!decCtx)
     {
         avformat_close_input(&fmtCtx);
-        return -1;
+        return nullptr;
     }
 
     avcodec_parameters_to_context(decCtx, stream->codecpar);
     if (avcodec_open2(decCtx, codec, nullptr) < 0)
     {
-        std::cout << "[SampleBank] WARNING: could not open codec\n" << std::flush;
+        log << "[SampleBank] WARNING: could not open codec\n";
         avcodec_free_context(&decCtx);
         avformat_close_input(&fmtCtx);
-        return -1;
+        return nullptr;
     }
 
     // ── 4. Resampler: source format → stereo float @ engineSampleRate ────────
@@ -180,11 +220,11 @@ int SampleBank::loadSampleFromSource(const std::string& filePath,
 
     if (ret < 0 || swr_init(swr) < 0)
     {
-        std::cout << "[SampleBank] WARNING: could not init resampler\n" << std::flush;
+        log << "[SampleBank] WARNING: could not init resampler\n";
         if (swr) swr_free(&swr);
         avcodec_free_context(&decCtx);
         avformat_close_input(&fmtCtx);
-        return -1;
+        return nullptr;
     }
 
     // ── 5. Seek to start time ────────────────────────────────────────────────
@@ -199,9 +239,24 @@ int SampleBank::loadSampleFromSource(const std::string& filePath,
     const int64_t endSampleOut   = static_cast<int64_t>(endTimeSec   * engineSampleRate);
     const int64_t expectedSamples = endSampleOut - startSampleOut;
 
+    // Reserve what the file can actually deliver, not what was asked for. Swapped
+    // audio is requested as [0, 3600 s) ("whole file, stop at EOF"); reserving that
+    // literally is 1.2 GB of commit charge per decode, and several decodes now run
+    // at once. Only the reservation changes: the vectors still grow as needed, and
+    // every limit below is still expectedSamples.
+    int64_t reserveSamples = expectedSamples + 4096;
+    {
+        int64_t deliverable = static_cast<int64_t>(60.0 * engineSampleRate);   // unknown length: start small
+        if (fmtCtx->duration != AV_NOPTS_VALUE && fmtCtx->duration > 0)
+        {
+            const double remainSec = static_cast<double>(fmtCtx->duration) / AV_TIME_BASE - startTimeSec;
+            deliverable = static_cast<int64_t>(std::max(remainSec, 0.0) * engineSampleRate) + 8192;
+        }
+        reserveSamples = std::max<int64_t>(4096, std::min(reserveSamples, deliverable));
+    }
     std::vector<float> chL, chR;
-    chL.reserve(static_cast<size_t>(expectedSamples + 4096));
-    chR.reserve(static_cast<size_t>(expectedSamples + 4096));
+    chL.reserve(static_cast<size_t>(reserveSamples));
+    chR.reserve(static_cast<size_t>(reserveSamples));
 
     AVPacket* pkt   = av_packet_alloc();
     AVFrame*  frame = av_frame_alloc();
@@ -320,9 +375,9 @@ decode_done:
 
     if (chL.empty())
     {
-        std::cout << "[SampleBank] WARNING: decoded zero samples from "
-                  << filePath << " [" << startTimeSec << "–" << endTimeSec << "s]\n" << std::flush;
-        return -1;
+        log << "[SampleBank] WARNING: decoded zero samples from "
+                  << filePath << " [" << startTimeSec << "–" << endTimeSec << "s]\n";
+        return nullptr;
     }
 
     // Trim to expected length (don't keep more than the region duration)
@@ -351,19 +406,113 @@ decode_done:
     info.originalSampleRate = engineSampleRate;  // decoded/resampled to engine rate
     info.bufferSampleRate   = engineSampleRate;  // bake rate == stored-sample rate
 
-    std::cout << "[SampleBank] Loaded region: " << name.toStdString()
+    log << "[SampleBank] Loaded region: " << name.toStdString()
               << " [" << startTimeSec << "–" << endTimeSec << "s]"
               << "  dur=" << std::round(durationMs) << "ms"
               << "  samples=" << numSamples
-              << "\n" << std::flush;
+              << "\n";
 
-    const int id = static_cast<int>(samples_.size());
     auto entry   = std::make_unique<LoadedSample>();
     entry->buffer = std::move(finalBuf);
     entry->info   = std::move(info);
+    return entry;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+int SampleBank::commitSample(std::unique_ptr<LoadedSample> entry)
+{
+    const int id = static_cast<int>(samples_.size());
     samples_.push_back(std::move(entry));
     return id;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+int SampleBank::loadSampleFromSource(const std::string& filePath,
+                                     double startTimeSec,
+                                     double endTimeSec,
+                                     double engineSampleRate)
+{
+    std::string log;
+    auto entry = decodeFromSource(filePath, startTimeSec, endTimeSec, engineSampleRate, log);
+    if (!log.empty()) std::cout << log << std::flush;
+    if (!entry) return -1;
+    return commitSample(std::move(entry));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Project load used to decode one region after another on the message thread: a
+// 76-region project spent 1.8 s here, each region re-opening the same source
+// file. The decodes are independent, so they run on a small pool; only the
+// commit (the id assignment) stays ordered and on the calling thread.
+std::vector<int> SampleBank::loadSamplesFromSources(const std::vector<SourceRequest>& requests,
+                                                    double engineSampleRate,
+                                                    bool logEachSuccess,
+                                                    int maxThreads)
+{
+    const int n = static_cast<int>(requests.size());
+    std::vector<int> ids(static_cast<size_t>(n), -1);
+    if (n == 0) return ids;
+
+    std::vector<std::unique_ptr<LoadedSample>> decoded(static_cast<size_t>(n));
+    std::vector<std::string> logs(static_cast<size_t>(n));
+
+    auto decodeOne = [&](int i)
+    {
+        const auto& r = requests[static_cast<size_t>(i)];
+        try
+        {
+            decoded[static_cast<size_t>(i)] = decodeFromSource(
+                r.filePath, r.startTimeSec, r.endTimeSec,
+                r.sampleRate > 0.0 ? r.sampleRate : engineSampleRate,
+                logs[static_cast<size_t>(i)], r.toContainerEnd);
+        }
+        catch (const std::exception& e)
+        {
+            // A worker thread must not let this escape (std::terminate). The
+            // request fails like any other undecodable file.
+            decoded[static_cast<size_t>(i)].reset();
+            logs[static_cast<size_t>(i)] += std::string("[SampleBank] WARNING: decode of ") + r.filePath
+                                          + " failed: " + e.what() + "\n";
+        }
+    };
+
+    int threads = maxThreads;
+    if (threads <= 0)
+    {
+        // Leave a core for the audio callback, which is already running.
+        const int hw = static_cast<int>(std::thread::hardware_concurrency());
+        threads = std::clamp(hw - 1, 1, 12);
+    }
+    threads = std::min(threads, n);
+
+    if (threads <= 1)
+    {
+        for (int i = 0; i < n; ++i) decodeOne(i);
+    }
+    else
+    {
+        std::atomic<int> next { 0 };
+        auto worker = [&] { for (int i; (i = next.fetch_add(1, std::memory_order_relaxed)) < n; ) decodeOne(i); };
+        std::vector<std::thread> pool;
+        pool.reserve(static_cast<size_t>(threads - 1));
+        for (int t = 1; t < threads; ++t) pool.emplace_back(worker);
+        worker();   // the calling thread works too
+        for (auto& th : pool) th.join();
+    }
+
+    // Commit in request order: ids come out exactly as if loadSampleFromSource
+    // had been called for each request in turn (a failed request takes no id).
+    std::string out;
+    for (int i = 0; i < n; ++i)
+    {
+        auto& entry = decoded[static_cast<size_t>(i)];
+        if (!entry || logEachSuccess) out += logs[static_cast<size_t>(i)];
+        if (entry) ids[static_cast<size_t>(i)] = commitSample(std::move(entry));
+    }
+    if (!out.empty()) std::cout << out << std::flush;
+    return ids;
+}
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 const juce::AudioBuffer<float>* SampleBank::getSample(int sampleId) const
@@ -402,7 +551,8 @@ double SampleBank::getSampleBufferRate(int sampleId) const noexcept
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-int64_t SampleBank::getLeadingSilenceSamples(int sampleId, float thresholdDb) const
+int64_t SampleBank::countEdgeSilence(int sampleId, float thresholdDb,
+                                     int64_t startSample, int64_t length, bool fromEnd) const
 {
     if (sampleId < 0 || sampleId >= static_cast<int>(samples_.size()))
         return -1;
@@ -410,9 +560,15 @@ int64_t SampleBank::getLeadingSilenceSamples(int sampleId, float thresholdDb) co
         return -1;
 
     const juce::AudioBuffer<float>& buf = samples_[sampleId]->buffer;
-    const int numSamples  = buf.getNumSamples();
-    const int numChannels = buf.getNumChannels();
+    const int64_t numSamples  = buf.getNumSamples();
+    const int     numChannels = buf.getNumChannels();
     if (numSamples <= 0 || numChannels <= 0) return 0;
+
+    // Clamp the window to the buffer.
+    const int64_t first = std::clamp<int64_t>(startSample, 0, numSamples);
+    const int64_t last  = (length >= numSamples - first) ? numSamples
+                                                         : std::max<int64_t>(first, first + length);
+    if (last <= first) return 0;
 
     // dB → linear. thresholdDb is expected to be negative (e.g., -54).
     const float threshold = std::pow(10.0f, thresholdDb / 20.0f);
@@ -422,17 +578,20 @@ int64_t SampleBank::getLeadingSilenceSamples(int sampleId, float thresholdDb) co
     for (int ch = 0; ch < numChannels; ++ch)
         chans[static_cast<size_t>(ch)] = buf.getReadPointer(ch);
 
-    for (int i = 0; i < numSamples; ++i)
-    {
-        float peak = 0.0f;
+    auto loud = [&](int64_t i) {
         for (int ch = 0; ch < numChannels; ++ch)
-        {
-            const float v = std::abs(chans[static_cast<size_t>(ch)][i]);
-            if (v > peak) peak = v;
-        }
-        if (peak >= threshold) return static_cast<int64_t>(i);
+            if (std::abs(chans[static_cast<size_t>(ch)][i]) >= threshold) return true;
+        return false;
+    };
+
+    if (fromEnd) {
+        for (int64_t i = last - 1; i >= first; --i)
+            if (loud(i)) return (last - 1) - i;
+    } else {
+        for (int64_t i = first; i < last; ++i)
+            if (loud(i)) return i - first;
     }
-    return static_cast<int64_t>(numSamples);
+    return last - first;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

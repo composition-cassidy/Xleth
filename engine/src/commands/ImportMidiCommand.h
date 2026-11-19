@@ -114,6 +114,9 @@ private:
 
     // Pre-execute snapshot
     double                       preBpm_ = 0.0;
+    // Trim offsets of the clips already in the project, re-anchored when the
+    // import overrides the tempo (commands/TempoTrimAnchor.h).
+    std::unordered_map<int, int64_t> preTrimOffsets_;
     std::unordered_map<int, int> preRegionToSampleMap_;
     // Max end tick (position + duration) across every block that existed
     // BEFORE this command placed anything. Tile-to-fill covers up to this

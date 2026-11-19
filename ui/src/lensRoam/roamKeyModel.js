@@ -11,27 +11,33 @@
 //
 // Key shape (the wire format of getLensRoam / setTrackRoamKeys):
 //   { channel: 'offsetX'|'offsetY'|'scale'|'rotationDeg', anchor: 'Origin',
-//     pos: timeline ticks (960 PPQ), value, interp: 'Hold'|'Linear'|'EaseOut' }
+//     pos: timeline ticks (960 PPQ), value, interp: 'Hold'|'Linear'|'EaseOut'|'Bezier',
+//     bez?: [x1, y1, x2, y2] (Bezier only) }
 // `interp` shapes the segment LEAVING a key (the last key's is never read).
 
 import {
-  applyKeyOp, keyEquals, keysOfChannel, makeKey, sortEventKeys, unitToValue, valueAtEvent, valueToUnit,
+  BEZIER_PRESETS, DEFAULT_BEZ, applyKeyOp, bezierHandlePoints, dragBezierHandle, interpOp, keyEquals,
+  keysOfChannel, makeKey, sanitizeBez, segmentEase, sortEventKeys, unitToValue, valueAtEvent, valueToUnit,
 } from './lensKeyModel.js'
 import { SCALE_MAX, SCALE_MIN, roamQuad } from './lensRoamModel.js'
 import { MINUS, THIN_SPACE } from '../ui-kit/format.ts'
 
-export { applyKeyOp, keyEquals, keysOfChannel, makeKey, unitToValue, valueToUnit }
+export {
+  BEZIER_PRESETS, DEFAULT_BEZ, applyKeyOp, bezierHandlePoints, dragBezierHandle, interpOp, keyEquals,
+  keysOfChannel, makeKey, sanitizeBez, segmentEase, unitToValue, valueToUnit,
+}
 
 export const TICKS_PER_BEAT = 960
 export const BEATS_PER_BAR = 4
 export const TICKS_PER_BAR = TICKS_PER_BEAT * BEATS_PER_BAR
 
-export const ROAM_CHANNELS = ['offsetX', 'offsetY', 'scale', 'rotationDeg']
+export const ROAM_CHANNELS = ['offsetX', 'offsetY', 'scale', 'rotationDeg', 'scaleY', 'cropLeft', 'cropRight', 'cropTop', 'cropBottom']
 export const ROAM_CHANNEL_LABELS = {
   offsetX: 'Offset X', offsetY: 'Offset Y', scale: 'Scale', rotationDeg: 'Rotate',
+  scaleY: 'Scale Y', cropLeft: 'Crop left', cropRight: 'Crop right', cropTop: 'Crop top', cropBottom: 'Crop bottom',
 }
 export const ROAM_CHANNEL_OPTIONS = ROAM_CHANNELS.map((c) => ({ value: c, label: ROAM_CHANNEL_LABELS[c] }))
-export const INTERPS = ['Hold', 'Linear', 'EaseOut']
+export const INTERPS = ['Hold', 'Linear', 'EaseOut', 'Bezier']
 
 // The Sweep lane (P11) is this same lane over the LENS channels: a track's
 // timeline-absolute Lens offset. A Sweep key is a LAYER on the framing, not an
@@ -47,21 +53,26 @@ export const SWEEP_CHANNEL_OPTIONS = SWEEP_CHANNELS.map((c) => ({ value: c, labe
 const LANE_CHANNELS = [...ROAM_CHANNELS, 'zoom', 'centerX', 'centerY']
 
 /** A multiplier channel (identity 1, drawn on a log lane): Roam's scale, Sweep's zoom. */
-export const isMultiplierChannel = (channel) => channel === 'scale' || channel === 'zoom'
+export const isMultiplierChannel = (channel) => channel === 'scale' || channel === 'scaleY' || channel === 'zoom'
 
-// The most a key may hold. The engine accepts any finite number (a scale > 0); the
-// UI keeps keys on the lane. A cell can leave the picture from the far corner of an
-// 8 x 8 grid, so offsets reach eight cells.
+// The most a key may hold. The engine accepts any finite number (a scale > 0). A
+// cell can leave the picture from the far corner of an 8 x 8 grid, so offsets reach
+// eight cells. Rotation and the Sweep centre offsets are unbounded: the lane grows
+// to fit whatever a key holds (roamLaneRange), so there is no ceiling to hit.
 export const KEY_LIMITS = {
   offsetX: [-8, 8],
   offsetY: [-8, 8],
   scale: [SCALE_MIN, SCALE_MAX],
-  rotationDeg: [-720, 720],
-  // Sweep layers (source-normalized centre offsets, a zoom multiplier): the same
-  // bounds lensKeyModel's VALUE_MIN / VALUE_MAX give the Lens keys.
+  scaleY: [SCALE_MIN, SCALE_MAX],
+  cropLeft: [0, 0.99],
+  cropRight: [0, 0.99],
+  cropTop: [0, 0.99],
+  cropBottom: [0, 0.99],
+  rotationDeg: [-Infinity, Infinity],
+  // Sweep layers (source-normalized centre offsets, a zoom multiplier).
   zoom: [SCALE_MIN, SCALE_MAX],
-  centerX: [-2, 2],
-  centerY: [-2, 2],
+  centerX: [-Infinity, Infinity],
+  centerY: [-Infinity, Infinity],
 }
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v))
@@ -94,6 +105,8 @@ export function resolveRoamAt(base, keys, tick, compiled = null) {
   for (const ch of ROAM_CHANNELS) {
     if (c[ch].length > 0) out[ch] = valueAtEvent(c[ch], tick, b[ch] ?? roamIdentityOf(ch))
   }
+  // A linked cell never reads Scale Y (nor its keys): its height IS its scale.
+  if (out.scaleLinked !== false) out.scaleY = out.scale
   return out
 }
 
@@ -178,9 +191,13 @@ const OFFSET_STEPS = [1, 2, 3, 4, 6, 8]
 const CENTER_STEPS = [0.25, 0.5, 1, 2]
 const ROTATION_STEPS = [45, 90, 180, 360, 720]
 
+// The first step that holds x; past the last step the lane keeps doubling, so a
+// key of any size fits.
 function niceCeil(x, steps) {
   for (const s of steps) if (x <= s) return s
-  return steps[steps.length - 1]
+  let s = steps[steps.length - 1]
+  while (s < x && Number.isFinite(s)) s *= 2
+  return s
 }
 
 /**
@@ -215,9 +232,13 @@ export function laneValueToY(range, inner, value) {
   return inner.top + (1 - u) * inner.height
 }
 
-/** y -> a value on the lane, clamped to the lane's range and to what a key may hold. */
+/**
+ * y -> a value on the lane, clamped only to what a key may hold. A y past the lane's
+ * edge extrapolates past its range: that is how a drag pushes a key beyond the
+ * current scale (the lane then rescales to fit the key).
+ */
 export function laneYToValue(range, inner, y, channel) {
-  const u = clamp(1 - (y - inner.top) / Math.max(1, inner.height), 0, 1)
+  const u = 1 - (y - inner.top) / Math.max(1, inner.height)
   return clampKeyValue(channel, unitToValue(range, u))
 }
 
@@ -258,6 +279,43 @@ export function moveKey(keys, match, { pos, value }) {
   const next = makeKey({ ...keys[i], pos: p, value: clampKeyValue(match.channel, value) })
   if (keyEquals(next, keys[i])) return keys
   return keys.map((k, j) => (j === i ? next : k))
+}
+
+// ── Multi-selection (a set of key addresses across lanes and tracks) ─────────
+// A key is addressed the way the lane already addresses its one selected key:
+// { trackId, channel, pos }. Positions are whole ticks, so half a tick is "same".
+
+export const sameKeyRef = (a, b) => !!a && !!b
+  && a.trackId === b.trackId && a.channel === b.channel && Math.abs(a.pos - b.pos) < SAME_TICK
+
+/** `refs` with `ref` added, or removed when it is already there. */
+export function toggleKeyRef(refs, ref) {
+  const list = refs ?? []
+  return list.some((r) => sameKeyRef(r, ref)) ? list.filter((r) => !sameKeyRef(r, ref)) : [...list, ref]
+}
+
+/** The keys of one track's list that `refs` address, in list order. */
+export function keysForRefs(keys, refs, trackId) {
+  const mine = (refs ?? []).filter((r) => r.trackId === trackId)
+  if (mine.length === 0) return []
+  return (keys ?? []).filter((k) => mine.some((r) => r.channel === k.channel && Math.abs(r.pos - k.pos) < SAME_TICK))
+}
+
+/**
+ * Give every addressed key of one track the interp `interp` (and, for Bezier, a
+ * preset's handles). Returns the new list, or `keys` itself when nothing changed.
+ */
+export function setInterpForRefs(keys, refs, trackId, interp, bez = null) {
+  const hit = keysForRefs(keys, refs, trackId)
+  if (hit.length === 0) return keys
+  return applyKeyOp(keys, interpOp(hit, interp, bez)) ?? keys
+}
+
+/** Every addressed key of one track removed. Returns `keys` itself when none was there. */
+export function removeKeysForRefs(keys, refs, trackId) {
+  const hit = keysForRefs(keys, refs, trackId)
+  if (hit.length === 0) return keys
+  return keys.filter((k) => !hit.includes(k))
 }
 
 /** The keys in time order per channel, channels in lane order (a stable display order). */

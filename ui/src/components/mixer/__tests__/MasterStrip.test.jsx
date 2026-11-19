@@ -92,7 +92,9 @@ describe('MasterStrip', () => {
     const names = Array.from(container.querySelectorAll('[aria-pressed], [role="slider"]'))
       .map(el => el.getAttribute('aria-label'))
 
-    expect(container.querySelectorAll('[aria-pressed]')).toHaveLength(0)
+    // The only toggle is the route arrow ("route the selected track to Master").
+    const pressed = Array.from(container.querySelectorAll('[aria-pressed]')).map(el => el.getAttribute('aria-label'))
+    expect(pressed).toEqual(['Route to Master'])
     expect(names).not.toContain('Pan')
     expect(names).not.toContain('Width')
     expect(names).toContain('Master volume')

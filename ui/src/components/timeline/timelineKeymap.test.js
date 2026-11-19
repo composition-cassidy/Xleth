@@ -3,8 +3,11 @@ import {
   TIMELINE_GLOBAL_KEY_COMBOS,
   TIMELINE_KEY_COMBOS,
   TIMELINE_PASSTHROUGH_COMMANDS,
+  MOTION_ROUTED_COMMANDS,
+  isBackquoteKey,
   logicalKey,
   resolveTimelineKeyCommand,
+  timelineCommandRoute,
 } from './timelineKeymap.js'
 
 const press = (key, extra = {}) => ({
@@ -143,5 +146,67 @@ describe('registered combos', () => {
       TIMELINE_PASSTHROUGH_COMMANDS.has(id(eventForCombo(combo))))
     expect(passthroughCombos.length).toBeGreaterThan(0)
     for (const combo of passthroughCombos) expect(combo).toHaveLength(1)
+  })
+
+  it('registers the Motion view keys: ` G Backspace Escape and the arrows', () => {
+    for (const combo of ['`', 'g', 'G', 'Backspace', 'Escape', 'ArrowLeft', 'ArrowRight', 'Shift+ArrowLeft', 'Shift+ArrowRight']) {
+      expect(TIMELINE_KEY_COMBOS).toContain(combo)
+    }
+  })
+})
+
+describe('Motion view keys (R20)', () => {
+  it('` toggles the view by the PHYSICAL Backquote key, whatever the layout prints on it', () => {
+    expect(resolveTimelineKeyCommand(press('`', { code: 'Backquote' }))).toEqual({ id: 'toggleView' })
+    expect(resolveTimelineKeyCommand(press('ч', { code: 'Backquote' }))).toEqual({ id: 'toggleView' })
+    expect(resolveTimelineKeyCommand(press('`'))).toEqual({ id: 'toggleView' })          // synthetic, no code
+    // The character on another key cap is not the view switch.
+    expect(resolveTimelineKeyCommand(press('`', { code: 'Equal' }))).toBeNull()
+    expect(resolveTimelineKeyCommand(press('`', { code: 'Backquote', ctrlKey: true }))).toBeNull()
+    expect(resolveTimelineKeyCommand(press('~', { code: 'Backquote', shiftKey: true }))).toBeNull()
+    expect(resolveTimelineKeyCommand(press('`', { code: 'Backquote', altKey: true }))).toBeNull()
+  })
+
+  it('G toggles the graph (any case, any layout); it is not a pass-through key', () => {
+    expect(resolveTimelineKeyCommand(press('g'))).toEqual({ id: 'toggleGraph' })
+    expect(resolveTimelineKeyCommand(press('G'))).toEqual({ id: 'toggleGraph' })
+    expect(resolveTimelineKeyCommand(press('г', { code: 'KeyG' }))).toEqual({ id: 'toggleGraph' })
+    expect(resolveTimelineKeyCommand(ctrl('g'))).toBeNull()
+    // Not passthrough: the handler stops it, so the Sampler's window listener never auditions F#.
+    expect(TIMELINE_PASSTHROUGH_COMMANDS.has('toggleGraph')).toBe(false)
+    expect(TIMELINE_PASSTHROUGH_COMMANDS.has('toggleView')).toBe(false)
+  })
+
+  it('Backspace deletes, the arrows nudge (Shift = fine), Escape escapes', () => {
+    expect(resolveTimelineKeyCommand(press('Backspace'))).toEqual({ id: 'delete', key: 'Backspace' })
+    expect(resolveTimelineKeyCommand(press('ArrowLeft'))).toEqual({ id: 'nudge', direction: -1, fine: false })
+    expect(resolveTimelineKeyCommand(press('ArrowRight', { shiftKey: true }))).toEqual({ id: 'nudge', direction: 1, fine: true })
+    expect(resolveTimelineKeyCommand(press('Escape'))).toEqual({ id: 'escape' })
+    expect(resolveTimelineKeyCommand(ctrl('ArrowLeft'))).toBeNull()
+  })
+
+  it('routes commands per view: Motion view takes the key edits and ignores the clip tools', () => {
+    const r = (e, view) => timelineCommandRoute(resolveTimelineKeyCommand(e), view)
+    // The same in both views.
+    expect(r(ctrl('z'), 'motion')).toBe('global')
+    expect(r(press('`', { code: 'Backquote' }), 'edit')).toBe('global')
+    expect(r(press('`', { code: 'Backquote' }), 'motion')).toBe('global')
+    // Motion view: the key edits go to the Motion view handle.
+    for (const e of [press('Delete'), press('Backspace'), ctrl('c'), ctrl('x'), ctrl('v'), ctrl('a'), press('ArrowLeft'), press('Escape')]) {
+      expect(r(e, 'motion')).toBe('motion')
+    }
+    expect(r(press('g'), 'motion')).toBe('global')
+    // Motion view ignores the clip tools, pitch, syllables, loop, duplicate.
+    for (const e of [press('s'), press('p'), press('c'), press('d'), press('l'), press('+'), press('1'), ctrl('d')]) {
+      expect(r(e, 'motion')).toBeNull()
+    }
+    // Edit view: unchanged, and the Motion-only keys are not claimed.
+    expect(r(press('Delete'), 'edit')).toBe('edit')
+    expect(r(press('p'), 'edit')).toBe('edit')
+    for (const e of [press('g'), press('Backspace'), press('ArrowRight'), press('Escape')]) {
+      expect(r(e, 'edit')).toBeNull()
+    }
+    expect(MOTION_ROUTED_COMMANDS.has('selectAll')).toBe(true)
+    expect(isBackquoteKey({ code: 'Backquote', key: 'x' })).toBe(true)
   })
 })

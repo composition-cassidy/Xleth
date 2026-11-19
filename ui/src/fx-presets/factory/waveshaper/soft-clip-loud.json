@@ -1,0 +1,16 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "waveshaper",
+  "name": "Soft Clip Loud",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "pregain": 0,
+      "postgain": -6,
+      "mix": 100,
+      "preset": 1
+    },
+    "points": null
+  }
+}

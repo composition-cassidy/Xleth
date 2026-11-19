@@ -17,6 +17,7 @@
  * Runs on the render thread only.
  */
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -29,6 +30,8 @@
 #include "RenderClock.h"         // sampleToVideoFrame, videoFrameToSample
 #include "model/ClipCompanionFxSnapshot.h" // ClipCompanionFxSnapshot (shared with preview)
 #include "model/LensRoam.h"   // LensParams / RoamParams / LensRoamSnapshot
+#include "model/ColorGrade.h" // BakedGrade / ColorGradeSnapshot
+#include "MotionBlur.h"       // motionblur::kDenseSamples / ZprPose
 
 // Forward declarations — avoid pulling heavy headers into every consumer
 class Timeline;
@@ -40,6 +43,7 @@ struct VideoEvent;
 struct VisualEffect;
 
 class AnimationManager;
+struct CellAnimation;
 
 // ---------------------------------------------------------------------------
 // CellLayerKind — distinguishes which compositor pass a request belongs to.
@@ -53,6 +57,48 @@ enum class CellLayerKind : uint8_t {
 
 // ClipCompanionFxSnapshot lives in model/ClipCompanionFxSnapshot.h so the data
 // contract stays independent of this file and of GridCompositor. Included above.
+
+// ---------------------------------------------------------------------------
+// Motion view: Parent (docs/XLETH_MOTION_VIEW_DESIGN.md R7, 3.4)
+//
+// A parent passes on its ROAM (offset, scale, rotation) as a similarity about
+// its HOME centre. The compositor needs, per ancestor, where its home is and
+// its Roam at the frame tick; it builds the similarity in output pixels itself
+// (canvas fit and output size are its business). Plain values, resolved by the
+// collector from the FULL layout at the frame tick (never a transition A/B or
+// Landing carry override) and the published LensRoamSnapshot, so a request
+// never points at another request (the parent's request may be culled, in a
+// gap, or in another collect).
+// ---------------------------------------------------------------------------
+struct ParentAncestor {
+    int        trackId          = -1;
+    bool       placed           = false;  // false: not placed at this tick -> identity
+    bool       fullscreen       = false;  // a fullscreen layer: home = unit = the canvas
+    int        cellCol          = 0;      // grid placement, fine sub-units (first slot)
+    int        cellRow          = 0;
+    int        spanX            = 0;
+    int        spanY            = 0;
+    float      gapScaleOverride = -1.0f;  // the ancestor track's own gap override
+    RoamParams roam;                      // at the frame tick (keys applied)
+};
+
+struct ParentChain {
+    // Ancestors in use, NEAREST FIRST (0 = no parent: today's path, untouched).
+    int depth = 0;
+    // The full layout's grid geometry at the frame tick, which every
+    // ancestor's home is computed on (it can differ from the geometry the
+    // compositor was handed during a snapshot transition).
+    int   gridCols = 0;
+    int   gridRows = 0;
+    float gapScale = 0.0f;
+    std::array<ParentAncestor, motionschema::kMaxParentDepth> ancestors{};
+    // Motion blur: every ancestor's Roam at the SAME dense sub-frame ticks as
+    // the child's roamMotion, taken when ANY placed ancestor moves inside the
+    // shutter (count kDenseSamples), else 0 (frame-time poses throughout).
+    int motionCount = 0;
+    std::array<std::array<RoamParams, motionschema::kMaxParentDepth>,
+               motionblur::kDenseSamples> motion{};
+};
 
 // ---------------------------------------------------------------------------
 // CellFrameRequest — what one grid cell needs for this output frame
@@ -145,6 +191,19 @@ struct CellFrameRequest {
     int sourcePixelW = 0;
     int sourcePixelH = 0;
 
+    // ── Color Grade (model/ColorGrade.h) ───────────────────────────────────
+    // The three per-cell levels, RESOLVED for this cell: the source's grade,
+    // the clip's (Clip Track) or region's (Pattern Track), and the track's.
+    // nullptr = no grade at that level. Each is an immutable baked grade the
+    // request co-owns, so the compositor never reads a grade the message
+    // thread can still change, and an edit landing mid-frame cannot free one
+    // under it. GridCompositor applies them in this order, in one pass, before
+    // the visual effect chain. (The Master grade is not per cell: see
+    // FrameCollector::masterGrade.)
+    std::shared_ptr<const xleth::grade::BakedGrade> gradeSource;
+    std::shared_ptr<const xleth::grade::BakedGrade> gradeClip;
+    std::shared_ptr<const xleth::grade::BakedGrade> gradeLayer;
+
     // ── Landing override (docs/XLETH_LANDING_SPEC.md §6.2) ─────────────────
     // true => draw at canvasRect and ignore cellCol / cellRow / span, the grid
     // size and the gap: the rect IS this cell's home rect for the frame. Set
@@ -159,6 +218,31 @@ struct CellFrameRequest {
     // the rect (audit D3). Lerped like the rect; equals the slot's own unit at
     // the end of the move.
     float canvasRoamUnit[2] = { 0.0f, 0.0f };           // w, h
+    // ── Motion blur (render/MotionBlur.h) ─────────────────────────────────
+    // Dense sub-frame samples across the shutter, taken by the collector
+    // ONLY when the value actually changes inside it; count 0 = no blur for
+    // that stage (today's single-sample path). Sample i sits at
+    // motionblur::sampleOffset(i, kDenseSamples) of the shutter interval from
+    // the frame time. Plain values, like lens/roam above.
+    //   lensMotion  the Lens (+ Sweep) at each instant  -> Lens framing pass
+    //   roamMotion  the Roam at each instant            -> the final draws
+    //   (both under the PROJECT's motion blur setting)
+    //   zprMotion   the composed ZPR pose at each instant -> the ZPR pass
+    //   (under the TRACK's Zoom/pan/rot motion blur, independent of the above)
+    int lensMotionCount = 0;
+    int roamMotionCount = 0;
+    int zprMotionCount  = 0;
+    std::array<LensParams,          motionblur::kDenseSamples> lensMotion{};
+    std::array<RoamParams,          motionblur::kDenseSamples> roamMotion{};
+    std::array<motionblur::ZprPose, motionblur::kDenseSamples> zprMotion{};
+
+    // ── Motion view (docs/XLETH_MOTION_VIEW_DESIGN.md 3.4) ─────────────────
+    // The track's masks at the frame tick (LensRoamSnapshot::masksAt; count 0
+    // = none) and its Parent chain (depth 0 = none). Fixed-size values, so a
+    // request stays self-contained and the collector allocates nothing for
+    // them. A request with neither takes today's compositor path, bit for bit.
+    MaskFrame   masks{};
+    ParentChain parent{};
 };
 
 // ---------------------------------------------------------------------------
@@ -191,6 +275,31 @@ public:
         lensRoam_ = std::move(snapshot);
     }
     const LensRoamSnapshot* lensRoamSnapshot() const { return lensRoam_.get(); }
+
+    /** Install the resolved Color Grades every request copies from. Same
+     *  contract as setLensRoamSnapshot: call under the lock the caller holds
+     *  around collectRequests. nullptr (the default) = no grade anywhere,
+     *  which renders exactly as before the feature. */
+    void setColorGradeSnapshot(std::shared_ptr<const xleth::grade::ColorGradeSnapshot> snapshot) {
+        grades_ = std::move(snapshot);
+    }
+    const xleth::grade::ColorGradeSnapshot* colorGradeSnapshot() const { return grades_.get(); }
+
+    /** PREVIEW-ONLY: hold-to-compare. While true every request is built with
+     *  no grade at any level and masterGrade() is null, so the picture is the
+     *  ungraded one. The export collector never sets it. */
+    void setColorGradeCompareBypass(bool bypass) { gradeCompareBypass_ = bypass; }
+    bool colorGradeCompareBypass() const { return gradeCompareBypass_; }
+
+    /** The Master grade for the frame being drawn, or nullptr. The caller
+     *  hands it to GridCompositor::setMasterGrade before readback, so it is
+     *  applied to the finished frame: after every cell, snapshot transition
+     *  and landing overlay. Co-owned for the same reason the request grades
+     *  are. Read under the same lock as collectRequests. */
+    std::shared_ptr<const xleth::grade::BakedGrade> masterGrade() const {
+        if (!grades_ || gradeCompareBypass_) return nullptr;
+        return grades_->master;
+    }
     bool companionFxEnabled() const { return companionFxEnabled_; }
 
     // ── Hold-frame GC guards (Landing; docs/XLETH_LANDING_AUDIT.md D2) ──────
@@ -347,6 +456,18 @@ private:
     void resolveActiveEvents(const std::vector<VideoEvent>& events, double beatPos);
     const VideoEvent* activeEventFor(const Timeline& timeline, int trackId) const;
 
+    // The gap a track sits in at beatPos, for Smart hold and Keep playing.
+    // prev = the event that ended last before the gap (nullptr: before the
+    // track's first event). nextStart = +inf after the last event.
+    // smartThreshold = model/SmartHold.h's threshold for this track's gaps.
+    struct GapInfo {
+        const VideoEvent* prev = nullptr;
+        double prevEnd        = 0.0;
+        double nextStart      = 0.0;
+        double smartThreshold = 0.0;
+    };
+    GapInfo gapFor(const std::vector<VideoEvent>& events, int trackId, double beatPos);
+
     // Compute the source frame index for an event at a given beat position.
     static int64_t computeSourceFrame(
         const VideoEvent& ev,
@@ -410,6 +531,12 @@ private:
         LensParams  lastLens;
         int         lastSourcePixelW = 0;
         int         lastSourcePixelH = 0;
+        // Who the held picture belongs to, so a held frame keeps its Source
+        // and Clip grades. Ids, not the grades themselves: a grade edited
+        // while the frame is held must show at once.
+        int         lastSourceId = -1;
+        int         lastClipId   = -1;
+        int         lastRegionId = -1;
     };
     std::unordered_map<int, HoldState> holdByTrack_;
 
@@ -435,10 +562,61 @@ private:
     // handful of hits. Cleared, not deallocated, per call.
     std::unordered_map<int, const VideoEvent*> activeByTrack_;
 
+    // Per-track gap index for gapFor(), built lazily the first time a track
+    // with Smart hold / Keep playing hits a gap, and thrown away whenever the
+    // event list changes (eventsFingerprint_, accumulated in the same single
+    // scan resolveActiveEvents already does). Holds INDICES into the events
+    // vector, not pointers: the fingerprint is order-sensitive, so an
+    // unchanged fingerprint means the same events in the same order, even if
+    // the caller rebuilt the vector at a new address.
+    struct TrackGapIndex {
+        std::vector<double> start, end;   // merged busy intervals, sorted, disjoint
+        std::vector<size_t> lastEvent;    // per interval: the event that ends it
+        double smartThreshold = 0.0;
+    };
+    std::unordered_map<int, TrackGapIndex> gapIndexByTrack_;
+    uint64_t eventsFingerprint_      = 0;
+    uint64_t gapIndexFingerprint_    = 0;
+
+    // Clones (model/Clone.h): a Trail clone replays its source at
+    // (frame - delay), so it needs the source's active event at ANOTHER beat
+    // than the one resolveActiveEvents resolved. Per source track, its events
+    // sorted by start (indices, like the gap index), built lazily the first
+    // time a Trail asks and dropped whenever the event list changes. Only
+    // tracks with Trail clones ever get an entry.
+    struct TrackEventIndex {
+        std::vector<size_t> byStart;      // ascending startBeat, ties in list order
+        double              maxDuration = 0.0;
+    };
+    std::unordered_map<int, TrackEventIndex> eventIndexByTrack_;
+    uint64_t eventIndexFingerprint_ = 0;
+    // The event findActiveEvent would pick on `trackId` at `beatPos`, IGNORING
+    // the track's mute (a muted source keeps its Clones; spec "What every Clone
+    // is"). Binary search plus a short backward walk.
+    const VideoEvent* activeEventAt(const std::vector<VideoEvent>& events,
+                                    int trackId, double beatPos);
+
     AnimationManager* animationMgr_ = nullptr;
 
     // Resolved Lens/Roam values (see setLensRoamSnapshot). nullptr = identity.
     std::shared_ptr<const LensRoamSnapshot> lensRoam_;
+
+    // Resolved Color Grades (see setColorGradeSnapshot). nullptr = none.
+    std::shared_ptr<const xleth::grade::ColorGradeSnapshot> grades_;
+    bool gradeCompareBypass_ = false;
+    // Fill a request's three grade levels from the snapshot. clipId >= 0 is a
+    // Clip Track event (its clip's grade); otherwise the region's.
+    void resolveGrades(CellFrameRequest& req, int sourceId, int clipId,
+                       int regionId, int trackId) const;
+
+    // ZPR motion blur: the one scratch copy of a track's CellAnimation that
+    // sub-frame instants are advanced on (the live state is never touched).
+    // Copy-assigned per use, which reuses its vectors' capacity, so it stops
+    // allocating after the first few frames. shared_ptr only because
+    // CellAnimation is incomplete here; created lazily by the .cpp.
+    std::shared_ptr<CellAnimation> zprMotionScratch_;
+    void sampleZprMotion(CellFrameRequest& req, const CellAnimation& anim,
+                         const TrackInfo& trk, double fps);
 
     // Visual Echo delay-binding resolver. Not owned; nullptr = feature off.
     const xleth::echo::IDelaySnapshotResolver* echoResolver_ = nullptr;

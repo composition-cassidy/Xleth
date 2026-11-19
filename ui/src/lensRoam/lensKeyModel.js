@@ -12,7 +12,8 @@
 // Key shape (the wire format of getLensRoam / getPattern / setNoteLensKeys):
 //   { channel: 'zoom'|'centerX'|'centerY'|'rotationDeg',
 //     anchor: 'Head'|'Body'|'Tail' (note keys) | 'Origin' (Clip Track event keys),
-//     pos, value, interp: 'Hold'|'Linear'|'EaseOut' }
+//     pos, value, interp: 'Hold'|'Linear'|'EaseOut'|'Bezier',
+//     bez?: [x1, y1, x2, y2] (Bezier keys only: CSS cubic-bezier handles) }
 //   Head / Tail pos = ticks (960 PPQ); Body pos = a 0..1 fraction; Origin pos =
 //   ticks from the event start.
 //
@@ -26,7 +27,81 @@ export const TICKS_PER_BEAT = 960
 
 export const LENS_CHANNELS = ['zoom', 'centerX', 'centerY', 'rotationDeg']
 export const NOTE_ANCHORS = ['Head', 'Body', 'Tail']
-export const INTERPS = ['Hold', 'Linear', 'EaseOut']
+export const INTERPS = ['Hold', 'Linear', 'EaseOut', 'Bezier']
+
+// ── Bezier handles (KeyCurve.h BezierHandles) ────────────────────────────────
+// A Bezier key's segment is CSS cubic-bezier(x1, y1, x2, y2) from this key to the
+// next: x is the segment's time fraction, y its value fraction. x1 / x2 live in
+// [0, 1] (time stays monotone); y1 / y2 are free, so a segment can overshoot.
+
+/** The engine's default handles (CSS ease-in-out). */
+export const DEFAULT_BEZ = Object.freeze([0.42, 0, 0.58, 1])
+
+/** The shapes "Make Bezier" offers. Each is a starting point; the handles stay editable. */
+export const BEZIER_PRESETS = Object.freeze([
+  { id: 'smooth', label: 'Smooth', bez: [0.42, 0, 0.58, 1] },
+  { id: 'easeIn', label: 'Ease in', bez: [0.42, 0, 1, 1] },
+  { id: 'easeOut', label: 'Ease out', bez: [0, 0, 0.58, 1] },
+  { id: 'overshoot', label: 'Overshoot', bez: [0.34, 1.56, 0.64, 1] },
+])
+
+/** Handles the evaluator can trust (KeyCurve.h sanitizeBezier). */
+export function sanitizeBez(bez) {
+  const d = DEFAULT_BEZ
+  const fin = (v, f) => (Number.isFinite(v) ? v : f)
+  const b = Array.isArray(bez) ? bez : d
+  return [clamp(fin(b[0], d[0]), 0, 1), fin(b[1], d[1]), clamp(fin(b[2], d[2]), 0, 1), fin(b[3], d[3])]
+}
+
+const bezCoord = (c1, c2, s) => {
+  const A = 1 + 3 * c1 - 3 * c2
+  const B = 3 * c2 - 6 * c1
+  const C = 3 * c1
+  return ((A * s + B) * s + C) * s
+}
+const bezCoordSlope = (c1, c2, s) => {
+  const A = 1 + 3 * c1 - 3 * c2
+  const B = 3 * c2 - 6 * c1
+  const C = 3 * c1
+  return (3 * A * s + 2 * B) * s + C
+}
+
+/** The eased fraction of a Bezier segment at time fraction u (KeyCurve.h bezierEase, literally). */
+export function bezierEase(bez, u) {
+  if (!(u > 0)) return 0
+  if (u >= 1) return 1
+  const [x1, y1, x2, y2] = bez
+  let s = u
+  let solved = false
+  for (let i = 0; i < 8; i++) {
+    const err = bezCoord(x1, x2, s) - u
+    if (Math.abs(err) < 1e-7) { solved = true; break }
+    const d = bezCoordSlope(x1, x2, s)
+    if (Math.abs(d) < 1e-12) break
+    const next = s - err / d
+    if (!(next >= 0 && next <= 1)) break
+    s = next
+  }
+  if (!solved) {
+    let lo = 0
+    let hi = 1
+    s = u
+    for (let i = 0; i < 64; i++) {
+      s = 0.5 * (lo + hi)
+      const err = bezCoord(x1, x2, s) - u
+      if (Math.abs(err) < 1e-7) break
+      if (err > 0) hi = s; else lo = s
+      if (hi - lo < 1e-7) break
+    }
+  }
+  return bezCoord(y1, y2, s)
+}
+
+const sameBez = (a, b) => {
+  const x = sanitizeBez(a)
+  const y = sanitizeBez(b)
+  return x[0] === y[0] && x[1] === y[1] && x[2] === y[2] && x[3] === y[3]
+}
 
 export const DEFAULT_ZONES = Object.freeze({ headTicks: 120, tailTicks: 240, shortNote: 'Squash' })
 
@@ -193,12 +268,19 @@ export function sortEventKeys(keys) {
 
 const easeOut = (u) => 1 - (1 - u) * (1 - u)
 
-function interpolate(a, b, u) {
+/** The eased fraction (0..1, or past it for an overshooting Bezier) of the segment leaving `a`. */
+export function segmentEase(a, u) {
   switch (a.interp) {
-    case 'Hold': return a.value
-    case 'EaseOut': return a.value + (b.value - a.value) * easeOut(u)
-    default: return a.value + (b.value - a.value) * u
+    case 'Hold': return 0
+    case 'EaseOut': return easeOut(u)
+    case 'Bezier': return bezierEase(sanitizeBez(a.bez), u)
+    default: return u
   }
+}
+
+function interpolate(a, b, u) {
+  if (a.interp === 'Hold') return a.value
+  return a.value + (b.value - a.value) * segmentEase(a, u)
 }
 
 function evaluateSorted(keys, t, fallback, timeOf) {
@@ -292,8 +374,15 @@ export function resolveClipLens({ base, keys = [], t }) {
 export const keyEquals = (a, b) => !!a && !!b
   && a.channel === b.channel && a.anchor === b.anchor && a.pos === b.pos
   && a.value === b.value && (a.interp ?? 'Linear') === (b.interp ?? 'Linear')
+  && ((a.interp ?? 'Linear') !== 'Bezier' || sameBez(a.bez, b.bez))
 
-export function makeKey({ channel, anchor, pos, value, interp = 'Linear' }) {
+/**
+ * A key in wire form. A Bezier key always carries its handles (sanitized, the
+ * default when none are given); any other key carries none, so switching a key
+ * away from Bezier drops them and switching back starts from the default.
+ */
+export function makeKey({ channel, anchor, pos, value, interp = 'Linear', bez }) {
+  if (interp === 'Bezier') return { channel, anchor, pos, value, interp, bez: sanitizeBez(bez ?? DEFAULT_BEZ) }
   return { channel, anchor, pos, value, interp }
 }
 
@@ -304,10 +393,22 @@ export function makeKey({ channel, anchor, pos, value, interp = 'Linear' }) {
  *   { type: 'add', key }
  *   { type: 'update', match, patch }
  *   { type: 'remove', match }
+ *   { type: 'batch', ops }      several of the above in order, ONE result (one commit,
+ *                               one undo step): how a multi-selection changes interp
  * Returns the new list, or null when the edit does not apply to this list
- * (an update / remove whose key is not in it, or an add that is already there).
+ * (an update / remove whose key is not in it, or an add that is already there;
+ * a batch none of whose ops applied).
  */
 export function applyKeyOp(keys, op) {
+  if (op.type === 'batch') {
+    let cur = keys
+    let changed = false
+    for (const o of op.ops ?? []) {
+      const next = applyKeyOp(cur, o)
+      if (next) { cur = next; changed = true }
+    }
+    return changed ? cur : null
+  }
   if (op.type === 'add') {
     if (keys.some((k) => keyEquals(k, op.key))) return null
     return [...keys, makeKey(op.key)]
@@ -321,6 +422,65 @@ export function applyKeyOp(keys, op) {
     return keys.map((k, j) => (j === i ? next : k))
   }
   return null
+}
+
+/**
+ * The batch op that gives every key in `matches` the interp `interp`. For 'Bezier',
+ * `bez` (a preset's handles) replaces each key's handles; without it a key that is
+ * already Bezier keeps its own and any other key starts from the default.
+ */
+export function interpOp(matches, interp, bez = null) {
+  return {
+    type: 'batch',
+    ops: (matches ?? []).map((match) => ({
+      type: 'update',
+      match,
+      patch: interp === 'Bezier'
+        ? { interp, bez: bez ?? (match.interp === 'Bezier' ? match.bez : DEFAULT_BEZ) }
+        : { interp },
+    })),
+  }
+}
+
+/**
+ * The Bezier handles of the segment a -> b (key objects) as lane points, given the
+ * lane's own mapping: `toX(key)` (where the lane draws that key in x) and
+ * `toY(value)`. A handle's y is a VALUE fraction (value = a + y * (b - a)), so it is
+ * mapped through the lane like a key: on a log lane the handle sits where that value
+ * is drawn.
+ */
+export function bezierHandlePoints(a, b, toX, toY) {
+  const [x1, y1, x2, y2] = sanitizeBez(a.bez)
+  const xa = toX(a)
+  const xb = toX(b)
+  const dv = b.value - a.value
+  return {
+    from: { x: xa, y: toY(a.value) },
+    to: { x: xb, y: toY(b.value) },
+    h1: { x: xa + x1 * (xb - xa), y: toY(a.value + y1 * dv) },
+    h2: { x: xa + x2 * (xb - xa), y: toY(a.value + y2 * dv) },
+  }
+}
+
+/**
+ * Inverse of bezierHandlePoints for ONE handle being dragged: the key's new `bez`.
+ * `which` is 1 or 2; (x, y) is the pointer in lane pixels; `toX(key)` as above and
+ * `fromY(y)` the lane's y -> value (unclamped). x is clamped into the segment; a flat
+ * segment (a.value === b.value) has no value span to measure y against, so its y
+ * handles keep their value. y is kept within [-3, 4] so a stray drag cannot fling
+ * the curve off to infinity.
+ */
+export function dragBezierHandle(a, b, which, x, y, toX, fromY) {
+  const bez = sanitizeBez(a.bez)
+  const xa = toX(a)
+  const xb = toX(b)
+  const fx = xb > xa ? clamp((x - xa) / (xb - xa), 0, 1) : bez[which === 1 ? 0 : 2]
+  const dv = b.value - a.value
+  const fy = Math.abs(dv) > 1e-12 ? clamp((fromY(y) - a.value) / dv, -3, 4) : bez[which === 1 ? 1 : 3]
+  const r = 1e-4
+  const round = (v) => Math.round(v / r) * r
+  if (which === 1) return [round(fx), round(fy), bez[2], bez[3]]
+  return [bez[0], bez[1], round(fx), round(fy)]
 }
 
 /** Re-anchor a key, keeping its place in time as far as the new zone allows. */

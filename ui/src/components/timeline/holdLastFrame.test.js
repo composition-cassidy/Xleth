@@ -6,6 +6,9 @@ import {
   getHoldThresholdBeats,
   getHoldThresholdTicks,
   formatHoldThreshold,
+  smartHoldThresholdBeats,
+  gapsBetween,
+  SMART_FALLBACK_THRESHOLD_BEATS,
 } from './holdLastFrame.js'
 import { drawHoldZones } from './timelineDrawing.js'
 
@@ -205,5 +208,44 @@ describe('drawHoldZones', () => {
       globalThis.window = prev
     }
     expect(spy).not.toHaveBeenCalled()
+  })
+})
+
+describe('smart hold (mirror of engine SmartHold.h)', () => {
+  it('holds every gap when there are none or all are under a beat', () => {
+    expect(smartHoldThresholdBeats([])).toBe(Infinity)
+    expect(smartHoldThresholdBeats([0.25, 0.5, 0.25])).toBe(Infinity)
+  })
+
+  it('splits phrase rests from phrase breaks at the biggest jump', () => {
+    const t = smartHoldThresholdBeats([0.5, 0.5, 6.5])
+    expect(t).toBeGreaterThan(0.5)
+    expect(t).toBeLessThan(6.5)
+    expect(t).toBeCloseTo(Math.sqrt(0.5 * 6.5))
+    const t2 = smartHoldThresholdBeats([0.125, 0.25, 0.75, 0.5, 5, 6, 0.25])
+    expect(t2).toBeGreaterThan(0.75)
+    expect(t2).toBeLessThan(5)
+  })
+
+  it('falls back to one bar when every gap is the same long kind', () => {
+    expect(smartHoldThresholdBeats([8, 8])).toBe(SMART_FALLBACK_THRESHOLD_BEATS)
+  })
+
+  it('merges overlapping and butted clips before measuring gaps', () => {
+    expect(gapsBetween([[0, 1], [0.5, 2], [3, 4], [4, 5]])).toEqual([1])
+  })
+
+  it('draws zones only over the held gaps and none after the last clip', () => {
+    const ctx = makeCtx()
+    // [0,.5) [1,1.5)  rest 6.5  [8,8.5) [9,9.5)
+    const clips = [0, 1, 8, 9].map((b, i) => ({
+      id: `c${i}`, trackId: 1, positionTicks: b * PPQ, durationTicks: PPQ / 2,
+    }))
+    drawHoldZones(ctx, 2000, TRACK_HEIGHT, 0, 100, clips, IDX,
+      [{ id: 1, videoHoldLastFrame: true, videoHoldSmart: true }], PALETTE, null)
+    const zones = zonesOf(ctx)
+    expect(zones.map((z) => Math.round(z.x))).toEqual([50, 850])
+    expect(zones.every((z) => Math.round(z.w) === 50)).toBe(true)
+    expect(marksOf(ctx)).toHaveLength(0)
   })
 })

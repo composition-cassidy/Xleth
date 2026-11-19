@@ -1,4 +1,5 @@
 #include "sandbox/SandboxRenderer.h"
+#include "HardwareTier.h"
 
 #include "dsp/AutotuneRender.h"
 #include "dsp/CorrectionCurve.h"
@@ -1004,7 +1005,9 @@ private:
 // ─── SandboxRenderer ──────────────────────────────────────────────────────────
 
 SandboxRenderer::SandboxRenderer(size_t maxBytes)
-    : pool_(std::make_unique<juce::ThreadPool>(kThreads)),
+    // kThreads (2) on small machines; up to 4 workers from 12 logical cores
+    // (HardwareTier::backgroundWorkers — never more than a quarter of the CPU).
+    : pool_(std::make_unique<juce::ThreadPool>(xleth::hw::backgroundWorkers(kThreads, 4))),
       maxBytes_(maxBytes) {}
 
 SandboxRenderer::~SandboxRenderer() {

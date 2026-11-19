@@ -8,7 +8,7 @@ import {
 import AutomatableKnob from './AutomatableKnob.jsx'
 import AutomationTarget from './AutomationTarget.jsx'
 import {
-  eqStoreInitializer, BAND_TYPES, BAND_MODES, CHANNEL_META, CHANNEL_MODES,
+  eqStoreInitializer, BAND_TYPES, BAND_MODES, BAND_SLOPES, DEFAULT_SLOPE, isCutBandType, CHANNEL_META, CHANNEL_MODES,
 } from '../../stores/eqStore.js'
 import {
   SVG_W, SVG_H, PAD_L, PAD_T, PLOT_W, PLOT_H, FREQ_MIN, FREQ_MAX,
@@ -457,6 +457,7 @@ export default function EqDevice({ target, registerApplied, deviceKey }) {
   })), [linPhase, oversample])
 
   const typeOptions = useMemo(() => BAND_TYPES.map((label, i) => ({ value: i, label })), [])
+  const slopeOptions = useMemo(() => BAND_SLOPES.map((label, i) => ({ value: i, label })), [])
   const channelOptions = useMemo(() => CHANNEL_MODES.map((ch) => ({
     value: ch, label: CHANNEL_META[ch].short, ariaLabel: `${CHANNEL_META[ch].label} only`,
   })), [])
@@ -522,6 +523,13 @@ export default function EqDevice({ target, registerApplied, deviceKey }) {
           <Select size="sm" ariaLabel="Band mode" value={band.mode || 0} options={modeOptions} onChange={(v) => setBandParam(idx, 'mode', v)} />
         </AutomationTarget>
       </div>
+      {isCutBandType(band.type) ? (
+        <div className={styles.row}>
+          <AutomationTarget paramId={`b${idx}_slope`} target={target}>
+            <Select size="sm" ariaLabel="Band slope" value={band.slope ?? DEFAULT_SLOPE} options={slopeOptions} onChange={(v) => setBandParam(idx, 'slope', v)} />
+          </AutomationTarget>
+        </div>
+      ) : null}
       <div className={styles.row}>
         <SegmentedControl size="sm" label="Band channel" value={band.channel || 'stereo'} options={channelOptions} onChange={(ch) => setBandChannel(idx, ch)} />
         <AutomationTarget paramId={`b${idx}_enabled`} target={target}>

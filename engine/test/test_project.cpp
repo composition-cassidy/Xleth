@@ -535,6 +535,61 @@ int main() {
         }
     }
 
+    // ── Test 5.76: motion blur (project-wide + per-track ZPR) round-trips ─────
+    // The project-wide setting is a top-level project.json key, so it has to be
+    // in BOTH ProjectManager whitelists; the ZPR one rides inside the track.
+    std::cout << "\n[5.76] motion blur round-trips through the project file\n";
+    {
+        MotionBlurSettings project;
+        project.enabled = true;
+        project.shutterAngleDeg = 270.0f;
+        tl.setMotionBlur(project);
+        ZoomPanRotSettings zpr = tl.getTrack(trkId)->zoomPanRot;
+        zpr.motionBlur.enabled = true;
+        zpr.motionBlur.shutterAngleDeg = 90.0f;
+        REQUIRE(tl.setTrackZoomPanRotSettings(trkId, zpr), "setTrackZoomPanRotSettings");
+
+        ProjectManager pmA;
+        REQUIRE(pmA.createProject(tempDir, "MotionBlurRoundTrip"), "createProject for motion blur");
+        REQUIRE(pmA.saveProject(tl), "saveProject with motion blur returned false");
+
+        std::ifstream f(tempDir + "/project.json");
+        json onDisk; f >> onDisk; f.close();
+        CHECK(onDisk.contains("motionBlur"), "project.json carries the project motionBlur key");
+        CHECK(onDisk.value("motionBlur", json::object()).value("enabled", false),
+              "project.json motionBlur.enabled is true");
+
+        ProjectManager pmB;
+        auto loaded = pmB.loadProject(tempDir);
+        REQUIRE(loaded.has_value(), "loadProject with motion blur returned nullopt");
+        CHECK(loaded->getMotionBlur().enabled, "loaded project motion blur is on");
+        CHECK(loaded->getMotionBlur().shutterAngleDeg == 270.0f, "loaded project shutter is 270");
+        const TrackInfo* lt = loaded->getTrack(trkId);
+        REQUIRE(lt != nullptr, "loaded track exists");
+        CHECK(lt->zoomPanRot.motionBlur.enabled, "loaded track ZPR motion blur is on");
+        CHECK(lt->zoomPanRot.motionBlur.shutterAngleDeg == 90.0f, "loaded track ZPR shutter is 90");
+
+        // A project saved before motion blur existed loads with both OFF.
+        onDisk.erase("motionBlur");
+        for (auto& t : onDisk["tracks"])
+            if (t.contains("zoomPanRot")) t["zoomPanRot"].erase("motionBlur");
+        std::ofstream out(tempDir + "/project.json");
+        out << onDisk.dump(4); out.close();
+        auto legacy = pmB.loadProject(tempDir);
+        REQUIRE(legacy.has_value(), "loadProject of pre-motion-blur project returned nullopt");
+        CHECK(!legacy->getMotionBlur().enabled, "legacy project: project motion blur off");
+        CHECK(!legacy->getTrack(trkId)->zoomPanRot.motionBlur.enabled,
+              "legacy project: track ZPR motion blur off");
+
+        // Sanitizer: a hand-edited shutter is held to 0..360.
+        MotionBlurSettings wild; wild.enabled = true; wild.shutterAngleDeg = 9000.0f;
+        tl.setMotionBlur(wild);
+        CHECK(tl.getMotionBlur().shutterAngleDeg == 360.0f, "shutter clamps to 360");
+        tl.setMotionBlur(MotionBlurSettings{});
+        zpr.motionBlur = MotionBlurSettings{};
+        tl.setTrackZoomPanRotSettings(trkId, zpr);
+    }
+
     // ── Test 5.9: master volume round-trips and defaults for legacy projects ──
     // Master volume lives only in MixEngine (no Timeline field), so it was never
     // written to project.json at all — every load silently inherited whatever

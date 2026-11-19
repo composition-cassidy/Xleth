@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useRef } from 'react'
-import { Fader, Icon, Knob, Meter, NumberBox, Pearl, Select, Toggle, isHeard, dbTaperScale, motionScrollBehavior, useMotionEnter } from '../../ui-kit'
+import { Fader, Icon, Knob, Meter, NumberBox, Pearl, Slider, hintAttrs, isHeard, dbTaperScale, motionScrollBehavior, useMotionEnter } from '../../ui-kit'
 import useMixerStore, { MASTER_OUTPUT_TARGET_ID, normalizeOutputTargetId } from '../../stores/mixerStore.js'
 import useTimelineFocusStore from '../../stores/timelineFocusStore.js'
 import useEffectChainStore, { resolveFxMode } from '../../stores/effectChainStore.js'
@@ -7,11 +7,14 @@ import useFxChainDragStore from '../../stores/fxChainDragStore.js'
 import { usePanelRegistry } from '../../windowing/registry/PanelRegistry'
 import { requestDeviceReveal } from '../devices/deviceRevealStore.js'
 import InsertList from './InsertList.jsx'
+import RouteArrow from './RouteArrow.jsx'
 import { subscribeMeter } from './mixerMeterBus.js'
 import { GAIN_FORMAT, dbToGain, formatPan, formatWidth, gainToDb, parsePan, parseWidth } from './mixerMath.js'
 import styles from './MixerStrip.module.css'
 
 const EMPTY_CHAIN = []
+/** The pan slider's drag weight: the pointer covers this many rails to sweep hard left to hard right. */
+const PAN_DRAG_WEIGHT = 1.5
 
 /** Stable `subscribe` for a kit Meter: this strip's levels from the mixer's one poll loop. */
 export function useMeterSubscribe(key) {
@@ -42,8 +45,8 @@ export function openDevicesFor(chainKey, trackId, deviceIndex = null) {
 }
 
 /**
- * The strip's name, written up the side of the meter (reads bottom to top, starts at the
- * bottom, an ellipsis takes the top of a long one). It is decoration for the eye: the strip's
+ * The strip's name, written down the side of the meter (reads top to bottom, starts at the
+ * top, an ellipsis takes the bottom of a long one). It is decoration for the eye: the strip's
  * group label already names the track, so it is hidden from assistive tech. The text sits in an
  * absolutely placed child, so a long name never lends the fader row any height.
  */
@@ -62,12 +65,9 @@ function MixerStrip({ trackId, index, color, stripW = 72, insertRowCount = 5, in
   const track = useMixerStore(s => s.tracks[trackId])
   const tracks = useMixerStore(s => s.tracks)
   const outputRoutes = useMixerStore(s => s.outputRoutes)
-  const routingError = useMixerStore(s => s.routingError)
   const setVolume = useMixerStore(s => s.setVolume)
   const setPan = useMixerStore(s => s.setPan)
   const setSpread = useMixerStore(s => s.setSpread)
-  const setOutputRoute = useMixerStore(s => s.setOutputRoute)
-  const getEligibleOutputTargets = useMixerStore(s => s.getEligibleOutputTargets)
   const refreshRouting = useMixerStore(s => s.refreshRouting)
   const pearl = useMixerStore(s => s.pearl)
   const toggleVisualOnly = useMixerStore(s => s.toggleVisualOnly)
@@ -117,18 +117,11 @@ function MixerStrip({ trackId, index, color, stripW = 72, insertRowCount = 5, in
   const handleVolume = useCallback((db) => setVolume(trackId, dbToGain(db)), [trackId, setVolume])
   const handlePan = useCallback((v) => setPan(trackId, v), [trackId, setPan])
   const handleSpread = useCallback((v) => setSpread(trackId, v), [trackId, setSpread])
-  const handleRoute = useCallback((target) => setOutputRoute(trackId, Number(target)), [trackId, setOutputRoute])
   const handleOpenInsert = useCallback((deviceIndex) => openDevicesFor(fxKey, trackId, deviceIndex), [fxKey, trackId])
 
   if (!track) return null
 
   const name = track.name || `Track ${trackId}`
-  const outputTargets = getEligibleOutputTargets(trackId)
-  const hasSelectedTarget = outputTargets.some(o => o.targetTrackId === routeTargetId)
-  const routeOptions = outputTargets.map(o => ({ value: o.targetTrackId, label: o.name }))
-  if (routeTargetId !== MASTER_OUTPUT_TARGET_ID && !hasSelectedTarget) {
-    routeOptions.unshift({ value: routeTargetId, label: 'Missing track', disabled: true })
-  }
   const db = gainToDb(track.volume)
   const knobW = Math.floor(stripW / 2) - 1
 
@@ -168,21 +161,22 @@ function MixerStrip({ trackId, index, color, stripW = 72, insertRowCount = 5, in
           onToggle={() => pearl(trackId, 'toggle')}
           onSolo={() => pearl(trackId, 'solo')}
         />
-        <Toggle
-          size="sm" className={styles.toggle} on={!!track.visualOnly} onChange={() => toggleVisualOnly(trackId)}
-          glyph={<Icon name="eye" />} aria-label={`Visual only ${name}`} hint="Visual only. Silences the audio, keeps grid triggers."
-        />
+        {/* No chip: the eye floats in its cell. On is the filled glyph at full ink, off the outlined one
+            dimmed, so state is never colour alone. A real button, so Space and Enter work. */}
+        <button
+          type="button" className={styles.eye} aria-pressed={!!track.visualOnly} aria-label={`Visual only ${name}`}
+          onClick={() => toggleVisualOnly(trackId)}
+          {...hintAttrs({ hint: 'Visual only. Silences the audio, keeps grid triggers.' })}
+        >
+          <Icon name="eye" weight={track.visualOnly ? 'fill' : 'regular'} aria-hidden="true" />
+        </button>
       </div>
 
-      {/* Pan left, width right: two plain dials, no words and no numbers (the pointer is the
-          reading; straight up is centre / 100 %). Each keeps its accessible name, its value
-          text and its hint, and double-click still types a value. */}
+      {/* Width: one plain dial, no words and no numbers (the pointer is the reading; straight up is
+          100 %). Pan sits right under it as a horizontal slider, a touch heavier to pull so it does
+          not skate off centre. Each keeps its accessible name, its value text and its hint, and
+          double-click still types a value. */}
       <div className={styles.knobs}>
-        <Knob
-          className={styles.knob} label="Pan" hideLabel hideValue minimal size={20} width={knobW} bipolar min={-1} max={1} defaultValue={0}
-          value={track.pan} format={formatPan} parse={parsePan}
-          onChange={handlePan} onCommit={handlePan} hint={`Pan of ${name}`}
-        />
         <Knob
           className={styles.knob} label="Width" hideLabel hideValue minimal size={20} width={knobW} min={0} max={2} defaultValue={1}
           value={track.spread} format={formatWidth} parse={parseWidth}
@@ -190,10 +184,18 @@ function MixerStrip({ trackId, index, color, stripW = 72, insertRowCount = 5, in
         />
       </div>
 
+      <div className={styles.pan}>
+        <Slider
+          label="Pan" bipolar weight={PAN_DRAG_WEIGHT} min={-1} max={1} defaultValue={0}
+          value={track.pan} format={formatPan} parse={parsePan}
+          onChange={handlePan} onCommit={handlePan} hint={`Pan of ${name}`}
+        />
+      </div>
+
       {/* The number; the fader under it is the slider, so the field draws no fill of its own. */}
       <div className={styles.field}>
         <NumberBox
-          label={`${name} volume`} hideLabel fill={false} width={stripW - 7} scale={dbTaperScale} unit="dB"
+          className={styles.readout} label={`${name} volume`} hideLabel fill={false} width={stripW - 7} scale={dbTaperScale} unit="dB"
           formatOptions={GAIN_FORMAT} defaultValue={0}
           value={db} onChange={handleVolume} onCommit={handleVolume} hint={`Volume of ${name}`}
         />
@@ -212,10 +214,9 @@ function MixerStrip({ trackId, index, color, stripW = 72, insertRowCount = 5, in
       </div>
 
       <div className={styles.cableSpace} aria-hidden="true" />
-      <Select
-        size="sm" className={styles.out} ariaLabel={`Output of ${name}`} value={routeTargetId}
-        options={routeOptions} onChange={handleRoute} hint={routingError || `Where ${name} sends its output`}
-      />
+      {/* FL-style: the arrow routes the SELECTED strip here (click), here only (Ctrl+click)
+          or sidechains it here (right-click). The cables above draw every route. */}
+      <RouteArrow targetTrackId={trackId} targetName={name} />
     </div>
   )
 }

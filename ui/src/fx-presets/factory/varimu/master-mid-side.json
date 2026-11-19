@@ -1,0 +1,15 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "varimu",
+  "name": "Master Mid-Side",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "input": 0,
+      "output": 0,
+      "time_constant": 6,
+      "mode": 1
+    }
+  }
+}

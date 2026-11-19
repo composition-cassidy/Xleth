@@ -272,4 +272,10 @@ public:
     // capture can still report whether the CLI happens to be on PATH (useful
     // when comparing against the legacy CLI path). Probed once and cached.
     static bool ffmpegAvailable();
+
+    // How many proxy/poster generations may run at once on this machine
+    // (1 on small machines; see HardwareTier::proxyGenerationSlots). ProxyManager
+    // sizes its worker pool from this so a long whole-source encode never
+    // blocks every poster and region proxy behind it.
+    static int generationSlots();
 };

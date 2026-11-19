@@ -129,6 +129,7 @@ export const DeleteToolIcon = make('eraser', 'DeleteToolIcon');
 export const SourceVideoIcon = make('film-strip', 'SourceVideoIcon');
 export const SourceAudioIcon = make('waveform', 'SourceAudioIcon');
 export const MediaIcon = make('images-square', 'MediaIcon');
+export const ColorGradeIcon = make('palette', 'ColorGradeIcon');
 
 /** Build a component for any icon name, for APIs that take an icon component (menus, tabs). */
 export function iconComponent(name: IconName, weight?: IconWeight): ComponentType<IconProps> {

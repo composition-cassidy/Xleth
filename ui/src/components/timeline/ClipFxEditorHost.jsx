@@ -1,4 +1,3 @@
-import React from 'react'
 import ClipVibratoEditorPanel from './ClipVibratoEditorPanel.jsx'
 import ClipScratchEditorPanel from './ClipScratchEditorPanel.jsx'
 

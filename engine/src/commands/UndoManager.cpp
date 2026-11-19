@@ -28,19 +28,48 @@ struct MutationLock {
 
 } // namespace
 
-void UndoManager::execute(std::unique_ptr<Command> cmd, Timeline& timeline) {
-    const std::string desc = cmd->describe();
-    {
-        MutationLock lock(mutationMutex_);
-        cmd->execute(timeline);
-    }
-    // A command that opts out of undo history has still mutated the timeline, so
-    // the hook must fire on this path too.
-    if (!cmd->shouldRecordInUndoHistory()) {
-        firePostMutationHook();
-        return;
+// ─── GroupCommand ─────────────────────────────────────────────────────────────
+// The single undo entry a closed group becomes. Undo reverses the members
+// newest-first, which is the order they would have been undone one at a time.
+
+namespace {
+
+class GroupCommand final : public Command {
+public:
+    GroupCommand(std::string label, std::vector<std::unique_ptr<Command>> commands)
+        : label_(std::move(label)), commands_(std::move(commands)) {}
+
+    void execute(Timeline& timeline) override {
+        for (auto& c : commands_) c->execute(timeline);
     }
 
+    void undo(Timeline& timeline) override {
+        for (auto it = commands_.rbegin(); it != commands_.rend(); ++it)
+            (*it)->undo(timeline);
+    }
+
+    std::string describe() const override {
+        const std::string count = std::to_string(commands_.size()) + " edits";
+        return label_.empty() ? count : label_ + " (" + count + ")";
+    }
+
+    // One surface's group belongs to that surface; a mixed group is the
+    // timeline's, like every command that predates domains.
+    const char* domain() const override {
+        const char* first = commands_.empty() ? "timeline" : commands_.front()->domain();
+        for (const auto& c : commands_)
+            if (std::string(c->domain()) != first) return "timeline";
+        return first;
+    }
+
+private:
+    std::string label_;
+    std::vector<std::unique_ptr<Command>> commands_;
+};
+
+} // namespace
+
+void UndoManager::noteNewEdit() {
     // Branch detection (pre-push): if the savepoint lies in the redo history
     // we're about to discard, the savepoint command is being destroyed.
     // In the pop-on-undo model, that's the case when savepointIndex_ is
@@ -55,7 +84,9 @@ void UndoManager::execute(std::unique_ptr<Command> cmd, Timeline& timeline) {
                   << redoStack_.size() << " item(s)) by new command\n";
         redoStack_.clear();
     }
+}
 
+void UndoManager::pushUndoEntry(std::unique_ptr<Command> cmd) {
     undoStack_.push_back(std::move(cmd));
 
     // Enforce history cap — drop the oldest entry if exceeded
@@ -71,6 +102,36 @@ void UndoManager::execute(std::unique_ptr<Command> cmd, Timeline& timeline) {
         std::cout << "[Undo] Stack overflow: dropped oldest entry"
                      " (max=" << maxHistory_ << ")\n";
     }
+}
+
+void UndoManager::execute(std::unique_ptr<Command> cmd, Timeline& timeline) {
+    const std::string desc = cmd->describe();
+    {
+        MutationLock lock(mutationMutex_);
+        cmd->execute(timeline);
+    }
+    // A command that opts out of undo history has still mutated the timeline, so
+    // the hook must fire on this path too.
+    if (!cmd->shouldRecordInUndoHistory()) {
+        lastUnrecorded_ = std::move(cmd);   // keep it readable for the caller
+        firePostMutationHook();
+        return;
+    }
+    lastUnrecorded_.reset();
+
+    noteNewEdit();
+
+    if (openGroup_) {
+        // Collected, not pushed: the group becomes one entry when it closes.
+        openGroup_->commands.push_back(std::move(cmd));
+        std::cout << "[Undo] Execute '" << desc << "' (in group '"
+                  << openGroup_->label << "', " << openGroup_->commands.size()
+                  << " so far)\n";
+        firePostMutationHook();
+        return;
+    }
+
+    pushUndoEntry(std::move(cmd));
 
     std::cout << "[Undo] Execute '" << desc << "'"
               << " | undo=" << undoStack_.size()
@@ -79,7 +140,43 @@ void UndoManager::execute(std::unique_ptr<Command> cmd, Timeline& timeline) {
     firePostMutationHook();
 }
 
+int UndoManager::beginGroup(std::string label) {
+    commitOpenGroup();   // groups do not nest
+    openGroup_ = std::make_unique<OpenGroup>();
+    openGroup_->token = nextGroupToken_++;
+    if (nextGroupToken_ <= 0) nextGroupToken_ = 1;
+    openGroup_->label = std::move(label);
+    return openGroup_->token;
+}
+
+bool UndoManager::endGroup(int token) {
+    if (!openGroup_ || openGroup_->token != token) return false;
+    commitOpenGroup();
+    return true;
+}
+
+bool UndoManager::isGroupOpen() const { return openGroup_ != nullptr; }
+
+void UndoManager::commitOpenGroup() {
+    if (!openGroup_) return;
+    std::unique_ptr<OpenGroup> group = std::move(openGroup_);
+    if (group->commands.empty()) return;
+
+    const size_t count = group->commands.size();
+    if (count == 1) {
+        pushUndoEntry(std::move(group->commands.front()));
+    } else {
+        pushUndoEntry(std::make_unique<GroupCommand>(std::move(group->label),
+                                                     std::move(group->commands)));
+    }
+    std::cout << "[Undo] Group closed: " << count << " command(s) -> '"
+              << undoStack_.back()->describe() << "'"
+              << " | undo=" << undoStack_.size()
+              << " redo=" << redoStack_.size() << "\n";
+}
+
 bool UndoManager::undo(Timeline& timeline) {
+    commitOpenGroup();
     if (undoStack_.empty()) {
         std::cout << "[Undo] WARNING undo(): nothing to undo\n";
         return false;
@@ -103,6 +200,7 @@ bool UndoManager::undo(Timeline& timeline) {
 }
 
 bool UndoManager::redo(Timeline& timeline) {
+    commitOpenGroup();
     if (redoStack_.empty()) {
         std::cout << "[Undo] WARNING redo(): nothing to redo\n";
         return false;
@@ -177,6 +275,8 @@ int UndoManager::countByDomain(const std::string& domain) const {
 }
 
 void UndoManager::clear() {
+    lastUnrecorded_.reset();
+    openGroup_.reset();   // whatever it held is discarded with the rest
     const int u = getUndoCount(), r = getRedoCount();
     undoStack_.clear();
     redoStack_.clear();
@@ -186,11 +286,14 @@ void UndoManager::clear() {
 }
 
 void UndoManager::markSavepoint() {
+    // The edits an open group already made are part of what was just saved.
+    commitOpenGroup();
     savepointIndex_ = undoStack_.size();
     savepointPoisoned_ = false;
     std::cout << "[Undo] Savepoint marked at depth " << savepointIndex_ << "\n";
 }
 
 bool UndoManager::isDirty() const {
+    if (openGroup_ && !openGroup_->commands.empty()) return true;
     return savepointPoisoned_ || undoStack_.size() != savepointIndex_;
 }

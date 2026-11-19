@@ -1,0 +1,14 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "opto",
+  "name": "Peak Stop",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "peak_reduction": 14,
+      "gain": 2,
+      "mode": 1
+    }
+  }
+}

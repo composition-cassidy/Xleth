@@ -66,8 +66,22 @@ function readPluginLoadInflight(workerPid) {
   }
 }
 
+// node/xleth-host/node.exe is node.exe re-stamped with the XLETH icon and name
+// (ui/scripts/brand-engine-host.cjs). The worker owns the audio device, so the
+// exe it runs under is what Volume Mixer / Task Manager show. Prefer it over a
+// plain node.exe in both packaged and dev runs. It must keep the node.exe
+// filename: the addon's N-API imports name "node.exe", and a renamed host
+// binds them to a second Node loaded from disk and crashes on require().
+function brandedEngineHost() {
+  if (process.platform !== 'win32') return null;
+  const p = runtimeResource('node', 'xleth-host', 'node.exe');
+  return fs.existsSync(p) ? p : null;
+}
+
 function resolveSystemNodeExe() {
   if (process.env.XLETH_NODE_EXE) return process.env.XLETH_NODE_EXE;
+  const branded = brandedEngineHost();
+  if (branded) return branded;
   if (app.isPackaged) {
     return runtimeResource('node', process.platform === 'win32' ? 'node.exe' : 'node');
   }
@@ -331,6 +345,9 @@ function isWorkerReady() { return workerReady; }
 function getAddonError() { return addonError; }
 function setAddonError(msg) { addonError = msg; }
 function killWorker() { worker?.kill(); }
+// Engine calls sent and not yet answered. main.js reads this to tell when a
+// freshly mounted workspace has finished its start-up burst of queries.
+function getPendingCount() { return pending.size; }
 // { plugin, vendor, phase } when the last worker exit happened mid plugin load.
 function getLastExitPlugin() { return lastExitPlugin; }
 
@@ -342,5 +359,6 @@ module.exports = {
   getAddonError,
   setAddonError,
   killWorker,
+  getPendingCount,
   getLastExitPlugin,
 };

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { Button, NumberBox, SegmentedControl, TextField } from '../../ui-kit'
-import { customAspectMismatch, buildExportConfig, describeExportSummary } from './presets.js'
+import { customAspectMismatch, buildExportConfig, describeExportSummary, resolveAudioCodec } from './presets.js'
 import { ExportSelect, Row, exportStyles as styles } from './exportKit.jsx'
 
 const CUSTOM_DEFAULTS = {
@@ -64,7 +64,7 @@ const RESOLUTION_OPTIONS = [
 ]
 const AUDIO_CODEC_OPTIONS = [
   { value: 'aac', label: 'AAC' },
-  { value: 'opus', label: 'Opus' },
+  // No Opus: the bundled FFmpeg has no libopus (presets.js, EXPORT_AUDIO_CODECS).
   { value: 'flac', label: 'FLAC' },
   { value: 'pcm_s16le', label: 'PCM (uncompressed)' },
 ]
@@ -81,7 +81,7 @@ const FIT_MODES_UI = [
 
 /**
  * Custom preset tab — exposes only what the FFmpegMuxer backend actually
- * supports (MP4 container, H.264/H.265/AV1/DNxHD/ProRes video, AAC/Opus/FLAC/PCM
+ * supports (MP4 container, H.264/H.265/AV1/DNxHD/ProRes video, AAC/FLAC/PCM
  * audio). Save/Load/Delete preset controls live at the top.
  */
 export default function CustomTab({
@@ -282,14 +282,14 @@ export default function CustomTab({
           <h3 className={styles.groupTitle}>Audio</h3>
 
           <Row label="Audio codec">
-            <ExportSelect label="Audio codec" value={settings.audioCodec} options={AUDIO_CODEC_OPTIONS} disabled={running} onChange={(v) => onChange({ audioCodec: v })} />
+            <ExportSelect label="Audio codec" value={resolveAudioCodec(settings.audioCodec)} options={AUDIO_CODEC_OPTIONS} disabled={running} onChange={(v) => onChange({ audioCodec: v })} />
           </Row>
 
           <Row label="Sample rate">
             <ExportSelect label="Audio sample rate" value={settings.sampleRate} options={SAMPLE_RATE_OPTIONS} disabled={running} onChange={(v) => onChange({ sampleRate: Number(v) })} />
           </Row>
 
-          {(settings.audioCodec === 'aac' || settings.audioCodec === 'opus') && (
+          {resolveAudioCodec(settings.audioCodec) === 'aac' && (
             <Row label="Audio bitrate">
               <ExportSelect label="Audio bitrate" value={settings.audioBitrate} options={AUDIO_BITRATE_OPTIONS} disabled={running} onChange={(v) => onChange({ audioBitrate: Number(v) })} />
             </Row>

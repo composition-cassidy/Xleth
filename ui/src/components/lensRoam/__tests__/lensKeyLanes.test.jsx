@@ -35,6 +35,15 @@ let root
 const ptr = (type, x, y, extra = {}) => new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, ...extra })
 const canvas = () => container.querySelector('[data-testid="lens-key-lanes"]')
 const fire = async (el, ev) => { await act(async () => { el.dispatchEvent(ev) }) }
+// The key menu is portaled to <body>.
+const menuEl = () => document.body.querySelector('[role="menu"]')
+const menuItem = (label) => [...document.body.querySelectorAll('[role^="menuitem"]')]
+  .find((b) => b.textContent.trim() === label) ?? null
+const clickMenuItem = async (label) => {
+  const b = menuItem(label)
+  expect(b, `menu item "${label}"`).not.toBeNull()
+  await act(async () => { b.click() })
+}
 
 beforeEach(() => {
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null)   // jsdom has no 2D context; the draw effect bails on null
@@ -145,17 +154,91 @@ describe('LensKeyLanes: gestures are local, one commit on mouseup', () => {
     expect(onOp).not.toHaveBeenCalled()
   })
 
-  it('right-click on a filled key deletes it; on a hollow (inherited) key it does nothing', async () => {
+  it('right-click on a filled key opens the key menu (Delete removes it); on a hollow (inherited) key no menu', async () => {
     const hollow = [key('zoom', 'Head', 60, 1.2)]
     const own = [key('centerX', 'Body', 0.5, 0.1)]
     const { onOp } = await mount({ ownKeys: own, inheritedKeys: hollow })
     const c = canvas()
     await fire(c, ptr('contextmenu', xOf(420, 960), yOf('centerX', 0.1, own), { button: 2 }))
+    expect(onOp).not.toHaveBeenCalled()                       // a menu, not a verb
+    await clickMenuItem('Delete key')
     expect(onOp).toHaveBeenCalledTimes(1)
-    expect(onOp).toHaveBeenCalledWith({ type: 'remove', match: own[0] })
+    expect(onOp).toHaveBeenCalledWith({ type: 'batch', ops: [{ type: 'remove', match: own[0] }] })
+    expect(menuEl()).toBeNull()                               // the menu closed
     onOp.mockClear()
     await fire(c, ptr('contextmenu', xOf(60, 960), yOf('zoom', 1.2, [...hollow]), { button: 2 }))
+    expect(menuEl()).toBeNull()
     expect(onOp).not.toHaveBeenCalled()
+  })
+
+  it('Ctrl-click builds a multi-selection; the menu makes every selected key Bezier in ONE batch op', async () => {
+    const own = [key('zoom', 'Head', 0, 1.35), key('zoom', 'Head', 120, 1.0), key('centerX', 'Body', 0.5, 0.1)]
+    const { onOp } = await mount({ ownKeys: own })
+    const c = canvas()
+    const at = (k) => [xOf(k.channel === 'centerX' ? 420 : k.pos, 960), yOf(k.channel, k.value, own)]
+    for (const k of [own[0], own[2]]) {
+      await fire(c, ptr('pointerdown', ...at(k), { ctrlKey: true }))
+      await fire(c, ptr('pointerup', ...at(k), { ctrlKey: true }))
+    }
+    expect(onOp).not.toHaveBeenCalled()                       // selecting sends nothing
+    await fire(c, ptr('contextmenu', ...at(own[2]), { button: 2 }))
+    expect(menuEl().getAttribute('aria-label')).toBe('2 keys')
+    await clickMenuItem('Bezier: Smooth')
+    expect(onOp).toHaveBeenCalledTimes(1)
+    const op = onOp.mock.calls[0][0]
+    expect(op.type).toBe('batch')
+    expect(op.ops.map((o) => o.match)).toEqual([own[0], own[2]])   // the unselected key is untouched
+    for (const o of op.ops) expect(o.patch).toEqual({ interp: 'Bezier', bez: [0.42, 0, 0.58, 1] })
+  })
+
+  it('Shift-drag draws a marquee; the keys inside become the selection (Delete in the menu removes them all)', async () => {
+    const own = [key('zoom', 'Head', 0, 1.35), key('zoom', 'Head', 120, 1.0), key('centerX', 'Body', 0.5, 0.1)]
+    const { onOp } = await mount({ ownKeys: own })
+    const c = canvas()
+    const top = RULER_H + 1
+    const bottom = RULER_H + LANE_H - 1                       // the zoom lane only
+    await fire(c, ptr('pointerdown', 20, top, { shiftKey: true }))   // in the gutter: no key under it
+    await fire(c, ptr('pointermove', xOf(200, 960), bottom, { shiftKey: true }))
+    await fire(c, ptr('pointerup', xOf(200, 960), bottom, { shiftKey: true }))
+    expect(onOp).not.toHaveBeenCalled()
+    await fire(c, ptr('contextmenu', xOf(600, 960), laneMidY('rotationDeg'), { button: 2 }))   // empty lane: acts on the selection
+    await clickMenuItem('Delete 2 keys')
+    expect(onOp).toHaveBeenCalledTimes(1)
+    expect(onOp.mock.calls[0][0]).toEqual({
+      type: 'batch', ops: [{ type: 'remove', match: own[0] }, { type: 'remove', match: own[1] }],
+    })
+  })
+
+  it('a selected Bezier key shows its handles; dragging one is ONE update of that key\'s bez', async () => {
+    const a = { ...key('zoom', 'Head', 0, 1.35, 'Bezier'), bez: [0.42, 0, 0.58, 1] }
+    const b = key('zoom', 'Tail', 0, 1.0)
+    const own = [a, b]
+    const { onOp } = await mount({ ownKeys: own, selected: a })
+    const c = canvas()
+    // Handle 1 sits 42 % along the segment (Head 0 -> the note's end), at a's value.
+    const hx = xOf(0, 960) + 0.42 * (xOf(960, 960) - xOf(0, 960))
+    const hy = yOf('zoom', 1.35, own)
+    await fire(c, ptr('pointerdown', hx, hy))
+    await fire(c, ptr('pointermove', xOf(480, 960), yOf('zoom', 1.0, own)))
+    expect(onOp).not.toHaveBeenCalled()                       // local while dragging
+    await fire(c, ptr('pointerup', xOf(480, 960), yOf('zoom', 1.0, own)))
+    expect(onOp).toHaveBeenCalledTimes(1)
+    const op = onOp.mock.calls[0][0]
+    expect(op.type).toBe('update')
+    expect(op.match).toEqual(a)
+    expect(op.patch.bez[0]).toBeCloseTo(0.5, 2)               // half-way along in time
+    expect(op.patch.bez[1]).toBeCloseTo(1, 1)                 // at b's value: y fraction 1
+    expect(op.patch.bez.slice(2)).toEqual([0.58, 1])          // the other handle is untouched
+  })
+
+  it('an unselected Bezier key shows no handles: a press there adds a key instead', async () => {
+    const a = { ...key('zoom', 'Head', 0, 1.35, 'Bezier'), bez: [0.42, 0, 0.58, 1] }
+    const own = [a, key('zoom', 'Tail', 0, 1.0)]
+    const { onOp } = await mount({ ownKeys: own })
+    const hx = xOf(0, 960) + 0.42 * (xOf(960, 960) - xOf(0, 960))
+    await fire(canvas(), ptr('pointerdown', hx, yOf('zoom', 1.35, own)))
+    await fire(canvas(), ptr('pointerup', hx, yOf('zoom', 1.35, own)))
+    expect(onOp.mock.calls[0][0].type).toBe('add')
   })
 
   it('an inherited key cannot be dragged: it clears the selection and sends nothing', async () => {

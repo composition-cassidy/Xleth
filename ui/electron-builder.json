@@ -1,7 +1,7 @@
 {
   "appId": "com.xleth.app",
   "productName": "XLETH",
-  "files": ["dist/**/*", "src/plugin-ui/layouts/*.json", "src/fx-presets/factory/**/*.json", "main.js", "electron-main/**/*", "preload.js", "rpc-manifest.js", "runtimePaths.js", "workspaceBackdropCapability.js", "update-checker.js", "splash.html", "splash-preload.js", "welcome.html", "welcome-preload.js", "xleth.svg", "assets/icon.ico", "assets/fonts/Barlow/*.ttf", "assets/fonts/Barlow/OFL.txt"],
+  "files": ["dist/**/*", "src/plugin-ui/layouts/*.json", "src/fx-presets/factory/**/*.json", "main.js", "electron-main/**/*", "preload.js", "rpc-manifest.js", "runtimePaths.js", "update-checker.js", "splash.html", "splash-preload.js", "welcome.html", "welcome-preload.js", "xleth.svg", "assets/icon.ico", "assets/fonts/Barlow/*.ttf", "assets/fonts/Barlow/OFL.txt"],
   "directories": {
     "output": "../dist"
   },
@@ -55,7 +55,7 @@
     {
       "from": "../vendor/node",
       "to": "node",
-      "filter": ["node.exe"]
+      "filter": ["node.exe", "xleth-host/node.exe"]
     },
     {
       "from": "../tools/separation_sidecar",

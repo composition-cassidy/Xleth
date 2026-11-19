@@ -7,6 +7,7 @@ import { getSyllableDisplayNumber } from '../SyllableSplitter/syllableModel.js'
 import { VIBRATO_DEFAULTS, getClipModulationStatus } from './clipModulationStatus.js'
 import RowToggle from './RowToggle.jsx'
 import LensPanel from '../lensRoam/LensPanel.jsx'
+import GradeSection from '../colorGrade/GradeSection.jsx'
 import { sourceTimeForClip } from '../grid/zprTimeline/zprSourceFrame.js'
 import { getTransportState } from '../../transportStore.js'
 import styles from './Inspector.module.css'
@@ -118,6 +119,17 @@ export default function ClipInspector({ context, actions }) {
             context={`${clipName} · this event only`}
             frameRef={lensFrame}
             clipTiming={{ startTick: clip.positionTicks ?? 0, lengthTicks: clip.durationTicks ?? 0 }}
+          />
+        )}
+
+        {hasVideo && (
+          <GradeSection
+            note="The color grades this clip's picture passes through, in order."
+            stack={{
+              source: { id: source.id, name: source.fileName ?? source.name ?? 'Source' },
+              clip: { level: 'clip', id: clipId, name: clipName },
+              layer: { id: clip.trackId, name: track?.name ?? 'Track' },
+            }}
           />
         )}
 

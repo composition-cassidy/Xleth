@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cassert>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -28,8 +29,12 @@
 #include "shaders/FX_OutlinePS.h"
 #include "shaders/FX_DropShadowPS.h"
 #include "shaders/SnapshotTransitionPS.h"
+#include "shaders/FX_ColorGradePS.h"
+#include "shaders/FX_MaskPS.h"
 
 #include "model/TimelineTypes.h"  // VisualEffect
+#include "model/ParentMath.h"     // Parent similarity (Motion view R7)
+#include "render/MaskMath.h"      // Mask path flattening (Motion view R11-R13)
 #include "VisualFrameDiagnostics.h"  // opt-in pixel-content instrumentation
 
 // ---------------------------------------------------------------------------
@@ -124,6 +129,180 @@ struct QuadVertex {
 };
 
 // ===========================================================================
+// Home rect + Parent geometry (Motion view, docs/XLETH_MOTION_VIEW_DESIGN.md
+// R7, R9, 3.4). Pure arithmetic on request data: no D3D, allocation or lock.
+// ===========================================================================
+namespace {
+
+// The home rect of one placement in canvas-UV, and its Roam unit. The ONE code
+// path for a request's own home and for every Parent ancestor's (design 3.4):
+//   Landing in flight  the rect it names (its unit travels with it)
+//   grid slot          its placement after the gap; the unit is the placement
+//                      before the gap (half-grid spans included)
+//   fullscreen layer   the canvas (unit = canvas)
+// Bounce is NOT part of it (grid-only, applied by the caller; a parent's pivot
+// is its home without bounce, R7).
+inline void placementHome(bool hasCanvasRect, const float* canvasRect, const float* canvasRoamUnit,
+                          bool isGrid, int cellCol, int cellRow, int spanX, int spanY,
+                          int gridCols, int gridRows, float gapScale, float gapScaleOverride,
+                          float& rx, float& ry, float& rw, float& rh,
+                          float& roamUnitW, float& roamUnitH)
+{
+    if (hasCanvasRect) {
+        // Landing: the request names its own home rect for this frame, so
+        // the slot, the grid size and the gap are not consulted. The rect
+        // already IS the drawn (post-gap) rect; at the end of the move it
+        // is bitwise what the grid branch below computes for the slot.
+        rx = canvasRect[0];  ry = canvasRect[1];
+        rw = canvasRect[2];  rh = canvasRect[3];
+        roamUnitW = (canvasRoamUnit[0] > 0.0f) ? canvasRoamUnit[0] : rw;
+        roamUnitH = (canvasRoamUnit[1] > 0.0f) ? canvasRoamUnit[1] : rh;
+    } else if (isGrid) {
+        float unitX, unitY;
+        xleth::slotCellRect(cellCol, cellRow, spanX, spanY,
+                            gridCols, gridRows, unitX, unitY, roamUnitW, roamUnitH);
+        // Placement, then the gap: shrink the rect symmetrically, creating
+        // inter-cell padding. GRID-ONLY, deliberately: a gap is the space
+        // BETWEEN cells, and a fullscreen layer has no neighbours to be
+        // spaced from — inset-ing it would just letterbox the backdrop for
+        // no reason.
+        xleth::slotCanvasRect(cellCol, cellRow, spanX, spanY,
+                              gridCols, gridRows,
+                              xleth::effectiveSlotGap(gapScale, gapScaleOverride),
+                              rx, ry, rw, rh);
+    } else {
+        rx = 0.0f; ry = 0.0f; rw = 1.0f; rh = 1.0f;
+        roamUnitW = rw;
+        roamUnitH = rh;
+    }
+}
+
+// canvas-UV <-> output pixels (canvas fit included). Rotation is rigid only in
+// pixels, so every Parent similarity is built and applied there.
+struct OutputMap {
+    double fitX = 0.0, fitY = 0.0, fitW = 1.0, fitH = 1.0;
+    double outW = 1.0, outH = 1.0;
+    parentmath::Vec2 toPx(double u, double v) const {
+        return { (fitX + u * fitW) * outW, (fitY + v * fitH) * outH };
+    }
+};
+
+// Each ancestor's home in output pixels (frame-time; homes do not move inside
+// the shutter, like the child's own). An unplaced ancestor's entry is unused.
+inline void parentHomes(const ParentChain& pc, const OutputMap& m,
+                        parentmath::Home (&homes)[motionschema::kMaxParentDepth])
+{
+    const int depth = std::min(pc.depth, motionschema::kMaxParentDepth);
+    for (int k = 0; k < depth; ++k) {
+        const ParentAncestor& a = pc.ancestors[k];
+        homes[k] = parentmath::Home{};
+        if (!a.placed) continue;
+        float hx, hy, hw, hh, uw, uh;
+        placementHome(false, nullptr, nullptr, !a.fullscreen,
+                      a.cellCol, a.cellRow, a.spanX, a.spanY,
+                      pc.gridCols, pc.gridRows, pc.gapScale, a.gapScaleOverride,
+                      hx, hy, hw, hh, uw, uh);
+        const parentmath::Vec2 o = m.toPx(hx, hy);
+        homes[k].x = o.x;
+        homes[k].y = o.y;
+        homes[k].w     = static_cast<double>(hw) * m.fitW * m.outW;
+        homes[k].h     = static_cast<double>(hh) * m.fitH * m.outH;
+        homes[k].unitW = static_cast<double>(uw) * m.fitW * m.outW;
+        homes[k].unitH = static_cast<double>(uh) * m.fitH * m.outH;
+    }
+}
+
+// The composed chain S_root o ... o S_parent (R7), output pixels, at the frame
+// time (sample < 0) or at dense motion sample `sample`. An unplaced ancestor
+// contributes identity; the chain continues above it.
+inline parentmath::Similarity parentChainAt(const ParentChain& pc,
+                                            const parentmath::Home (&homes)[motionschema::kMaxParentDepth],
+                                            int sample)
+{
+    parentmath::Similarity S[motionschema::kMaxParentDepth];
+    const int depth = std::min(pc.depth, motionschema::kMaxParentDepth);
+    const bool sampled = sample >= 0 && pc.motionCount > 0 && sample < pc.motionCount;
+    for (int k = 0; k < depth; ++k) {
+        if (!pc.ancestors[k].placed) { S[k] = parentmath::Similarity{}; continue; }
+        const RoamParams& r = sampled ? pc.motion[static_cast<size_t>(sample)][static_cast<size_t>(k)]
+                                      : pc.ancestors[k].roam;
+        S[k] = parentmath::parentSimilarity(homes[k], r);
+    }
+    return parentmath::composeChain(S, depth);
+}
+
+// Carry a canvas-UV rect (centre, size) and its rotation through a chain in
+// output pixels and back: centre -> S(centre), size x s, rotation + r.
+inline void carryRect(const parentmath::Similarity& S, const OutputMap& m,
+                      lensroam::UvRect& r, float& rotRad)
+{
+    const parentmath::Vec2 c  = m.toPx(static_cast<double>(r.x) + r.w * 0.5,
+                                       static_cast<double>(r.y) + r.h * 0.5);
+    const parentmath::Vec2 c2 = parentmath::apply(S, c);
+    const double w = static_cast<double>(r.w) * S.s;
+    const double h = static_cast<double>(r.h) * S.s;
+    const double cu = (c2.x / m.outW - m.fitX) / m.fitW;
+    const double cv = (c2.y / m.outH - m.fitY) / m.fitH;
+    r.x = static_cast<float>(cu - w * 0.5);
+    r.y = static_cast<float>(cv - h * 0.5);
+    r.w = static_cast<float>(w);
+    r.h = static_cast<float>(h);
+    rotRad = static_cast<float>(static_cast<double>(rotRad) + S.rotDeg * 0.017453292519943295);
+}
+
+// R9, rotated chain: the carried home (canvas-UV rect + rotation) as four
+// corners in the drawn cell's own pixels (about its centre, its rotation
+// removed): what the Mask pass intersects with.
+inline MaskClipQuad carriedHomeQuad(const lensroam::UvRect& home, float homeRotRad,
+                                    const lensroam::UvRect& cell, float cellRotRad,
+                                    const OutputMap& m)
+{
+    MaskClipQuad q;
+    q.active = true;
+    const parentmath::Vec2 hc = m.toPx(static_cast<double>(home.x) + home.w * 0.5,
+                                       static_cast<double>(home.y) + home.h * 0.5);
+    const parentmath::Vec2 cc = m.toPx(static_cast<double>(cell.x) + cell.w * 0.5,
+                                       static_cast<double>(cell.y) + cell.h * 0.5);
+    const double hw = static_cast<double>(home.w) * m.fitW * m.outW * 0.5;
+    const double hh = static_cast<double>(home.h) * m.fitH * m.outH * 0.5;
+    const double homeDeg = static_cast<double>(homeRotRad) * 57.29577951308232;
+    const double cellDeg = static_cast<double>(cellRotRad) * 57.29577951308232;
+    const double corners[4][2] = { { -hw, -hh }, { hw, -hh }, { hw, hh }, { -hw, hh } };
+    for (int i = 0; i < 4; ++i) {
+        const parentmath::Vec2 d = parentmath::rotate(homeDeg, { corners[i][0], corners[i][1] });
+        const parentmath::Vec2 p = { hc.x + d.x - cc.x, hc.y + d.y - cc.y };
+        const parentmath::Vec2 l = parentmath::rotate(-cellDeg, p);
+        q.pts[i][0] = static_cast<float>(l.x);
+        q.pts[i][1] = static_cast<float>(l.y);
+    }
+    return q;
+}
+
+// R9 fallback: the axis-aligned bounding box (canvas-UV) of the carried home
+// (canvas-UV rect + rotation), for a scissor when the Mask pass that should
+// have clipped to the turned quad could not run. Looser than the quad, never
+// unclipped. Rotation is measured in output pixels, as everywhere in R7.
+inline lensroam::UvRect carriedHomeBounds(const lensroam::UvRect& home, float homeRotRad,
+                                          const OutputMap& m)
+{
+    const double pxW = m.fitW * m.outW;
+    const double pxH = m.fitH * m.outH;
+    if (!(pxW > 0.0) || !(pxH > 0.0)) return home;
+    const double hw = static_cast<double>(home.w) * pxW * 0.5;
+    const double hh = static_cast<double>(home.h) * pxH * 0.5;
+    const double c = std::abs(std::cos(static_cast<double>(homeRotRad)));
+    const double s = std::abs(std::sin(static_cast<double>(homeRotRad)));
+    const double ex = (c * hw + s * hh) / pxW;   // half extents back in canvas-UV
+    const double ey = (s * hw + c * hh) / pxH;
+    const double cx = static_cast<double>(home.x) + home.w * 0.5;
+    const double cy = static_cast<double>(home.y) + home.h * 0.5;
+    return lensroam::UvRect{ static_cast<float>(cx - ex), static_cast<float>(cy - ey),
+                             static_cast<float>(ex * 2.0), static_cast<float>(ey * 2.0) };
+}
+
+} // namespace
+
+// ===========================================================================
 // Lifecycle
 // ===========================================================================
 
@@ -161,6 +340,16 @@ bool GridCompositor::init(ID3D11Device* device, ID3D11DeviceContext* deviceCtx,
         // Non-fatal: compositor works without effects
     }
 
+    if (!createGradeResources()) {
+        std::fprintf(stderr, "[Compositor] WARNING: Color Grade shader failed to init — grades will not render\n");
+        // Non-fatal: the compositor draws every picture ungraded.
+    }
+
+    if (!createMaskResources()) {
+        std::fprintf(stderr, "[Compositor] WARNING: Mask shader failed to init — masks will not render\n");
+        // Non-fatal: a masked cell draws unmasked.
+    }
+
     initialized_ = true;
     std::fprintf(stderr, "[Compositor] Init: %dx%d render target, BGRA, blend=SRC_ALPHA/INV_SRC_ALPHA\n",
                  width_, height_);
@@ -177,6 +366,19 @@ void GridCompositor::shutdown()
     echoRings_.clear();
     echoStats_ = {};
     additiveBlendState_.Reset();
+
+    gradePS_.Reset();
+    gradeCB_.Reset();
+    gradeGpu_.clear();
+    masterTarget_.Reset();
+    masterTargetRTV_.Reset();
+    lastGradePasses_ = 0;
+    maskPS_.Reset();
+    maskCB_.Reset();
+    lastMaskPasses_ = 0;
+    // masterGrade_ is deliberately kept: it is a setting, not a GPU resource,
+    // and a resize (shutdown + init) must not drop the look until the next
+    // frame sets it again.
 
     renderTarget_.Reset();
     renderTargetRTV_.Reset();
@@ -545,6 +747,21 @@ bool GridCompositor::createPipelineState()
         return false;
     }
 
+    // Motion blur taps (MotionConstants, b3). Read only by draws that set a
+    // kXformMotion* bit; uploaded right before each such draw.
+    D3D11_BUFFER_DESC mcbDesc = {};
+    mcbDesc.Usage          = D3D11_USAGE_DYNAMIC;
+    mcbDesc.ByteWidth      = sizeof(MotionConstants);
+    mcbDesc.BindFlags      = D3D11_BIND_CONSTANT_BUFFER;
+    mcbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
+    hr = device_->CreateBuffer(&mcbDesc, nullptr, &motionConstantBuffer_);
+    if (FAILED(hr)) {
+        std::fprintf(stderr, "[Compositor] Failed to create motion constant buffer, HR=0x%08X\n",
+                     static_cast<unsigned int>(hr));
+        return false;
+    }
+
     // Rasterizer state — no culling, solid fill
     D3D11_RASTERIZER_DESC rsDesc = {};
     rsDesc.FillMode = D3D11_FILL_SOLID;
@@ -642,6 +859,11 @@ void GridCompositor::compositeRequests(const std::vector<CellFrameRequest>& requ
     rtPool_.pruneIdle();
     // Sizes a landing passed through a few passes ago go now (see beginPass).
     rtPool_.beginPass();
+    // Transfer tables of grades nothing has drawn with for a while (a slider
+    // drag leaves one behind per change).
+    gradeGpu_.beginPass();
+    if (clearTarget) lastGradePasses_ = 0;
+    if (clearTarget) lastMaskPasses_ = 0;
 
     // Echo rings are swept on the same tick and for the same reason, but on a
     // much shorter fuse: one ring can be tens of megabytes, against a few
@@ -662,6 +884,7 @@ void GridCompositor::compositeRequests(const std::vector<CellFrameRequest>& requ
 
     // Lens/Roam work counters for the dev [Roam] line (plain ints, no cost).
     int lensPasses = 0, roamCells = 0;
+    int motionBlurCells = 0;   // stages that drew with motion-blur taps this frame
 #ifdef XLETH_DEBUG
     RoamGpuTimer* roamTimer = nullptr;
     if (kRoamDevLog) {
@@ -829,35 +1052,13 @@ void GridCompositor::compositeRequests(const std::vector<CellFrameRequest>& requ
         // this draws the same slot cannot diverge.
         float rx, ry, rw, rh;
         // One Roam cell unit: this placement before the gap (half-grid spans
-        // included), or the canvas for a fullscreen layer.
+        // included), or the canvas for a fullscreen layer. The same helper
+        // gives every Parent ancestor its home (Motion view, design 3.4).
         float roamUnitW, roamUnitH;
-        if (req.hasCanvasRect) {
-            // Landing: the request names its own home rect for this frame, so
-            // the slot, the grid size and the gap are not consulted. The rect
-            // already IS the drawn (post-gap) rect; at the end of the move it
-            // is bitwise what the grid branch below computes for the slot.
-            rx = req.canvasRect[0];  ry = req.canvasRect[1];
-            rw = req.canvasRect[2];  rh = req.canvasRect[3];
-            roamUnitW = (req.canvasRoamUnit[0] > 0.0f) ? req.canvasRoamUnit[0] : rw;
-            roamUnitH = (req.canvasRoamUnit[1] > 0.0f) ? req.canvasRoamUnit[1] : rh;
-        } else if (isGrid) {
-            float unitX, unitY;
-            xleth::slotCellRect(req.cellCol, req.cellRow, req.spanX, req.spanY,
-                                gridCols, gridRows, unitX, unitY, roamUnitW, roamUnitH);
-            // Placement, then the gap: shrink the rect symmetrically, creating
-            // inter-cell padding. GRID-ONLY, deliberately: a gap is the space
-            // BETWEEN cells, and a fullscreen layer has no neighbours to be
-            // spaced from — inset-ing it would just letterbox the backdrop for
-            // no reason.
-            xleth::slotCanvasRect(req.cellCol, req.cellRow, req.spanX, req.spanY,
-                                  gridCols, gridRows,
-                                  xleth::effectiveSlotGap(gapScale, req.gapScaleOverride),
-                                  rx, ry, rw, rh);
-        } else {
-            rx = 0.0f; ry = 0.0f; rw = 1.0f; rh = 1.0f;
-            roamUnitW = rw;
-            roamUnitH = rh;
-        }
+        placementHome(req.hasCanvasRect, req.canvasRect, req.canvasRoamUnit, isGrid,
+                      req.cellCol, req.cellRow, req.spanX, req.spanY,
+                      gridCols, gridRows, gapScale, req.gapScaleOverride,
+                      rx, ry, rw, rh, roamUnitW, roamUnitH);
 
         // The Lens framing box keeps THIS rect's aspect (the cell as laid out,
         // before the per-note bounce squashes it; a squash then squashes the
@@ -901,6 +1102,76 @@ void GridCompositor::compositeRequests(const std::vector<CellFrameRequest>& requ
             rx = q.x; ry = q.y; rw = q.w; rh = q.h;
             ++roamCells;
         }
+        // The frame-time Roam pose, canvas-UV: what Roam motion blur's
+        // sub-frame poses are measured against (before any outline pad).
+        const lensroam::UvRect roamHomeCanvas = roamHome;
+
+        // ── Parent (Motion view R7): carry the Roamed cell ──────────────────
+        // The ancestors' Roams, composed nearest first into one similarity in
+        // OUTPUT pixels about each ancestor's home centre, applied to the
+        // child's Roamed pose (centre, size, rotation). Here, before any
+        // content stage sizes its target from rw/rh, so effects, masks,
+        // outline, echo and shadow follow the carried cell. An unparented
+        // request (depth 0), or a chain that is exactly the identity, takes
+        // none of this: today's path, bit for bit.
+        // R9: under Bounds Clip the cell clips to its home AS CARRIED (only
+        // when its own Roam moves it, as today). A chain with no net rotation
+        // keeps the home axis-aligned: the existing scissor, on the carried
+        // home. A rotating chain cannot be a scissor: the carried home goes to
+        // the Mask pass as a hard clip quad instead.
+        // A chain that MOVES inside the shutter (project motion blur on, any
+        // placed ancestor's Roam changing) also sends the clip to the Mask
+        // pass, rotating or not: the frame-time scissor would stay put while
+        // the motion-blur taps carry the cell (and with it its home) along the
+        // parent's path, cutting the trail off at a hard edge. Baked into the
+        // cell texture, the home clip rides every tap instead ("sampled over
+        // the full cell transform above, parent included"). Remaining
+        // approximations, accepted for v1:
+        //  - The quad is the home at the FRAME-TIME own Roam pose. Taps that
+        //    move the cell by the child's OWN Roam (own motion inside the
+        //    shutter, alone or with a moving parent) carry the baked clip with
+        //    them, so the clip edge smears by the own motion too, where an
+        //    exact clip would hold still against it. Exact needs a per-tap
+        //    home clip in GridComposite.hlsl (left untouched by design, R9).
+        //  - The baked clip is anti-aliased over 1 px in cell texels, not a
+        //    pixel-snapped scissor edge.
+        //  - An Outline strokes the clipped silhouette (the home edge too),
+        //    where the scissor path clips the stroke to the home grown by the
+        //    stroke width.
+        // When the Mask pass cannot run (FX_Mask missing, or no target for
+        // the cell size) the clip falls back to a scissor on the frame-time
+        // carried home's bounding box below: looser, never unclipped.
+        const OutputMap outMap{ canvasFitX_, canvasFitY_, canvasFitW_, canvasFitH_,
+                                static_cast<double>(width_), static_cast<double>(height_) };
+        parentmath::Home parentHome[motionschema::kMaxParentDepth];
+        bool parentCarries     = false;   // the frame-time chain is not the identity
+        bool clipHomeInMask    = false;   // R9 clip in the Mask pass (rotating or moving chain)
+        lensroam::UvRect carriedHome{};   // R9: the home as carried (canvas-UV)
+        float carriedHomeRot = 0.0f;
+        if (req.parent.depth > 0) {
+            parentHomes(req.parent, outMap, parentHome);
+            const parentmath::Similarity S = parentChainAt(req.parent, parentHome, -1);
+            // Blur taps only exist when effects are not bypassed (see Roam
+            // motion blur below); bypassed, the frame-time scissor is exact.
+            const bool parentMovesInShutter = req.parent.motionCount > 0 && !effectsBypass_;
+            if (!S.isIdentity()) {
+                parentCarries = true;
+                lensroam::UvRect cell{ rx, ry, rw, rh };
+                carryRect(S, outMap, cell, roamRotRad);
+                rx = cell.x; ry = cell.y; rw = cell.w; rh = cell.h;
+                ++roamCells;
+            }
+            if (lensroam::roamClipsToHome(req.roam)
+                && (!S.isIdentity() || parentMovesInShutter)) {
+                carriedHome = roamHome;
+                if (!S.isIdentity()) carryRect(S, outMap, carriedHome, carriedHomeRot);
+                if (S.rotDeg == 0.0 && !parentMovesInShutter)
+                    roamHome = carriedHome;                     // static, axis-aligned: the scissor
+                else
+                    clipHomeInMask = true;                      // turned or travelling: the Mask pass
+            }
+        }
+        const lensroam::UvRect roamRectCanvas{ rx, ry, rw, rh };
 
         if (kRenderLog) {
             if (isGrid) {
@@ -927,9 +1198,14 @@ void GridCompositor::compositeRequests(const std::vector<CellFrameRequest>& requ
         // order and reads its output. Not subject to effectsBypass_: framing is
         // not an effect. Skipped entirely (today's bit-exact path) when the
         // Lens moves no pixels: fit Stretch, centred, zoom 1, no rotation.
-        const bool lensFrames = lensroam::lensNeedsFraming(req.lens);
+        // Motion blur (render/MotionBlur.h): a Lens that moves inside the
+        // shutter frames even when its frame-time pose is identity, and is
+        // skipped like every other decoration in fast-preview bypass.
+        const bool lensMoving = req.lensMotionCount > 0 && !effectsBypass_;
+        const bool lensFrames = lensroam::lensNeedsFraming(req.lens) || lensMoving;
         float lensRow0[4] = { 1.0f, 0.0f, 0.0f, 0.0f };
         float lensRow1[4] = { 0.0f, 1.0f, 0.0f, 0.0f };
+        MotionConstants lensMotion;   // taps = 0: no blur
         if (lensFrames) {
             float srcW = 0.0f, srcH = 0.0f;
             lensroam::fitSourceSize(req.sourcePixelW, req.sourcePixelH,
@@ -939,13 +1215,68 @@ void GridCompositor::compositeRequests(const std::vector<CellFrameRequest>& requ
             lensRow0[0] = map.m00; lensRow0[1] = map.m01; lensRow0[2] = map.tx;
             lensRow1[0] = map.m10; lensRow1[1] = map.m11; lensRow1[2] = map.ty;
 
+            if (lensMoving) {
+                // Travel is measured in the cell as it lands on screen (Roam
+                // scale included), back in the frame-time framing: a source
+                // point shown at local p by tap i sits at map^-1(map_i(p)).
+                motionblur::Affine dense[motionblur::kDenseSamples];
+                const int n = std::min(req.lensMotionCount, motionblur::kDenseSamples);
+                for (int i = 0; i < n; ++i)
+                    dense[i] = motionblur::fromLensMap(lensroam::computeLensUvMap(
+                        req.lensMotion[i], lensFrameW, lensFrameH, srcW, srcH));
+                const motionblur::Affine toCenter =
+                    motionblur::invert(motionblur::fromLensMap(map));
+                const double travel = motionblur::pathLengthPx(
+                    dense, n, toCenter, motionblur::unitProbes(), motionblur::kUnitProbeCount,
+                    static_cast<double>(rw) * canvasFitW_ * width_,
+                    static_cast<double>(rh) * canvasFitH_ * height_);
+                lensMotion.taps = motionblur::tapsForPathPx(travel);
+                for (int t = 0; t < lensMotion.taps; ++t) {
+                    const motionblur::Affine a = motionblur::resampleAffine(dense, n, t, lensMotion.taps);
+                    lensMotion.row0[t][0] = static_cast<float>(a.m00);
+                    lensMotion.row0[t][1] = static_cast<float>(a.m01);
+                    lensMotion.row0[t][2] = static_cast<float>(a.tx);
+                    lensMotion.row1[t][0] = static_cast<float>(a.m10);
+                    lensMotion.row1[t][1] = static_cast<float>(a.m11);
+                    lensMotion.row1[t][2] = static_cast<float>(a.ty);
+                }
+                if (lensMotion.taps > 1) ++motionBlurCells;
+            }
+
             const int lensW = std::max(1, static_cast<int>(rw * width_));
             const int lensH = std::max(1, static_cast<int>(rh * height_));
             ID3D11ShaderResourceView* framed =
-                applyLensPass(cellSRV, lensW, lensH, lensRow0, lensRow1);
+                applyLensPass(cellSRV, lensW, lensH, lensRow0, lensRow1, &lensMotion);
             if (framed != cellSRV) {
                 cellSRV = framed;
                 ++lensPasses;
+            }
+            restoreMainPipelineState(activeRTV);
+            deviceCtx_->OMSetBlendState(blendState_.Get(), blendFactor, 0xFFFFFFFF);
+        }
+
+        // ── Color Grade: Source -> Clip -> Layer ────────────────────────────
+        // After Lens (so it costs the cell, not the source, and the grade
+        // sees the framed picture) and BEFORE the visual effect chain (so the
+        // keyer, tint and TV effects work on corrected footage). All three
+        // levels in one pass. Not subject to effectsBypass_: a grade is the
+        // footage's look, not a decoration; dropping it in fast preview would
+        // show a different picture, not a plainer one. A request with no
+        // grade at any level skips this entirely and renders bit-identically
+        // to before the feature.
+        const xleth::grade::BakedGrade* gradeLevels[3] = { nullptr, nullptr, nullptr };
+        int gradeCount = 0;
+        if (req.gradeSource) gradeLevels[gradeCount++] = req.gradeSource.get();
+        if (req.gradeClip)   gradeLevels[gradeCount++] = req.gradeClip.get();
+        if (req.gradeLayer)  gradeLevels[gradeCount++] = req.gradeLayer.get();
+        if (gradeCount > 0 && gradePS_) {
+            const int gradeW = std::max(1, static_cast<int>(rw * width_));
+            const int gradeH = std::max(1, static_cast<int>(rh * height_));
+            ID3D11ShaderResourceView* graded = applyGradePass(
+                cellSRV, gradeW, gradeH, gradeLevels, gradeCount, kGradeRtSlot);
+            if (graded != cellSRV) {
+                cellSRV = graded;
+                ++lastGradePasses_;
             }
             restoreMainPipelineState(activeRTV);
             deviceCtx_->OMSetBlendState(blendState_.Get(), blendFactor, 0xFFFFFFFF);
@@ -1034,6 +1365,24 @@ void GridCompositor::compositeRequests(const std::vector<CellFrameRequest>& requ
             if (entry2 && entry2->srv) {
                 int ppW = std::max(1, static_cast<int>(rw * width_));
                 int ppH = std::max(1, static_cast<int>(rh * height_));
+
+                // The secondary frame is raw source pixels: it gets the same
+                // grades as the primary, or the crossfade would blend an
+                // ungraded picture in. Graded at the source's own size when a
+                // Lens will frame it below (the framing samples it), at the
+                // cell's size otherwise.
+                ID3D11ShaderResourceView* secondarySRV = entry2->srv.Get();
+                if (gradeCount > 0 && gradePS_) {
+                    const int sW = lensFrames ? std::max(1, entry2->width)  : ppW;
+                    const int sH = lensFrames ? std::max(1, entry2->height) : ppH;
+                    ID3D11ShaderResourceView* gradedSecondary = applyGradePass(
+                        secondarySRV, sW, sH, gradeLevels, gradeCount, kGradeSecondaryRtSlot);
+                    if (gradedSecondary != secondarySRV) {
+                        secondarySRV = gradedSecondary;
+                        ++lastGradePasses_;
+                    }
+                    deviceCtx_->OMSetBlendState(blendState_.Get(), blendFactor, 0xFFFFFFFF);
+                }
                 RTPool::RTPair& ppRTP = rtPool_.acquire(device_, ppW, ppH, /*rtSlot=*/2);
                 if (ppRTP.rtvA && ppRTP.srvA) {
                     const float clear[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -1097,12 +1446,15 @@ void GridCompositor::compositeRequests(const std::vector<CellFrameRequest>& requ
                                 cb.xformFlags = kXformLens;
                                 std::memcpy(cb.lensRow0, lensRow0, sizeof(lensRow0));
                                 std::memcpy(cb.lensRow1, lensRow1, sizeof(lensRow1));
+                                // ...and with the same motion blur taps.
+                                if (lensMotion.taps > 1) cb.xformFlags |= kXformMotionLens;
                             }
                             std::memcpy(mapped.pData, &cb, sizeof(cb));
                             deviceCtx_->Unmap(constantBuffer_.Get(), 0);
+                            if (lensFrames && lensMotion.taps > 1) bindMotionConstants(lensMotion);
                         }
                     }
-                    drawEffectPass(entry2->srv.Get());
+                    drawEffectPass(secondarySRV);
 
                     // Unbind RT before reading as SRV
                     ID3D11RenderTargetView* nullRTV2 = nullptr;
@@ -1138,6 +1490,51 @@ void GridCompositor::compositeRequests(const std::vector<CellFrameRequest>& requ
             }
         }
 
+        // ── Masks (Motion view R11-R13) ──────────────────────────────────────
+        // A content stage: right after the companion FX, before the echo push
+        // and the Outline, so the stroke traces the masked silhouette, the
+        // shadow is cast by it, the trail carries masked frames, and the final
+        // draw's rotation / Roam / Parent / motion blur / scissor all apply to
+        // the masked picture. Coverage is evaluated at the inverse of the
+        // final draw's orientation, so the mask does not flip with the
+        // content. Exempt from effectsBypass_ (like Chroma Key: it decides
+        // which pixels exist). Also carries the R9 clip quad of a parented
+        // Bounds Clip cell whose chain rotates. A request with no mask and no
+        // such clip skips this entirely.
+        bool clipHomeApplied = false;   // the R9 clip quad reached the texture
+        bool cropRounded     = false;   // the crop rectangle took the cell's corner rounding
+        if ((req.masks.count > 0 || clipHomeInMask) && maskPS_ && maskCB_) {
+            const int maskW = std::max(1, static_cast<int>(rw * width_));
+            const int maskH = std::max(1, static_cast<int>(rh * height_));
+            const MaskClipQuad clip = clipHomeInMask
+                ? carriedHomeQuad(carriedHome, carriedHomeRot,
+                                  lensroam::UvRect{ rx, ry, rw, rh }, roamRotRad, outMap)
+                : MaskClipQuad{};
+            ID3D11ShaderResourceView* masked = applyMaskPass(
+                cellSRV, maskW, maskH, req.masks, clip,
+                static_cast<float>(static_cast<double>(rw) * canvasFitW_ * width_),
+                static_cast<float>(static_cast<double>(rh) * canvasFitH_ * height_),
+                lensroam::effectiveOrientation(req.lens.flip, req.orientation),
+                req.cornerRadius);
+            if (masked != cellSRV) {
+                cellSRV = masked;
+                ++lastMaskPasses_;
+                clipHomeApplied = clipHomeInMask;
+                cropRounded = req.masks.cropSlot >= 0 && req.cornerRadius > 0.0f;
+            }
+            restoreMainPipelineState(activeRTV);
+            deviceCtx_->OMSetBlendState(blendState_.Get(), blendFactor, 0xFFFFFFFF);
+        }
+        // R9: the Mask pass that should have clipped to the carried home did
+        // not run (FX_Mask unavailable, or no render target for this cell
+        // size). Never leave the cell unclipped over its neighbours: scissor
+        // to the frame-time carried home's bounding box instead (exact for an
+        // axis-aligned chain; looser than the turned quad for a rotating one).
+        if (clipHomeInMask && !clipHomeApplied) {
+            roamHome = carriedHomeBounds(carriedHome, carriedHomeRot, outMap);
+            clipHomeInMask = false;
+        }
+
         // ── Visual Echo: record this cell's finished pixels ─────────────────
         //
         // Positioned here on purpose: after the chain / ZPR / ping-pong /
@@ -1171,7 +1568,10 @@ void GridCompositor::compositeRequests(const std::vector<CellFrameRequest>& requ
         // output-UV whether or not a stroke already grew the rect.
         int   contentPxW    = std::max(1, static_cast<int>(rw * width_));
         int   contentPxH    = std::max(1, static_cast<int>(rh * height_));
-        float cellCornerRad = req.cornerRadius;
+        // A cropped cell with rounded corners: the mask pass rounded the crop rectangle
+        // (so the rounding sits on the cropped edges); the draw must not round the
+        // full cell again.
+        float cellCornerRad = cropRounded ? 0.0f : req.cornerRadius;
 
         if (!effectsBypass_) {
             int outlinePad = 0;
@@ -1220,7 +1620,10 @@ void GridCompositor::compositeRequests(const std::vector<CellFrameRequest>& requ
         CellDrawXform xf;
         xf.orientation = lensroam::effectiveOrientation(req.lens.flip, req.orientation);
         xf.rotationRad = roamRotRad;
-        if (lensroam::roamClipsToHome(req.roam)) {
+        // (A parented cell under a rotating chain, or one whose chain moves
+        // inside the shutter, was clipped by the Mask pass instead: no single
+        // axis-aligned scissor can express that home, R9.)
+        if (lensroam::roamClipsToHome(req.roam) && !clipHomeInMask) {
             const lensroam::UvRect homeOut{ canvasFitX_ + roamHome.x * canvasFitW_,
                                             canvasFitY_ + roamHome.y * canvasFitH_,
                                             roamHome.w * canvasFitW_,
@@ -1231,6 +1634,66 @@ void GridCompositor::compositeRequests(const std::vector<CellFrameRequest>& requ
             xf.scissorRect.top    = static_cast<LONG>(pr.top);
             xf.scissorRect.right  = static_cast<LONG>(pr.right);
             xf.scissorRect.bottom = static_cast<LONG>(pr.bottom);
+        }
+
+        // ── Roam motion blur ────────────────────────────────────────────────
+        // Each dense sub-frame Roam pose becomes a screen-space map back to the
+        // frame-time pose; the final draws average the picture over them. The
+        // scissor stays the home rect: Bounds Clip clips the whole smear.
+        // Parent (Motion view): every sub pose is the child's Roam at that
+        // instant carried by the chain at that instant, so a still child of a
+        // moving parent blurs with it (the collector samples it then too).
+        // Its home moves with the chain, so a Bounds Clip child of a moving
+        // parent was clipped in the Mask pass (R9 above), not by the scissor.
+        MotionConstants roamMotion;   // taps = 0: no blur
+        if ((req.roamMotionCount > 0 || req.parent.motionCount > 0) && !effectsBypass_) {
+            auto toOut = [&](const lensroam::UvRect& r) {
+                return lensroam::UvRect{ canvasFitX_ + r.x * canvasFitW_,
+                                         canvasFitY_ + r.y * canvasFitH_,
+                                         r.w * canvasFitW_, r.h * canvasFitH_ };
+            };
+            const lensroam::UvRect centerOut = toOut(roamRectCanvas);
+            motionblur::Affine dense[motionblur::kDenseSamples];
+            const int n = req.roamMotionCount > 0
+                ? std::min(req.roamMotionCount, motionblur::kDenseSamples)
+                : motionblur::kDenseSamples;
+            for (int i = 0; i < n; ++i) {
+                float subRot = 0.0f;
+                lensroam::UvRect sub = lensroam::roamCellRect(
+                    req.roamMotionCount > 0 ? req.roamMotion[i] : req.roam,
+                    roamHomeCanvas, roamUnitW, roamUnitH, subRot);
+                if (req.parent.depth > 0) {
+                    const parentmath::Similarity Si = parentChainAt(req.parent, parentHome, i);
+                    if (!Si.isIdentity()) carryRect(Si, outMap, sub, subRot);
+                }
+                dense[i] = motionblur::roamScreenDelta(centerOut, roamRotRad, toOut(sub), subRot,
+                                                       width_, height_);
+            }
+            // Probe the frame-time rect's corners and centre, in output pixels.
+            const double probes[5][2] = {
+                { centerOut.x,                   centerOut.y },
+                { centerOut.x + centerOut.w,     centerOut.y },
+                { centerOut.x,                   centerOut.y + centerOut.h },
+                { centerOut.x + centerOut.w,     centerOut.y + centerOut.h },
+                { centerOut.x + centerOut.w * 0.5, centerOut.y + centerOut.h * 0.5 },
+            };
+            const double travel = motionblur::pathLengthPx(
+                dense, n, motionblur::Affine{}, probes, 5,
+                static_cast<double>(width_), static_cast<double>(height_));
+            roamMotion.taps = motionblur::tapsForPathPx(travel);
+            for (int t = 0; t < roamMotion.taps; ++t) {
+                const motionblur::Affine a = motionblur::resampleAffine(dense, n, t, roamMotion.taps);
+                roamMotion.row0[t][0] = static_cast<float>(a.m00);
+                roamMotion.row0[t][1] = static_cast<float>(a.m01);
+                roamMotion.row0[t][2] = static_cast<float>(a.tx);
+                roamMotion.row1[t][0] = static_cast<float>(a.m10);
+                roamMotion.row1[t][1] = static_cast<float>(a.m11);
+                roamMotion.row1[t][2] = static_cast<float>(a.ty);
+            }
+            if (roamMotion.taps > 1) {
+                xf.motion = &roamMotion;
+                ++motionBlurCells;
+            }
         }
 
         // ── Visual Echo: draw the trail ─────────────────────────────────────
@@ -1321,13 +1784,13 @@ void GridCompositor::compositeRequests(const std::vector<CellFrameRequest>& requ
         }
         std::fprintf(stderr,
             "[Roam] frame %lld composite cpu=%.3fms gpu=%.3fms (frame %lld) "
-            "requests=%d lensPasses=%d roamCells=%d\n",
+            "requests=%d lensPasses=%d roamCells=%d motionBlur=%d\n",
             static_cast<long long>(roamFrameCounter_), ms, gpuMs, gpuFrame,
-            static_cast<int>(requests.size()), lensPasses, roamCells);
+            static_cast<int>(requests.size()), lensPasses, roamCells, motionBlurCells);
         ++roamFrameCounter_;
     }
 #endif
-    (void)lensPasses; (void)roamCells;
+    (void)lensPasses; (void)roamCells; (void)motionBlurCells;
 }
 
 RTPool::RTPair& GridCompositor::acquireTransitionTargets()
@@ -1450,8 +1913,15 @@ void GridCompositor::drawCell(ID3D11ShaderResourceView* srv,
         cb.roamRow1[0] = inv.r10; cb.roamRow1[1] = inv.r11; cb.roamRow1[2] = inv.r12;
     }
 
+    // Roam motion blur: each tap first maps the pixel back to the frame-time
+    // pose, then runs the mapping above. Same taps for every draw of the
+    // request, so a shadow or echo tap moves with its cell.
+    const bool motion = xf && xf->motion && xf->motion->taps > 1;
+    if (motion) cb.xformFlags |= kXformMotionScreen;
+
     std::memcpy(mapped.pData, &cb, sizeof(cb));
     deviceCtx_->Unmap(constantBuffer_.Get(), 0);
+    if (motion) bindMotionConstants(*xf->motion);
 
     // Bind texture
     deviceCtx_->PSSetShaderResources(0, 1, &srv);
@@ -1471,10 +1941,22 @@ void GridCompositor::drawCell(ID3D11ShaderResourceView* srv,
 // Lens framing pass
 // ===========================================================================
 
+void GridCompositor::bindMotionConstants(const MotionConstants& m)
+{
+    if (!motionConstantBuffer_) return;
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(deviceCtx_->Map(motionConstantBuffer_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+        return;
+    std::memcpy(mapped.pData, &m, sizeof(m));
+    deviceCtx_->Unmap(motionConstantBuffer_.Get(), 0);
+    deviceCtx_->PSSetConstantBuffers(3, 1, motionConstantBuffer_.GetAddressOf());
+}
+
 ID3D11ShaderResourceView* GridCompositor::applyLensPass(ID3D11ShaderResourceView* srcSRV,
                                                         int dstW, int dstH,
                                                         const float lensRow0[4],
-                                                        const float lensRow1[4])
+                                                        const float lensRow1[4],
+                                                        const MotionConstants* motion)
 {
     if (!initialized_ || !srcSRV || dstW <= 0 || dstH <= 0) return srcSRV;
 
@@ -1511,8 +1993,13 @@ ID3D11ShaderResourceView* GridCompositor::applyLensPass(ID3D11ShaderResourceView
     cb.xformFlags   = kXformLens;
     std::memcpy(cb.lensRow0, lensRow0, sizeof(cb.lensRow0));
     std::memcpy(cb.lensRow1, lensRow1, sizeof(cb.lensRow1));
+    // Lens motion blur: average the source framed at each tap's map, read
+    // straight from the source so a fast zoom-out never runs out of picture.
+    const bool blur = motion && motion->taps > 1;
+    if (blur) cb.xformFlags |= kXformMotionLens;
     std::memcpy(mapped.pData, &cb, sizeof(cb));
     deviceCtx_->Unmap(constantBuffer_.Get(), 0);
+    if (blur) bindMotionConstants(*motion);
 
     // Straight overwrite, so the source's alpha and the transparent
     // background land verbatim; the cell's own SRC_ALPHA composite stays the
@@ -1526,6 +2013,444 @@ ID3D11ShaderResourceView* GridCompositor::applyLensPass(ID3D11ShaderResourceView
     ID3D11ShaderResourceView* nullSRV = nullptr;
     deviceCtx_->PSSetShaderResources(0, 1, &nullSRV);
     return rtp.srvA.Get();
+}
+
+// ===========================================================================
+// Masks (Motion view, docs/XLETH_MOTION_VIEW_DESIGN.md R11-R13, 3.4)
+// ===========================================================================
+
+bool GridCompositor::createMaskResources()
+{
+    HRESULT hr = device_->CreatePixelShader(g_FX_MaskPS, sizeof(g_FX_MaskPS), nullptr, &maskPS_);
+    if (FAILED(hr)) {
+        std::fprintf(stderr, "[Mask] Failed to create pixel shader, HR=0x%08X\n",
+                     static_cast<unsigned int>(hr));
+        maskPS_.Reset();
+        return false;
+    }
+    D3D11_BUFFER_DESC desc = {};
+    desc.Usage          = D3D11_USAGE_DYNAMIC;
+    desc.ByteWidth      = static_cast<UINT>(sizeof(MaskConstants));
+    desc.BindFlags      = D3D11_BIND_CONSTANT_BUFFER;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    hr = device_->CreateBuffer(&desc, nullptr, &maskCB_);
+    if (FAILED(hr)) {
+        std::fprintf(stderr, "[Mask] Failed to create constant buffer, HR=0x%08X\n",
+                     static_cast<unsigned int>(hr));
+        maskPS_.Reset();
+        maskCB_.Reset();
+        return false;
+    }
+    if (!maskConstants_) maskConstants_ = std::make_unique<MaskConstants>();
+    return true;
+}
+
+ID3D11ShaderResourceView* GridCompositor::applyMaskPass(ID3D11ShaderResourceView* srcSRV,
+                                                        int dstW, int dstH,
+                                                        const MaskFrame& masks,
+                                                        const MaskClipQuad& clip,
+                                                        float cellPxW, float cellPxH,
+                                                        int orientation,
+                                                        float cornerRadius)
+{
+    if (!initialized_ || !srcSRV || dstW <= 0 || dstH <= 0 || !maskPS_ || !maskCB_
+        || !maskConstants_) return srcSRV;
+    if (!(cellPxW > 0.0f) || !(cellPxH > 0.0f)) return srcSRV;
+
+    // The geometry, in the drawn cell's pixels about its centre: every path
+    // flattened into the fixed point array (render/MaskMath.h). Filled in
+    // place in a block created at init, never allocated here.
+    MaskConstants& mc = *maskConstants_;
+    mc.maskCount   = 0;
+    mc.orientation = orientation;
+    mc.clipFirst   = -1;
+    mc.pad0        = 0;
+    mc.cellPx[0]   = cellPxW;
+    mc.cellPx[1]   = cellPxH;
+    mc.aaPx        = 1.0f;
+    mc.pad1        = 0.0f;
+    maskmath::Point pts[maskmath::kMaskMaxPoints];
+    int total = 0;
+    const float minSide = std::min(cellPxW, cellPxH);
+    const int count = std::min(static_cast<int>(masks.count), kMaskFrameMasks);
+    for (int m = 0; m < count; ++m) {
+        const MaskFrameEntry& e = masks.masks[static_cast<size_t>(m)];
+        const int first = e.firstVertex;
+        const int vc    = e.vertexCount;
+        int written = 0;
+        if (m == masks.cropSlot && cornerRadius > 0.0f && vc == kCropMaskVertices
+            && first >= 0 && first + vc <= kMaskFrameVertices) {
+            // The crop rectangle carries the cell's corner rounding (the final draw's
+            // own rounding is dropped in that case), radius as the shader derives it.
+            const MaskVertexF* v = masks.verts.data() + first;
+            written = maskmath::roundedRectPoints(v[0].x * cellPxW, v[0].y * cellPxH,
+                                                  v[2].x * cellPxW, v[2].y * cellPxH,
+                                                  cornerRadius * minSide,
+                                                  pts + total, maskmath::kMaskMaxPathPoints - total);
+        } else if (first >= 0 && vc >= 3 && first + vc <= kMaskFrameVertices) {
+            written = maskmath::flattenPath(masks.verts.data() + first, vc, cellPxW, cellPxH,
+                                            pts + total, maskmath::kMaskMaxPathPoints - total);
+        }
+        const int slot = mc.maskCount++;
+        mc.info[slot][0]   = total;
+        mc.info[slot][1]   = written;
+        mc.info[slot][2]   = static_cast<int>(e.mode);
+        mc.info[slot][3]   = e.invert ? 1 : 0;
+        // R11: feather and expansion in units of the drawn cell's SHORTER side.
+        mc.params[slot][0] = e.feather   * minSide;
+        mc.params[slot][1] = e.expansion * minSide;
+        mc.params[slot][2] = e.opacity;
+        mc.params[slot][3] = 0.0f;
+        total += written;
+    }
+    if (clip.active) {
+        mc.clipFirst = total;
+        for (int i = 0; i < 4; ++i)
+            pts[total++] = maskmath::Point{ clip.pts[i][0], clip.pts[i][1] };
+    }
+    if (mc.maskCount == 0 && mc.clipFirst < 0) return srcSRV;
+    for (int i = 0; i < total; i += 2) {
+        float* row = mc.points[i / 2];
+        row[0] = pts[i].x;
+        row[1] = pts[i].y;
+        row[2] = (i + 1 < total) ? pts[i + 1].x : 0.0f;
+        row[3] = (i + 1 < total) ? pts[i + 1].y : 0.0f;
+    }
+
+    RTPool::RTPair& rtp = rtPool_.acquire(device_, dstW, dstH, kMaskRtSlot);
+    if (!rtp.rtvA || !rtp.srvA) return srcSRV;
+
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(deviceCtx_->Map(maskCB_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+        return srcSRV;
+    // Only the rows in use need to reach the GPU; the shader never reads past
+    // them. The header and per-mask tables go whole.
+    const size_t header = offsetof(MaskConstants, points);
+    const size_t rows   = static_cast<size_t>((total + 1) / 2);
+    std::memcpy(mapped.pData, &mc, header + rows * sizeof(mc.points[0]));
+    deviceCtx_->Unmap(maskCB_.Get(), 0);
+
+    D3D11_VIEWPORT vp{};
+    vp.Width    = static_cast<float>(dstW);
+    vp.Height   = static_cast<float>(dstH);
+    vp.MinDepth = 0.0f;
+    vp.MaxDepth = 1.0f;
+    deviceCtx_->RSSetViewports(1, &vp);
+    deviceCtx_->OMSetRenderTargets(1, rtp.rtvA.GetAddressOf(), nullptr);
+    deviceCtx_->PSSetShader(maskPS_.Get(), nullptr, 0);
+    deviceCtx_->PSSetConstantBuffers(2, 1, maskCB_.GetAddressOf());
+    deviceCtx_->PSSetSamplers(0, 1, samplerState_.GetAddressOf());
+
+    // Straight overwrite, the chain's alpha convention (see processEffectChain):
+    // every texel of the target, alpha included, is written verbatim.
+    const float bf[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    deviceCtx_->OMSetBlendState(opaqueBlendState_.Get(), bf, 0xFFFFFFFF);
+    drawEffectPass(srcSRV);
+
+    ID3D11RenderTargetView* nullRTV = nullptr;
+    deviceCtx_->OMSetRenderTargets(1, &nullRTV, nullptr);
+    ID3D11ShaderResourceView* nullSRV = nullptr;
+    deviceCtx_->PSSetShaderResources(0, 1, &nullSRV);
+    return rtp.srvA.Get();
+}
+
+// ===========================================================================
+// Color Grade
+// ===========================================================================
+
+bool GridCompositor::createGradeResources()
+{
+    HRESULT hr = device_->CreatePixelShader(g_FX_ColorGradePS, sizeof(g_FX_ColorGradePS),
+                                            nullptr, &gradePS_);
+    if (FAILED(hr)) {
+        std::fprintf(stderr, "[ColorGrade] Failed to create pixel shader, HR=0x%08X\n",
+                     static_cast<unsigned int>(hr));
+        gradePS_.Reset();
+        return false;
+    }
+    D3D11_BUFFER_DESC desc = {};
+    desc.Usage          = D3D11_USAGE_DYNAMIC;
+    desc.ByteWidth      = static_cast<UINT>(sizeof(GradeConstants));
+    desc.BindFlags      = D3D11_BIND_CONSTANT_BUFFER;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    hr = device_->CreateBuffer(&desc, nullptr, &gradeCB_);
+    if (FAILED(hr)) {
+        std::fprintf(stderr, "[ColorGrade] Failed to create constant buffer, HR=0x%08X\n",
+                     static_cast<unsigned int>(hr));
+        gradePS_.Reset();
+        gradeCB_.Reset();
+        return false;
+    }
+    return true;
+}
+
+ID3D11ShaderResourceView* GradeGpuCache::transferFor(ID3D11Device* device,
+                                                     const xleth::grade::BakedGrade& g)
+{
+    auto it = transfers.find(g.serial);
+    if (it != transfers.end()) {
+        it->second.lastPass = pass;
+        return it->second.srv.Get();
+    }
+    const size_t expected = static_cast<size_t>(xleth::grade::kTransferLutSize) * 4;
+    if (!device || g.transfer.size() != expected) return nullptr;
+
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width            = static_cast<UINT>(xleth::grade::kTransferLutSize);
+    desc.Height           = 1;
+    desc.MipLevels        = 1;
+    desc.ArraySize        = 1;
+    desc.Format           = DXGI_FORMAT_R16G16B16A16_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage            = D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags        = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA init = {};
+    init.pSysMem     = g.transfer.data();
+    init.SysMemPitch = static_cast<UINT>(expected * sizeof(uint16_t));
+
+    Transfer t;
+    if (FAILED(device->CreateTexture2D(&desc, &init, &t.tex))) return nullptr;
+    if (FAILED(device->CreateShaderResourceView(t.tex.Get(), nullptr, &t.srv))) return nullptr;
+    t.lastPass = pass;
+    ID3D11ShaderResourceView* out = t.srv.Get();
+    transfers.emplace(g.serial, std::move(t));
+    return out;
+}
+
+ID3D11ShaderResourceView* GradeGpuCache::lutFor(ID3D11Device* device,
+                                                const xleth::grade::Lut3D& lut)
+{
+    auto it = luts.find(lut.serial);
+    if (it != luts.end()) {
+        it->second.lastPass = pass;
+        return it->second.srv.Get();
+    }
+    const int n = lut.size;
+    const size_t texels = static_cast<size_t>(n) * n * n;
+    if (!device || n < 2 || lut.rgb.size() != texels * 3) return nullptr;
+
+    // RGBA16 UNORM: filterable on every feature level this app runs on, and
+    // finer than the 8-bit frame it colours. A LUT's entries are display
+    // colours, so the clamp to [0,1] loses nothing the output could show.
+    std::vector<uint16_t> data(texels * 4);
+    for (size_t i = 0; i < texels; ++i) {
+        for (int c = 0; c < 3; ++c) {
+            const float v = std::min(1.0f, std::max(0.0f, lut.rgb[i * 3 + c]));
+            data[i * 4 + c] = static_cast<uint16_t>(std::lround(v * 65535.0f));
+        }
+        data[i * 4 + 3] = 65535;
+    }
+
+    D3D11_TEXTURE3D_DESC desc = {};
+    desc.Width     = static_cast<UINT>(n);
+    desc.Height    = static_cast<UINT>(n);
+    desc.Depth     = static_cast<UINT>(n);
+    desc.MipLevels = 1;
+    desc.Format    = DXGI_FORMAT_R16G16B16A16_UNORM;
+    desc.Usage     = D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA init = {};
+    init.pSysMem          = data.data();
+    init.SysMemPitch      = static_cast<UINT>(n * 4 * sizeof(uint16_t));
+    init.SysMemSlicePitch = static_cast<UINT>(n * n * 4 * sizeof(uint16_t));
+
+    Lut l;
+    if (FAILED(device->CreateTexture3D(&desc, &init, &l.tex))) return nullptr;
+    if (FAILED(device->CreateShaderResourceView(l.tex.Get(), nullptr, &l.srv))) return nullptr;
+    l.lastPass = pass;
+    ID3D11ShaderResourceView* out = l.srv.Get();
+    luts.emplace(lut.serial, std::move(l));
+    return out;
+}
+
+void GradeGpuCache::beginPass()
+{
+    ++pass;
+    if (transfers.empty() && luts.empty()) return;
+    for (auto it = transfers.begin(); it != transfers.end(); ) {
+        if (pass - it->second.lastPass > kKeepPasses) it = transfers.erase(it);
+        else ++it;
+    }
+    for (auto it = luts.begin(); it != luts.end(); ) {
+        if (pass - it->second.lastPass > kKeepPasses) it = luts.erase(it);
+        else ++it;
+    }
+}
+
+void GradeGpuCache::clear()
+{
+    transfers.clear();
+    luts.clear();
+    pass = 0;
+}
+
+bool GridCompositor::bindGradeLevels(const xleth::grade::BakedGrade* const* levels,
+                                     int count, bool forceOpaque)
+{
+    if (!gradePS_ || !gradeCB_ || count < 1 || count > 3) return false;
+
+    GradeConstants cb;
+    cb.levelCount  = count;
+    cb.forceOpaque = forceOpaque ? 1 : 0;
+    ID3D11ShaderResourceView* textures[6] = { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
+
+    for (int i = 0; i < count; ++i) {
+        const xleth::grade::BakedGrade& g = *levels[i];
+        GradeLevelConstants& L = cb.levels[i];
+        // Matrix rows; identity when the grade has none (the shader skips it
+        // on the flag, the rows are filled so no field is ever garbage).
+        for (int r = 0; r < 3; ++r) {
+            float* row = r == 0 ? L.row0 : (r == 1 ? L.row1 : L.row2);
+            row[0] = g.matrix[r * 3 + 0];
+            row[1] = g.matrix[r * 3 + 1];
+            row[2] = g.matrix[r * 3 + 2];
+        }
+        L.row0[3] = g.vibrance;
+        L.flags[1] = g.hasMatrix ? 1.0f : 0.0f;
+
+        if (g.hasTransfer) {
+            ID3D11ShaderResourceView* t = gradeGpu_.transferFor(device_, g);
+            if (!t) return false;
+            textures[i] = t;
+            L.flags[0] = 1.0f;
+        }
+        if (g.lut3d && g.lutAmount > 0.0f) {
+            ID3D11ShaderResourceView* l = gradeGpu_.lutFor(device_, *g.lut3d);
+            if (!l) return false;
+            textures[3 + i] = l;
+            L.flags[2] = 1.0f;
+            L.row1[3]  = g.lutAmount;
+            L.row2[3]  = static_cast<float>(g.lut3d->size);
+            for (int c = 0; c < 3; ++c) {
+                L.lutMin[c]      = g.lut3d->domainMin[c];
+                L.lutInvRange[c] = 1.0f / (g.lut3d->domainMax[c] - g.lut3d->domainMin[c]);
+            }
+        }
+    }
+
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(deviceCtx_->Map(gradeCB_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+        return false;
+    std::memcpy(mapped.pData, &cb, sizeof(cb));
+    deviceCtx_->Unmap(gradeCB_.Get(), 0);
+
+    deviceCtx_->PSSetShader(gradePS_.Get(), nullptr, 0);
+    deviceCtx_->PSSetConstantBuffers(2, 1, gradeCB_.GetAddressOf());
+    deviceCtx_->PSSetSamplers(0, 1, samplerState_.GetAddressOf());
+    deviceCtx_->PSSetShaderResources(1, 6, textures);
+    return true;
+}
+
+void GridCompositor::unbindGradeTextures()
+{
+    ID3D11ShaderResourceView* none[7] = { nullptr, nullptr, nullptr, nullptr,
+                                          nullptr, nullptr, nullptr };
+    deviceCtx_->PSSetShaderResources(0, 7, none);
+}
+
+ID3D11ShaderResourceView* GridCompositor::applyGradePass(
+    ID3D11ShaderResourceView* srcSRV, int dstW, int dstH,
+    const xleth::grade::BakedGrade* const* levels, int count, int rtSlot)
+{
+    if (!initialized_ || !srcSRV || dstW <= 0 || dstH <= 0) return srcSRV;
+
+    RTPool::RTPair& rtp = rtPool_.acquire(device_, dstW, dstH, rtSlot);
+    if (!rtp.rtvA || !rtp.srvA) return srcSRV;
+
+    D3D11_VIEWPORT vp{};
+    vp.Width    = static_cast<float>(dstW);
+    vp.Height   = static_cast<float>(dstH);
+    vp.MinDepth = 0.0f;
+    vp.MaxDepth = 1.0f;
+    deviceCtx_->RSSetViewports(1, &vp);
+    deviceCtx_->OMSetRenderTargets(1, rtp.rtvA.GetAddressOf(), nullptr);
+
+    if (!bindGradeLevels(levels, count, /*forceOpaque=*/false)) {
+        ID3D11RenderTargetView* nullRTV = nullptr;
+        deviceCtx_->OMSetRenderTargets(1, &nullRTV, nullptr);
+        unbindGradeTextures();
+        return srcSRV;
+    }
+
+    // Straight overwrite, the chain's alpha convention (see processEffectChain):
+    // the pass writes every texel of its target, alpha included, verbatim.
+    const float bf[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    deviceCtx_->OMSetBlendState(opaqueBlendState_.Get(), bf, 0xFFFFFFFF);
+    drawEffectPass(srcSRV);
+
+    ID3D11RenderTargetView* nullRTV = nullptr;
+    deviceCtx_->OMSetRenderTargets(1, &nullRTV, nullptr);
+    unbindGradeTextures();
+    return rtp.srvA.Get();
+}
+
+ID3D11Texture2D* GridCompositor::resolveReadbackSource()
+{
+    if (!masterGrade_ || !gradePS_ || !renderTarget_ || !renderTargetSRV_)
+        return renderTarget_.Get();
+
+    if (!masterTarget_) {
+        // Same description as the render target, so the staging copy that
+        // follows is the copy it always was.
+        D3D11_TEXTURE2D_DESC desc{};
+        renderTarget_->GetDesc(&desc);
+        if (FAILED(device_->CreateTexture2D(&desc, nullptr, &masterTarget_))
+            || FAILED(device_->CreateRenderTargetView(masterTarget_.Get(), nullptr,
+                                                      &masterTargetRTV_))) {
+            std::fprintf(stderr, "[ColorGrade] Failed to create the master target; "
+                                 "the Master grade is not applied\n");
+            masterTarget_.Reset();
+            masterTargetRTV_.Reset();
+            return renderTarget_.Get();
+        }
+    }
+
+    // readback() can follow any of compositeFrame, a snapshot transition or a
+    // landing overlay, so this sets every piece of state it relies on.
+    ID3D11ShaderResourceView* nullSRV = nullptr;
+    deviceCtx_->PSSetShaderResources(0, 1, &nullSRV);
+    ID3D11RenderTargetView* rtv = masterTargetRTV_.Get();
+    deviceCtx_->OMSetRenderTargets(1, &rtv, nullptr);
+
+    D3D11_VIEWPORT viewport{};
+    viewport.Width    = static_cast<float>(width_);
+    viewport.Height   = static_cast<float>(height_);
+    viewport.MinDepth = 0.0f;
+    viewport.MaxDepth = 1.0f;
+    deviceCtx_->RSSetViewports(1, &viewport);
+
+    deviceCtx_->IASetInputLayout(inputLayout_.Get());
+    deviceCtx_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    UINT stride = sizeof(QuadVertex);
+    UINT offset = 0;
+    deviceCtx_->IASetVertexBuffers(0, 1, vertexBuffer_.GetAddressOf(), &stride, &offset);
+    deviceCtx_->IASetIndexBuffer(indexBuffer_.Get(), DXGI_FORMAT_R16_UINT, 0);
+    deviceCtx_->VSSetShader(vertexShader_.Get(), nullptr, 0);
+    deviceCtx_->VSSetConstantBuffers(1, 1, globalConstantBuffer_.GetAddressOf());
+    deviceCtx_->RSSetState(rasterizerState_.Get());
+    deviceCtx_->OMSetDepthStencilState(depthStencilState_.Get(), 0);
+    const float bf[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    deviceCtx_->OMSetBlendState(opaqueBlendState_.Get(), bf, 0xFFFFFFFF);
+
+    // The frame was composited over transparent black, so its RGB is already
+    // the picture over black. The master pass grades that and writes alpha 1:
+    // a Master grade describes the picture as delivered, empty areas and
+    // background included.
+    const xleth::grade::BakedGrade* level = masterGrade_.get();
+    if (!bindGradeLevels(&level, 1, /*forceOpaque=*/true)) {
+        ID3D11RenderTargetView* nullRTV = nullptr;
+        deviceCtx_->OMSetRenderTargets(1, &nullRTV, nullptr);
+        unbindGradeTextures();
+        return renderTarget_.Get();
+    }
+    ID3D11ShaderResourceView* src = renderTargetSRV_.Get();
+    deviceCtx_->PSSetShaderResources(0, 1, &src);
+    deviceCtx_->DrawIndexed(6, 0, 0);
+
+    ID3D11RenderTargetView* nullRTV = nullptr;
+    deviceCtx_->OMSetRenderTargets(1, &nullRTV, nullptr);
+    unbindGradeTextures();
+    return masterTarget_.Get();
 }
 
 // ===========================================================================
@@ -1714,7 +2639,7 @@ const ReadbackBuffer& GridCompositor::readback(ReadbackMode mode,
                 return buf;
             }
 
-            deviceCtx_->CopyResource(stagingTextures_[0].Get(), renderTarget_.Get());
+            deviceCtx_->CopyResource(stagingTextures_[0].Get(), resolveReadbackSource());
             lastReadbackDiag_.deviceRemovedReason = device_->GetDeviceRemovedReason();
             if (FAILED(lastReadbackDiag_.deviceRemovedReason)) {
                 lastReadbackDiag_.failureStage = ReadbackFailureStage::CopyIssuedThenDeviceRemoved;
@@ -1824,7 +2749,7 @@ const ReadbackBuffer& GridCompositor::readback(ReadbackMode mode,
                 return buf;
             }
 
-            deviceCtx_->CopyResource(stagingTextures_[writeSlot].Get(), renderTarget_.Get());
+            deviceCtx_->CopyResource(stagingTextures_[writeSlot].Get(), resolveReadbackSource());
             lastReadbackDiag_.deviceRemovedReason = device_->GetDeviceRemovedReason();
             if (FAILED(lastReadbackDiag_.deviceRemovedReason)) {
                 lastReadbackDiag_.failureStage = ReadbackFailureStage::CopyIssuedThenDeviceRemoved;
@@ -2514,7 +3439,7 @@ bool EffectShaderCache::init(ID3D11Device* device)
     if (!createEffectCB(device, 32, tintCB,        "Tint"))            return false;
     if (!createEffectCB(device, 16, brightContCB,  "BrightnessContrast")) return false;
     if (!createEffectCB(device, 32, tvSimCB,       "TVSimulator"))     return false;
-    if (!createEffectCB(device, 16, zoomPanRotCB,  "ZoomPanRotation")) return false;
+    if (!createEffectCB(device, sizeof(ZprConstants), zoomPanRotCB, "ZoomPanRotation")) return false;
     if (!createEffectCB(device, 32, vibratoSwirlCB, "VibratoSwirl"))   return false;
     if (!createEffectCB(device, 32, scratchWaveSmearCB, "ScratchWaveSmear")) return false;
     // 32 bytes = params[0..7]: keyRGB + tolerance | softness, spill, choke, edgeBlur.
@@ -2928,12 +3853,39 @@ ID3D11ShaderResourceView* GridCompositor::processEffectChain(
                 // to skip the generic memcpy/PSSetConstantBuffers(2,...) path.
                 bool animActive = (req.currentZoom   != 1.0f || req.currentPanX != 0.0f ||
                                    req.currentPanY   != 0.0f || req.currentRotDeg != 0.0f);
-                struct { float zoom, panX, panY, rotRad; } zprCBData;
+                ZprConstants zprCBData;
                 if (animActive) {
                     zprCBData.zoom   = req.currentZoom;
                     zprCBData.panX   = req.currentPanX;
                     zprCBData.panY   = req.currentPanY;
                     zprCBData.rotRad = req.currentRotDeg * (3.14159265f / 180.0f);
+
+                    // ZPR motion blur (the TRACK's own setting; the collector
+                    // only samples when it is on and the pose moves). Travel is
+                    // measured in this pass's target, back in the frame-time
+                    // pose, like the Lens.
+                    if (req.zprMotionCount > 0 && !effectsBypass_) {
+                        const int n = std::min(req.zprMotionCount, motionblur::kDenseSamples);
+                        const double aspect = static_cast<double>(cellWidth) / cellHeight;
+                        motionblur::Affine dense[motionblur::kDenseSamples];
+                        for (int i = 0; i < n; ++i)
+                            dense[i] = motionblur::zprUvMap(req.zprMotion[i], aspect);
+                        const motionblur::ZprPose centerPose{ req.currentZoom, req.currentPanX,
+                                                              req.currentPanY, req.currentRotDeg };
+                        const double travel = motionblur::pathLengthPx(
+                            dense, n, motionblur::invert(motionblur::zprUvMap(centerPose, aspect)),
+                            motionblur::unitProbes(), motionblur::kUnitProbeCount,
+                            static_cast<double>(cellWidth), static_cast<double>(cellHeight));
+                        zprCBData.taps = motionblur::tapsForPathPx(travel);
+                        for (int t = 0; t < zprCBData.taps; ++t) {
+                            const motionblur::ZprPose p =
+                                motionblur::resamplePose(req.zprMotion.data(), n, t, zprCBData.taps);
+                            zprCBData.tap[t][0] = p.zoom;
+                            zprCBData.tap[t][1] = p.panX;
+                            zprCBData.tap[t][2] = p.panY;
+                            zprCBData.tap[t][3] = p.rotDeg * (3.14159265f / 180.0f);
+                        }
+                    }
                 } else {
                     zprCBData.zoom   = (fx.params[1] > 0.001f) ? fx.params[1] : 1.0f; // targetZoom
                     zprCBData.panX   = fx.params[4];                                   // targetPanX

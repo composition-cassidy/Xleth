@@ -30,7 +30,7 @@ const ADD_TRACK_HINT = 'Adds an empty clip track to the project'
 /**
  * What every strip shares, printed once at the left of the scroller: the dB numerals of the
  * meters (same rows as a strip, so each numeral sits at the strips' tick), the FX button that
- * opens every strip's insert list, and the strip-width switch. The pan and width knobs print
+ * opens every strip's insert list, and the strip-width switch. The width knob and pan slider print
  * no words anywhere: their pointers are the reading.
  */
 export function MixerGutter({ stripMode, onStripMode, insertsOpen = false, onInsertsOpen }) {
@@ -53,7 +53,8 @@ export function MixerGutter({ stripMode, onStripMode, insertsOpen = false, onIns
         </button>
       </div>
       <div className={strip.gutterCell} />
-      {/* The pan + width knob row and the volume row: nothing to print (the knobs carry no words). */}
+      {/* The width knob, pan slider and volume rows: nothing to print (the controls carry no words). */}
+      <div className={strip.gutterCell} />
       <div className={strip.gutterCell} />
       <div className={strip.gutterCell} />
       <div className={`${strip.gutterCell} ${strip.gutterScale}`}>

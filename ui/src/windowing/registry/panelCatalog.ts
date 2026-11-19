@@ -1,6 +1,7 @@
 import type { ComponentType } from 'react';
 import {
   BrowserIcon,
+  ColorGradeIcon,
   DevicesIcon,
   FxGraphIcon,
   InspectorIcon,
@@ -30,6 +31,7 @@ export const PANEL_IDS = [
   'sampleSandbox',
   'inspector',
   'devices',
+  'colorGrade',
 ] as const;
 
 export type PanelId = (typeof PANEL_IDS)[number];
@@ -261,6 +263,22 @@ export const PANEL_CATALOG = {
     minWidth: 280,
     minHeight: 120,
     minDockedSize: 220,
+    presentation: 'window',
+  },
+  colorGrade: {
+    id: 'colorGrade',
+    title: 'Color Grade',
+    typeColorToken: '--theme-panel-preview',
+    icon: ColorGradeIcon,
+    // Context-opened: from a source, a clip, a track, the Preview header or the
+    // Tools menu (which opens the Master grade). One window, retargeted by its
+    // props, so it never docks into the detail dock and has no F-key.
+    showInToolbar: false,
+    defaultFloating: { x: 220, y: 110, width: 400, height: 640 },
+    keepAliveWhenHidden: false,
+    minWidth: 340,
+    minHeight: 320,
+    minDockedSize: 320,
     presentation: 'window',
   },
   sampleSandbox: {

@@ -169,6 +169,15 @@ public:
     static std::pair<int64_t, int64_t> frameBoundsForBuffer(
         int64_t bufferStart, int bufferSize, int sampleRate, AVRational fps);
 
+    /**
+     * Number of video frames whose first sample lies in [0, numSamples) — i.e.
+     * exactly how many frames a render of numSamples emits when it walks its
+     * audio through frameBoundsForBuffer(). Use this, not sampleToVideoFrame()
+     * (which rounds to nearest), for a frame total.
+     */
+    static int64_t frameCountForSamples(int64_t numSamples, int sampleRate,
+                                        AVRational fps);
+
     // ----- validation (test-friendly) --------------------------------------
 
     /**

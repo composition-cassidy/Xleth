@@ -68,6 +68,12 @@ export default function SandboxPanelContent() {
   useEffect(() => {
     if (useSandboxStore.getState().layers.length === 0 && !openTarget) {
       useSandboxStore.getState().reloadFromEngine()
+    } else {
+      // Local layers exist, or a fresh openTarget is about to add one, so a
+      // wholesale replace is unsafe. But the engine may still hold layers this
+      // store never saw (reload + openTarget case): adopt just those, since an
+      // unseen unrendered layer blocks every composite mix.
+      useSandboxStore.getState().adoptUnknownEngineLayers()
     }
     // Mount-only (empty deps, deliberately) — see comment above for why this
     // must not re-fire on every transition to an empty layer list (e.g. the

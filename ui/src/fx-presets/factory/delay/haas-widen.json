@@ -1,0 +1,25 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "delay",
+  "name": "Haas Widen",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "time_l": 1,
+      "time_r": 18,
+      "sync": 0,
+      "sync_div_l": 3,
+      "sync_div_r": 3,
+      "stereo_mode": 1,
+      "feedback": 0,
+      "filter_lo": 80,
+      "filter_hi": 12000,
+      "mod_rate": 0.3,
+      "mod_depth": 0,
+      "stereo_width": 0,
+      "duck_amount": 0,
+      "mix": 40
+    }
+  }
+}

@@ -79,13 +79,40 @@ export default function MixerGalleryFixture({ stripMode = 'compact', insertsOpen
       width: useMixerUiStore.getState().stripWidthMode,
     }
     const outputRoutes = Object.fromEntries(IDS.map((id) => [id, id === 2 || id === 3 ? 5 : (id === 8 ? 10 : -1)]))
+    // Track 1 is selected and multi-wired, FL style: Master + sends into 5 (unity) and 9
+    // (-6 dB), a sidechain key into 6 (an effect's own route) and into 7 (right-click,
+    // track-level). Tracks 2 and 3 feed bus 5; 8 feeds 10.
+    const sends = { 1: [{ targetTrackId: 5, gain: 1 }, { targetTrackId: 9, gain: 0.5 }] }
+    let sidechainRoutes = [
+      { routeId: 'gallery-sc', sourceTrackId: 1, targetTrackId: 6, targetEffectInstanceId: 'gallery-fx', gain: 1, preFader: false, enabled: true, status: 'ok' },
+      { routeId: 'gallery-sc-trk', sourceTrackId: 1, targetTrackId: 7, targetEffectInstanceId: '', gain: 1, preFader: false, enabled: true, status: 'ok' },
+    ]
     useMixerStore.setState({
-      tracks: mockTracks(), trackOrder: IDS, outputRoutes, selectedChainKey: '5', master: { volume: 1 },
-      sidechainRoutes: [{
-        routeId: 'gallery-sc', sourceTrackId: 1, targetTrackId: 6, targetEffectInstanceId: 'gallery-fx',
-        gain: 1, preFader: false, enabled: true, status: 'ok',
-      }],
+      tracks: mockTracks(), trackOrder: IDS, outputRoutes, sends, selectedChainKey: '1', master: { volume: 1 },
+      sidechainRoutes,
     })
+    // A MOCK routing engine so the arrows can be clicked in the gallery.
+    const mockTimeline = {
+      setTrackRoutes: async (_id, routes) => ({ ok: true, targetTrackId: routes.targetTrackId, sends: routes.sends }),
+      setTrackSendGain: async () => ({ ok: true }),
+      addSidechainRoute: async (sourceTrackId, r) => {
+        sidechainRoutes = [...sidechainRoutes, { ...r, routeId: `gallery-${sidechainRoutes.length}-${Date.now()}`, sourceTrackId, status: 'ok' }]
+        return { ok: true }
+      },
+      removeSidechainRoute: async (_id, routeId) => {
+        sidechainRoutes = sidechainRoutes.filter(r => r.routeId !== routeId)
+        return { ok: true }
+      },
+      getRouting: async () => {
+        const s = useMixerStore.getState()
+        return s.trackOrder.map(id => ({
+          trackId: id,
+          outputRoute: { targetTrackId: s.outputRoutes[id] ?? -1 },
+          sends: s.sends[id] ?? [],
+          sidechainRoutes: sidechainRoutes.filter(r => r.sourceTrackId === id),
+        }))
+      },
+    }
     const fx = (nodeId, pluginId, extra) => ({ nodeId, pluginId, ...extra })
     const mockChains = {
       1: [fx(1, 'xletheq'), fx(2, 'compressor'), fx(3, 'reverb', { bypassed: true })],
@@ -101,6 +128,7 @@ export default function MixerGalleryFixture({ stripMode = 'compact', insertsOpen
     // Each strip fetches its own chain when it mounts, so the MOCK answers that call too.
     window.xleth = {
       ...(window.xleth || {}),
+      timeline: { ...(window.xleth?.timeline || {}), ...mockTimeline },
       audio: {
         ...(window.xleth?.audio || {}),
         getMasterLoudness: async () => MOCK_LOUDNESS,

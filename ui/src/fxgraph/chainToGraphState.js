@@ -30,6 +30,7 @@ export const STOCK_EFFECT_LABELS = Object.freeze({
   fet: 'FET Comp',
   varimu: 'Vari-Mu Comp',
   fedda: 'Fedda',
+  szkrezh: 'Szkrezh',
 })
 
 function fallbackUuid() {

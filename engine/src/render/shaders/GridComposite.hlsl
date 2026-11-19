@@ -52,6 +52,28 @@ cbuffer GlobalConstants : register(b1)
     float  gPadding;
 };
 
+// ---------------------------------------------------------------------------
+// Motion blur taps (matches struct MotionConstants in GridCompositor.h).
+// Read ONLY when xformFlags carries a motion bit; otherwise whatever is bound
+// at b3 is ignored. Every map is computed on the CPU (render/MotionBlur.h).
+//   bit 2  kXformMotionLens    tap i frames the source with motionRow0/1[i]
+//                              in place of lensRow0/1 (the Lens framing pass)
+//   bit 3  kXformMotionScreen  tap i first maps output UV through
+//                              motionRow0/1[i] back to the frame-time pose,
+//                              then runs the draw's own mapping (final draws)
+// The taps are averaged in premultiplied alpha, so a moving edge fades out
+// along its path instead of darkening.
+// ---------------------------------------------------------------------------
+#define MAX_MOTION_TAPS 32
+
+cbuffer MotionConstants : register(b3)
+{
+    int    motionTaps;
+    int3   motionPad;
+    float4 motionRow0[MAX_MOTION_TAPS];
+    float4 motionRow1[MAX_MOTION_TAPS];
+};
+
 Texture2D    cellTexture   : register(t0);
 SamplerState linearSampler : register(s0);
 
@@ -91,11 +113,100 @@ VSOutput VSMain(VSInput input)
 }
 
 // ---------------------------------------------------------------------------
+// One motion-blur tap: the same arithmetic as PSMain below, as a function
+// that returns transparent (instead of discarding) outside the cell, so taps
+// can be averaged. `uv` is already in the frame-time pose; (l0, l1) is the
+// Lens map this tap frames with.
+// ---------------------------------------------------------------------------
+float4 cellTap(float2 uv, float4 l0, float4 l1)
+{
+    float2 localUV;
+    if (xformFlags & 2)
+        localUV = float2(dot(roamRow0.xy, uv) + roamRow0.z,
+                         dot(roamRow1.xy, uv) + roamRow1.z);
+    else
+        localUV = (uv - cellRect.xy) / cellRect.zw;
+
+    if (localUV.x < 0.0f || localUV.x > 1.0f ||
+        localUV.y < 0.0f || localUV.y > 1.0f)
+        return float4(0.0f, 0.0f, 0.0f, 0.0f);
+
+    float2 sampleUV = localUV;
+    if      (orientation == 1) sampleUV.x = 1.0f - sampleUV.x;
+    else if (orientation == 2) sampleUV.y = 1.0f - sampleUV.y;
+    else if (orientation == 3) { sampleUV.x = 1.0f - sampleUV.x; sampleUV.y = 1.0f - sampleUV.y; }
+    else if (orientation == 4) sampleUV   = float2(localUV.y,        1.0f - localUV.x);
+    else if (orientation == 5) sampleUV   = float2(1.0f - localUV.y, localUV.x);
+
+    float4 color;
+    if (xformFlags & 1)
+    {
+        float2 lensUV = float2(dot(l0.xy, sampleUV) + l0.z,
+                               dot(l1.xy, sampleUV) + l1.z);
+        if (lensUV.x < 0.0f || lensUV.x > 1.0f ||
+            lensUV.y < 0.0f || lensUV.y > 1.0f)
+            color = float4(0.0f, 0.0f, 0.0f, 0.0f);
+        else
+            color = cellTexture.SampleLevel(linearSampler, lensUV, 0.0f);
+    }
+    else
+    {
+        color = cellTexture.SampleLevel(linearSampler, sampleUV, 0.0f);
+    }
+    color.a *= opacity;
+
+    if (cornerRadius > 0.0f)
+    {
+        float cellWidthPx   = gOutputWidth  * cellRect.z;
+        float cellHeightPx  = gOutputHeight * cellRect.w;
+        float2 pixelPos     = (localUV - 0.5f) * float2(cellWidthPx, cellHeightPx);
+        float2 halfSize     = float2(cellWidthPx * 0.5f, cellHeightPx * 0.5f);
+        float  radiusPx     = cornerRadius * min(cellWidthPx, cellHeightPx);
+        float  sdf          = roundedRectSDF(pixelPos, halfSize, radiusPx);
+        color.a *= 1.0f - smoothstep(-1.0f, 1.0f, sdf);
+    }
+    return color;
+}
+
+float4 motionBlurred(float2 uv)
+{
+    const int taps = clamp(motionTaps, 1, MAX_MOTION_TAPS);
+    float4 acc = float4(0.0f, 0.0f, 0.0f, 0.0f);   // premultiplied
+    [loop]
+    for (int i = 0; i < taps; ++i)
+    {
+        float2 tuv = uv;
+        float4 l0  = lensRow0;
+        float4 l1  = lensRow1;
+        if (xformFlags & 4)
+        {
+            l0 = motionRow0[i];
+            l1 = motionRow1[i];
+        }
+        if (xformFlags & 8)
+        {
+            tuv = float2(dot(motionRow0[i].xy, uv) + motionRow0[i].z,
+                         dot(motionRow1[i].xy, uv) + motionRow1[i].z);
+        }
+        float4 c = cellTap(tuv, l0, l1);
+        acc += float4(c.rgb * c.a, c.a);
+    }
+    acc /= float(taps);
+    if (acc.a <= 0.0f) discard;
+    return float4(acc.rgb / acc.a, acc.a);   // back to straight alpha
+}
+
+// ---------------------------------------------------------------------------
 // Pixel shader — cell rectangle clipping, orientation transform, opacity
 // ---------------------------------------------------------------------------
 float4 PSMain(VSOutput input) : SV_Target
 {
     float2 uv = input.uv;
+
+    // Motion blur (bits 2/3): averaged taps. Every other draw runs the
+    // original arithmetic below, untouched.
+    if (xformFlags & 12)
+        return motionBlurred(uv);
 
     // Map screen UV to local UV within the cell rectangle. A Roam rotation
     // replaces the axis-aligned divide with its inverse affine; otherwise the

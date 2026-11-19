@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Button, NumberBox, SectionHeader, THIN_SPACE, formatValue, parseValue } from '../../ui-kit'
+import { Button, NumberBox, SegmentedControl, THIN_SPACE, formatValue, parseValue } from '../../ui-kit'
 import { timelineEvents } from '../../timelineEvents.js'
 import VideoFlipSection from '../inspector/VideoFlipSection.jsx'
 import RowToggle from '../inspector/RowToggle.jsx'
@@ -9,7 +9,10 @@ import { getTrackPlacement, placementBadgeLabel, setFullscreenPlacementMode } fr
 import { HOLD_THRESHOLD_UNLIMITED } from './holdLastFrame.js'
 import useTrackIdentityColors from '../inspector/useTrackIdentityColors.js'
 import RoamPanel from '../lensRoam/RoamPanel.jsx'
-import styles from '../inspector/Inspector.module.css'
+import GradeStack from '../colorGrade/GradeStack.jsx'
+import { TrackSection, TRow, trackStyles as t } from '../inspector/TrackSection.jsx'
+import CloneSection, { ClonesListSection } from '../inspector/CloneSection.jsx'
+import { cloneKindLabel, isClone, isTrailClone, sourceOf } from '../../clones/cloneModel.js'
 
 const snapZero = (v) => (Math.abs(v) < 0.025 ? 0 : v)
 // Corner radius is 0..0.5 of the cell, shown as 0..100 % (as the old widget did).
@@ -23,6 +26,18 @@ const GAP_FMT = {
   parse: (t) => { const n = parseValue(t, '%'); return n === null ? null : n / 100 },
 }
 
+// Which gaps the hold fills. Smart and All/Timed are separate engine fields
+// (videoHoldSmart, videoHoldLastFrameThresholdBeats); this is one choice.
+const GAP_OPTIONS = [
+  { value: 'smart', label: 'Smart', hint: 'Hold the short rests inside a phrase; leave the long rests between phrases, and the end, blank' },
+  { value: 'all',   label: 'All',   hint: 'Hold until the next clip, however long the gap' },
+  { value: 'timed', label: 'Timed', hint: 'Hold for a set number of beats, then cut' },
+]
+const FILL_OPTIONS = [
+  { value: 'freeze', label: 'Freeze',       hint: "Show the clip's last frame, still" },
+  { value: 'play',   label: 'Keep playing', hint: 'Let the video run on past the clip until the next clip or note takes over' },
+]
+
 const notify     = () => timelineEvents.dispatchEvent(new Event('timeline-tracks-changed'))
 const notifyGrid = () => timelineEvents.dispatchEvent(new Event('timeline-grid-changed'))
 
@@ -31,23 +46,14 @@ const parseNum = (text) => {
   return Number.isFinite(n) ? n : null
 }
 
-function Row({ label, children }) {
-  return (
-    <div className={styles.row}>
-      <span className={styles.rowLabel}>{label}</span>
-      <div className={styles.rowControl}>{children}</div>
-    </div>
-  )
-}
-
 /**
- * A track in the Inspector: identity (name, colour, type), placement, hold
- * last frame, the fullscreen layer (when placed fullscreen), cell shape, video
- * flip, and the "Video effects (N)" button that opens the Devices tab on the
- * track's picture (every visual-effect parameter lives there now). Label /
- * value rows, kit controls only. Same IPC calls as the old Video-tab detail view; this is where
- * that view lives now, so the arrangement and the video settings are visible
- * together.
+ * A track in the Inspector. The header is identity (colour edge, name, type,
+ * where it is placed) plus "Video effects (N)", which opens the Devices tab on
+ * the track's picture. Then foldable sections in the order the picture is built:
+ * Cell (fullscreen hold and opacity when fullscreen, corners, gap), Roam and
+ * Roam keys, Hold last frame and Video flip (each switched on from its header;
+ * the body only exists while on). Same IPC calls as the old Video-tab detail
+ * view; UI only.
  *
  * Props:
  *   trackId – id of the track to show
@@ -145,6 +151,26 @@ export default function TrackVideoProperties({ trackId }) {
     }
   }, [trackId, fetchTracks])
 
+  const setHoldBehavior = useCallback(async (patch) => {
+    try {
+      await window.xleth?.timeline?.setVideoHoldBehavior(trackId, patch)
+      fetchTracks()
+    } catch (err) {
+      console.error('[Arrange] setVideoHoldBehavior failed:', err)
+    }
+  }, [trackId, fetchTracks])
+
+  const holdSmart = !!track?.videoHoldSmart
+  const holdKeepPlaying = !!track?.videoHoldKeepPlaying
+  const gapMode = holdSmart ? 'smart' : (thresholdIsUnlimited ? 'all' : 'timed')
+
+  const setGapMode = useCallback(async (mode) => {
+    if (mode === 'smart') { await setHoldBehavior({ smart: true }); return }
+    if (holdSmart) await setHoldBehavior({ smart: false })
+    if (mode === 'all' && !thresholdIsUnlimited) await commitThreshold(HOLD_THRESHOLD_UNLIMITED)
+    else if (mode === 'timed' && thresholdIsUnlimited) await commitThreshold(4)
+  }, [holdSmart, thresholdIsUnlimited, setHoldBehavior, commitThreshold])
+
   // Fullscreen opacity — only while the track is placed fullscreen. Grid slots
   // carry their own opacity in the grid editor.
   const placement = useMemo(
@@ -190,8 +216,8 @@ export default function TrackVideoProperties({ trackId }) {
 
   if (!track) {
     return (
-      <div className={styles.empty}>
-        <p className={styles.emptyText}>{loaded ? 'This track no longer exists.' : 'Loading track…'}</p>
+      <div className={t.empty}>
+        <p className={t.emptyText}>{loaded ? 'This track no longer exists.' : 'Loading track…'}</p>
       </div>
     )
   }
@@ -199,80 +225,96 @@ export default function TrackVideoProperties({ trackId }) {
   const hold = track.videoHoldLastFrame || false
   const isPattern = track.type === 'Pattern'
   const visualFxCount = videoFxCount(track)
+  // Clones (docs/XLETH_CLONE_SPEC.md): a Voice clone owns a full cell (every section
+  // applies, plus its Clone section). A Trail clone has no cell of its own: it
+  // replays its source's picture, so only its Clone settings and its added Roam
+  // (Offset X / Y) apply; the cell, grade, hold, flip and effects sections are the
+  // source's and are not shown here.
+  const clone = isClone(track)
+  const trail = isTrailClone(track)
+  const sourceName = clone ? (sourceOf(tracks, track)?.name ?? 'its source') : null
+  const kindText = clone ? `${cloneKindLabel(track)} of ${sourceName}` : (isPattern ? 'Pattern track' : 'Clip track')
+  const swatch = trail ? (track.clone?.tint ?? colors[track.id]) : colors[track.id]
 
   const hasGapOverride = (track.gapScaleOverride ?? -1) >= 0
   const cornerRadius = track.cornerRadius ?? 0
+  const gapText = hasGapOverride
+    ? `Own gap ${formatValue((track.gapScaleOverride ?? 0) * 100, '%')}`
+    : `Grid gap ${formatValue((gapScale ?? 0) * 100, '%')}`
+  const holdSummary = [
+    GAP_OPTIONS.find((o) => o.value === gapMode)?.label,
+    gapMode === 'timed' ? `${Number(thresholdBeats.toFixed(2))}${THIN_SPACE}beats` : null,
+    holdKeepPlaying ? 'Keep playing' : 'Freeze',
+  ].filter(Boolean).join(' · ')
+
+  if (trail) {
+    return (
+      <div className={t.root} data-testid="xleth-inspector-track">
+        <header className={t.head}>
+          <span className={t.swatch} style={{ background: swatch }} aria-hidden="true" />
+          <div className={t.headText}>
+            <h2 className={t.title} title={track.name}>{track.name}</h2>
+            <span className={t.meta}>{`${kindText} · no cell of its own`}</span>
+          </div>
+        </header>
+        <div className={t.body}>
+          <CloneSection track={track} tracks={tracks} />
+          <RoamPanel
+            trackId={track.id} variant="trail" sourceName={sourceName}
+            context={`${track.name} · an offset added on top of where ${sourceName} was`}
+          />
+        </div>
+      </div>
+    )
+  }
 
   return (
-    <div className={styles.root} data-testid="xleth-inspector-track">
-      <header className={styles.head}>
-        <span className={styles.swatch} style={{ background: colors[track.id] }} aria-hidden="true" />
-        <div className={styles.headText}>
-          <h2 className={styles.title} title={track.name}>{track.name}</h2>
-          <span className={styles.meta}>{isPattern ? 'Pattern track' : 'Clip track'}</span>
+    <div className={t.root} data-testid="xleth-inspector-track">
+      <header className={t.head}>
+        <span className={t.swatch} style={{ background: swatch }} aria-hidden="true" />
+        <div className={t.headText}>
+          <h2 className={t.title} title={track.name}>{track.name}</h2>
+          <span className={t.meta}>{`${kindText} · ${placementBadgeLabel(placement)}`}</span>
+        </div>
+        <div className={t.headActions}>
+          <Button
+            size="sm"
+            onClick={() => openVideoDevicesFor(track.id)}
+            hint="Open this track's video effects in the Devices tab"
+            data-testid="xleth-inspector-video-fx"
+          >
+            {`Video effects (${visualFxCount})`}
+          </Button>
         </div>
       </header>
 
-      <div className={styles.body}>
-        <section className={styles.section} aria-label="Placement">
-          <SectionHeader>Placement</SectionHeader>
-          <Row label="Placed">
-            <span className={styles.rowValue}>{placementBadgeLabel(placement)}</span>
-          </Row>
+      <div className={t.body}>
+        {clone ? <CloneSection track={track} tracks={tracks} /> : <ClonesListSection track={track} tracks={tracks} />}
+        <TrackSection
+          id="cell" title="Cell"
+          summary={`Corners ${CORNER_FMT.format(cornerRadius)} · ${gapText}`}
+          hint="This track's cell on the picture: its corners and the gap around it"
+        >
           {isFullscreen && (
             <>
-              <Row label="Hold gaps">
+              <TRow label="Hold gaps">
                 <RowToggle
                   label="Hold last frame between notes"
                   on={placement.kind === 'behind'}
                   onChange={(next) => handleSetPlacementMode(next ? 'behind' : 'front')}
                   hint="Freeze this layer's last decoded frame across gaps instead of blinking out"
                 />
-              </Row>
-              <Row label="Opacity">
+              </TRow>
+              <TRow label="Opacity">
                 <NumberBox
-                  label="Fullscreen opacity" hideLabel
+                  label="Fullscreen opacity" hideLabel width={72}
                   value={Math.round(fsLayerOpacity * 100)} min={0} max={100} step={1} defaultValue={100} unit="%"
                   onCommit={(x) => commitFsOpacity(Math.round(x) / 100)}
                 />
-              </Row>
+              </TRow>
             </>
           )}
-        </section>
-
-        <section className={styles.section} aria-label="Hold last frame">
-          <SectionHeader>Hold last frame</SectionHeader>
-          <Row label="Hold">
-            <RowToggle label="Hold last frame" on={hold} onChange={handleToggleHold} hint="Freeze the final frame after the clip ends" />
-          </Row>
-          {hold && (
-            <div className={styles.group}>
-              <Row label="Until next">
-                <RowToggle
-                  label="Hold until the next clip"
-                  on={thresholdIsUnlimited}
-                  onChange={(next) => commitThreshold(next ? HOLD_THRESHOLD_UNLIMITED : 4)}
-                  hint="Hold until the next clip, however long the gap"
-                />
-              </Row>
-              {!thresholdIsUnlimited && (
-                <Row label="Hold for">
-                  <NumberBox
-                    label="Hold last frame threshold" hideLabel
-                    value={thresholdBeats} min={0} max={64} step={0.25} defaultValue={4}
-                    format={(x) => `${Number(x.toFixed(2))}${THIN_SPACE}beats`} parse={parseNum}
-                    onCommit={(x) => { const beats = Math.round(x * 4) / 4; if (beats !== thresholdBeats) commitThreshold(beats) }}
-                    hint="Beats to hold before cutting"
-                  />
-                </Row>
-              )}
-            </div>
-          )}
-        </section>
-
-        <section className={styles.section} aria-label="Cell shape">
-          <SectionHeader>Cell shape</SectionHeader>
-          <Row label="Corners">
+          <TRow label="Corners">
             <NumberBox
               label="Corner radius" hideLabel width={72}
               value={cornerDraft ?? cornerRadius} min={0} max={0.5} step={0.005} defaultValue={0}
@@ -286,8 +328,8 @@ export default function TrackVideoProperties({ trackId }) {
             <Button size="sm" onClick={() => applyCornerRadiusToAll(cornerRadius)} hint="Copy this corner radius to every track">
               Apply to all
             </Button>
-          </Row>
-          <Row label="Own gap">
+          </TRow>
+          <TRow label="Own gap">
             <RowToggle
               label="Use this track's own gap"
               on={hasGapOverride}
@@ -305,28 +347,62 @@ export default function TrackVideoProperties({ trackId }) {
                 onCommit={(v) => commitGap(snapZero(v))}
               />
             ) : (
-              <span className={styles.rowValue}>{`Grid gap ${formatValue((gapScale ?? 0) * 100, '%')}`}</span>
+              <span className={t.value}>{gapText}</span>
             )}
-          </Row>
-        </section>
+          </TRow>
+        </TrackSection>
 
         <RoamPanel trackId={track.id} context={`${track.name} · moves this cell on the picture`} />
 
-        <VideoFlipSection track={track} onCommit={handleCommitFlip} />
+        <TrackSection
+          id="color" title="Color"
+          hint="The color grade of this track's cell, and the Master grade over the whole picture"
+          testId="xleth-inspector-track-color"
+        >
+          <GradeStack stack={{ layer: { id: track.id, name: track.name } }} openLabel="Open" />
+        </TrackSection>
 
-        <section className={styles.section} aria-label="Video effects">
-          <SectionHeader>Video effects</SectionHeader>
-          <Row label="Effects">
-            <Button
-              size="sm"
-              onClick={() => openVideoDevicesFor(track.id)}
-              hint="Open this track's video effects in the Devices tab"
-              data-testid="xleth-inspector-video-fx"
-            >
-              {`Video effects (${visualFxCount})`}
-            </Button>
-          </Row>
-        </section>
+        {/* A Voice clone never holds: with no note to play it draws nothing (spec "Idle"). */}
+        {!clone && (
+        <TrackSection
+          id="hold" title="Hold last frame"
+          summary={hold ? holdSummary : null}
+          hint="Freeze the final frame after the clip ends"
+          actions={<RowToggle label="Hold last frame" on={hold} onChange={handleToggleHold} hint="Freeze the final frame after the clip ends" />}
+        >
+          {hold ? (
+            <>
+              <TRow label="Gaps">
+                <SegmentedControl
+                  size="sm" label="Which gaps to hold" value={gapMode}
+                  options={GAP_OPTIONS} onChange={setGapMode}
+                  hint="Which gaps between clips get held"
+                />
+              </TRow>
+              <TRow label="Fill">
+                <SegmentedControl
+                  size="sm" label="What fills a held gap" value={holdKeepPlaying ? 'play' : 'freeze'}
+                  options={FILL_OPTIONS} onChange={(v) => setHoldBehavior({ keepPlaying: v === 'play' })}
+                  hint="What a held gap shows"
+                />
+              </TRow>
+              {gapMode === 'timed' && (
+                <TRow label="Hold for">
+                  <NumberBox
+                    label="Hold last frame threshold" hideLabel width={88}
+                    value={thresholdBeats} min={0} max={64} step={0.25} defaultValue={4}
+                    format={(x) => `${Number(x.toFixed(2))}${THIN_SPACE}beats`} parse={parseNum}
+                    onCommit={(x) => { const beats = Math.round(x * 4) / 4; if (beats !== thresholdBeats) commitThreshold(beats) }}
+                    hint="Beats to hold before cutting"
+                  />
+                </TRow>
+              )}
+            </>
+          ) : null}
+        </TrackSection>
+        )}
+
+        <VideoFlipSection track={track} onCommit={handleCommitFlip} />
       </div>
     </div>
   )

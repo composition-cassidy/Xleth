@@ -1,0 +1,21 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "compressor",
+  "name": "Bass Hold",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "threshold": -22,
+      "ratio": 4,
+      "attack": 25,
+      "release": 150,
+      "knee": 6,
+      "makeup": 4,
+      "mix": 100,
+      "mix_linked": 1,
+      "detect_mode": 1,
+      "lookahead": 0
+    }
+  }
+}

@@ -5,6 +5,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <exception>
@@ -155,13 +156,100 @@ Napi::Value jsonToNapi(Napi::Env env, const nlohmann::json& value)
     return out;
 }
 
+// ── Large replies: one JSON.parse instead of one N-API call per node ────────
+// jsonToNapi crosses the N-API boundary two or three times for every node it
+// builds (create the value, create the key, set the property). That is fine for
+// the small replies most RPCs return and it is the bulk of the cost of a big
+// one: timeline_getClips on a 3000-clip project is ~190k nodes. V8 builds the
+// same tree from text an order of magnitude faster, so a reply that is large
+// AND plain JSON goes through JSON.parse.
+//
+// "Plain" is checked rather than assumed, so the fast path can never change
+// what the caller receives:
+//   - a $xlethType marker (undefined, Buffer, ArrayBuffer, typed array) has no
+//     JSON form and needs jsonToNapi's handling;
+//   - a non-finite float dumps as null, where jsonToNapi yields NaN/Infinity;
+//   - a "__proto__" key means different things to JSON.parse and to a property
+//     set.
+// Anything of that kind, an unserialisable string, or a parse that fails for
+// any reason, falls back to the node-by-node path.
+constexpr std::size_t kFastParseMinNodes = 512;
+
+struct PlainScan
+{
+    std::size_t nodes = 0;
+    bool plain = true;
+};
+
+void scanPlain(const nlohmann::json& value, PlainScan& scan)
+{
+    if (!scan.plain) return;
+    ++scan.nodes;
+    switch (value.type()) {
+    case nlohmann::json::value_t::object:
+        if (value.contains(kType)) { scan.plain = false; return; }
+        for (auto it = value.begin(); it != value.end(); ++it) {
+            if (it.key() == "__proto__") { scan.plain = false; return; }
+            scanPlain(it.value(), scan);
+            if (!scan.plain) return;
+        }
+        break;
+    case nlohmann::json::value_t::array:
+        for (const auto& element : value) {
+            scanPlain(element, scan);
+            if (!scan.plain) return;
+        }
+        break;
+    case nlohmann::json::value_t::number_float:
+        if (!std::isfinite(value.get<double>())) scan.plain = false;
+        break;
+    case nlohmann::json::value_t::binary:
+    case nlohmann::json::value_t::discarded:
+        scan.plain = false;
+        break;
+    default:
+        break;
+    }
+}
+
+Napi::Value resultToNapi(Napi::Env env, const nlohmann::json& value)
+{
+    if (!value.is_structured())
+        return jsonToNapi(env, value);
+
+    PlainScan scan;
+    scanPlain(value, scan);
+    if (!scan.plain || scan.nodes < kFastParseMinNodes)
+        return jsonToNapi(env, value);
+
+    std::string text;
+    try {
+        text = value.dump();   // strict: throws on a string that is not UTF-8
+    } catch (const nlohmann::json::exception&) {
+        return jsonToNapi(env, value);
+    }
+
+    Napi::Value jsonNamespace = env.Global().Get("JSON");
+    if (!jsonNamespace.IsObject()) return jsonToNapi(env, value);
+    Napi::Value parse = jsonNamespace.As<Napi::Object>().Get("parse");
+    if (!parse.IsFunction()) return jsonToNapi(env, value);
+
+    Napi::Value parsed = parse.As<Napi::Function>().Call(
+        jsonNamespace, { Napi::String::New(env, text) });
+    if (env.IsExceptionPending()) {
+        env.GetAndClearPendingException();
+        return jsonToNapi(env, value);
+    }
+    return parsed;
+}
+
 Napi::Value dispatchToService(const Napi::CallbackInfo& info, const char* method)
 {
     try {
         auto args = nlohmann::json::array();
         for (std::size_t i = 0; i < info.Length(); ++i)
             args.push_back(napiToJson(info[i]));
-        return jsonToNapi(
+        return resultToNapi(
             info.Env(), XlethEngineService::getInstance().dispatch(method, args));
     } catch (const std::exception& error) {
         Napi::Error::New(info.Env(), error.what()).ThrowAsJavaScriptException();

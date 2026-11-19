@@ -14,6 +14,11 @@
 #include "audio/HermiteInterp.h"
 #include "audio/WorldStretchCache.h"
 #include "audio/SlotBakeCache.h"
+#include "HardwareTier.h"
+#include "audio/RealtimeWorkerPool.h"
+#if defined(_M_X64) || defined(__x86_64__) || defined(_M_IX86)
+#  include <immintrin.h>
+#endif
 #include "dsp/DeclickEnvelope.h"
 #include "model/ClipModulationCompatibility.h"
 #include "render/RenderClock.h"
@@ -233,7 +238,7 @@ void MixEngine::StereoCompensationDelay::resetToDelaySamples(int delaySamples)
 void MixEngine::StereoCompensationDelay::ensureCapacity(int requiredDelaySamples)
 {
     const int requiredSamples = juce::jmax(
-        kDefaultCapacitySamples,
+        minCapacitySamples_,
         requiredDelaySamples + maxBlockSize_ + kCrossfadeSamples + 1);
 
     if (requiredSamples <= 0)
@@ -363,6 +368,88 @@ void MixEngine::StereoCompensationDelay::process(juce::AudioBuffer<float>& buffe
     hasProcessedAudio_ = true;
 }
 
+// ── Parallel track processing: per-block scheduling state ────────────────────
+// One block's worth of hand-off state between MixEngine::processBlock (the
+// audio thread, the only one that runs phase B and pushes ready slots) and the
+// helper threads (which pop ready slots and run phase A). Preallocated once in
+// prepare(); reinitialised at the top of every parallel block.
+struct MixEngine::ParallelTrackJob
+{
+    static constexpr int kMaxEdgesPerSlot =
+        1 + kMaxTrackSends + xleth::SidechainPlan::kMaxTaps;
+
+    std::atomic<int> claim[MixEngine::kMaxTracks];   // 0 free, 1 taken (whoever runs A)
+    std::atomic<int> done[MixEngine::kMaxTracks];    // 1 once phase A has finished
+    std::atomic<int> inDeg[MixEngine::kMaxTracks];   // upstream phase Bs still pending
+    int              edgeTarget[MixEngine::kMaxTracks][kMaxEdgesPerSlot];
+    int              edgeCount[MixEngine::kMaxTracks];
+    int              readyQ[MixEngine::kMaxTracks];  // single producer (audio thread)
+    std::atomic<int> readyHead{0};                   // multi-consumer (CAS)
+    std::atomic<int> readyTail{0};
+
+    void*  runner = nullptr;                         // &runSlotA (lives on the callback stack)
+    void (*runA)(void* runner, int slot) = nullptr;
+    const XlethEffectBase::TrackMidiRef* midiDir = nullptr;
+    int      midiCount = 0;
+    unsigned mxcsr     = 0;
+    xleth::audio::RealtimeWorkerPool* pool = nullptr;
+
+    int popReady() noexcept
+    {
+        int h = readyHead.load(std::memory_order_acquire);
+        while (h < readyTail.load(std::memory_order_acquire))
+        {
+            if (readyHead.compare_exchange_weak(h, h + 1, std::memory_order_acq_rel))
+                return readyQ[h];
+        }
+        return -1;
+    }
+};
+
+// Helper-thread side of one parallel block: run any ready slot's phase A until
+// the audio thread closes the block. Every helper adopts the callback thread's
+// floating-point control word (FTZ/DAZ, rounding) and per-block thread-locals,
+// so a chain computes exactly what it would have on the audio thread.
+void MixEngine::parallelTrackWorker(void* p)
+{
+    auto& job = *static_cast<ParallelTrackJob*>(p);
+    const unsigned savedCsr = _mm_getcsr();
+    _mm_setcsr(job.mxcsr);
+    XlethEffectBase::setTrackMidiDirectory(job.midiDir, job.midiCount);
+
+    int idleSpins = 0;
+    while (job.pool->isOpen())
+    {
+        const int slot = job.popReady();
+        if (slot >= 0)
+        {
+            int expected = 0;
+            if (job.claim[slot].compare_exchange_strong(expected, 1, std::memory_order_acq_rel))
+            {
+                job.runA(job.runner, slot);
+                job.done[slot].store(1, std::memory_order_release);
+            }
+            idleSpins = 0;
+            continue;
+        }
+        _mm_pause();
+        if (++idleSpins >= 2048)      // nothing ready for a while: let others run
+        {
+            std::this_thread::yield();
+            idleSpins = 0;
+        }
+    }
+
+    XlethEffectBase::setTrackMidiDirectory(nullptr, 0);
+    (void) XlethEffectBase::takeTailHold();
+    _mm_setcsr(savedCsr);
+}
+
+int MixEngine::getTrackWorkerCount() const noexcept
+{
+    return trackWorkerPool_ ? trackWorkerPool_->numWorkers() : 0;
+}
+
 MixEngine::MixEngine()
 {
     // Publish an empty chain snapshot before anything can call processBlock.
@@ -397,12 +484,19 @@ MixEngine::MixEngine()
 
     // WORLD vocoder content cache lives next to ClipRenderCache so the WORLD
     // dispatch branch (worker thread) can reuse analysis across pitch toggles.
-    worldStretchCache_ = std::make_unique<xleth::audio::WorldStretchCache>();
+    // Budgets scale with installed RAM (HardwareTier::ramCacheMultiplier: 1x
+    // below 24 GB — the historical sizes — 2x to 48 GB, 4x above), so a big
+    // machine keeps more rendered clips / bakes warm instead of re-rendering.
+    worldStretchCache_ = std::make_unique<xleth::audio::WorldStretchCache>(
+        xleth::hw::scaledCacheBytes(xleth::audio::WorldStretchCache::kDefaultMaxBytes));
     clipRenderCache_.setWorldCache(worldStretchCache_.get());
+    clipRenderCache_.setMaxBytes(
+        xleth::hw::scaledCacheBytes(ClipRenderCache::kDefaultMaxBytes));
 
     // Per-slot PREP bake cache. Starts memory-only; the disk tier switches on
     // once a project directory exists (setSlotBakeCacheDir).
-    slotBakeCache_ = std::make_unique<xleth::audio::SlotBakeCache>();
+    slotBakeCache_ = std::make_unique<xleth::audio::SlotBakeCache>(
+        xleth::hw::scaledCacheBytes(xleth::audio::SlotBakeCache::kDefaultMaxBytes));
 
     // Create plugin registry (registers VST3 format manager).
     pluginRegistry_ = std::make_unique<PluginRegistry>();
@@ -425,6 +519,15 @@ MixEngine::~MixEngine()
 {
     // The settle timer calls back into this engine; stop it first.
     fxSettleTimer_.reset();
+
+    // Stop the clip render workers before ANY member goes away. A running
+    // ClipRenderJob borrows worldStretchCache_ (owner_->worldCache()), which is
+    // declared after clipRenderCache_ and so is destroyed before the cache's
+    // own destructor would have stopped the pool: shutting down while WORLD
+    // renders were still in flight (quit, or a test exiting, within a few
+    // seconds of opening a project with pitched clips) was a use-after-free.
+    // shutdown() is idempotent — the member destructor finds nothing left.
+    clipRenderCache_.shutdown();
 
     // Stop the envelope applier before anything else tears down: it writes to
     // effect chains, so it must not be running while they are destroyed.
@@ -2234,6 +2337,18 @@ void MixEngine::rebuildAllSamplers()
 void MixEngine::prepare(double sampleRate, int maxBlockSize)
 {
     preparedSampleRate_ = sampleRate;
+
+    // Parallel track processing helpers: created once, on the first prepare
+    // (message thread, before any callback). None on small machines.
+    if (!trackWorkerPool_)
+    {
+        const int workers = xleth::hw::audioWorkerThreads();
+        if (workers > 0)
+        {
+            trackWorkerPool_  = std::make_unique<xleth::audio::RealtimeWorkerPool>(workers);
+            parallelTrackJob_ = std::make_unique<ParallelTrackJob>();
+        }
+    }
     preparedBlockSize_  = maxBlockSize;
 
     for (int i = 0; i < kMaxTracks; ++i)
@@ -2243,7 +2358,13 @@ void MixEngine::prepare(double sampleRate, int maxBlockSize)
         const float cur = trackParams_[i].volume.load(std::memory_order_relaxed);
         volumeSmoothed_[i].setCurrentAndTargetValue(cur);
         trackCompensationDelays_[i].prepare(sampleRate, maxBlockSize);
+        for (int k = 0; k < kMaxTrackSends; ++k)
+        {
+            sendCompensationDelays_[i][k].setMinimumCapacitySamples(kSendDelayMinCapacity);
+            sendCompensationDelays_[i][k].prepare(sampleRate, maxBlockSize);
+        }
     }
+    sendScratch_.setSize(2, juce::jmax(1, maxBlockSize, trackBufferSize_), false, true, true);
 
     resetLatencyCompensationState();
     pendingLatencyCompensationReset_.store(false, std::memory_order_relaxed);
@@ -2599,7 +2720,7 @@ void MixEngine::invalidateClipCacheImpl(int clipId, const char* trigger, bool qu
 #else
         (void) lane;
 #endif
-        clipRenderCache_.submitJob(clipId, laneKey, *srcBuf, preparedSampleRate_, bakeRate);
+        clipRenderCache_.submitJob(clipId, laneKey, *srcBuf, preparedSampleRate_, bakeRate, quiet);
     };
 
     if (needsProcessing) submitLane(key, "orig");
@@ -2695,9 +2816,11 @@ void MixEngine::syncSidechainTargetBuses()
 
     // Group, per target track, the stable effectInstanceIds that an ENABLED
     // sidechain route currently targets. A disabled route leaves the bus off
-    // (no key would flow anyway); a track-level (empty) target is deferred to a
-    // later prompt and ignored here. Source mute/visual-only is irrelevant to
-    // *enabling* the bus — that only governs whether a key flows at DSP time.
+    // (no key would flow anyway). A track-level (empty) target enables every
+    // capable effect on the track (the AudioGraph wildcard): each effect's own
+    // external switch then decides whether it listens, like FL's sidechain
+    // input selector. Source mute/visual-only is irrelevant to *enabling* the
+    // bus — that only governs whether a key flows at DSP time.
     std::unordered_map<int, std::set<std::string>> targetsByTrack;
     for (const auto* tr : timeline_->getAllTracks())
     {
@@ -2705,8 +2828,10 @@ void MixEngine::syncSidechainTargetBuses()
         for (const auto& route : tr->sidechainRoutes)
         {
             if (!route.enabled) continue;
-            if (route.targetEffectInstanceId.empty()) continue;
-            targetsByTrack[route.targetTrackId].insert(route.targetEffectInstanceId);
+            targetsByTrack[route.targetTrackId].insert(
+                route.targetEffectInstanceId.empty()
+                    ? std::string(AudioGraph::kAllSidechainTargets)
+                    : route.targetEffectInstanceId);
         }
     }
 
@@ -4441,11 +4566,7 @@ void MixEngine::evaluateLfoModulation(int64_t positionSamples,
         for (int ti = 0; ti < cachedTrackSnapshotCount_; ++ti) {
             const auto* t = cachedTrackSnapshot_[ti];
             if (t == nullptr || slotCount >= xleth::RoutePlan::kMaxSlots) continue;
-            routeInputs[slotCount].trackId             = t->id;
-            routeInputs[slotCount].outputTargetTrackId = t->outputRoute.targetTrackId;
-            routeInputs[slotCount].muted               = t->muted;
-            routeInputs[slotCount].solo                = t->solo;
-            routeInputs[slotCount].visualOnly          = t->visualOnly;
+            xleth::fillRoutePlanSlotInput(routeInputs[slotCount], *t);
             ++slotCount;
         }
     }
@@ -5283,6 +5404,11 @@ void MixEngine::resetLatencyCompensationState()
         cachedTrackInsertLatencySamples_[i] = 0;
         cachedTrackCompensationSamples_[i] = 0;
         cachedTrackLatencyEpochs_[i] = 0;
+        for (int k = 0; k < kMaxTrackSends; ++k)
+        {
+            sendCompensationDelays_[i][k].reset();
+            cachedSendCompensationSamples_[i][k] = 0;
+        }
     }
 
     cachedMaxAudibleTrackLatencySamples_ = 0;
@@ -5302,6 +5428,21 @@ void MixEngine::syncTrackCompensationDelayState(int slot,
         trackCompensationDelays_[slot].resetToDelaySamples(compensationSamples);
     else
         trackCompensationDelays_[slot].setTargetDelaySamples(compensationSamples);
+}
+
+void MixEngine::syncSendCompensationDelayState(int slot, bool clearHistory)
+{
+    if (slot < 0 || slot >= kMaxTracks)
+        return;
+
+    for (int k = 0; k < kMaxTrackSends; ++k)
+    {
+        const int comp = juce::jmax(0, cachedSendCompensationSamples_[slot][k]);
+        if (clearHistory)
+            sendCompensationDelays_[slot][k].resetToDelaySamples(comp);
+        else
+            sendCompensationDelays_[slot][k].setTargetDelaySamples(comp);
+    }
 }
 
 int MixEngine::getTrackChainOutputLatencySamplesLocked(int trackId) const
@@ -5326,11 +5467,7 @@ int MixEngine::buildRoutePdcPlanLocked(xleth::RoutePlan& plan,
         for (const auto* t : timeline_->getAllTracks())
         {
             if (t == nullptr || count >= kMaxTracks) continue;
-            inputs[count].trackId             = t->id;
-            inputs[count].outputTargetTrackId = t->outputRoute.targetTrackId;
-            inputs[count].muted               = t->muted;
-            inputs[count].solo                = t->solo;
-            inputs[count].visualOnly          = t->visualOnly;
+            xleth::fillRoutePlanSlotInput(inputs[count], *t);
             chainLatencies[count] = getTrackChainOutputLatencySamplesLocked(t->id);
             if (slotTrackIds != nullptr)
                 slotTrackIds[count] = t->id;
@@ -5599,6 +5736,7 @@ void MixEngine::ensureTrackBuffers(int numSamples)
         buf.setSize(2, numSamples, false, true, false);
     for (auto& buf : sidechainBuffers_)
         buf.setSize(2, numSamples, false, true, false);
+    sendScratch_.setSize(2, numSamples, false, true, false);
 
     trackBufferSize_ = numSamples;
 }
@@ -6545,18 +6683,12 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     // Slot space == trackSlots[] order, read live from the same getAllTracks()
     // snapshot the rest of the block uses, so the plan can never disagree with
     // the buffers it indexes. Pure, allocation-free, no locks — built once here,
-    // outside the per-track processing loop. Output routing only; sends and
-    // sidechain are deferred (Prompt 4+). Junction PDC is deferred (Prompt 2C):
-    // the flat per-track compensation below is intentionally left intact.
+    // outside the per-track processing loop. Covers the primary output route and
+    // every send (FL multi-wiring); sidechain key edges are layered on below.
     xleth::RoutePlanSlotInput routeInputs[kMaxTracks];
     for (int i = 0; i < numTrackSlots; ++i)
     {
-        const auto* t = trackSlots[i].info;
-        routeInputs[i].trackId             = t->id;
-        routeInputs[i].outputTargetTrackId = t->outputRoute.targetTrackId;
-        routeInputs[i].muted               = t->muted;
-        routeInputs[i].solo                = t->solo;
-        routeInputs[i].visualOnly          = t->visualOnly;
+        xleth::fillRoutePlanSlotInput(routeInputs[i], *trackSlots[i].info);
     }
     xleth::RoutePlan routePlan;
     xleth::buildRoutePlan(routeInputs, numTrackSlots, routePlan);
@@ -7179,6 +7311,18 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         }
     }
 
+    // Publish every track's onset buffer for this block so an effect can read
+    // ANOTHER track's notes (Szkrezh Keys source). Cleared when this block ends —
+    // the buffers persist between blocks but their contents are only this block's.
+    XlethEffectBase::TrackMidiRef trackMidiDirectory[kMaxTracks];
+    for (int i = 0; i < numTrackSlots; ++i)
+        trackMidiDirectory[i] = { trackSlots[i].info->id, &trackMidiBuffers_[i] };
+    XlethEffectBase::setTrackMidiDirectory(trackMidiDirectory, numTrackSlots);
+    struct TrackMidiDirectoryScope
+    {
+        ~TrackMidiDirectoryScope() { XlethEffectBase::setTrackMidiDirectory(nullptr, 0); }
+    } trackMidiDirectoryScope;
+
     // [MidiPop] Throttled debug log — every ~500 blocks
     {
         static int midiPopCounter = 0;
@@ -7345,6 +7489,20 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                 recordPdcRetarget();
             }
             syncTrackCompensationDelayState(i, compensation, false);
+
+            const int sendsHere = (i < numTrackSlots) ? routePlan.sendCount[i] : 0;
+            for (int k = 0; k < kMaxTrackSends; ++k)
+            {
+                const int sendComp = (k < sendsHere)
+                                   ? routePdcPlan.sendCompensationSamples[i][k]
+                                   : 0;
+                if (cachedSendCompensationSamples_[i][k] != sendComp)
+                {
+                    cachedSendCompensationSamples_[i][k] = sendComp;
+                    recordPdcRetarget();
+                }
+            }
+            syncSendCompensationDelayState(i, false);
         }
 
         cachedMaxAudibleTrackLatencySamples_ = maxAudibleTrackLatency;
@@ -7438,11 +7596,12 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                 if (scTapCount >= xleth::SidechainPlan::kMaxTaps) break;
 
                 // Resolve the target effect instance on the target chain. A stale
-                // or missing target (deleted effect, empty/track-level id which is
-                // deferred) does not resolve and is skipped silently at DSP — the
-                // route persists but contributes no key.
-                bool resolved = false;
-                if (!route.targetEffectInstanceId.empty())
+                // or missing target (deleted effect) does not resolve and is
+                // skipped silently at DSP — the route persists but contributes no
+                // key. A track-level route (empty id) always resolves: its key
+                // goes to the target track, whatever effects listen there.
+                bool resolved = route.targetEffectInstanceId.empty();
+                if (!resolved)
                 {
                     const auto* target = chains->find(route.targetTrackId);
                     if (target != nullptr && target->chain)
@@ -7474,35 +7633,46 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                     sidechainBuffers_[t].clear(0, numSamples);
     }
 
-    for (int oi = 0; oi < numTrackSlots; ++oi)
+    // ── Per-slot work, split for parallel track processing ────────────────────
+    // Phase A (runSlotA) is everything a slot does up to and including its
+    // insert chain. It reads and writes only that slot's own state plus what its
+    // upstream sources already summed into it (bus input, sends, sidechain key).
+    // Phase B (runSlotB) is everything after the chain — key taps, fader, pan,
+    // sends, PDC, tail bookkeeping, the sums into buses / Master — and is the only
+    // part that writes ANOTHER slot's buffers or outputBuffer.
+    //
+    // Serial mix: A then B per slot in processOrder (exactly the previous loop).
+    // Parallel mix: B still runs only on this thread, strictly in processOrder,
+    // so every float sum lands in the same order as the serial mix and the output
+    // is bit-identical. A runs on helper threads as soon as every upstream slot's
+    // B is done; when this thread reaches a slot nobody has started, it runs that
+    // slot's A itself, so a slow helper wake can never stall the callback.
+    struct SlotAResult
     {
-        // Process in topological + sidechain order so every source slot has
-        // already summed into its bus AND produced its key before the consuming
-        // slot runs its own chain (Prompt 2B output order + Prompt 4C key order).
-        // All per-slot state (buffers, smoothers, latency caches, peaks) is
-        // indexed by the real slot `i`, so iteration changes only the visit order.
-        const int i = scPlan.processOrder[oi];
-        const auto* track = trackSlots[i].info;
-        struct TrackTimingScope
+        bool     active                   = false;   // false: silenced/skipped in A
+        bool     audible                  = false;
+        bool     hasAudio                 = false;
+        bool     isTailing                = false;
+        bool     chainHoldsTail           = false;
+        bool     chainRan                 = false;
+        int      trackCompensationSamples = 0;
+        uint64_t chainNs                  = 0;
+        uint64_t phaseANs                 = 0;
+    };
+    SlotAResult slotA[kMaxTracks];
+
+    auto runSlotA = [&](const int i, const bool onAudioThread)
+    {
+        SlotAResult& r = slotA[i];
+        r = SlotAResult{};
+        const uint64_t phaseStartNs = rtDiagEnabled ? steadyNowNs() : 0;
+        struct PhaseATimer
         {
-            MixEngine* engine = nullptr;
-            bool enabled = false;
-            int trackId = -1;
-            uint64_t startNs = 0;
+            SlotAResult& result; bool enabled; uint64_t startNs;
+            ~PhaseATimer() { if (enabled) result.phaseANs = steadyNowNs() - startNs; }
+        } phaseATimer { r, rtDiagEnabled, phaseStartNs };
 
-            ~TrackTimingScope()
-            {
-                if (enabled && engine != nullptr)
-                    engine->recordTrackProcessTiming(trackId, steadyNowNs() - startNs);
-            }
-        };
-
-        TrackTimingScope trackTiming {
-            this,
-            rtDiagEnabled,
-            track != nullptr ? track->id : -1,
-            rtDiagEnabled ? steadyNowNs() : 0
-        };
+        const auto* track = trackSlots[i].info;
 
         const int trackCompensationSamples = cachedTrackCompensationSamples_[i];
 
@@ -7519,6 +7689,8 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         // audible (the output sum below is gated on `audible`).
         const bool feedsKeyOnly = scPlan.feedsSidechainOnly[i];
         const bool shouldPlay   = audible || feedsKeyOnly;
+        r.audible                  = audible;
+        r.trackCompensationSamples = trackCompensationSamples;
 
         if (!shouldPlay)
         {
@@ -7527,7 +7699,8 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             tailEndSamples_[i] = 0;
             tailBelowThreshRun_[i] = 0;
             syncTrackCompensationDelayState(i, 0, true);
-            continue;
+            syncSendCompensationDelayState(i, true);
+            return;
         }
 
         // Tail-aware processing: keep calling the effect chain after content
@@ -7549,7 +7722,8 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             tailEndSamples_[i] = 0;
             tailBelowThreshRun_[i] = 0;
             syncTrackCompensationDelayState(i, trackCompensationSamples, true);
-            continue;
+            syncSendCompensationDelayState(i, true);
+            return;
         }
 
         syncTrackCompensationDelayState(i, trackCompensationSamples, false);
@@ -7562,6 +7736,10 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         // Per-track insert effect chain (if present) — runs on the full-level
         // input so level-dependent effects (compressor, gate, etc.) respond to
         // the original dynamics, not the fader position.
+        // Raised by an effect that still holds material it will play while its
+        // output is momentarily silent (XlethEffectBase::raiseTailHold); the
+        // tail drain below then treats this block as not silent.
+        bool chainHoldsTail = false;
         if (chainsLocked)
         {
             const auto* chainEntry = chains->find(track->id);
@@ -7620,7 +7798,10 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                 }
 
                 const uint64_t chainStartNs = rtDiagEnabled ? steadyNowNs() : 0;
-                if (rtDiagEnabled)
+                // Per-plugin timing goes through the telemetry ring, which has a
+                // single producer (this callback thread): helper threads only
+                // measure the whole chain, and phase B records it from here.
+                if (rtDiagEnabled && onAudioThread)
                 {
                     XlethEffectBase::RealtimeTimingContext context;
                     context.enabled = true;
@@ -7632,14 +7813,18 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                     XlethEffectBase::setRealtimeTimingContext(context);
                 }
 
+                (void) XlethEffectBase::takeTailHold();
                 chainEntry->chain->processBlock(trackBuffers_[i], numSamples,
                                                 trackMidiBuffers_[i]);
+                chainHoldsTail = XlethEffectBase::takeTailHold();
 
                 if (rtDiagEnabled)
                 {
-                    XlethEffectBase::setRealtimeTimingContext({});
-                    recordTrackChainTiming(track->id, steadyNowNs() - chainStartNs);
+                    if (onAudioThread)
+                        XlethEffectBase::setRealtimeTimingContext({});
+                    r.chainNs = steadyNowNs() - chainStartNs;
                 }
+                r.chainRan = true;
 
                 // Drop the borrowed key pointers so no later block reads them.
                 if (deliverKey)
@@ -7648,6 +7833,38 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                 chainEntry->chain->endRealtimeUse();
             }
         }
+
+        r.active         = true;
+        r.hasAudio       = hasAudio;
+        r.isTailing      = isTailing;
+        r.chainHoldsTail = chainHoldsTail;
+    };
+
+    auto runSlotB = [&](const int i)
+    {
+        const SlotAResult& r = slotA[i];
+        const auto* track = trackSlots[i].info;
+        const uint64_t phaseBStartNs = rtDiagEnabled ? steadyNowNs() : 0;
+        struct TrackTimingScope
+        {
+            MixEngine* engine; bool enabled; int trackId; uint64_t phaseANs; uint64_t startNs;
+            ~TrackTimingScope()
+            {
+                if (enabled && engine != nullptr)
+                    engine->recordTrackProcessTiming(trackId, phaseANs + (steadyNowNs() - startNs));
+            }
+        } trackTiming { this, rtDiagEnabled, track != nullptr ? track->id : -1, r.phaseANs, phaseBStartNs };
+
+        if (rtDiagEnabled && r.chainRan)
+            recordTrackChainTiming(track->id, r.chainNs);
+        if (!r.active)
+            return;
+
+        const int  trackCompensationSamples = r.trackCompensationSamples;
+        const bool audible        = r.audible;
+        const bool hasAudio       = r.hasAudio;
+        const bool isTailing      = r.isTailing;
+        const bool chainHoldsTail = r.chainHoldsTail;
 
         // Sidechain pre-fader key tap (Prompt 4C+4D): snapshot the post-chain,
         // pre-fader signal of this source into each enabled pre-fader route's
@@ -7703,6 +7920,42 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         const float preCompensationMag =
             hasAudio ? 0.0f : trackBuffers_[i].getMagnitude(0, numSamples);
 
+        // Sends (FL multi-wiring): the post-fader/post-pan signal also sums into
+        // every send target's pre-chain buffer at the send's level. Each edge is
+        // aligned by its OWN delay line (per-edge junction PDC), so it is tapped
+        // here, BEFORE the primary edge's in-place compensation delay below. The
+        // targets run later in topo order (sends are route-plan edges). A level
+        // change ramps across the block from the edge's previous level.
+        if (audible && numSamples <= sendScratch_.getNumSamples())
+        {
+            for (int k = 0; k < routePlan.sendCount[i]; ++k)
+            {
+                const int targetSlot = routePlan.sendTargetSlot[i][k];
+                if (targetSlot < 0 || targetSlot >= numTrackSlots)
+                    continue;
+                const int nCh = std::min({ sendScratch_.getNumChannels(),
+                                           trackBuffers_[i].getNumChannels(),
+                                           trackBuffers_[targetSlot].getNumChannels() });
+                for (int ch = 0; ch < nCh; ++ch)
+                    sendScratch_.copyFrom(ch, 0, trackBuffers_[i], ch, 0, numSamples);
+                sendCompensationDelays_[i][k].process(sendScratch_, numSamples);
+
+                const float gainTo   = routePlan.sendGain[i][k];
+                const float gainFrom = sendGainPrev_[i][k];
+                auto& targetBuf = trackBuffers_[targetSlot];
+                for (int ch = 0; ch < nCh; ++ch)
+                {
+                    if (gainFrom == gainTo)
+                        targetBuf.addFrom(ch, 0, sendScratch_, ch, 0, numSamples, gainTo);
+                    else
+                        targetBuf.addFromWithRamp(ch, 0, sendScratch_.getReadPointer(ch),
+                                                  numSamples, gainFrom, gainTo);
+                }
+                sendGainPrev_[i][k] = gainTo;
+                receivedRoutedInput[targetSlot] = true;
+            }
+        }
+
         {
             const uint64_t pdcStartNs = rtDiagEnabled ? steadyNowNs() : 0;
             trackCompensationDelays_[i].process(trackBuffers_[i], numSamples);
@@ -7745,7 +7998,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         }
         else  // isTailing — this point is reached only when hasAudio || isTailing
         {
-            if (preCompensationMag < kRealtimeTailThresholdLinear)
+            if (preCompensationMag < kRealtimeTailThresholdLinear && !chainHoldsTail)
                 tailBelowThreshRun_[i] += numSamples;
             else
                 tailBelowThreshRun_[i] = 0;
@@ -7781,7 +8034,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         // are NOT audible — skip every audible sum so the key never leaks into
         // Master or any bus.
         if (!audible)
-            continue;
+            return;
 
         // Route-aware sum (Prompt 2B). A default route (-1) sums to Master
         // (outputBuffer); a bus route sums into the target track's pre-chain
@@ -7804,6 +8057,101 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                 targetBuf.addFrom(ch, 0, trackBuffers_[i], ch, 0, numSamples);
             receivedRoutedInput[targetSlot] = true;
         }
+    };
+
+    xleth::audio::RealtimeWorkerPool* const trackPool = trackWorkerPool_.get();
+    const bool parallelMix = trackPool != nullptr && trackPool->numWorkers() > 0
+                          && parallelTrackJob_ != nullptr
+                          && parallelTracksEnabled_.load(std::memory_order_relaxed)
+                          && chainsLocked && numTrackSlots >= 2;
+    if (!parallelMix)
+    {
+        for (int oi = 0; oi < numTrackSlots; ++oi)
+        {
+            // Topological + sidechain order: every source slot has summed into its
+            // bus AND produced its key before the consuming slot runs its chain.
+            const int i = scPlan.processOrder[oi];
+            runSlotA(i, true);
+            runSlotB(i);
+        }
+    }
+    else
+    {
+        ParallelTrackJob& job = *parallelTrackJob_;
+        int inDeg[kMaxTracks] = {};
+        for (int s = 0; s < numTrackSlots; ++s)
+        {
+            job.claim[s].store(0, std::memory_order_relaxed);
+            job.done[s].store(0, std::memory_order_relaxed);
+            job.edgeCount[s] = 0;
+        }
+        // Every way a slot's phase B writes into another slot: its output route,
+        // its sends, and its sidechain key taps. The target's phase A may start
+        // only after all of these sources have run phase B.
+        auto addEdge = [&](int u, int t)
+        {
+            if (u < 0 || u >= numTrackSlots || t < 0 || t >= numTrackSlots || t == u) return;
+            if (job.edgeCount[u] >= ParallelTrackJob::kMaxEdgesPerSlot) return;
+            job.edgeTarget[u][job.edgeCount[u]++] = t;
+            ++inDeg[t];
+        };
+        for (int u = 0; u < numTrackSlots; ++u)
+        {
+            addEdge(u, routePlan.outputTargetSlot[u]);
+            for (int k = 0; k < routePlan.sendCount[u]; ++k)
+                addEdge(u, routePlan.sendTargetSlot[u][k]);
+        }
+        if (scPlan.anyActive)
+            for (int k = 0; k < scPlan.tapCount; ++k)
+                addEdge(scPlan.tapSourceSlot[k], scPlan.tapTargetSlot[k]);
+
+        int readyTail = 0;
+        for (int oi = 0; oi < numTrackSlots; ++oi)
+        {
+            const int i = scPlan.processOrder[oi];
+            job.inDeg[i].store(inDeg[i], std::memory_order_relaxed);
+            if (inDeg[i] == 0)
+                job.readyQ[readyTail++] = i;
+        }
+        job.readyHead.store(0, std::memory_order_relaxed);
+        job.readyTail.store(readyTail, std::memory_order_release);
+        job.runner    = &runSlotA;
+        job.runA      = [](void* runner, int slot) { (*static_cast<decltype(runSlotA)*>(runner))(slot, false); };
+        job.midiDir   = trackMidiDirectory;
+        job.midiCount = numTrackSlots;
+        job.mxcsr     = _mm_getcsr();   // helpers adopt this thread's FTZ/DAZ/rounding
+        job.pool      = trackPool;
+        trackPool->open(&MixEngine::parallelTrackWorker, &job);
+
+        for (int oi = 0; oi < numTrackSlots; ++oi)
+        {
+            const int i = scPlan.processOrder[oi];
+            if (job.done[i].load(std::memory_order_acquire) == 0)
+            {
+                int expected = 0;
+                if (job.claim[i].compare_exchange_strong(expected, 1, std::memory_order_acq_rel))
+                {
+                    runSlotA(i, true);
+                    job.done[i].store(1, std::memory_order_release);
+                }
+                else
+                {
+                    while (job.done[i].load(std::memory_order_acquire) == 0)
+                        _mm_pause();
+                }
+            }
+            runSlotB(i);
+            for (int e = 0; e < job.edgeCount[i]; ++e)
+            {
+                const int t = job.edgeTarget[i][e];
+                if (job.inDeg[t].fetch_sub(1, std::memory_order_acq_rel) == 1)
+                {
+                    job.readyQ[readyTail++] = t;
+                    job.readyTail.store(readyTail, std::memory_order_release);
+                }
+            }
+        }
+        trackPool->close();
     }
 
     // ── Preview samplers (audition bus, also audible during playback) ────────

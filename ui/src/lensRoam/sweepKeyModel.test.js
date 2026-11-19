@@ -66,7 +66,11 @@ describe('the lane over the Sweep channels', () => {
     const [zlo] = KEY_LIMITS.zoom
     expect(zlo).toBeGreaterThan(0)
     expect(clampKeyValue('zoom', -3)).toBe(zlo)
-    expect(clampKeyValue('centerX', 9)).toBe(KEY_LIMITS.centerX[1])
+    // centre and rotation have no ceiling: the lane grows to fit the key
+    expect(clampKeyValue('centerX', 9)).toBe(9)
+    expect(clampKeyValue('centerY', -40)).toBe(-40)
+    expect(clampKeyValue('rotationDeg', 5000)).toBe(5000)
+    expect(roamLaneRange('centerX', [K('centerX', 0, 9)], {}).max).toBeGreaterThanOrEqual(9)
     expect(clampKeyValue('centerY', Number.NaN)).toBe(0)
     expect(clampKeyValue('zoom', Number.NaN)).toBe(1)
   })

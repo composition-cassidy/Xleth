@@ -31,7 +31,8 @@
 //   Clip Track event          Clip::lens            LensTrack {base, keys}
 //   Pattern Track source      TrackInfo::trackLens  regionId -> LensTrack {base, hitCurve}
 //                             (the {trackId, regionId} key: the map lives on the track)
-//   Track                     TrackInfo::roam       RoamTrack {base, keys}
+//   Track                     TrackInfo::roam       RoamTrack {base, keys, masks}
+//                             (masks: Motion view; parent: TrackInfo::parentTrackId)
 //   Per note                  PatternNote::lensOverride  LensNoteOverride {mode, keys}
 //                             (the {patternId, noteId} key: it lives on the note; P5)
 //
@@ -54,9 +55,13 @@
 #include <nlohmann/json.hpp>
 
 #include "KeyCurve.h"
+#include "MotionSchema.h"
+
+#include <array>
 
 class Timeline;
 struct TrackInfo;
+struct VisualEffect;
 
 // ─── Enums ────────────────────────────────────────────────────────────────────
 
@@ -125,20 +130,48 @@ struct LensParams {
 struct RoamParams {
     float      offsetX     = 0.0f;  // cell units: 1.0 = one cell width
     float      offsetY     = 0.0f;  // cell units: 1.0 = one cell height
-    float      scale       = 1.0f;  // multiplier
+    // `scale` is the cell's width multiplier, and its height one too while
+    // `scaleLinked` (the default, and what every project saved before Scale X/Y
+    // split loads as). Unlinked, `scaleY` is the height multiplier. A linked
+    // cell never reads `scaleY` (nor its keys), so old projects render exactly
+    // as before. Read both through scaleXEff() / scaleYEff().
+    float      scale       = 1.0f;  // multiplier (X when unlinked)
+    float      scaleY      = 1.0f;  // multiplier, read only when !scaleLinked
+    bool       scaleLinked = true;
     float      rotationDeg = 0.0f;  // about the cell center
+    // Border crop: the share of the DRAWN cell (after offset / scale /
+    // rotation, so it travels with the cell) trimmed off each edge, 0..1. The
+    // picture is not scaled: a cropped edge just stops showing, so a cell's
+    // shape changes without squishing the video. Rendered by the Mask pass.
+    float      cropLeft    = 0.0f;
+    float      cropRight   = 0.0f;
+    float      cropTop     = 0.0f;
+    float      cropBottom  = 0.0f;
     RoamBounds bounds      = RoamBounds::Clip;
     RoamLayer  layer       = RoamLayer::GridOrder;
 
+    float scaleXEff() const { return scale; }
+    float scaleYEff() const { return scaleLinked ? scale : scaleY; }
+    bool  hasCrop() const {
+        return cropLeft != 0.0f || cropRight != 0.0f || cropTop != 0.0f || cropBottom != 0.0f;
+    }
+
     bool isIdentity() const {
         return offsetX == 0.0f && offsetY == 0.0f
-            && scale == 1.0f && rotationDeg == 0.0f
+            && scale == 1.0f && scaleYEff() == 1.0f && rotationDeg == 0.0f
+            && !hasCrop()
             && bounds == RoamBounds::Clip && layer == RoamLayer::GridOrder;
     }
 
+    // scaleY of a linked cell is not part of its value (never read), so it is
+    // not compared; scaleLinked itself is (it changes what the next edit means).
     bool operator==(const RoamParams& o) const {
         return offsetX == o.offsetX && offsetY == o.offsetY && scale == o.scale
-            && rotationDeg == o.rotationDeg && bounds == o.bounds && layer == o.layer;
+            && scaleLinked == o.scaleLinked && (scaleLinked || scaleY == o.scaleY)
+            && rotationDeg == o.rotationDeg
+            && cropLeft == o.cropLeft && cropRight == o.cropRight
+            && cropTop == o.cropTop && cropBottom == o.cropBottom
+            && bounds == o.bounds && layer == o.layer;
     }
     bool operator!=(const RoamParams& o) const { return !(*this == o); }
 };
@@ -158,10 +191,12 @@ struct RoamParams {
 //   Body    `pos` = fraction 0..1 of the span between head end and tail start.
 //   Tail    `pos` ticks before the clamped note end.
 //
-// `interp` shapes the segment LEAVING the key (Hold | Linear | EaseOut; see
-// KeyCurve.h). P7 replaced P1's never-evaluated bezier handles with it; a
-// stored key without "interp" loads as Linear, which is what P1's default
-// handles described.
+// `interp` shapes the segment LEAVING the key (Hold | Linear | EaseOut |
+// Bezier; see KeyCurve.h). P7 replaced P1's never-evaluated p1x..p2y handles
+// with it; a stored key without "interp" loads as Linear, which is what P1's
+// default handles described. A Bezier key carries its own handles in `bez`
+// (saved as "bez": [x1, y1, x2, y2]); every other key ignores `bez` and keeps
+// the default, so two keys that only differ in an unread `bez` never exist.
 //
 // What a key's value MEANS (P7):
 //   Clip lens keys and Roam keys are ABSOLUTE: a keyed channel follows its
@@ -174,8 +209,16 @@ struct RoamParams {
 enum class KeyAnchor : uint8_t { Origin = 0, Head = 1, Body = 2, Tail = 3 };
 
 enum class LensChannel : uint8_t { CenterX = 0, CenterY = 1, Zoom = 2, RotationDeg = 3 };
-enum class RoamChannel : uint8_t { OffsetX = 0, OffsetY = 1, Scale = 2, RotationDeg = 3 };
-inline constexpr int kLensRoamChannels = 4;   // both enums have exactly four
+// Scale is the width (and the height while linked); ScaleY only counts unlinked.
+// Crop channels are fractions 0..1 of the drawn cell, kept below 1 together.
+enum class RoamChannel : uint8_t {
+    OffsetX = 0, OffsetY = 1, Scale = 2, RotationDeg = 3,
+    ScaleY = 4, CropLeft = 5, CropRight = 6, CropTop = 7, CropBottom = 8,
+};
+// Slots in a ChannelRuns: sized for the widest enum (Roam). Lens, Sweep and the
+// Mask scalars use the first four (or three) and leave the rest empty.
+inline constexpr int kLensRoamChannels = 9;
+inline constexpr int kLensChannelCount = 4;   // LensChannel has exactly four
 
 template <typename Channel>
 struct LensRoamKey {
@@ -184,6 +227,7 @@ struct LensRoamKey {
     double                  pos    = 0.0;
     double                  value  = 0.0;
     xleth::keycurve::Interp interp = xleth::keycurve::Interp::Linear;
+    xleth::keycurve::BezierHandles bez;   // Bezier only; default otherwise
 };
 
 using LensKey = LensRoamKey<LensChannel>;
@@ -196,13 +240,139 @@ struct KeyedParams {
     std::vector<Key> keys;
     // Head / Body / Tail zone lengths and the short-note rule, for
     // note-anchored keys. Only a Pattern Track source's hit curve reads it
-    // (saved with that trackLens entry). A clip lens and a roam are not
-    // note-relative: they ignore it and never save it.
+    // (saved with that trackLens entry). A clip lens is not note-relative: it
+    // ignores it and never saves it.
     xleth::keycurve::NoteZones zones;
 };
 
 using LensTrack = KeyedParams<LensParams, LensKey>;
-using RoamTrack = KeyedParams<RoamParams, RoamKey>;
+
+// ─── Masks (Motion view, docs/XLETH_MOTION_VIEW_DESIGN.md 2.2, R11-R15) ──────
+// A Mask is a closed bezier path in the cell's own space that cuts what the
+// cell shows. It belongs to Roam (it moves, scales, rotates, bounces and blurs
+// with the cell). Several masks per track combine top to bottom (R12).
+//
+// Space (R11): normalized CELL space. Origin at the centre of the drawn cell;
+// x in [-0.5, 0.5] spans the cell width left -> right, y in [-0.5, 0.5] its
+// height top -> bottom (y down). Feather and Expansion are distances in units
+// of the drawn cell's SHORTER side.
+//
+// Every mask has one base shape and optional SHAPE keys (each stores every
+// vertex; all have the base's vertex count, R14) plus scalar keys on the
+// Mask channels below. Keys are timeline-absolute (anchor Origin, TimelineTicks),
+// like every Roam key, and ABSOLUTE: a keyed channel follows its keys, an
+// unkeyed one holds the base.
+//
+// Channel names, identities, clamps and the caps come from the motion schema
+// (model/MotionSchema.h): mask.feather / mask.expansion / mask.opacity carry
+// engineIndex 0 / 1 / 2 = MaskChannel.
+enum class MaskChannel : uint8_t { Feather = 0, Expansion = 1, Opacity = 2 };
+inline constexpr int kMaskChannels = 3;
+using MaskKey = LensRoamKey<MaskChannel>;
+
+// Rectangle / Ellipse are kinds of the same path (4 vertices); the vertices are
+// always stored. Editing one vertex of a Rectangle or Ellipse makes it a Path.
+enum class MaskKind : uint8_t { Rectangle = 0, Ellipse = 1, Path = 2 };
+enum class MaskMode : uint8_t { Add = 0, Subtract = 1, Intersect = 2 };
+
+// One path vertex. The tangents are RELATIVE to the vertex (handle offsets);
+// a corner has zero tangents. Wire form: [x, y, inX, inY, outX, outY].
+struct MaskVertex {
+    double x = 0.0, y = 0.0;
+    double inX = 0.0, inY = 0.0;
+    double outX = 0.0, outY = 0.0;
+    bool operator==(const MaskVertex& o) const {
+        return x == o.x && y == o.y && inX == o.inX && inY == o.inY
+            && outX == o.outX && outY == o.outY;
+    }
+    bool operator!=(const MaskVertex& o) const { return !(*this == o); }
+};
+
+struct MaskShape {
+    bool closed = true;                   // v1: always closed (open paths are rejected)
+    std::vector<MaskVertex> vertices;     // 3..32 (schema limits)
+    bool operator==(const MaskShape& o) const { return closed == o.closed && vertices == o.vertices; }
+    bool operator!=(const MaskShape& o) const { return !(*this == o); }
+};
+
+struct MaskParams {
+    MaskShape shape;
+    double    feather   = 0.0;            // [0, 1] shorter-side units, centred on the edge
+    double    expansion = 0.0;            // [-1, 1] shorter-side units
+    double    opacity   = 1.0;            // [0, 1]; 0 = the mask has no effect
+    MaskMode  mode      = MaskMode::Add;
+    bool      invert    = false;
+    bool operator==(const MaskParams& o) const {
+        return shape == o.shape && feather == o.feather && expansion == o.expansion
+            && opacity == o.opacity && mode == o.mode && invert == o.invert;
+    }
+    bool operator!=(const MaskParams& o) const { return !(*this == o); }
+};
+
+// A shape key: the whole path at one timeline tick. interp/bez shape the
+// segment LEAVING the key (the blend factor every vertex and tangent lerps by).
+struct MaskShapeKey {
+    double                         pos    = 0.0;   // timeline ticks
+    xleth::keycurve::Interp        interp = xleth::keycurve::Interp::Linear;
+    xleth::keycurve::BezierHandles bez;            // Bezier only; default otherwise
+    std::vector<MaskVertex>        vertices;       // the base's vertex count
+    bool operator==(const MaskShapeKey& o) const {
+        return pos == o.pos && interp == o.interp
+            && (interp != xleth::keycurve::Interp::Bezier || bez == o.bez)
+            && vertices == o.vertices;
+    }
+    bool operator!=(const MaskShapeKey& o) const { return !(*this == o); }
+};
+
+struct RoamMask {
+    int                       id   = 0;          // > 0, unique within the track
+    std::string               name;              // <= 64 characters
+    MaskKind                  kind = MaskKind::Path;
+    MaskParams                base;
+    std::vector<MaskKey>      keys;              // feather / expansion / opacity, Origin
+    std::vector<MaskShapeKey> shapeKeys;         // ascending pos, one per pos
+    bool operator==(const RoamMask& o) const {
+        return id == o.id && name == o.name && kind == o.kind && base == o.base
+            && keys == o.keys && shapeKeys == o.shapeKeys;
+    }
+    bool operator!=(const RoamMask& o) const { return !(*this == o); }
+};
+
+// A track's Roam: its own struct (not the KeyedParams alias LensTrack uses), so
+// the masks belong to Roam only. Roam keys are timeline ticks; Roam never had
+// note zones (it never saved them), so it carries none.
+struct RoamTrack {
+    RoamParams            base;
+    std::vector<RoamKey>  keys;
+    std::vector<RoamMask> masks;    // top to bottom; saved only when non-empty
+};
+
+// ─── Video effect parameter keys (Motion view) ───────────────────────────────
+// One key on one param of one chain effect. `uid` is VisualEffect::uid, `param`
+// the params[] index, `pos` timeline ticks (anchor Origin), `value` the param's
+// own units (the same number a static edit writes). Absolute, like a Roam key.
+struct FxKey {
+    int                     uid    = 0;
+    int                     param  = 0;
+    double                  pos    = 0.0;
+    double                  value  = 0.0;
+    xleth::keycurve::Interp interp = xleth::keycurve::Interp::Linear;
+    xleth::keycurve::BezierHandles bez;   // Bezier only; default otherwise
+    bool operator==(const FxKey& o) const {
+        return uid == o.uid && param == o.param && pos == o.pos && value == o.value
+            && interp == o.interp
+            && (interp != xleth::keycurve::Interp::Bezier || bez == o.bez);
+    }
+    bool operator!=(const FxKey& o) const { return !(*this == o); }
+};
+
+namespace fxparam {
+// The params[] of a chain effect that can be animated: continuous scalars. Colours
+// (RGB), enums, flags, the Echo's tap count and its Delay binding are not. Mirrors
+// ui/src/components/devices/video/videoFxCatalog.js (CHAIN_PARAMS, minus Taps).
+// `type` is VisualEffect::Type as an int. True and [lo, hi] when animatable.
+bool range(int type, int param, double& lo, double& hi);
+} // namespace fxparam
 
 // ─── Sweep (P11, spec "Sweep lane") ──────────────────────────────────────────
 // A track's timeline-absolute Lens offset. Keys are Lens channels (centerX,
@@ -249,12 +419,14 @@ struct LensNoteOverride {
 
 using LensNoteOverridePtr = std::shared_ptr<const LensNoteOverride>;
 
-// Exact compares (channel, anchor, pos, value, interp, in stored order): what
-// an edit command uses to decide whether it changes anything.
+// Exact compares (channel, anchor, pos, value, interp, and a Bezier key's
+// handles, in stored order): what an edit command uses to decide whether it
+// changes anything.
 template <typename Channel>
 inline bool operator==(const LensRoamKey<Channel>& a, const LensRoamKey<Channel>& b) {
     return a.channel == b.channel && a.anchor == b.anchor && a.pos == b.pos
-        && a.value == b.value && a.interp == b.interp;
+        && a.value == b.value && a.interp == b.interp
+        && (a.interp != xleth::keycurve::Interp::Bezier || a.bez == b.bez);
 }
 template <typename Channel>
 inline bool operator!=(const LensRoamKey<Channel>& a, const LensRoamKey<Channel>& b) {
@@ -267,6 +439,40 @@ inline bool sameLensOverride(const LensNoteOverridePtr& a, const LensNoteOverrid
     if (!a || !b) return false;
     return a->mode == b->mode && a->keys == b->keys;
 }
+
+// ─── Evaluated masks for one cell (render-request copy, design 3.3) ──────────
+// Fixed capacity from the schema caps, so a CellFrameRequest can carry it by
+// value with no allocation. Filled by LensRoamSnapshot::masksAt.
+inline constexpr int kMaxMasksPerTrack        = motionschema::kMaxMasksPerTrack;         // 8
+inline constexpr int kMaxMaskVerticesPerTrack = motionschema::kMaxMaskVerticesPerTrack;  // 64
+
+// One evaluated vertex, cell space (R11), tangents relative to the vertex.
+struct MaskVertexF { float x, y, inX, inY, outX, outY; };
+
+struct MaskFrameEntry {
+    uint8_t  mode;          // MaskMode
+    uint8_t  invert;        // 0 / 1
+    uint8_t  vertexCount;   // 3..32
+    uint16_t firstVertex;   // into MaskFrame::verts
+    float    feather, expansion, opacity;   // clamped into the schema clamps
+};
+
+// A frame holds the track's user masks plus ONE more mask: the Roam border crop
+// (an Intersect rectangle appended last by masksAt, 4 corner vertices), so a
+// track with the full 8 masks can still crop.
+inline constexpr int kCropMaskVertices  = 4;
+// Points the crop rectangle may flatten to: 4 straight corners, or a rounded rectangle
+// (4 arcs of up to 15 points) when the cell has corner rounding.
+inline constexpr int kCropMaskPoints    = 64;
+inline constexpr int kMaskFrameMasks    = kMaxMasksPerTrack + 1;
+inline constexpr int kMaskFrameVertices = kMaxMaskVerticesPerTrack + kCropMaskVertices;
+
+struct MaskFrame {
+    uint8_t count = 0;      // masks in use, top to bottom (R12 combination order)
+    int8_t  cropSlot = -1;  // the entry that is the Roam crop rectangle, -1 = none
+    std::array<MaskFrameEntry, kMaskFrameMasks>     masks;
+    std::array<MaskVertexF, kMaskFrameVertices> verts;
+};
 
 namespace lensroam {
 
@@ -284,6 +490,7 @@ xleth::keycurve::Key toCurveKey(const LensRoamKey<Channel>& k, xleth::keycurve::
     xleth::keycurve::Key c;
     c.value  = k.value;
     c.interp = k.interp;
+    if (k.interp == xleth::keycurve::Interp::Bezier) c.bez = k.bez;
     switch (k.anchor) {
         case KeyAnchor::Head: c.position = Position::head(k.pos); break;
         case KeyAnchor::Body: c.position = Position::body(k.pos); break;
@@ -318,6 +525,62 @@ RoamTrack      roamTrackFromJson(const nlohmann::json& j);
 nlohmann::json sweepTrackToJson(const SweepTrack& t);
 SweepTrack     sweepTrackFromJson(const nlohmann::json& j);
 
+// ── Masks (design 2.2) ────────────────────────────────────────────────────────
+// roamTrackToJson writes "masks" only when the track has one, so a project
+// with no masks saves exactly as before.
+//
+// Wire / file shape of one mask:
+//   { id, name, kind: Rectangle|Ellipse|Path,
+//     base: { shape: { closed: true, vertices: [[x,y,inX,inY,outX,outY], ...] },
+//             feather, expansion, opacity, mode: Add|Subtract|Intersect, invert },
+//     keys: [{ channel: feather|expansion|opacity, anchor: Origin, pos, value,
+//              interp, bez? }],
+//     shapeKeys: [{ pos, interp, bez?, vertices: [[...6 numbers], ...] }] }
+nlohmann::json        maskToJson(const RoamMask& m);
+nlohmann::json        masksToJson(const std::vector<RoamMask>& masks);
+// TOLERANT (project load): a mask whose base shape is malformed (not 3..32
+// vertices of six finite numbers) is dropped; a missing / invalid / duplicate id
+// gets a fresh one (max + 1); a name is cut to 64 characters; an unknown kind
+// loads as Path, an unknown mode as Add; scalars missing -> identity, out of
+// the schema clamp -> clamped; malformed keys and shape keys (wrong vertex
+// count, non-finite) are dropped; shape keys are sorted by pos (a later key at
+// the same pos wins). Masks past the caps (8 per track, 64 vertices in total)
+// are dropped in order.
+std::vector<RoamMask> masksFromJson(const nlohmann::json& j);
+// STRICT (the timeline_setTrackMasks RPC): the whole list. Unknown field, wrong
+// type, non-finite number, value outside the schema clamp, unknown enum string,
+// open path, a vertex count outside 3..32, a shape key whose vertex count is
+// not the base's, two shape keys at one pos, a duplicate or non-positive id, a
+// name over 64 characters, a key whose anchor is not Origin or pos < 0, or a
+// cap exceeded -> false + `err` (nothing written to `out`). Required per mask:
+// `id` and `base.shape.vertices`; everything else defaults (name "Mask <id>",
+// kind Path, identity scalars, no keys). Shape keys come back sorted by pos.
+bool masksFromJsonStrict(const nlohmann::json& j, std::vector<RoamMask>& out, std::string& err);
+
+const char* maskKindToString(MaskKind k);
+const char* maskModeToString(MaskMode m);
+const char* maskChannelToString(MaskChannel c);
+
+// Default shapes (design 2.2): Rectangle = 4 corners clockwise from the top
+// left, zero tangents; Ellipse = 4 vertices top, right, bottom, left with
+// kappa tangents (clockwise on screen, y down). The UI adds them inset +-0.4 /
+// radii 0.4.
+inline constexpr double kEllipseKappa = 0.5522847498;
+MaskShape rectangleMaskShape(double halfW, double halfH);
+MaskShape ellipseMaskShape(double rx, double ry);
+
+// Every vertex of every mask's base shape (what the 64-per-track cap counts).
+int maskVertexTotal(const std::vector<RoamMask>& masks);
+
+// ── Roam evaluated straight from the model (message thread; allocates) ───────
+// The same compile + evaluation path as LensRoamSnapshot::roamAt, so the value
+// is bit-identical to what the renderer computes at that tick. Used by the
+// Parent keep-on-screen solve (model/ParentMath.h).
+RoamParams roamAtTick(const RoamTrack& t, double tick);
+// True when the track has at least one key on channel `c` (that channel then
+// ignores the base).
+bool roamChannelKeyed(const RoamTrack& t, RoamChannel c);
+
 // TrackInfo::trackLens as an array of {regionId, base, hitCurve, zones},
 // ascending regionId. zones = {headTicks, tailTicks, shortNote: Squash|Cut};
 // a missing or malformed field loads as the spec default (120, 240, Squash).
@@ -334,9 +597,19 @@ LensNoteOverridePtr lensNoteOverrideFromJson(const nlohmann::json& j);
 const char* lensOverrideModeToString(LensOverrideMode m);
 
 const char* interpToString(xleth::keycurve::Interp i);
+// A Bezier key's handles as [x1, y1, x2, y2]. The reader is strict: it returns
+// false (and leaves `out` alone) unless `j` is an array of four finite
+// numbers; x1 / x2 are clamped into [0, 1] (KeyCurve's sanitizeBezier).
+nlohmann::json bezierToJson(const xleth::keycurve::BezierHandles& b);
+bool           bezierFromJson(const nlohmann::json& j, xleth::keycurve::BezierHandles& out);
 const char* shortNoteRuleToString(xleth::keycurve::ShortNoteRule r);
 nlohmann::json             noteZonesToJson(const xleth::keycurve::NoteZones& z);
 xleth::keycurve::NoteZones noteZonesFromJson(const nlohmann::json& j);
+
+// TrackInfo::fxKeys as an array of {uid, param, pos, value, interp, bez?}. The
+// reader drops a malformed key (non-finite, uid <= 0, param outside 0..15).
+nlohmann::json      fxKeysToJson(const std::vector<FxKey>& keys);
+std::vector<FxKey>  fxKeysFromJson(const nlohmann::json& j);
 
 const char* lensFitToString(LensFit f);
 const char* lensFlipToString(LensFlip f);
@@ -391,8 +664,56 @@ struct LensRoamSnapshot {
         LensParams  sourceFallback;
         ChannelRuns roamKeys{};            // TimelineTicks, absolute values
         bool        roamKeyed = false;
+        // The track crops its cell (a non-zero base or any crop key): masksAt
+        // appends the crop as the last mask. Precomputed so a frame without
+        // masks or crop costs one flag test.
+        bool        cropActive = false;
         ChannelRuns sweepKeys{};           // TimelineTicks, a LAYER (P11)
         bool        swept = false;
+        // Motion view. The RESOLVED parent: -1 when none, when the stored id
+        // is dangling (no such track) or names the track itself. Cycles are
+        // cut by parentChain (bounded walk), never here.
+        int         parentTrackId = -1;
+        // This track's compiled masks: masks[maskFirst, maskFirst + maskCount).
+        uint32_t    maskFirst = 0;
+        uint8_t     maskCount = 0;
+        // This track's compiled video-effect param keys: fxRuns[fxFirst, fxFirst + fxCount).
+        uint32_t    fxFirst = 0;
+        uint32_t    fxCount = 0;
+    };
+
+    // One animated param of one chain effect (Motion view). The run lives in the
+    // shared `keys` pool (TimelineTicks, absolute); lo / hi clamp the value.
+    struct FxRun {
+        int     uid   = 0;
+        int     param = 0;
+        int     type  = 0;       // VisualEffect::Type the keys were compiled for
+        float   lo    = 0.0f;
+        float   hi    = 1.0f;
+        KeyRun  run{};
+    };
+
+    // One compiled mask. Scalars: base values (already clamped) plus runs in
+    // the shared `keys` pool (TimelineTicks, absolute). Shape: the base path
+    // at maskVertices[baseVertex, baseVertex + vertexCount) and, when keyed,
+    // shapeKeys[firstShapeKey, firstShapeKey + shapeKeyCount) (ascending pos,
+    // one per pos, each pointing at its own vertexCount vertices).
+    struct MaskEntry {
+        uint8_t     mode = 0;              // MaskMode
+        uint8_t     invert = 0;
+        uint8_t     vertexCount = 0;
+        float       feather = 0.0f, expansion = 0.0f, opacity = 1.0f;
+        ChannelRuns scalarKeys{};          // indexed by MaskChannel (slot 3 unused)
+        bool        scalarKeyed = false;
+        uint32_t    baseVertex = 0;
+        uint32_t    firstShapeKey = 0;
+        uint32_t    shapeKeyCount = 0;
+    };
+    struct ShapeKeyEntry {
+        double                         pos = 0.0;      // timeline ticks
+        xleth::keycurve::Interp        interp = xleth::keycurve::Interp::Linear;
+        xleth::keycurve::BezierHandles bez;            // sanitized; Bezier only
+        uint32_t                       firstVertex = 0;
     };
     struct ClipEntry {
         int         clipId = -1;
@@ -423,11 +744,32 @@ struct LensRoamSnapshot {
         bool             keyed     = false;
     };
 
+    // A Trail clone (model/Clone.h), compiled: the source whose whole cell
+    // result it replays `delayTicks` later, its multiply tint and its opacity
+    // (base + timeline-absolute keys, ABSOLUTE values, in `keys`). Its added
+    // Roam is its own TrackEntry's (roamAt(trackId, tick); offset only).
+    struct TrailEntry {
+        int      trackId       = -1;   // the Trail clone
+        int      sourceTrackId = -1;
+        double   delayTicks    = 0.0;
+        uint32_t tintRgb       = 0xFFFFFFu;
+        double   opacity       = 1.0;
+        KeyRun   opacityKeys{};
+        bool     keyed         = false;
+    };
+
     std::vector<TrackEntry>           tracks;     // ascending trackId
+    // Ascending sourceTrackId; within a source FARTHEST delay first (the draw
+    // order under the source: the nearest delay sits closest to it), then id.
+    std::vector<TrailEntry>           trails;
     std::vector<ClipEntry>            clips;      // ascending clipId
     std::vector<SourceEntry>          sources;    // ascending (trackId, regionId)
     std::vector<OverrideEntry>        overrides;  // ascending (trackId, patternId, noteId)
     std::vector<xleth::keycurve::Key> keys;       // every compiled key (see KeyRun)
+    std::vector<FxRun>                fxRuns;       // per track, see TrackEntry::fxFirst
+    std::vector<MaskEntry>            masks;        // per track, see TrackEntry::maskFirst
+    std::vector<ShapeKeyEntry>        shapeKeys;    // see MaskEntry::firstShapeKey
+    std::vector<MaskVertexF>          maskVertices; // base shapes and shape keys
 
     // ── Static bases (keys ignored) ─────────────────────────────────────────
     RoamParams roamFor(int trackId) const;
@@ -485,6 +827,44 @@ struct LensRoamSnapshot {
     // The track's Roam, keyed channels at the timeline tick.
     RoamParams roamAt(int trackId, double frameTick) const;
 
+    // Video effect param keys (Motion view): overwrite the keyed params[] of the
+    // request's COPY of the track's chain with their value at the timeline tick,
+    // clamped to the param's range. An effect is matched by uid and type, so a
+    // chain edited since this snapshot was built is left alone where it no longer
+    // matches. A track with no fx keys returns at once. No allocation, lock or log.
+    void applyFxKeys(int trackId, double frameTick, std::vector<VisualEffect>& chain) const;
+
+    // ── Motion view: Masks and Parent (render thread) ───────────────────────
+    // The track's masks at the timeline tick into a FIXED-capacity frame: no
+    // allocation, lock or log. Scalars (feather, expansion, opacity) follow
+    // their keys or hold the base, then are clamped into the schema clamps.
+    // The shape follows its shape keys (R14): before the first key the first
+    // key's path, at / after the last the last's, between two keys every
+    // vertex and tangent lerps by the LEAVING key's blend factor (Hold 0,
+    // Linear u, EaseOut, Bezier with its handles; a Bezier factor may
+    // overshoot). Shape keys are evaluated at the frame tick only (the cell's
+    // motion blurs the mask). `out.count` = 0 for a track with no masks (or a
+    // miss). Returns out.count > 0.
+    bool masksAt(int trackId, double frameTick, MaskFrame& out) const;
+
+    // ── Clones: Trail clones (render thread) ────────────────────────────────
+    // The Trail clones of a source: trails[first, first + count), farthest
+    // delay first. count 0 for a track with none (nearly every track).
+    // Binary search; no allocation.
+    void trailsOf(int sourceTrackId, std::size_t& first, std::size_t& count) const;
+    // A Trail's opacity at the timeline tick (keys, else the base), in [0, 1].
+    double trailOpacityAt(const TrailEntry& t, double frameTick) const;
+
+    // The track's resolved parent (-1 = none / dangling / self).
+    int parentOf(int trackId) const;
+
+    // The track's ancestors, NEAREST FIRST, into `out` (at most
+    // motionschema::kMaxParentDepth = 4). The walk stops at a track with no
+    // (resolved) parent, at the depth cap, or before an id already seen (the
+    // track itself included), so a cycle in damaged data ends the chain
+    // instead of looping. Returns the count. Binary searches only.
+    int parentChain(int trackId, int (&out)[motionschema::kMaxParentDepth]) const;
+
     struct Counts {
         int tracks = 0, roamNonIdentity = 0;
         int clips = 0, clipLensNonIdentity = 0;
@@ -492,12 +872,18 @@ struct LensRoamSnapshot {
         int keys = 0;   // compiled keys across every curve
         int noteNudge = 0, noteOwn = 0;   // per-note overrides (per track placement)
         int sweepTracks = 0;              // tracks with at least one Sweep key (P11)
+        int masks = 0;                    // compiled masks across every track (Motion view)
+        int maskTracks = 0;               // tracks with at least one mask
+        int parentedTracks = 0;           // tracks with a resolved parent
+        int trails = 0;                   // Trail clones with a live source (Clones)
         bool operator==(const Counts& o) const {
             return tracks == o.tracks && roamNonIdentity == o.roamNonIdentity
                 && clips == o.clips && clipLensNonIdentity == o.clipLensNonIdentity
                 && sources == o.sources && sourceLensNonIdentity == o.sourceLensNonIdentity
                 && keys == o.keys && noteNudge == o.noteNudge && noteOwn == o.noteOwn
-                && sweepTracks == o.sweepTracks;
+                && sweepTracks == o.sweepTracks && masks == o.masks
+                && maskTracks == o.maskTracks && parentedTracks == o.parentedTracks
+                && trails == o.trails;
         }
         bool operator!=(const Counts& o) const { return !(*this == o); }
     };

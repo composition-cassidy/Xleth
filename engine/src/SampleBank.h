@@ -4,6 +4,7 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 
 #include <memory>
+#include <string>
 #include <vector>
 
 class SampleBank
@@ -39,6 +40,38 @@ public:
                              double endTimeSec,
                              double engineSampleRate);
 
+    // Batch form of loadSampleFromSource, for project load: decodes every
+    // request concurrently on a small thread pool, then stores the results in
+    // REQUEST ORDER. Returns one id per request (-1 = that decode failed).
+    //
+    // Same samples, same ids: each request runs exactly the decode
+    // loadSampleFromSource runs (own FFmpeg contexts, nothing shared), and ids
+    // are handed out in request order with a failed request taking none, so
+    // the result is what calling loadSampleFromSource once per request, in
+    // order, would have produced. Only the wall-clock differs.
+    //
+    // logEachSuccess=false keeps the per-sample "Loaded region" lines out of
+    // the log (the caller prints one summary); warnings are always printed.
+    // maxThreads <= 0 picks from the machine (cores - 1, at most 12).
+    // Call ONLY from the main thread (the decodes it starts touch no bank state).
+    struct SourceRequest
+    {
+        std::string filePath;
+        double      startTimeSec = 0.0;
+        double      endTimeSec   = 0.0;
+        // true: decode to the end the container reports (endTimeSec is ignored;
+        // 3600 s when the container reports none). The "whole swapped-audio
+        // file" form — the same end a caller would get by probing the file's
+        // duration first, without opening it twice.
+        bool        toContainerEnd = false;
+        // Rate to decode to; 0 = the batch's engineSampleRate.
+        double      sampleRate = 0.0;
+    };
+    std::vector<int> loadSamplesFromSources(const std::vector<SourceRequest>& requests,
+                                            double engineSampleRate,
+                                            bool logEachSuccess = true,
+                                            int maxThreads = 0);
+
     // Thread-safe after load: data is immutable once stored.
     // Returns nullptr if sampleId is out of range OR the slot has been
     // tombstoned by a prior unloadSample() call.
@@ -59,16 +92,24 @@ public:
     // is safe to call from the render loop (no alloc, no atomic refcount bump).
     double getSampleBufferRate(int sampleId) const noexcept;
 
-    // Returns the index of the first sample (across both channels) whose
-    // absolute value reaches `thresholdDb`. Returns 0 if audio breaches the
-    // threshold at sample 0, and the buffer length if the sample is entirely
-    // below threshold. Returns -1 if sampleId is invalid OR tombstoned.
+    // How many consecutive samples stay below `thresholdDb` at one end of the
+    // window [startSample, startSample + length) of this sample's buffer:
+    // counted forwards from the window's first sample, or, with fromEnd,
+    // backwards from its last. The window is clamped to the buffer. Returns
+    // the (clamped) window length when all of it is below threshold, 0 when
+    // the first sample examined already reaches it, and -1 if sampleId is
+    // invalid OR tombstoned.
+    //
+    // A window rather than "from sample 0" because that is what a clip plays:
+    // it starts regionOffset into the sample and may be reversed, in which case
+    // the silence it plays first is at the END of its window.
     // Call from main thread only (reads immutable buffer, no locks needed).
-    int64_t getLeadingSilenceSamples(int sampleId, float thresholdDb) const;
+    int64_t countEdgeSilence(int sampleId, float thresholdDb,
+                             int64_t startSample, int64_t length, bool fromEnd) const;
 
     // Tombstones the slot at `id`: frees the audio buffer, leaves the slot
     // index intact so all other IDs remain valid. After this call,
-    // getSample(id), getSampleInfo(id), and getLeadingSilenceSamples(id)
+    // getSample(id), getSampleInfo(id), and countEdgeSilence(id)
     // return their failure values (nullptr / empty / -1) for the
     // tombstoned id.
     //
@@ -133,5 +174,15 @@ private:
 
     void ensureFormatsRegistered();
     static void applyFades(juce::AudioBuffer<float>& buf, double sampleRate);
+    // The decode half of loadSampleFromSource: any thread, no bank state. Null on
+    // failure. Messages the sequential path printed are appended to logOut.
+    static std::unique_ptr<LoadedSample> decodeFromSource(const std::string& filePath,
+                                                          double startTimeSec,
+                                                          double endTimeSec,
+                                                          double engineSampleRate,
+                                                          std::string& logOut,
+                                                          bool toContainerEnd = false);
+    // The store half: appends to the bank and returns the new id. Main thread.
+    int commitSample(std::unique_ptr<LoadedSample> entry);
     juce::String uniqueSampleName(const juce::String& baseName) const;
 };

@@ -81,6 +81,17 @@ function updateFrameShmMeta(meta) {
 
 window.xleth = ({
 
+  // ── Boot gate ──────────────────────────────────────────────────────────────
+  // The workspace window is created while its project is still loading (see
+  // "Workspace window boot" in main.js). whenProjectReady() resolves once the
+  // project is in — immediately for any window that was not created early —
+  // and is what src/main.jsx waits on before mounting. notifyMounted() tells
+  // main the first commit is on screen so the window can be shown.
+  boot: {
+    whenProjectReady: () => invoke('xleth:boot:whenProjectReady'),
+    notifyMounted:    () => ipcRenderer.send('xleth:boot:mounted'),
+  },
+
   // ── Media server (for <video> elements) ────────────────────────────────────
   getMediaPort: () => invoke('xleth:getMediaPort'),
 
@@ -160,7 +171,7 @@ window.xleth = ({
     removeClipsBatch: (ids)                 => invoke('xleth:timeline:removeClipsBatch', ids),
     removeClip:       (id)                  => invoke('xleth:timeline:removeClip', id),
     moveClip:         (id, trackId, pos)    => invoke('xleth:timeline:moveClip', id, trackId, pos),
-    resizeClip:       (id, dur)             => invoke('xleth:timeline:resizeClip', id, dur),
+    resizeClip:       (id, dur, offset)     => invoke('xleth:timeline:resizeClip', id, dur, offset),
     resizeClipLeft:   (id, pos, dur, offset) => invoke('xleth:timeline:resizeClipLeft', id, pos, dur, offset),
     stretchClip:      (id, dur)             => invoke('xleth:timeline:stretchClip', id, dur),
     stretchClipLeft:  (id, pos, dur)        => invoke('xleth:timeline:stretchClipLeft', id, pos, dur),
@@ -604,6 +615,7 @@ window.xleth = ({
   // ── Dialogs ───────────────────────────────────────────────────────────────
   dialog: {
     openMidiDialog: () => invoke('xleth:dialog:importMIDI'),
+    openLutDialog: () => invoke('xleth:dialog:openLut'),
   },
 
   // ── Loop Lab (DEV dataset-authoring tool) ─────────────────────────────────

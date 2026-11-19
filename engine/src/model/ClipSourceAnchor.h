@@ -45,17 +45,18 @@
  * sourceTicksForTimelineTicks / timelineTicksForSourceTicks below; never open-code
  * the division.
  *
- * TEMPO DEPENDENCE (deliberate, and a known wart — see the note below)
- * -------------------------------------------------------------------
+ * TEMPO DEPENDENCE
+ * ----------------
  * regionOffset is stored in musical ticks, so converting it to source seconds
- * needs the project tempo: a trimmed clip anchors at a different source instant
- * if the BPM changes. That is how the sampler treats the field for AUDIO too
- * (MixEngine converts the same ticks with TickTime::toSamples at the same BPM),
- * so audio and video stay locked to each other at any tempo — which is the
- * property that actually matters. It does mean a leading-silence trim measured
- * in seconds and stored in ticks stops lining up with that silence if the tempo
- * later changes; fixing that belongs in AutoTrimClipCommand and the clip data
- * model, not here, because it is an audio-domain decision.
+ * needs the project tempo. MixEngine converts the same ticks with
+ * TickTime::toSamples at the same BPM, so audio and video stay locked to each
+ * other at any tempo.
+ *
+ * A tick is a different length of time at a different tempo, so the commands
+ * that CHANGE the tempo rescale every clip's regionOffset to describe the same
+ * source seconds afterwards (commands/TempoTrimAnchor.h). A trimmed clip
+ * therefore keeps starting at the same instant of its source across a tempo
+ * change. Any new code path that changes the BPM must do the same.
  *
  * FRAME ACCURACY
  * --------------

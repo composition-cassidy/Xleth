@@ -1,0 +1,1612 @@
+{
+ "scalar": {
+  "compressor": {
+   "threshold": [
+    -60,
+    0
+   ],
+   "ratio": [
+    1,
+    100
+   ],
+   "attack": [
+    0.01,
+    100
+   ],
+   "release": [
+    10,
+    1000
+   ],
+   "knee": [
+    0,
+    24
+   ],
+   "makeup": [
+    0,
+    36
+   ],
+   "mix": [
+    0,
+    100
+   ],
+   "dry": [
+    0,
+    100
+   ],
+   "wet": [
+    0,
+    100
+   ],
+   "mix_linked": [
+    0,
+    1
+   ],
+   "detect_mode": [
+    0,
+    1
+   ],
+   "lookahead": [
+    0,
+    10
+   ],
+   "sc_external": [
+    0,
+    1
+   ]
+  },
+  "glue": {
+   "threshold": [
+    -40,
+    0
+   ],
+   "makeup": [
+    -10,
+    20
+   ],
+   "ratio": [
+    0,
+    2
+   ],
+   "attack": [
+    0,
+    5
+   ],
+   "release": [
+    0,
+    4
+   ],
+   "topology": [
+    0,
+    1
+   ],
+   "sc_hpf_on": [
+    0,
+    1
+   ],
+   "sc_hpf_freq": [
+    20,
+    500
+   ],
+   "color": [
+    0,
+    1
+   ]
+  },
+  "opto": {
+   "peak_reduction": [
+    0,
+    40
+   ],
+   "gain": [
+    0,
+    40
+   ],
+   "mode": [
+    0,
+    1
+   ]
+  },
+  "fet": {
+   "input": [
+    -24,
+    36
+   ],
+   "output": [
+    -24,
+    24
+   ],
+   "attack": [
+    1,
+    7
+   ],
+   "release": [
+    1,
+    7
+   ],
+   "ratio": [
+    0,
+    4
+   ]
+  },
+  "varimu": {
+   "input": [
+    -24,
+    36
+   ],
+   "output": [
+    -24,
+    24
+   ],
+   "time_constant": [
+    1,
+    6
+   ],
+   "mode": [
+    0,
+    1
+   ]
+  },
+  "limiter": {
+   "gain": [
+    0,
+    36
+   ],
+   "ceiling": [
+    -12,
+    0
+   ],
+   "release": [
+    10,
+    1000
+   ],
+   "style": [
+    0,
+    2
+   ]
+  },
+  "apex": {
+   "lowcut": [
+    0,
+    100
+   ],
+   "split_lo": [
+    40,
+    1000
+   ],
+   "split_hi": [
+    1000,
+    18000
+   ],
+   "slope_lo": [
+    0,
+    1
+   ],
+   "slope_hi": [
+    0,
+    1
+   ],
+   "lookahead": [
+    0,
+    20
+   ],
+   "bandmix": [
+    0,
+    100
+   ],
+   "lo_state": [
+    0,
+    3
+   ],
+   "lo_solo": [
+    0,
+    1
+   ],
+   "lo_pre": [
+    -24,
+    24
+   ],
+   "lo_post": [
+    -24,
+    24
+   ],
+   "lo_att": [
+    0.1,
+    100
+   ],
+   "lo_rel": [
+    5,
+    500
+   ],
+   "lo_sus": [
+    0,
+    500
+   ],
+   "lo_det": [
+    0,
+    1
+   ],
+   "lo_satth": [
+    -100,
+    100
+   ],
+   "lo_satcl": [
+    -60,
+    0
+   ],
+   "lo_sep": [
+    -100,
+    100
+   ],
+   "md_state": [
+    0,
+    3
+   ],
+   "md_solo": [
+    0,
+    1
+   ],
+   "md_pre": [
+    -24,
+    24
+   ],
+   "md_post": [
+    -24,
+    24
+   ],
+   "md_att": [
+    0.1,
+    100
+   ],
+   "md_rel": [
+    5,
+    500
+   ],
+   "md_sus": [
+    0,
+    500
+   ],
+   "md_det": [
+    0,
+    1
+   ],
+   "md_satth": [
+    -100,
+    100
+   ],
+   "md_satcl": [
+    -60,
+    0
+   ],
+   "md_sep": [
+    -100,
+    100
+   ],
+   "hi_state": [
+    0,
+    3
+   ],
+   "hi_solo": [
+    0,
+    1
+   ],
+   "hi_pre": [
+    -24,
+    24
+   ],
+   "hi_post": [
+    -24,
+    24
+   ],
+   "hi_att": [
+    0.1,
+    100
+   ],
+   "hi_rel": [
+    5,
+    500
+   ],
+   "hi_sus": [
+    0,
+    500
+   ],
+   "hi_det": [
+    0,
+    1
+   ],
+   "hi_satth": [
+    -100,
+    100
+   ],
+   "hi_satcl": [
+    -60,
+    0
+   ],
+   "hi_sep": [
+    -100,
+    100
+   ],
+   "ms_state": [
+    0,
+    3
+   ],
+   "ms_pre": [
+    -24,
+    24
+   ],
+   "ms_post": [
+    -24,
+    24
+   ],
+   "ms_att": [
+    0.1,
+    100
+   ],
+   "ms_rel": [
+    5,
+    500
+   ],
+   "ms_sus": [
+    0,
+    500
+   ],
+   "ms_det": [
+    0,
+    1
+   ],
+   "ms_satth": [
+    -100,
+    100
+   ],
+   "ms_satcl": [
+    -60,
+    0
+   ],
+   "ms_sep": [
+    -100,
+    100
+   ]
+  },
+  "overdone": {
+   "depth": [
+    0,
+    100
+   ],
+   "time": [
+    0,
+    100
+   ],
+   "xover_low": [
+    40,
+    400
+   ],
+   "xover_high": [
+    1000,
+    8000
+   ],
+   "gain_low": [
+    -12,
+    12
+   ],
+   "gain_mid": [
+    -12,
+    12
+   ],
+   "gain_high": [
+    -12,
+    12
+   ],
+   "inputGain": [
+    -24,
+    24
+   ],
+   "outputGain": [
+    -24,
+    24
+   ]
+  },
+  "transientproc": {
+   "attack": [
+    -100,
+    100
+   ],
+   "sustain": [
+    -100,
+    100
+   ],
+   "attack_speed": [
+    0.5,
+    20
+   ],
+   "threshold": [
+    -60,
+    0
+   ],
+   "mix": [
+    0,
+    100
+   ],
+   "midi_detect": [
+    0,
+    1
+   ]
+  },
+  "resonancesuppressor": {
+   "depth": [
+    0,
+    100
+   ],
+   "sharpness": [
+    0,
+    100
+   ],
+   "selectivity": [
+    0,
+    100
+   ],
+   "attack": [
+    1,
+    200
+   ],
+   "release": [
+    10,
+    2000
+   ],
+   "mix": [
+    0,
+    100
+   ],
+   "trim": [
+    -12,
+    12
+   ],
+   "delta": [
+    0,
+    1
+   ],
+   "processing_mode": [
+    0,
+    1
+   ],
+   "quality": [
+    0,
+    2
+   ],
+   "stereo_link": [
+    0,
+    100
+   ],
+   "stereo_mode": [
+    0,
+    2
+   ],
+   "mode": [
+    0,
+    1
+   ],
+   "wc_hp": [
+    20,
+    2000
+   ],
+   "wc_lp": [
+    2000,
+    20000
+   ],
+   "wc_b1_freq": [
+    40,
+    20000
+   ],
+   "wc_b1_gain": [
+    -12,
+    12
+   ],
+   "wc_b2_freq": [
+    40,
+    20000
+   ],
+   "wc_b2_gain": [
+    -12,
+    12
+   ],
+   "wc_b3_freq": [
+    40,
+    20000
+   ],
+   "wc_b3_gain": [
+    -12,
+    12
+   ],
+   "wc_b4_freq": [
+    40,
+    20000
+   ],
+   "wc_b4_gain": [
+    -12,
+    12
+   ],
+   "wc_b1_active": [
+    0,
+    1
+   ],
+   "wc_b1_type": [
+    0,
+    4
+   ],
+   "wc_b1_q": [
+    0.25,
+    4
+   ],
+   "wc_b2_active": [
+    0,
+    1
+   ],
+   "wc_b2_type": [
+    0,
+    4
+   ],
+   "wc_b2_q": [
+    0.25,
+    4
+   ],
+   "wc_b3_active": [
+    0,
+    1
+   ],
+   "wc_b3_type": [
+    0,
+    4
+   ],
+   "wc_b3_q": [
+    0.25,
+    4
+   ],
+   "wc_b4_active": [
+    0,
+    1
+   ],
+   "wc_b4_type": [
+    0,
+    4
+   ],
+   "wc_b4_q": [
+    0.25,
+    4
+   ],
+   "wc_b5_active": [
+    0,
+    1
+   ],
+   "wc_b5_type": [
+    0,
+    4
+   ],
+   "wc_b5_freq": [
+    40,
+    20000
+   ],
+   "wc_b5_gain": [
+    -12,
+    12
+   ],
+   "wc_b5_q": [
+    0.25,
+    4
+   ],
+   "wc_b6_active": [
+    0,
+    1
+   ],
+   "wc_b6_type": [
+    0,
+    4
+   ],
+   "wc_b6_freq": [
+    40,
+    20000
+   ],
+   "wc_b6_gain": [
+    -12,
+    12
+   ],
+   "wc_b6_q": [
+    0.25,
+    4
+   ],
+   "wc_b7_active": [
+    0,
+    1
+   ],
+   "wc_b7_type": [
+    0,
+    4
+   ],
+   "wc_b7_freq": [
+    40,
+    20000
+   ],
+   "wc_b7_gain": [
+    -12,
+    12
+   ],
+   "wc_b7_q": [
+    0.25,
+    4
+   ],
+   "wc_b8_active": [
+    0,
+    1
+   ],
+   "wc_b8_type": [
+    0,
+    4
+   ],
+   "wc_b8_freq": [
+    40,
+    20000
+   ],
+   "wc_b8_gain": [
+    -12,
+    12
+   ],
+   "wc_b8_q": [
+    0.25,
+    4
+   ],
+   "hq_engine": [
+    0,
+    1
+   ]
+  },
+  "distortion": {
+   "mode": [
+    0,
+    6
+   ],
+   "drive": [
+    0,
+    48
+   ],
+   "tone": [
+    20,
+    20000
+   ],
+   "filter_pos": [
+    0,
+    1
+   ],
+   "mix": [
+    0,
+    100
+   ],
+   "symmetry": [
+    0,
+    100
+   ],
+   "bits": [
+    2,
+    16
+   ],
+   "downsample": [
+    1,
+    40
+   ]
+  },
+  "waveshaper": {
+   "pregain": [
+    -24,
+    48
+   ],
+   "postgain": [
+    -24,
+    24
+   ],
+   "mix": [
+    0,
+    100
+   ],
+   "preset": [
+    0,
+    5
+   ]
+  },
+  "amp": {
+   "model": [
+    0,
+    5
+   ],
+   "drive": [
+    0,
+    10
+   ],
+   "bass": [
+    0,
+    10
+   ],
+   "mid": [
+    0,
+    10
+   ],
+   "treble": [
+    0,
+    10
+   ],
+   "sag": [
+    0,
+    10
+   ],
+   "tighten": [
+    0,
+    10
+   ],
+   "gate": [
+    0,
+    10
+   ],
+   "cab": [
+    0,
+    4
+   ],
+   "presence": [
+    0,
+    10
+   ],
+   "mix": [
+    0,
+    100
+   ],
+   "output": [
+    -24,
+    12
+   ]
+  },
+  "uniflange": {
+   "order": [
+    1,
+    8
+   ],
+   "depth": [
+    0,
+    100
+   ],
+   "speed": [
+    0,
+    100
+   ],
+   "delay": [
+    0,
+    100
+   ],
+   "spread": [
+    0,
+    100
+   ],
+   "cross": [
+    -100,
+    100
+   ],
+   "dry": [
+    -100,
+    100
+   ],
+   "wet": [
+    -100,
+    100
+   ],
+   "mode": [
+    0,
+    1
+   ]
+  },
+  "chorus": {
+   "rate": [
+    0.05,
+    5
+   ],
+   "depth": [
+    0,
+    100
+   ],
+   "delay": [
+    7,
+    30
+   ],
+   "feedback": [
+    0,
+    25
+   ],
+   "voices": [
+    1,
+    10
+   ],
+   "width": [
+    0,
+    100
+   ],
+   "mix": [
+    0,
+    100
+   ]
+  },
+  "flanger": {
+   "rate": [
+    0.05,
+    10
+   ],
+   "depth": [
+    0,
+    100
+   ],
+   "delay": [
+    0.1,
+    5
+   ],
+   "feedback": [
+    -95,
+    95
+   ],
+   "width": [
+    0,
+    100
+   ],
+   "mix": [
+    0,
+    100
+   ]
+  },
+  "phaser": {
+   "rate": [
+    0.05,
+    5
+   ],
+   "depth": [
+    0,
+    100
+   ],
+   "stages": [
+    1,
+    6
+   ],
+   "feedback": [
+    -95,
+    95
+   ],
+   "resonance": [
+    0.3,
+    5
+   ],
+   "width": [
+    0,
+    100
+   ],
+   "mix": [
+    0,
+    100
+   ],
+   "freq_low": [
+    20,
+    2000
+   ],
+   "freq_high": [
+    200,
+    16000
+   ],
+   "spread": [
+    0,
+    100
+   ]
+  },
+  "phanjer": {
+   "mode": [
+    0,
+    2
+   ],
+   "f_mix": [
+    0,
+    100
+   ],
+   "f_rate": [
+    0.05,
+    10
+   ],
+   "f_depth": [
+    0,
+    100
+   ],
+   "f_feedback": [
+    -95,
+    95
+   ],
+   "f_delay_min": [
+    0.1,
+    20
+   ],
+   "f_delay_max": [
+    0.1,
+    20
+   ],
+   "f_sync": [
+    0,
+    1
+   ],
+   "f_sync_div": [
+    0,
+    5
+   ],
+   "f_sync_feel": [
+    0,
+    2
+   ],
+   "p_mix": [
+    0,
+    100
+   ],
+   "p_rate": [
+    0.05,
+    10
+   ],
+   "p_depth": [
+    0,
+    100
+   ],
+   "p_feedback": [
+    -95,
+    95
+   ],
+   "p_stages": [
+    1,
+    6
+   ],
+   "p_freq_min": [
+    20,
+    2000
+   ],
+   "p_freq_max": [
+    200,
+    16000
+   ],
+   "p_sync": [
+    0,
+    1
+   ],
+   "p_sync_div": [
+    0,
+    5
+   ],
+   "p_sync_feel": [
+    0,
+    2
+   ],
+   "global_mix": [
+    0,
+    100
+   ],
+   "lfo_shape": [
+    0,
+    4
+   ],
+   "chaos": [
+    0,
+    100
+   ]
+  },
+  "delay": {
+   "time_l": [
+    1,
+    5000
+   ],
+   "time_r": [
+    1,
+    5000
+   ],
+   "sync": [
+    0,
+    1
+   ],
+   "sync_div_l": [
+    0,
+    11
+   ],
+   "sync_div_r": [
+    0,
+    11
+   ],
+   "stereo_mode": [
+    0,
+    2
+   ],
+   "feedback": [
+    0,
+    95
+   ],
+   "filter_lo": [
+    20,
+    2000
+   ],
+   "filter_hi": [
+    1000,
+    20000
+   ],
+   "mod_rate": [
+    0.01,
+    5
+   ],
+   "mod_depth": [
+    0,
+    100
+   ],
+   "stereo_width": [
+    0,
+    100
+   ],
+   "duck_amount": [
+    0,
+    100
+   ],
+   "mix": [
+    0,
+    100
+   ]
+  },
+  "reverb": {
+   "decay": [
+    0.1,
+    30
+   ],
+   "predelay": [
+    0,
+    100
+   ],
+   "size": [
+    0,
+    100
+   ],
+   "damping": [
+    0,
+    100
+   ],
+   "mod_rate": [
+    0,
+    100
+   ],
+   "mod_depth": [
+    0,
+    100
+   ],
+   "er_level": [
+    0,
+    100
+   ],
+   "er_late": [
+    0,
+    100
+   ],
+   "hicut": [
+    1000,
+    20000
+   ],
+   "locut": [
+    20,
+    500
+   ],
+   "mix": [
+    0,
+    100
+   ],
+   "smoothness": [
+    0,
+    100
+   ],
+   "style": [
+    0,
+    3
+   ]
+  },
+  "pitchshifter": {
+   "mode": [
+    0,
+    3
+   ],
+   "mix": [
+    0,
+    1
+   ],
+   "semitones": [
+    -24,
+    24
+   ],
+   "cents": [
+    -100,
+    100
+   ],
+   "size": [
+    10,
+    100
+   ],
+   "formant": [
+    0.5,
+    2
+   ],
+   "clip_semitones": [
+    -24,
+    24
+   ],
+   "clip_cents": [
+    -100,
+    100
+   ],
+   "clip_method": [
+    0,
+    4
+   ],
+   "clip_formant": [
+    0,
+    1
+   ]
+  },
+  "szkrezh": {
+   "pitch_src": [
+    0,
+    2
+   ],
+   "pitch": [
+    -3600,
+    3600
+   ],
+   "pitch_offset": [
+    -2400,
+    2400
+   ],
+   "harmony": [
+    -14,
+    14
+   ],
+   "key": [
+    0,
+    11
+   ],
+   "scale": [
+    0,
+    8
+   ],
+   "root": [
+    0,
+    127
+   ],
+   "midi_track": [
+    0,
+    1000000
+   ],
+   "sync": [
+    0,
+    1
+   ],
+   "splice": [
+    10,
+    2000
+   ],
+   "splice_div": [
+    1,
+    15
+   ],
+   "smoothing": [
+    5,
+    250
+   ],
+   "delay": [
+    0,
+    2000
+   ],
+   "delay_div": [
+    0,
+    15
+   ],
+   "splice_offset": [
+    0,
+    50
+   ],
+   "delay_offset": [
+    0,
+    50
+   ],
+   "reverse": [
+    0,
+    1
+   ],
+   "recycle": [
+    0,
+    100
+   ],
+   "fb_mode": [
+    0,
+    2
+   ],
+   "low_cut": [
+    20,
+    5000
+   ],
+   "high_cut": [
+    500,
+    20000
+   ],
+   "freeze": [
+    0,
+    1
+   ],
+   "dyn_amount": [
+    -100,
+    100
+   ],
+   "dyn_threshold": [
+    -60,
+    0
+   ],
+   "dyn_attack": [
+    0.1,
+    200
+   ],
+   "dyn_release": [
+    10,
+    2000
+   ],
+   "dyn_target": [
+    0,
+    2
+   ],
+   "quality": [
+    0,
+    1
+   ],
+   "input": [
+    -24,
+    24
+   ],
+   "output": [
+    -24,
+    24
+   ],
+   "mix": [
+    0,
+    100
+   ]
+  },
+  "smartbalance": {
+   "amount": [
+    0,
+    100
+   ],
+   "preserve": [
+    0,
+    100
+   ],
+   "response": [
+    10,
+    500
+   ],
+   "mix": [
+    0,
+    100
+   ],
+   "mode": [
+    0,
+    1
+   ],
+   "target_sub": [
+    -40,
+    12
+   ],
+   "target_lomid": [
+    -40,
+    12
+   ],
+   "target_upmid": [
+    -40,
+    12
+   ],
+   "target_air": [
+    -40,
+    12
+   ],
+   "bandamt_sub": [
+    0,
+    100
+   ],
+   "bandamt_lomid": [
+    0,
+    100
+   ],
+   "bandamt_upmid": [
+    0,
+    100
+   ],
+   "bandamt_air": [
+    0,
+    100
+   ],
+   "floor_sub": [
+    -96,
+    -20
+   ],
+   "floor_lomid": [
+    -96,
+    -20
+   ],
+   "floor_upmid": [
+    -96,
+    -20
+   ],
+   "floor_air": [
+    -96,
+    -20
+   ],
+   "warmth": [
+    0,
+    100
+   ],
+   "output": [
+    -12,
+    12
+   ],
+   "loudness_match": [
+    0,
+    1
+   ]
+  },
+  "fedda": {
+   "width": [
+    0,
+    200
+   ],
+   "character": [
+    0,
+    2
+   ],
+   "size": [
+    0.5,
+    30
+   ],
+   "low_bypass": [
+    20,
+    2000
+   ],
+   "low_slope": [
+    0,
+    1
+   ],
+   "hf_damp": [
+    2000,
+    20000
+   ],
+   "guard": [
+    0,
+    100
+   ],
+   "variation": [
+    0,
+    999
+   ],
+   "loudness_match": [
+    0,
+    1
+   ],
+   "mono_check": [
+    0,
+    1
+   ],
+   "compare": [
+    0,
+    1
+   ]
+  }
+ },
+ "xletheq": {
+  "band": {
+   "freq": [
+    20,
+    20000
+   ],
+   "gain": [
+    -30,
+    30
+   ],
+   "q": [
+    0.1,
+    30
+   ],
+   "type": [
+    0,
+    6
+   ],
+   "enabled": [
+    0,
+    1
+   ],
+   "channel": [
+    0,
+    4
+   ],
+   "mode": [
+    0,
+    2
+   ],
+   "dyn_thresh": [
+    -60,
+    0
+   ],
+   "dyn_ratio": [
+    1,
+    20
+   ],
+   "dyn_attack": [
+    0.1,
+    100
+   ],
+   "dyn_release": [
+    1,
+    1000
+   ],
+   "dyn_range": [
+    -30,
+    30
+   ],
+   "spec_sens": [
+    0,
+    1
+   ],
+   "spec_sel": [
+    1,
+    20
+   ],
+   "spec_attack": [
+    0.1,
+    100
+   ],
+   "spec_release": [
+    10,
+    1000
+   ]
+  },
+  "global": {
+   "linphase": [
+    0,
+    1
+   ],
+   "oversample": [
+    0,
+    2
+   ],
+   "spectral_engine": [
+    0,
+    1
+   ],
+   "spectral_quality": [
+    0,
+    2
+   ]
+  }
+ },
+ "xlethfilter": {
+  "slot": {
+   "enabled": [
+    0,
+    1
+   ],
+   "type": [
+    0,
+    19
+   ],
+   "cutoff": [
+    20,
+    20000
+   ],
+   "q": [
+    0.5,
+    30
+   ],
+   "gain": [
+    -24,
+    24
+   ],
+   "morph": [
+    0,
+    1
+   ],
+   "slope": [
+    0,
+    3
+   ],
+   "drive": [
+    0,
+    24
+   ],
+   "mix": [
+    0,
+    1
+   ],
+   "vowel_a": [
+    0,
+    3
+   ],
+   "vowel_b": [
+    0,
+    3
+   ],
+   "head": [
+    -12,
+    12
+   ]
+  },
+  "lane": {
+   "kind": [
+    0,
+    3
+   ],
+   "dest": [
+    0,
+    5
+   ],
+   "depth": [
+    -1,
+    1
+   ],
+   "shape": [
+    0,
+    5
+   ],
+   "rate_mode": [
+    0,
+    1
+   ],
+   "rate_ms": [
+    1,
+    5000
+   ],
+   "sync": [
+    0.125,
+    64
+   ],
+   "phase": [
+    0,
+    1
+   ],
+   "attack": [
+    0,
+    2000
+   ],
+   "hold": [
+    0,
+    2000
+   ],
+   "decay": [
+    0,
+    2000
+   ],
+   "sustain": [
+    0,
+    1
+   ],
+   "release": [
+    0,
+    5000
+   ],
+   "slides": [
+    0,
+    1
+   ],
+   "dyn_attack": [
+    0.1,
+    100
+   ],
+   "dyn_release": [
+    1,
+    2000
+   ],
+   "cut_min": [
+    20,
+    20000
+   ],
+   "cut_max": [
+    20,
+    20000
+   ]
+  }
+ }
+}

@@ -1,0 +1,21 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "phaser",
+  "name": "Fixed Notch Color",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "rate": 0.05,
+      "depth": 0,
+      "stages": 3,
+      "feedback": 0,
+      "resonance": 1.5,
+      "width": 0,
+      "mix": 100,
+      "freq_low": 500,
+      "freq_high": 2000,
+      "spread": 60
+    }
+  }
+}

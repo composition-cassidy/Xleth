@@ -140,8 +140,18 @@ public:
     template <typename T>
     T As() const { return T(*this); }
 
-    const nlohmann::json& raw() const { return *value_; }
-    nlohmann::json& raw() { return *value_; }
+    const nlohmann::json& raw() const & { return *value_; }
+    nlohmann::json& raw() & { return *value_; }
+    // On a temporary the tree is handed over rather than copied. This is what
+    // every `return Handler(info).raw();` in dispatch() resolves to: the reply
+    // used to be deep-copied once more on its way out of the engine.
+    nlohmann::json raw() && { return isSoleOwner() ? std::move(*value_) : *value_; }
+
+    // True when nothing else references this value's JSON tree, so a container
+    // may take the tree by move instead of deep-copying it. A value built in
+    // place for a Set() call (Number::New(...), clipToJs(...)) is always sole;
+    // a named value the caller still holds is not, and keeps copy semantics.
+    bool isSoleOwner() const { return value_.use_count() == 1; }
 
 protected:
     explicit Value(std::shared_ptr<nlohmann::json> value)
@@ -206,8 +216,12 @@ public:
     template <typename T>
     void Set(const std::string& key, T&& value)
     {
+        // Move the tree in when this call owns it outright. Copying here made
+        // every nested object pay a deep copy per level on its way into the
+        // reply: a clip was copied once per Set that carried it upward.
         JsonApi::Value wrapped(std::forward<T>(value));
-        raw()[key] = wrapped.raw();
+        if (wrapped.isSoleOwner()) raw()[key] = std::move(wrapped.raw());
+        else raw()[key] = wrapped.raw();
     }
 
     template <typename T>
@@ -245,7 +259,8 @@ public:
     {
         while (raw().size() <= index) raw().push_back(nullptr);
         JsonApi::Value wrapped(std::forward<T>(value));
-        raw()[index] = wrapped.raw();
+        if (wrapped.isSoleOwner()) raw()[index] = std::move(wrapped.raw());
+        else raw()[index] = wrapped.raw();
     }
 
     class ElementProxy

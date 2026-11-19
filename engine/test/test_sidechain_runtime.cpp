@@ -223,6 +223,9 @@ struct Scenario
     bool   soloTarget    = false;
     bool   staleRoute    = false;  // route targets a bogus effectInstanceId
     float  sourceVolume  = 1.0f;
+    bool   trackLevel    = false;  // route has an EMPTY effect id (FL "Sidechain to this track")
+    bool   alsoTrackLevel = false; // add a track-level route NEXT TO the effect route (dedupe)
+    float  sendGain      = -1.0f;  // >= 0: also an audible send source→target at this level
 };
 
 struct Result
@@ -285,6 +288,7 @@ static Result runScenario(const SampleSet& ss, const Scenario& sc)
         route.routeId = "sc-test-route";
         route.targetTrackId = targetId;
         route.targetEffectInstanceId = sc.staleRoute ? std::string("stale-nonexistent-eid")
+                                     : sc.trackLevel ? std::string()
                                                      : realEid;
         route.gain = sc.gain;
         route.preFader = sc.preFader;
@@ -301,6 +305,22 @@ static Result runScenario(const SampleSet& ss, const Scenario& sc)
             };
         const auto vr = tl.addSidechainRoute(sourceId, route, resolver);
         r.routeAccepted = vr.ok();
+
+        if (sc.alsoTrackLevel)
+        {
+            SidechainRoute trackRoute = route;
+            trackRoute.routeId = "sc-test-track-route";
+            trackRoute.targetEffectInstanceId.clear();
+            r.routeAccepted = r.routeAccepted && tl.addSidechainRoute(sourceId, trackRoute, resolver).ok();
+        }
+    }
+
+    if (sc.sendGain >= 0.0f)
+    {
+        TrackSend send;
+        send.targetTrackId = targetId;
+        send.gain = sc.sendGain;
+        r.routeAccepted = r.routeAccepted && tl.setTrackRoutes(sourceId, -1, { send }).ok();
     }
 
     engine->syncTrackSlotsFromTimeline(true);
@@ -398,16 +418,69 @@ static void testSourceProcessorUnit()
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
+// ─── T/S: FL-style routing — track-level sidechain + audible sends ───────────
+
+static void testFlRouting(const SampleSet& ss)
+{
+    Scenario base;
+    const Result effectRoute = runScenario(ss, base);
+
+    std::cout << "[T] Track-level sidechain route (empty effect id)\n";
+    Scenario trk = base; trk.trackLevel = true;
+    const Result trackRes = runScenario(ss, trk);
+    CHECK(trackRes.routeAccepted, "track-level route accepted");
+    CHECK(trackRes.scPeak > 0.01f, "track-level route delivers the key to the target's effect");
+    CHECK(std::abs(trackRes.scPeak - effectRoute.scPeak) < 1e-4f,
+          "track-level key == effect-level key");
+
+    Scenario both = base; both.alsoTrackLevel = true;
+    const Result bothRes = runScenario(ss, both);
+    CHECK(bothRes.routeAccepted, "effect + track-level routes both accepted");
+    CHECK(std::abs(bothRes.scPeak - effectRoute.scPeak) < 1e-4f,
+          "same source→target twice sums the key ONCE (no +6 dB)");
+    CHECK(maxAbsDiff(trackRes.master, effectRoute.master) < 1e-6, "track-level key stays silent");
+
+    std::cout << "[S] Audible sends (multi-wiring)\n";
+    Scenario none = base; none.addRoute = false;
+    const Result dry = runScenario(ss, none);
+
+    Scenario s1 = none; s1.sendGain = 1.0f;
+    Scenario sHalf = none; sHalf.sendGain = 0.5f;
+    Scenario s0 = none; s0.sendGain = 0.0f;
+    const Result r1 = runScenario(ss, s1);
+    const Result rHalf = runScenario(ss, sHalf);
+    const Result r0 = runScenario(ss, s0);
+    CHECK(r1.routeAccepted && rHalf.routeAccepted && r0.routeAccepted, "sends accepted");
+    CHECK(r1.mainPeak > dry.mainPeak + 0.01f, "send audio reaches the target's chain input");
+
+    // with − without == the source arriving a second time via the target.
+    auto diffEnergy = [&](const Result& r) {
+        juce::AudioBuffer<float> d(2, kRenderSamples);
+        for (int ch = 0; ch < 2; ++ch)
+            for (int i = 0; i < kRenderSamples; ++i)
+                d.setSample(ch, i, r.master.getSample(ch, i) - dry.master.getSample(ch, i));
+        return totalEnergy(d);
+    };
+    const double e1 = diffEnergy(r1);
+    const double eHalf = diffEnergy(rHalf);
+    CHECK(e1 > 1e-3, "a unity send adds the source to Master a second time (via the target)");
+    CHECK(std::abs(eHalf / e1 - 0.25) < 0.02, "send level 0.5 → a quarter of the energy");
+    CHECK(maxAbsDiff(r0.master, dry.master) < 1e-6, "send at level 0 is silent");
+}
+
 int main()
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
     std::cout << "=== test_sidechain_runtime (Prompt 4C+4D) ===\n";
+    // NOTE: sections [T] and [S] below cover FL-style routing (track-level
+    // sidechain + multi-destination sends).
 
     SampleSet ss = makeSamples();
     CHECK(ss.kickWav.existsAsFile(), "kick WAV generated");
     CHECK(ss.leadWav.existsAsFile(), "lead WAV generated");
 
     testSourceProcessorUnit();
+    testFlRouting(ss);
 
     // ── A: delivery + silence guarantee ───────────────────────────────────────
     std::cout << "[A] Key delivered to chain; master unchanged by the route\n";

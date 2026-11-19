@@ -18,10 +18,16 @@ import {
   LENS_FIELDS, changedFields, getLensRoam, resetClipLens, resetTrackLens, resetTrackRoam,
   setClipLens, setTrackLens, setTrackRoam, setTrackRoamKeys,
 } from './lensRoamApi.js'
-import { LENS_IDENTITY, ROAM_IDENTITY } from './lensRoamModel.js'
+import { LENS_IDENTITY, ROAM_IDENTITY, cellGeometry, normalizeRoam } from './lensRoamModel.js'
 import {
   TICKS_PER_BEAT, compileRoamKeys, keyedChannels, planRoamEdit, resolveRoamAt,
 } from './roamKeyModel.js'
+import { fromWireList, toWireList } from '../motion/maskModel.js'
+import { parentIdOf } from '../motion/parentModel.js'
+import { runMotionPlan } from '../motion/motionPlan.js'
+import {
+  chainIdsOf, makePoseResolver, trackIndexFor,
+} from '../components/lensRoam/roamOverlayPose.js'
 
 export const REFRESH_EVENTS = [
   'lens-roam-changed',
@@ -165,7 +171,8 @@ export function usePlayheadTick(enabled = true) {
 /**
  * @param {number|null} trackId
  * @returns {{ roam, base, keys, committedKeys, keyed, autoKey, ready, resolveAt(tick), preview(patch),
- *             commit(patch), commitDraft(), cancel(), reset(), commitKeys(keys) }}
+ *             commit(patch), commitDraft(), cancel(), reset(), commitKeys(keys),
+ *             masks, parentTrackId, commitMasks(masks, label), adopt(res) }}
  *
  * `roam` is the static base with any in-flight draft merged in (what the inspector's
  * boxes edit). `keys` are the track's Roam keys with a lane / dot gesture's local
@@ -175,10 +182,17 @@ export function usePlayheadTick(enabled = true) {
  * base as it always did; with Auto-key on a move / scale / rotate writes keys at the
  * playhead instead; a KEYED channel edited with Auto-key off is refused (the base
  * would be ignored), resolving to { changed: false, blocked: true, channels }.
+ *
+ * Motion view (docs/XLETH_MOTION_VIEW_DESIGN.md 2.1, 2.2): `masks` is the track's
+ * Mask list (maskModel form, read tolerantly) and `parentTrackId` its Parent (-1 =
+ * none), both from getLensRoam. commitMasks(next) replaces the whole list as ONE
+ * runMotionPlan 'masks' write (one undo step) and adopts the engine's post-state.
  */
 export function useRoamValue(trackId) {
   const [base, setBase] = useState(null)
   const [committedKeys, setKeys] = useState(NO_KEYS)
+  const [masks, setMasks] = useState(NO_KEYS)
+  const [parentTrackId, setParentTrackId] = useState(-1)
   const token = useRef(0)
   const draftTrack = useRoamDraftStore((s) => s.trackId)
   const draftPatch = useRoamDraftStore((s) => s.patch)
@@ -188,18 +202,22 @@ export function useRoamValue(trackId) {
   const keyDraft = useRoamKeysStore((s) => (s.draft && s.draft.trackId === trackId ? s.draft.keys : null))
 
   const refresh = useCallback(async () => {
-    if (trackId == null) { setBase(null); setKeys(NO_KEYS); return }
+    if (trackId == null) { setBase(null); setKeys(NO_KEYS); setMasks(NO_KEYS); setParentTrackId(-1); return }
     const mine = ++token.current
     const res = await getLensRoam({ trackIds: [trackId] })
     if (mine !== token.current) return
     const hit = res?.tracks?.[0]
-    setBase(hit?.roam ?? null)
+    setBase(hit?.roam ? normalizeRoam(hit.roam) : null)
     setKeys(Array.isArray(hit?.keys) ? hit.keys : NO_KEYS)
+    setMasks(Array.isArray(hit?.masks) && hit.masks.length ? fromWireList(hit.masks) : NO_KEYS)
+    setParentTrackId(parentIdOf(hit))
   }, [trackId])
 
   useEffect(() => {
     setBase(null)
     setKeys(NO_KEYS)
+    setMasks(NO_KEYS)
+    setParentTrackId(-1)
     refresh()
   }, [refresh])
   useRefreshOn(REFRESH_EVENTS, refresh)
@@ -220,10 +238,26 @@ export function useRoamValue(trackId) {
   const keysRef = useRef(NO_KEYS)
   keysRef.current = committedKeys
 
+  // The track this hook shows NOW: a write that resolves after the hook moved to
+  // another track (the pen closing on the pen's track) must not land in its state.
+  const trackRef = useRef(trackId)
+  trackRef.current = trackId
   const adopt = useCallback((res) => {
-    if (res?.roam) setBase(res.roam)
-    if (Array.isArray(res?.keys)) setKeys(res.keys)
+    if (!res || (res.trackId != null && res.trackId !== trackRef.current)) return
+    if (res.roam) setBase(normalizeRoam(res.roam))
+    if (Array.isArray(res.keys)) setKeys(res.keys)
+    if (Array.isArray(res.masks)) setMasks(res.masks.length ? fromWireList(res.masks) : NO_KEYS)
+    if (Number.isInteger(res.parentTrackId)) setParentTrackId(parentIdOf(res))
   }, [])
+
+  // Replace the whole Mask list: ONE runMotionPlan write, one undo step.
+  const commitMasks = useCallback(async (next, label = 'Edit mask') => {
+    token.current++
+    const run = await runMotionPlan([{ kind: 'masks', trackId, masks: toWireList(next) }], label)
+    const res = run.results[0] ?? null
+    adopt(res)
+    return res
+  }, [trackId, adopt])
 
   // Replace the whole key list: ONE command, one undo step.
   const commitKeys = useCallback(async (keys) => {
@@ -283,6 +317,78 @@ export function useRoamValue(trackId) {
   return {
     roam, base, keys, committedKeys, keyed, autoKey, ready: base !== null, resolveAt,
     preview, commit, commitDraft, cancel, reset, commitKeys,
+    masks, parentTrackId, commitMasks, adopt,
+  }
+}
+
+// ── Parent: the ancestors' Roam, and the selected cell's pose on screen ─────
+
+const NO_ANCESTORS = new Map()
+
+/**
+ * Map<trackId, { base, keys }> for a track's ancestors (one getLensRoam for the
+ * whole chain), kept current on the same events as the other Roam hooks. `chainIds`
+ * nearest first; an empty chain fetches nothing.
+ */
+export function useAncestorRoams(chainIds) {
+  const [state, setState] = useState(NO_ANCESTORS)
+  const token = useRef(0)
+  const idsKey = (chainIds ?? []).join(',')
+
+  const refresh = useCallback(async () => {
+    const ids = idsKey ? idsKey.split(',').map(Number) : []
+    const mine = ++token.current
+    if (ids.length === 0) { setState(NO_ANCESTORS); return }
+    const res = await getLensRoam({ trackIds: ids })
+    if (mine !== token.current) return
+    const m = new Map()
+    for (const t of res?.tracks ?? []) {
+      m.set(t.trackId, {
+        base: t.roam ?? ROAM_IDENTITY,
+        keys: Array.isArray(t.keys) ? t.keys : NO_KEYS,
+        parentTrackId: parentIdOf(t),
+      })
+    }
+    setState(m)
+  }, [idsKey])
+
+  useEffect(() => { refresh() }, [refresh])
+  useRefreshOn(REFRESH_EVENTS, refresh)
+  return state
+}
+
+/**
+ * The selected track's Roam with its Parent chain (docs/XLETH_MOTION_VIEW_DESIGN.md
+ * 5.5, R7): everything useRoamValue gives (as `R`), the geometry, and
+ *   poseAt(tick, ownRoam?)  composePose at that tick (ownRoam defaults to R.resolveAt(tick)),
+ *                           or null when the track has no cell
+ *   poseWith(tick, ownRoam) the same with ownRoam required; stable across drafts (memo key)
+ *   chainIds                the ancestors, nearest first ([] = unparented)
+ *   ancestors               Map<id, { base, keys }>
+ *   parented                chainIds.length > 0
+ * The parent's home comes from the same getGridLayout the child's does.
+ */
+export function useRoamPose(trackId) {
+  const R = useRoamValue(trackId)
+  const { layout, track, tracks } = useTrackGeometry(trackId)
+  const childParent = R.ready ? R.parentTrackId : undefined
+  const tracksById = useMemo(() => trackIndexFor(tracks, trackId, childParent), [tracks, trackId, childParent])
+  const chainIds = useMemo(() => chainIdsOf(trackId, tracksById), [trackId, tracksById])
+  // The ancestors are fetched by id list (a string), so a track-list refetch that
+  // keeps the same chain does not refetch them.
+  const ancestors = useAncestorRoams(chainIds)
+  const geo = useMemo(() => cellGeometry(layout, track), [layout, track])
+  const resolver = useMemo(
+    () => makePoseResolver({ trackId, layout, tracksById, ancestors }),
+    [trackId, layout, tracksById, ancestors],
+  )
+  // poseWith needs the child's own Roam passed in, so it does not change with a draft
+  // (the motion path is memoized on it); poseAt fills it from resolveAt (draft included).
+  const poseWith = useCallback((tick, ownRoam) => (geo ? resolver(tick, ownRoam) : null), [geo, resolver])
+  const resolveAt = R.resolveAt
+  const poseAt = useCallback((tick, ownRoam) => poseWith(tick, ownRoam ?? resolveAt(tick)), [poseWith, resolveAt])
+  return {
+    R, layout, track, tracks, tracksById, geo, chainIds, ancestors, parented: chainIds.length > 0, poseAt, poseWith,
   }
 }
 

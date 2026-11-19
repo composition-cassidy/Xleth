@@ -108,6 +108,9 @@ function physicalKeyFromCode(code: unknown): string | null {
   if (/^Digit[0-9]$/.test(code)) return code.slice(5);
   if (/^Numpad[0-9]$/.test(code)) return code.slice(6);
   if (/^Key[A-Z]$/.test(code)) return code.slice(3).toLowerCase();
+  // The key left of 1: '`' on a US layout, but '^', 'ö', '²' ... elsewhere. The
+  // Edit | Motion view switch is bound to '`', so it must match by key cap.
+  if (code === 'Backquote') return '`';
   return null;
 }
 

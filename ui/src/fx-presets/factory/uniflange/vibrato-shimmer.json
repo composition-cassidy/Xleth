@@ -1,0 +1,19 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "uniflange",
+  "name": "Vibrato Shimmer",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "order": 1,
+      "depth": 60,
+      "speed": 75,
+      "delay": 0,
+      "spread": 100,
+      "cross": 0,
+      "dry": 0,
+      "wet": 100
+    }
+  }
+}

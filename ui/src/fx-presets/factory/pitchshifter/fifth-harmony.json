@@ -1,0 +1,17 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "pitchshifter",
+  "name": "Fifth Harmony",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "mode": 2,
+      "mix": 0.5,
+      "semitones": 7,
+      "cents": 0,
+      "size": 50,
+      "formant": 1
+    }
+  }
+}

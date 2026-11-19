@@ -1,0 +1,95 @@
+/* The Devices tab: an Audio lane over a Video lane. One scroller owns both axes, so a
+ * sideways scroll moves both chains together; the folder tabs are sticky at the left
+ * and never move, which keeps the Audio | Video divide readable at any scroll. */
+@layer kit {
+  .scroller {
+    box-sizing: border-box;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+    /* A well (g0): the device frames in it are the raised chrome (g1). */
+    background: var(--ui-g0);
+  }
+
+  /* A fat, obviously-draggable bar (FL's playlist navigator): a recessed track with a
+   * lighter rounded thumb. Deliberately NOT `scrollbar-width`/`scrollbar-color`: Chromium
+   * ignores ::-webkit-scrollbar the moment either is set. */
+  .scroller::-webkit-scrollbar {
+    width: 18px;
+    height: 18px;
+  }
+
+  .scroller::-webkit-scrollbar-track {
+    background: var(--ui-g0);
+    border-top: 1px solid var(--ui-g4);
+  }
+
+  .scroller::-webkit-scrollbar-thumb {
+    min-width: 48px;
+    min-height: 48px;
+    border: 3px solid var(--ui-g0);
+    border-radius: 999px;
+    background: var(--ui-boundary);
+  }
+
+  .scroller::-webkit-scrollbar-thumb:hover,
+  .scroller::-webkit-scrollbar-thumb:active {
+    background: var(--ui-ink-2);
+  }
+
+  .scroller::-webkit-scrollbar-corner {
+    background: var(--ui-g0);
+  }
+
+  /* As wide as the longer chain; both lanes stretch to it, so each lane's top edge runs the
+   * full scroll width. */
+  .lanes {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    width: max-content;
+    min-width: 100%;
+  }
+
+  .lane {
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+  }
+
+  /* The folder tab: its own row above the lane's edge, pinned to the scroller's left. */
+  .tabRail {
+    position: sticky;
+    left: 0;
+    z-index: 2;
+    align-self: flex-start;
+    display: flex;
+    height: var(--space-5);
+    padding: 0 var(--space-1);
+    margin-top: var(--space-1);
+  }
+
+  .tab {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    height: 100%;
+    padding: 0 var(--space-4);
+    background: var(--ui-g3);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    font-weight: var(--weight-semibold);
+    line-height: 1;
+    /* Folder-tab silhouette: the sides lean in toward the top. */
+    clip-path: polygon(0 100%, var(--space-2) 0, calc(100% - var(--space-2)) 0, 100% 100%);
+  }
+
+  /* The lane's edge: the tab's colour, running the full width under it. */
+  .laneBody {
+    display: flex;
+    flex: 0 0 auto;
+    border-top: 2px solid var(--ui-g3);
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "amp",
+  "name": "Bass Amp Grit",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "model": 0,
+      "drive": 7,
+      "bass": 4,
+      "mid": 6,
+      "treble": 4,
+      "sag": 5,
+      "tighten": 0,
+      "gate": 0,
+      "cab": 3,
+      "presence": 5,
+      "mix": 40,
+      "output": 0
+    }
+  }
+}

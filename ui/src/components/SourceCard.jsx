@@ -2,6 +2,7 @@ import { SourceAudioIcon, SourceVideoIcon } from '../ui-kit'
 import { formatClock } from './browser/browserFormat.js'
 import styles from './browser/Browser.module.css'
 import { iconComponent } from '../ui-kit/icons'
+import { GradeIndicator } from './colorGrade/GradeStack.jsx'
 
 const IcSpinnerGap = iconComponent('spinner-gap')
 
@@ -80,6 +81,7 @@ export default function SourceCard({
           <IcSpinnerGap size={14} className={styles.spin} aria-hidden="true" />
         </span>
       )}
+      {isVideo && <GradeIndicator target={{ level: 'source', id: source.id }} />}
       <span className={styles.duration}>{formatClock(source.duration || 0)}</span>
     </div>
   )

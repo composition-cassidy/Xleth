@@ -160,7 +160,7 @@ struct UvRect {
 // honoured only for Float), so it stays on today's path too.
 inline bool roamMovesCell(const RoamParams& r) {
     return r.offsetX != 0.0f || r.offsetY != 0.0f
-        || r.scale != 1.0f || r.rotationDeg != 0.0f;
+        || r.scale != 1.0f || r.scaleYEff() != 1.0f || r.rotationDeg != 0.0f;
 }
 
 // Bounds Clip scissors the moved cell to its home rect. Only when Roam is
@@ -186,11 +186,15 @@ inline UvRect roamCellRect(const RoamParams& r, const UvRect& home,
     q.y += oy * unitH;
     float sc = std::isfinite(r.scale) ? r.scale : 1.0f;
     sc = std::clamp(sc, 1e-3f, 1e3f);
-    if (sc != 1.0f) {
+    // Linked (the default) scaleYEff() == scale, so h takes the very same
+    // multiply as before the split.
+    float scY = std::isfinite(r.scaleYEff()) ? r.scaleYEff() : 1.0f;
+    scY = std::clamp(scY, 1e-3f, 1e3f);
+    if (sc != 1.0f || scY != 1.0f) {
         const float cx = q.x + q.w * 0.5f;
         const float cy = q.y + q.h * 0.5f;
         q.w *= sc;
-        q.h *= sc;
+        q.h *= scY;
         q.x = cx - q.w * 0.5f;
         q.y = cy - q.h * 0.5f;
     }
@@ -278,13 +282,25 @@ struct DrawKey {
     }
 };
 
-inline DrawKey roamDrawKey(const RoamParams& r, int zOrder, int maxGridZOrder) {
-    switch (effectiveRoamLayer(r)) {
+inline DrawKey drawKeyFor(RoamLayer layer, int zOrder, int maxGridZOrder) {
+    switch (layer) {
         case RoamLayer::AboveNeighbours: return { std::max(zOrder, maxGridZOrder), 1 };
         case RoamLayer::Top:             return { INT_MAX, 2 };
         case RoamLayer::GridOrder:
         default:                         return { zOrder, 0 };
     }
+}
+
+inline DrawKey roamDrawKey(const RoamParams& r, int zOrder, int maxGridZOrder) {
+    return drawKeyFor(effectiveRoamLayer(r), zOrder, maxGridZOrder);
+}
+
+// Motion view R10 (docs/XLETH_MOTION_VIEW_DESIGN.md): the layer a cell draws
+// on. A PARENTED cell honours its Roam layer under Bounds Clip as it does under
+// Float, because its parent can carry it over its neighbours. An unparented
+// cell is effectiveRoamLayer, unchanged.
+inline RoamLayer drawLayer(const RoamParams& r, bool parented) {
+    return parented ? r.layer : effectiveRoamLayer(r);
 }
 
 } // namespace lensroam

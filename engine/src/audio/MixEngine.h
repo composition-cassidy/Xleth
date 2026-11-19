@@ -55,7 +55,7 @@ namespace xleth::audio { class WorldStretchCache; }
 // Immutable per-chain node view (AudioGraph.h). Held by shared_ptr only, so an
 // incomplete type here keeps juce_audio_processors out of this header.
 namespace xleth::audio { struct GraphRealtimeView; }
-namespace xleth::audio { class SlotBakeCache; struct BakeKey; }
+namespace xleth::audio { class SlotBakeCache; struct BakeKey; class RealtimeWorkerPool; }
 
 // ─── Debug log queue (lock-free, single-producer / single-consumer) ──────────
 
@@ -516,6 +516,23 @@ public:
     };
 
     void setRealtimeDiagnosticsEnabled(bool enabled);
+
+    // ── Parallel track processing ───────────────────────────────────────────
+    // Independent track effect chains run on helper threads during the audio
+    // callback (and offline renders). Output is bit-identical to the serial mix:
+    // only the chains move; every sum still happens on the calling thread in
+    // processOrder. Helpers are created by prepare() (HardwareTier::
+    // audioWorkerThreads(); 0 on small machines → always serial). The switch is
+    // read once per block, so it can be flipped live (tests, A/B).
+    void setParallelTrackProcessingEnabled(bool enabled) noexcept
+    {
+        parallelTracksEnabled_.store(enabled, std::memory_order_relaxed);
+    }
+    bool isParallelTrackProcessingEnabled() const noexcept
+    {
+        return parallelTracksEnabled_.load(std::memory_order_relaxed);
+    }
+    int getTrackWorkerCount() const noexcept;
     bool isRealtimeDiagnosticsEnabled() const;
     void resetRealtimeDiagnostics();
     RealtimeDiagnosticsSnapshot getRealtimeDiagnosticsSnapshot(uint64_t minTimingSequence = 0) const;
@@ -1312,6 +1329,10 @@ private:
     {
     public:
         void prepare(double sampleRate, int maxBlockSize);
+        // Floor on the ring size (samples). Track delays keep the generous
+        // default; send-edge delays use a small floor because there are
+        // kMaxTracks * kMaxTrackSends of them. Call before prepare().
+        void setMinimumCapacitySamples(int samples) noexcept { minCapacitySamples_ = samples; }
         void reset();
         void resetToDelaySamples(int delaySamples);
         void setTargetDelaySamples(int delaySamples);
@@ -1341,9 +1362,25 @@ private:
         bool hasProcessedAudio_ = false;
         int maxBlockSize_ = 0;
         double sampleRate_ = 44100.0;
+        int minCapacitySamples_ = kDefaultCapacitySamples;
     };
 
     StereoCompensationDelay trackCompensationDelays_[kMaxTracks];
+
+    // ── Sends (FL multi-wiring) ─────────────────────────────────────────────
+    // One delay line per (source slot, send index): a source feeding junctions
+    // of different latency needs a different alignment per edge (junction PDC,
+    // per edge). Sized small at prepare (kSendDelayMinCapacity); a latency past
+    // that grows the ring like the track delays do.
+    static constexpr int kSendDelayMinCapacity = 4096;
+    StereoCompensationDelay sendCompensationDelays_[kMaxTracks][kMaxTrackSends];
+    int   cachedSendCompensationSamples_[kMaxTracks][kMaxTrackSends] = {};
+    // Gain each send edge ended the previous block at, so a level change ramps
+    // across one block instead of stepping (zipper).
+    float sendGainPrev_[kMaxTracks][kMaxTrackSends] = {};
+    // Scratch for one send edge's delayed copy of its source (pre-sized).
+    juce::AudioBuffer<float> sendScratch_;
+    void syncSendCompensationDelayState(int slot, bool clearHistory);
     int cachedTrackInsertLatencySamples_[kMaxTracks] = {};
     int cachedTrackCompensationSamples_[kMaxTracks] = {};
     std::uint64_t cachedTrackLatencyEpochs_[kMaxTracks] = {};
@@ -2088,6 +2125,15 @@ private:
     // Content-keyed, disk-backed cache for the sampler's stretch/shift bake.
     // Held by pointer so MixEngine.h need not pull in the DSP headers.
     std::unique_ptr<xleth::audio::SlotBakeCache> slotBakeCache_;
+
+    // Parallel track processing (see setParallelTrackProcessingEnabled). The job
+    // block is preallocated so the callback never allocates; its layout lives in
+    // MixEngine.cpp.
+    struct ParallelTrackJob;
+    static void parallelTrackWorker(void* job);
+    std::unique_ptr<xleth::audio::RealtimeWorkerPool> trackWorkerPool_;
+    std::unique_ptr<ParallelTrackJob>                 parallelTrackJob_;
+    std::atomic<bool>                                 parallelTracksEnabled_{true};
 
     // Bakes queued but not yet published, keyed by regionId*MAX_SAMPLE_SLOTS +
     // slotIndex — the same flat key slotSampleMap_ uses. Main thread only.

@@ -141,7 +141,7 @@ public:
         float peakL = 0.0f, peakR = 0.0f;
 
 #ifdef XLETH_DEBUG
-        static int blockCount_ = 0;
+        static std::atomic<int> blockCount_{0};   // shared by every instance; chains may run on helper threads
         ++blockCount_;
         const bool doLog = (blockCount_ % 1000 == 0);
 #endif

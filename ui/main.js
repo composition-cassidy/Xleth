@@ -35,11 +35,39 @@ try { fs.mkdirSync(path.dirname(logPath), { recursive: true }); } catch {}
 // renderer console pipe below (and every non-silent IPC call) used to cost a
 // synchronous disk write per log line. 'w' truncates on open, replacing the
 // old separate writeFileSync('') clear.
-const logStream = fs.createWriteStream(logPath, { flags: 'w' });
+//
+// Size cap: the file used to grow without bound for a whole session (~17 MB/h
+// of mostly [IPC] lines; 56 MB seen after 1.5 h). Past LOG_ROTATE_BYTES the
+// current file is moved to startup.1.log (replacing the previous chunk) and a
+// fresh startup.log continues, so disk use stays under ~2x the cap and the
+// most recent lines are always in startup.log. stdout is unaffected.
+const LOG_ROTATE_BYTES = 20 * 1024 * 1024;
+let logStream = fs.createWriteStream(logPath, { flags: 'w' });
+let logBytes = 0;
+let logRotations = 0;
+function rotateLog() {
+  const old = logStream;
+  const rotatedPath = userDataPath('startup.1.log');
+  logRotations += 1;
+  logBytes = 0;
+  // Rename once the old stream has flushed and closed; new lines go to a
+  // fresh stream immediately (opened on a temp name, then swapped in, so no
+  // line is lost or written into the file being renamed).
+  logStream = fs.createWriteStream(`${logPath}.next`, { flags: 'w' });
+  old.end(() => {
+    // libuv opens files with FILE_SHARE_DELETE, so the fresh stream's handle
+    // stays valid while its file is renamed into place.
+    try { fs.renameSync(logPath, rotatedPath); } catch {}
+    try { fs.renameSync(`${logPath}.next`, logPath); } catch {}
+  });
+  logStream.write(`[${new Date().toISOString()}] [log] rotated (#${logRotations}) — previous ${LOG_ROTATE_BYTES >> 20} MB in startup.1.log\n`);
+}
 function writeLogLine(msg) {
   const line = `[${new Date().toISOString()}] ${msg}\n`;
   process.stdout.write(line);
   logStream.write(line);
+  logBytes += Buffer.byteLength(line);
+  if (logBytes >= LOG_ROTATE_BYTES) rotateLog();
 }
 
 // ── Session console log capture (Settings → Application → Logs) ──────────────
@@ -109,7 +137,14 @@ const clipProcessingDefaults = require('./electron-main/clip-processing-defaults
 const undoRedoHandlers = require('./electron-main/undo-redo');
 const transportHandlers = require('./electron-main/transport');
 const welcomeHandlers = require('./electron-main/welcome');
-projectHandlers.init({ safeHandler });
+// The three hooks are function declarations further down (hoisted): see
+// "Workspace window boot". They only run once a load is actually requested.
+projectHandlers.init({
+  safeHandler,
+  shouldBroadcastTo: (wc) => workspaceTakesBroadcasts(wc),
+  onLoadStart: (event) => onIpcProjectLoadStart(event),
+  onLoadEnd: (event, _dir, ok) => onIpcProjectLoadEnd(event, ok),
+});
 timelineHandlers.init({ safeHandler });
 clipProcessingDefaults.init({ safeHandler });
 undoRedoHandlers.init({ safeHandler });
@@ -192,6 +227,10 @@ function ffprobeExecutable() {
   if (app.isPackaged || fs.existsSync(exe)) return exe;
   return 'ffprobe';
 }
+
+// Same id as electron-builder's appId, so the taskbar groups XLETH windows (and
+// pins/jump lists) under the XLETH icon instead of electron.exe's identity.
+if (process.platform === 'win32') app.setAppUserModelId('com.xleth.app');
 
 // Cap V8 old-space so the renderer/main heaps don't balloon on long sessions.
 // Caps Electron's V8 heaps only; the forked engine worker runs under system Node
@@ -333,25 +372,62 @@ function nudgeWindowZoom(targetWindow, direction) {
 }
 const nodeEditorWindows = new Map(); // key → BrowserWindow
 
+// The splash is never waited FOR: whatever it is covering (engine boot, a
+// project load, the workspace window's own boot) starts at once and runs
+// alongside it. A status sent before the splash page exists is remembered and
+// replayed when it appears; a transition that finishes before the splash has
+// even painted closes it unseen instead of flashing it.
+const SPLASH_MIN_VISIBLE_MS = 400;   // once seen, it stays long enough to be read
+let splashVisibleSince = 0;          // Date.now() when it became visible; 0 = not (yet) shown
+let splashShownPromise = null;
+let lastSplashStatus = null;
+let splashEpoch = 0;                 // bumped by every showSplashWindow(); see finishSplash
+
 function splashStatus(message, percent) {
-  if (splashWin && !splashWin.isDestroyed()) {
+  lastSplashStatus = [message, percent];
+  if (splashWin && !splashWin.isDestroyed() && splashVisibleSince) {
     splashWin.webContents.send('splash:status', message, percent);
   }
 }
 
+// Closes the splash, then runs `reveal` (showing whatever it was covering).
+// The minimum-visibility wait counts from when the splash APPEARED, not from
+// when the thing behind it became ready — so it only ever costs time on a
+// transition quick enough that the splash would otherwise blink.
+function finishSplash(reveal) {
+  const w = splashWin;
+  const epoch = splashEpoch;
+  const wait = splashVisibleSince
+    ? Math.max(0, SPLASH_MIN_VISIBLE_MS - (Date.now() - splashVisibleSince))
+    : 0;
+  const done = () => {
+    // Asked for again while this close was waiting out the minimum (a retry
+    // straight after a failed load): it now belongs to that newer transition.
+    if (w && !w.isDestroyed() && epoch === splashEpoch) w.close();
+    if (reveal) {
+      try { reveal(); } catch (e) { log(`[Splash] reveal failed: ${e.message}`); }
+    }
+  };
+  if (wait > 0) setTimeout(done, wait); else done();
+}
+
 // Creates (or reuses) the splash window and resolves once it's actually
-// visible. Used both for the one-time engine-boot sequence and for any later
-// transition that needs the same "loading, here's the progress" treatment —
-// Welcome handing off to the workspace, and in-app project switches (see
-// launchWorkspace/switchProjectWindow below). Idempotent: if splashWin is
-// already up (e.g. a switch triggered while the previous one is still
-// closing), it's shown/reused rather than duplicated.
+// visible (or with null if it was closed first). Used both for the one-time
+// engine-boot sequence and for any later transition that needs the same
+// "loading, here's the progress" treatment — Welcome handing off to the
+// workspace, and in-app project switches (see launchWorkspace/
+// switchProjectWindow below). Idempotent: if splashWin is already up (e.g. a
+// switch triggered while the previous one is still closing), it's shown/
+// reused rather than duplicated.
 function showSplashWindow() {
+  splashEpoch++;
   if (splashWin && !splashWin.isDestroyed()) {
+    if (!splashVisibleSince) return splashShownPromise;   // still loading its page
     if (!splashWin.isVisible()) splashWin.show();
     return Promise.resolve(splashWin);
   }
-  splashWin = new BrowserWindow({
+  splashVisibleSince = 0;
+  const w = new BrowserWindow({
     width: 640,
     height: 400,
     icon: path.join(__dirname, 'assets', 'icon.ico'),
@@ -369,18 +445,228 @@ function showSplashWindow() {
       preload: path.join(__dirname, 'splash-preload.js'),
     },
   });
-  const shown = new Promise((resolve) => {
-    splashWin.once('ready-to-show', () => {
-      splashWin.show();
-      resolve(splashWin);
+  splashWin = w;
+  splashShownPromise = new Promise((resolve) => {
+    w.once('ready-to-show', () => {
+      if (w.isDestroyed()) { resolve(null); return; }
+      w.show();
+      splashVisibleSince = Date.now();
+      if (lastSplashStatus) w.webContents.send('splash:status', ...lastSplashStatus);
+      resolve(w);
     });
+    w.once('closed', () => resolve(null));
   });
-  splashWin.loadFile(path.join(__dirname, 'splash.html'), { query: { v: app.getVersion() } });
-  splashWin.on('closed', () => { splashWin = null; });
-  return shown;
+  w.loadFile(path.join(__dirname, 'splash.html'), { query: { v: app.getVersion() } });
+  w.on('closed', () => {
+    if (splashWin === w) { splashWin = null; splashVisibleSince = 0; }
+  });
+  return splashShownPromise;
 }
 
-function createWindow() {
+// ── Workspace window boot ────────────────────────────────────────────────────
+// Booting the workspace renderer (process spawn, bundle load + evaluation)
+// takes about as long as the engine takes to load a project, and neither
+// needs the other. So the window is created HIDDEN as soon as a project load
+// is known to be coming, and the two run side by side:
+//
+//   gate    The renderer evaluates its bundle, then waits on
+//           xleth:boot:whenProjectReady before mounting React (ui/src/
+//           main.jsx). The UI therefore still mounts against a fully loaded
+//           project, exactly as when the window was only created afterwards.
+//   mounted After its first commit the renderer reports xleth:boot:mounted.
+//           That — not Chromium's ready-to-show, which for a gated page fires
+//           on an empty document — is what the reveal waits for, plus the
+//           start-up burst of engine queries draining (whenEngineQuiet).
+//
+// One xleth:project-loaded is delivered per boot (it is what hydrates
+// effectChainStore's FX Graph state), and it is sent immediately BEFORE the
+// gate opens: the stores, whose listeners register when the bundle is
+// evaluated, get it; the components, which are not mounted yet, do not — they
+// read the project once, as they mount. (Sent after the mount, as it used to
+// be, every mounted component threw its fresh state away and fetched the
+// whole project a second time.) project.js's own broadcast skips a window
+// that is still booting, see workspaceTakesBroadcasts.
+//
+// A bundle that predates the gate never asks for it: it mounts at once (its
+// queries simply queue behind the load in the engine worker), gets its signal
+// from the fallback timer, and is revealed by it.
+let workspaceBoot = null;   // boot state of the current workspace window, or null
+let workspaceLaunchRequested = false;   // a project is open(ing) in a workspace window
+let welcomeLoadInFlight = false;
+
+function newWorkspaceBootState(gateOpen) {
+  let openGate;
+  const gatePromise = new Promise((resolve) => { openGate = resolve; });
+  if (gateOpen) openGate();
+  return {
+    gateOpen, openGate, gatePromise,
+    gateAware: false,       // the renderer asked for the gate (current bundle)
+    finishedLoad: false,    // did-finish-load
+    mounted: false,         // xleth:boot:mounted
+    fallback: false,        // gave up waiting for `mounted`
+    fallbackTimer: null,
+    signalled: false,       // xleth:project-loaded delivered
+    revealRequested: false, // openWorkspaceWindow() ran: show it when ready
+    revealed: false,
+    handleSplash: false,
+    createdAt: Date.now(),
+  };
+}
+
+function isWorkspaceSender(event) {
+  return !!(win && !win.isDestroyed() && event.sender === win.webContents);
+}
+
+// project.js asks before each xleth:project-loaded broadcast. The workspace
+// window gets its own, once, when its boot completes; until then it is skipped.
+function workspaceTakesBroadcasts(wc) {
+  if (!win || win.isDestroyed() || wc !== win.webContents) return true;
+  return !workspaceBoot || workspaceBoot.signalled;
+}
+
+// The boot's one xleth:project-loaded. Only ever sent to a renderer whose
+// bundle has been evaluated (it asked for the gate, or the page finished
+// loading), so the stores' listeners exist to receive it.
+function signalWorkspaceProjectLoaded(st) {
+  if (st.signalled || workspaceBoot !== st || !win || win.isDestroyed()) return;
+  st.signalled = true;
+  win.webContents.send('xleth:project-loaded');
+}
+
+ipcMain.handle('xleth:boot:whenProjectReady', (event) => {
+  const st = workspaceBoot;
+  if (!st || !isWorkspaceSender(event)) return true;   // child windows are never gated
+  st.gateAware = true;
+  // Project already in (the window was created after the load, or the load
+  // beat the bundle): signal now, ahead of the reply that lets it mount.
+  if (st.gateOpen) signalWorkspaceProjectLoaded(st);
+  return st.gatePromise.then(() => true);
+});
+
+ipcMain.on('xleth:boot:mounted', (event) => {
+  const st = workspaceBoot;
+  if (!st || !isWorkspaceSender(event)) return;
+  st.mounted = true;
+  advanceWorkspaceBoot();
+});
+
+// Resolves when the engine has had no call in flight for `settleMs` — i.e.
+// the renderer's start-up queries (tracks, clips, chains, …) have been
+// answered — or after `capMs` regardless. Polling calls resolve in well under
+// a millisecond, so they do not hold this open.
+function whenEngineQuiet({ settleMs = 60, capMs = 900 } = {}) {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    let quietSince = 0;
+    const tick = () => {
+      const now = Date.now();
+      if (workerBridge.getPendingCount() === 0) {
+        if (!quietSince) quietSince = now;
+        if (now - quietSince >= settleMs) { resolve(now - start); return; }
+      } else {
+        quietSince = 0;
+      }
+      if (now - start >= capMs) { resolve(now - start); return; }
+      setTimeout(tick, 15);
+    };
+    tick();
+  });
+}
+
+// Moves the workspace boot along whenever one of its inputs changes. Safe to
+// call at any time, any number of times.
+function advanceWorkspaceBoot() {
+  const st = workspaceBoot;
+  if (!st || !win || win.isDestroyed() || !st.gateOpen) return;
+
+  // Never leave the user without a window: if the renderer has not reported a
+  // mount, carry on without it. A bundle that never asked for the gate is not
+  // going to report one, so it gets a short wait; a current one a long one.
+  if (st.finishedLoad && !st.mounted && !st.fallback && !st.fallbackTimer) {
+    st.fallbackTimer = setTimeout(() => {
+      st.fallbackTimer = null;
+      if (workspaceBoot !== st || st.mounted) return;
+      st.fallback = true;
+      log(`[Boot] workspace renderer reported no mount (${st.gateAware ? 'timeout' : 'pre-gate bundle'}) — continuing without it`);
+      advanceWorkspaceBoot();
+    }, st.gateAware ? 3000 : 400);
+  }
+
+  const settled = st.mounted || st.fallback;
+  // Normally sent already, ahead of the gate. This is the pre-gate bundle's
+  // turn (it never asked): its page has loaded, so its listeners exist.
+  if (st.finishedLoad && settled) signalWorkspaceProjectLoaded(st);
+  if (st.revealRequested && !st.revealed && settled) {
+    st.revealed = true;
+    if (st.fallbackTimer) { clearTimeout(st.fallbackTimer); st.fallbackTimer = null; }
+    revealWorkspace(st);
+  }
+}
+
+async function revealWorkspace(st) {
+  const waited = await whenEngineQuiet();
+  const show = () => {
+    if (workspaceBoot !== st || !win || win.isDestroyed()) return;
+    win.show();
+    log(`[Boot] workspace shown ${Date.now() - st.createdAt}ms after its window was created (hydration settled in ${waited}ms)`);
+  };
+  if (st.handleSplash) {
+    splashStatus('Ready.', 100);
+    finishSplash(show);
+  } else {
+    show();
+  }
+}
+
+// Creates the workspace window hidden, gate closed, ahead of a project load
+// that is starting now. openWorkspaceWindow() adopts it once the project is in.
+function prewarmWorkspaceWindow() {
+  if (win && !win.isDestroyed()) return;
+  if (getAddonError()) return;
+  createWindow(newWorkspaceBootState(false));
+  log('[Boot] workspace window booting (hidden) alongside the project load');
+}
+
+// Throws away a pre-warmed window whose project never arrived (load failed,
+// Welcome closed mid-load, engine died). Only ever touches a still-gated,
+// never-shown window.
+function discardPrewarmedWorkspace(reason) {
+  const st = workspaceBoot;
+  if (!st || st.gateOpen || !win || win.isDestroyed()) return false;
+  log(`[Boot] discarding the pre-warmed workspace window (${reason})`);
+  if (st.fallbackTimer) clearTimeout(st.fallbackTimer);
+  workspaceBoot = null;
+  const w = win;
+  win = null;
+  w.destroy();
+  return true;
+}
+
+// xleth:project:load arriving from the Welcome window is the start of the
+// Welcome → workspace hand-off: put the splash up and start the workspace
+// window now, while the engine loads. (The same channel from an already open
+// workspace is an in-app load and needs none of this.)
+function onIpcProjectLoadStart(event) {
+  const welcomeWin = welcomeHandlers.getWelcomeWindow();
+  if (!welcomeWin || welcomeWin.isDestroyed() || event.sender !== welcomeWin.webContents) return;
+  welcomeLoadInFlight = true;
+  showSplashWindow();
+  splashStatus('Loading project…', 30);
+  prewarmWorkspaceWindow();
+}
+
+function onIpcProjectLoadEnd(event, ok) {
+  if (!welcomeLoadInFlight) return;
+  welcomeLoadInFlight = false;
+  if (ok) return;   // Welcome reports projectReady next → launchWorkspace()
+  // Back to Welcome, which shows the error.
+  discardPrewarmedWorkspace('project load failed');
+  finishSplash();
+}
+
+function createWindow(bootState) {
+  workspaceBoot = bootState || newWorkspaceBootState(true);
+  const boot = workspaceBoot;
   win = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -429,10 +715,18 @@ function createWindow() {
   // regardless of how the project already loaded. In-app project switches are
   // unaffected — this window already exists then, so project.js's own
   // broadcast reaches it directly.
+  //
+  // With the boot gate (see "Workspace window boot") the page can finish
+  // loading BEFORE its project has, so the signal is no longer tied to
+  // did-finish-load: it is sent once the project is in, just ahead of the
+  // renderer's mount — still exactly once per window.
+  const thisWin = win;
   if (!addonError) {
     win.webContents.once('did-finish-load', () => {
-      win.webContents.send('xleth:project-loaded');
-      restoreUiScale(win);
+      if (thisWin.isDestroyed()) return;
+      restoreUiScale(thisWin);
+      boot.finishedLoad = true;
+      advanceWorkspaceBoot();
     });
   }
 
@@ -456,10 +750,16 @@ function createWindow() {
   }
 
   win.on('closed', () => {
+    if (boot.fallbackTimer) { clearTimeout(boot.fallbackTimer); boot.fallbackTimer = null; }
+    // A discarded pre-warmed window closes after `win` has already moved on
+    // (to null, or to its replacement) — only the current window's closing
+    // tears the session's child windows down.
+    if (win !== thisWin && win !== null) return;
     for (const [, child] of nodeEditorWindows) {
       if (!child.isDestroyed()) child.close();
     }
     nodeEditorWindows.clear();
+    if (workspaceBoot === boot) workspaceBoot = null;
     win = null;
   });
 }
@@ -480,26 +780,41 @@ function decideBootTarget() {
   return { mode: 'welcome' };
 }
 
-// Creates + shows the real workspace window and performs the one-time
-// per-window setup (HWND handoff to the engine, update check). handleSplash
-// is true only on the direct auto-boot path, where the splash window is
-// still open and its close has to be timed off this window's first paint;
-// when called from Welcome's completion callback the splash already closed
-// when Welcome itself first appeared (see attachSplashHandoff below).
+// Shows the real workspace window for a project that has JUST finished
+// loading, and performs the one-time per-window setup (HWND handoff to the
+// engine, update check). Adopts the window pre-warmed alongside the load when
+// there is one (its renderer is already evaluated and waiting at the boot
+// gate); otherwise creates it now. Either way the window appears only once
+// its renderer has mounted and hydrated — see "Workspace window boot".
+// handleSplash: the splash is up and should be closed as the window appears.
 function openWorkspaceWindow({ handleSplash }) {
-  createWindow();
-  if (win) {
-    win.once('ready-to-show', () => {
-      if (handleSplash) {
-        splashStatus('Ready.', 100);
-        setTimeout(() => {
-          if (splashWin && !splashWin.isDestroyed()) splashWin.close();
-          win.show();
-        }, 400); // minimum splash visibility after first paint
-      } else {
-        win.show();
+  workspaceLaunchRequested = true;
+  const prewarmed = !!(win && !win.isDestroyed() && workspaceBoot && !workspaceBoot.gateOpen);
+  if (!prewarmed) createWindow(newWorkspaceBootState(true));
+  const st = workspaceBoot;
+  if (win && st) {
+    st.handleSplash = !!handleSplash;
+    if (getAddonError()) {
+      // The engine-error page: no renderer bundle, so no mount report. Show
+      // it on first paint, as before.
+      const errorWin = win;
+      errorWin.once('ready-to-show', () => {
+        if (errorWin.isDestroyed()) return;
+        if (st.handleSplash) finishSplash(() => { if (!errorWin.isDestroyed()) errorWin.show(); });
+        else errorWin.show();
+      });
+    } else {
+      st.revealRequested = true;
+      if (!st.gateOpen) {
+        st.gateOpen = true;
+        // Signal first, then let it mount (same tick, so in that order on the
+        // wire). A renderer that has not asked for the gate yet is signalled
+        // when it does — see xleth:boot:whenProjectReady.
+        if (st.gateAware) signalWorkspaceProjectLoaded(st);
+        st.openGate();
       }
-    });
+      advanceWorkspaceBoot();
+    }
   }
 
   // Pass the main-window native HWND to the engine so VST editor-host
@@ -530,9 +845,12 @@ function openWorkspaceWindow({ handleSplash }) {
 // already closed once when Welcome itself appeared, so it's re-shown here
 // for the Welcome → workspace handoff (this used to be a silent gap: Welcome
 // closes, then nothing visible until the workspace window's first paint).
-async function launchWorkspace(dir, name) {
-  await showSplashWindow();
-  splashStatus(name ? `Opening “${name}”…` : 'Opening project…', 30);
+function launchWorkspace(dir, name) {
+  // Synchronous on purpose: welcome.js calls this and THEN closes Welcome,
+  // whose 'closed' handler reads workspaceLaunchRequested (set in
+  // openWorkspaceWindow) to know this is not a quit.
+  showSplashWindow();   // usually already up since the load started
+  splashStatus(name ? `Opening “${name}”…` : 'Opening project…', 70);
   openWorkspaceWindow({ handleSplash: true });
 }
 
@@ -544,27 +862,39 @@ async function launchWorkspace(dir, name) {
 // then reveal the workspace again. `work` is loadProject(dir) or
 // newBlankProject() from electron-main/project.js.
 async function switchProjectWindow(message, work) {
-  await showSplashWindow();
+  // The engine work starts immediately; the splash comes up alongside it and
+  // the workspace is hidden only once the splash is actually covering for it
+  // (never a moment with nothing on screen). A switch that finishes before the
+  // splash has painted skips it entirely.
+  const wasVisible = !!(win && !win.isDestroyed() && win.isVisible());
+  let finished = false;
+  let hidden = false;
+  showSplashWindow().then((shown) => {
+    if (finished || !shown || !win || win.isDestroyed()) return;
+    win.hide();
+    hidden = true;
+  });
   splashStatus(message, 25);
 
-  const wasVisible = !!(win && !win.isDestroyed() && win.isVisible());
-  if (win && !win.isDestroyed()) win.hide();
-
-  const reveal = (delayMs) => {
-    setTimeout(() => {
-      if (splashWin && !splashWin.isDestroyed()) splashWin.close();
-      if (wasVisible && win && !win.isDestroyed()) win.show();
-    }, delayMs);
+  const reveal = () => {
+    finished = true;
+    finishSplash(() => {
+      if (hidden && wasVisible && win && !win.isDestroyed()) win.show();
+    });
   };
 
   try {
     const result = await work();
     splashStatus('Ready.', 100);
-    reveal(400); // minimum splash visibility after first paint, matches openWorkspaceWindow
+    // The broadcast in work() has the renderer re-reading the whole project;
+    // bring the window back once those queries have been answered.
+    await whenEngineQuiet();
+    reveal();
     return result;
   } catch (e) {
     splashStatus('Failed: ' + e.message, 100);
-    reveal(900); // linger longer so the failure message is readable
+    finished = true;
+    setTimeout(reveal, 900); // linger so the failure message is readable
     throw e;
   }
 }
@@ -1279,6 +1609,17 @@ ipcMain.handle('xleth:audio:probeAudioDuration',
 // ── Sample Video Export / Swap (mirrors Sample Audio Export/Swap above) ──────
 
 // Dialog: open a video file to swap in as the replacement video stream
+// Dialog: pick a .cube LUT for a Color Grade (the renderer hands the path to
+// colorGrade.checkLut before using it).
+ipcMain.handle('xleth:dialog:openLut', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+    title: 'Import LUT',
+    filters: [{ name: '3D LUT', extensions: ['cube'] }],
+    properties: ['openFile'],
+  });
+  return canceled || !filePaths.length ? null : filePaths[0];
+});
+
 ipcMain.handle('xleth:dialog:swapVideo', async () => {
   let defaultPath = undefined;
   try {
@@ -2185,22 +2526,70 @@ ipcMain.on('xleth:window:closeNodeEditor', (event) => {
 // ── App lifecycle ──────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
+  const bootStart = Date.now();
   log('app ready — loading addon...');
-
-  // ── Splash window ──────────────────────────────────────────────────────────
-  // Awaited before engine init begins so window.splashStatus (defined by the
-  // splash's own inline script) exists before the first real milestone fires.
-  await showSplashWindow();
-  // ──────────────────────────────────────────────────────────────────────────
 
   // COOP/COEP — required so the renderer's `crossOriginIsolated` flag is
   // true, which is a prerequisite for `SharedArrayBuffer` in Chromium.
+  // Installed before any window exists so every page load goes through it.
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     const responseHeaders = { ...details.responseHeaders };
     responseHeaders['Cross-Origin-Opener-Policy']   = ['same-origin'];
     responseHeaders['Cross-Origin-Embedder-Policy'] = ['require-corp'];
     callback({ responseHeaders });
   });
+
+  registerMediaProtocol();
+  startMediaServer();
+
+  // ── Start-up runs three things side by side ───────────────────────────────
+  // The splash, the engine, and the first real window (Welcome, or the
+  // workspace on the auto-boot path) do not depend on one another to START,
+  // only to FINISH — so none of them waits for another before beginning.
+  // The splash is not awaited: a status sent before its page exists is
+  // replayed when it appears (splashStatus).
+  showSplashWindow();
+
+  // Settings + recents are plain files; no engine needed to decide.
+  const bootTarget = decideBootTarget();
+
+  // Welcome is shown once BOTH its page has painted and the engine is up (its
+  // buttons all go through the engine). Whichever finishes last calls this.
+  let engineBootDone = false;
+  let welcomePainted = null;   // the Welcome window, once ready-to-show
+  let welcomeShown = false;
+  const maybeShowWelcome = () => {
+    if (welcomeShown || !engineBootDone || !welcomePainted) return;
+    welcomeShown = true;
+    const w = welcomePainted;
+    splashStatus('Ready.', 100);
+    finishSplash(() => {
+      if (w.isDestroyed()) return;
+      w.show();
+      log(`[Boot] Welcome shown ${Date.now() - bootStart}ms after app ready`);
+    });
+  };
+  const openWelcome = () => {
+    welcomeHandlers.createWelcomeWindow({
+      onReadyToShow: (welcomeWin) => { welcomePainted = welcomeWin; maybeShowWelcome(); },
+      onClosed: () => {
+        if (workspaceLaunchRequested) return;   // closed because a project was opened
+        // Closed without a project having been created/opened (the × button,
+        // Alt+F4, taskbar close — see welcome-preload.js/welcome.html). The
+        // mandatory gate: there is no path to the workspace without a
+        // project file, so XLETH quits. Windows-only, so window-all-closed
+        // (below) does that — once nothing else is open: a workspace window
+        // pre-warmed for a load still in flight, and the splash over it,
+        // would otherwise keep the app alive with no visible window.
+        log('[Welcome] closed without a project — quitting (mandatory gate)');
+        discardPrewarmedWorkspace('Welcome closed');
+        finishSplash();
+      },
+    });
+  };
+
+  if (bootTarget.mode === 'welcome') openWelcome();
+  else prewarmWorkspaceWindow();   // auto-boot: its renderer boots during engine init + project load
 
   try {
     splashStatus('Loading audio engine…', 15); // engine fork about to spawn
@@ -2244,9 +2633,43 @@ app.whenReady().then(async () => {
   } catch (e) {
     setAddonError(e.message);
     log(`Engine init FAILED: ${e.message}`);
+    discardPrewarmedWorkspace('engine init failed');
     if (splashWin && !splashWin.isDestroyed()) splashWin.close();
   }
+  engineBootDone = true;
+  log(`[Boot] engine ready ${Date.now() - bootStart}ms after app ready`);
 
+  // ── Mandatory Welcome gate ───────────────────────────────────────────────
+  // No path to the workspace exists without a project file on disk. Auto-boot
+  // straight into the workspace only when "show Welcome on startup" is off
+  // AND a valid recent project exists; otherwise Welcome always shows first —
+  // the gate is shortened, never bypassed.
+  if (bootTarget.mode === 'workspace') {
+    try {
+      splashStatus(bootTarget.name ? `Opening “${bootTarget.name}”…` : 'Opening project…', 90);
+      const loaded = await callWorker('project_load', [bootTarget.dir]);
+      if (!loaded) throw new Error('project_load returned false');
+      recentProjects.touchRecent({ name: bootTarget.name, dir: bootTarget.dir });
+    } catch (e) {
+      log(`[Boot] Auto-load of last project failed, falling back to Welcome: ${e.message}`);
+      bootTarget.mode = 'welcome';
+      discardPrewarmedWorkspace('auto-load failed');
+      openWelcome();
+    }
+  }
+
+  if (bootTarget.mode === 'workspace') {
+    openWorkspaceWindow({ handleSplash: true });
+  } else {
+    maybeShowWelcome();
+  }
+  // ──────────────────────────────────────────────────────────────────────────
+});
+
+// Serve local media files via xleth-media:// protocol so the renderer can load
+// audio/video without file:// CORS/CSP issues when running from localhost:5173.
+// Called once from app.whenReady(), before any window is created.
+function registerMediaProtocol() {
   // Serve local media files via xleth-media:// protocol so the renderer can load
   // audio/video without file:// CORS/CSP issues when running from localhost:5173.
   // Explicit Range support is required for <video> seeking — net.fetch with
@@ -2324,50 +2747,7 @@ app.whenReady().then(async () => {
     );
   });
   log('[Protocol] xleth-media registered');
-
-  startMediaServer();
-
-  // ── Mandatory Welcome gate ───────────────────────────────────────────────
-  // No path to the workspace exists without a project file on disk. Auto-boot
-  // straight into the workspace only when "show Welcome on startup" is off
-  // AND a valid recent project exists; otherwise Welcome always shows first —
-  // the gate is shortened, never bypassed.
-  const bootTarget = decideBootTarget();
-
-  if (bootTarget.mode === 'workspace') {
-    try {
-      const loaded = await callWorker('project_load', [bootTarget.dir]);
-      if (!loaded) throw new Error('project_load returned false');
-      recentProjects.touchRecent({ name: bootTarget.name, dir: bootTarget.dir });
-    } catch (e) {
-      log(`[Boot] Auto-load of last project failed, falling back to Welcome: ${e.message}`);
-      bootTarget.mode = 'welcome';
-    }
-  }
-
-  if (bootTarget.mode === 'workspace') {
-    openWorkspaceWindow({ handleSplash: true });
-  } else {
-    welcomeHandlers.createWelcomeWindow({
-      onReadyToShow: (welcomeWin) => {
-        splashStatus('Ready.', 100);
-        setTimeout(() => {
-          if (splashWin && !splashWin.isDestroyed()) splashWin.close();
-          welcomeWin.show();
-        }, 400); // minimum splash visibility after first paint
-      },
-      onClosed: () => {
-        // Closed without a project having been created/opened (the × button,
-        // Alt+F4, taskbar close — see welcome-preload.js/welcome.html). The
-        // mandatory gate: there is no path to the workspace without a
-        // project file, so XLETH quits. Windows-only, so window-all-closed
-        // (below) already does this; this is here for the startup log.
-        log('[Welcome] closed without a project — quitting (mandatory gate)');
-      },
-    });
-  }
-  // ──────────────────────────────────────────────────────────────────────────
-});
+}
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();

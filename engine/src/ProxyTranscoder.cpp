@@ -37,6 +37,13 @@ extern "C" {
   #pragma comment(lib, "ole32.lib")
 #endif
 
+#include <condition_variable>
+#include <deque>
+#include <map>
+
+#include "HardwareTier.h"
+#include "render/GpuDeviceManager.h"
+
 namespace fs = std::filesystem;
 
 // ── Windows-safe file-existence check ────────────────────────────────────────
@@ -114,12 +121,12 @@ static int evenClamp(int v) { v &= ~1; return v < 2 ? 2 : v; }
 
 // libav equivalent of the CLI `-threads` flag: caps decode/encode worker
 // threads so proxy generation doesn't oversubscribe against the audio and
-// video threads. g_genMutex already serialises generation to one at a time;
-// this is the remaining per-process knob.
+// video threads. g_genGate bounds how many generations run at once; this is
+// the remaining per-job knob. Historical value clamp(hw/2-1, 1, 4) — see
+// HardwareTier.h.
 static int proxyThreadCount()
 {
-    const int hw = (int) std::thread::hardware_concurrency();
-    return std::clamp(hw / 2 - 1, 1, 4);
+    return xleth::hw::proxyDecodeThreads();
 }
 
 // ╔══════════════════════════════════════════════════════════════════════════╗
@@ -143,13 +150,60 @@ static int proxyThreadCount()
 // ║  with --enable-libdav1d; this keeps generation working with zero rebuild.   ║
 // ╚══════════════════════════════════════════════════════════════════════════╝
 
-// Serialize the heavy decode/encode across the 2 ProxyManager workers. This
-// machine has a tiny integrated GPU (≈486 MB VRAM) already hosting the render
-// device; running two extra 4K D3D11VA decode devices at once risks VRAM
-// exhaustion. Preview artifacts are not latency-critical, so one-at-a-time
-// generation trades a little throughput for stability. (Audio/video threads are
-// never touched — this only gates the background worker pool.)
-static std::mutex g_genMutex;
+// Bound the heavy decode/encode across the ProxyManager workers. Originally a
+// plain mutex (one generation at a time) because the dev machine had a tiny
+// integrated GPU (≈486 MB VRAM) already hosting the render device, and two
+// extra 4K D3D11VA decode devices at once risked VRAM exhaustion. That stays
+// the rule on small machines; HardwareTier allows a second concurrent job from
+// 16 logical cores with ≥ 2 GB dedicated VRAM, so posters and region proxies
+// are no longer stuck behind one long whole-source encode. (Audio/video threads
+// are never touched — this only gates the background worker pool.)
+class GenerationGate {
+public:
+    void acquire() {
+        std::unique_lock<std::mutex> lk(m_);
+        cv_.wait(lk, [&] { return active_ < capacity(); });
+        ++active_;
+    }
+    void release() {
+        { std::lock_guard<std::mutex> lk(m_); --active_; }
+        cv_.notify_one();
+    }
+    static int capacity() {
+        static const int slots = [] {
+            const int n = xleth::hw::proxyGenerationSlots(
+                GpuDeviceManager::queryMaxDedicatedVramBytes());
+            std::cout << "[ProxyTranscoder] generation slots: " << n
+                      << " (logical cores " << xleth::hw::logicalCores() << ")\n";
+            return n;
+        }();
+        return slots;
+    }
+private:
+    std::mutex              m_;
+    std::condition_variable cv_;
+    int                     active_ = 0;
+};
+static GenerationGate g_genGate;
+
+struct GenerationSlot {
+    GenerationSlot()  { g_genGate.acquire(); }
+    ~GenerationSlot() { g_genGate.release(); }
+    GenerationSlot(const GenerationSlot&) = delete;
+    GenerationSlot& operator=(const GenerationSlot&) = delete;
+};
+
+int ProxyTranscoder::generationSlots() { return GenerationGate::capacity(); }
+
+// Pipeline helper threads (decode + scale workers) run below normal priority:
+// proxies are background work and must yield to the video/preview thread and
+// the UI. (The audio callback runs under MMCSS and is unaffected either way.)
+static void lowerHelperThreadPriority()
+{
+#if defined(_WIN32) || defined(_WIN64)
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+#endif
+}
 
 // FFmpeg get_format callback — choose D3D11 hw frames when offered (mirrors
 // RenderVideoDecoder). Returning AV_PIX_FMT_D3D11 commits the decoder to the
@@ -220,7 +274,7 @@ static bool openVideoSource(const std::string& path, SrcCtx& s)
     if (needHw) {
         // Create a fresh, thread-isolated D3D11VA device (FFmpeg makes its own
         // ID3D11Device). Not shared with the render device — avoids cross-thread
-        // D3D11 contention; serialized by g_genMutex so only one is alive.
+        // D3D11 contention; g_genGate bounds how many are alive at once.
         rc = av_hwdevice_ctx_create(&s.hwDeviceCtx, AV_HWDEVICE_TYPE_D3D11VA,
                                     nullptr, nullptr, 0);
         if (rc < 0) {
@@ -583,8 +637,8 @@ bool ProxyTranscoder::extractPoster(const std::string& inputPath,
         return false;
     }
 
-    // One-at-a-time generation (tiny shared GPU) — see g_genMutex.
-    std::lock_guard<std::mutex> genLock(g_genMutex);
+    // Bounded concurrent generation (tiny shared GPU on small machines) — see g_genGate.
+    GenerationSlot genSlot;
 
     // Honest decode capability check (one real frame, cached). If this source
     // can't be decoded for generation, bail now rather than truncating anything.
@@ -1039,10 +1093,10 @@ static bool transcodeImplBody(const std::string& inputPath,
         return false;
     }
 
-    // One-at-a-time generation (tiny shared GPU) — see g_genMutex.
-    std::lock_guard<std::mutex> genLock(g_genMutex);
+    // Bounded concurrent generation (tiny shared GPU on small machines) — see g_genGate.
+    GenerationSlot genSlot;
 
-    // A job cancelled while it queued on g_genMutex should not start at all.
+    // A job cancelled while it queued on g_genGate should not start at all.
     if (shouldCancel && shouldCancel()) {
         std::cout << "[ProxyTranscoder] Cancelled before start: " << outputPath << "\n";
         return false;
@@ -1213,6 +1267,19 @@ static bool transcodeImplBody(const std::string& inputPath,
     if (av_frame_get_buffer(encFrame, 32) < 0) goto cleanup;
 
     // ── decode → scale → encode the requested range ───────────────────────────
+    //
+    // Three stages, measured on a 1080p24 H.264 source → 720p proxy (120 s of
+    // footprint): decode (4 thr) + Lanczos scale (1 thr) 4.7 s, encode 2.6 s.
+    // Run back-to-back on one thread that was ~7.3 s per 120 s — the whole
+    // 22-minute episode proxy took 104 s. Two changes, both bounded by
+    // HardwareTier (small machines keep the historical single-threaded path):
+    //   1. The scaler is threaded (sws slice threads; 4.7 s → 2.4 s).
+    //   2. Decoding runs on a helper thread feeding a small bounded queue, so it
+    //      overlaps scale+encode on this thread (which stays the MTA thread the
+    //      Media Foundation encoder was opened on).
+    // Output is identical: same decoder, same scaler flags/colour handling
+    // (explicitly-initialised context — frame colour tags are NOT read, exactly
+    // like the legacy sws_scale path), same encoder, same frame order.
     {
         if (startSec > 0.0) {
             int64_t seekTs = av_rescale_q(static_cast<int64_t>(startSec * AV_TIME_BASE),
@@ -1225,6 +1292,9 @@ static bool transcodeImplBody(const std::string& inputPath,
         double spanSec = 0.0;
         if (endSec >= 0.0 && startSec >= 0.0) spanSec = endSec - startSec;
         else if (s.fmt->duration > 0)         spanSec = s.fmt->duration / static_cast<double>(AV_TIME_BASE);
+
+        const int  scaleWorkers = xleth::hw::proxyScaleThreads(GenerationGate::capacity());
+        const bool pipelined    = xleth::hw::proxyPipelineEnabled();
 
         auto encodeOne = [&](AVFrame* f) -> bool {
             int rc = avcodec_send_frame(enc, f);
@@ -1244,76 +1314,264 @@ static bool transcodeImplBody(const std::string& inputPath,
             }
         };
 
-        const double kEps     = 1e-6;
-        int64_t      outIdx    = 0;
-        bool         done      = false;
-        bool         flushed   = false;
-        bool         encodeErr = false;
+        // Stages: decode → scale → encode. Serial mode runs all three on this
+        // thread. Pipelined mode runs decode on one helper thread, scaling on
+        // `scaleWorkers` helper threads (FRAME-level parallelism: each worker has
+        // its own single-threaded scaler and scales whole frames, which scales
+        // linearly — swscale's slice threading gave ~1.3x from 6 threads on a
+        // 1080p→720p Lanczos), and encoding stays on this (MTA) thread, fed in
+        // frame order. Every frame goes through exactly the same scaler setup as
+        // the historical path, so the output is bit-identical.
+        int64_t outIdx = 0;
+        using StageClock = std::chrono::steady_clock;
+        double encodeSec = 0.0, waitSec = 0.0, progressSec = 0.0;
+        std::atomic<int64_t> scaleMicros{0};
+        const auto jobStart = StageClock::now();
+        auto secSince = [](StageClock::time_point t) {
+            return std::chrono::duration<double>(StageClock::now() - t).count();
+        };
 
-        while (!done) {
-            int rr = av_read_frame(s.fmt, pkt);
-            if (rr < 0) {
-                if (!flushed) { avcodec_send_packet(s.dec, nullptr); flushed = true; }
-            } else if (pkt->stream_index != s.streamIdx) {
-                av_packet_unref(pkt);
-                continue;
-            } else {
-                avcodec_send_packet(s.dec, pkt);
-                av_packet_unref(pkt);
+        // The historical scaler: explicitly initialised, single-threaded.
+        auto makeScaler = [&](const AVFrame* cpu) -> SwsContext* {
+            return sws_getContext(cpu->width, cpu->height,
+                                  static_cast<AVPixelFormat>(cpu->format),
+                                  tw, th, enc->pix_fmt,
+                                  swsFlags, nullptr, nullptr, nullptr);
+        };
+        auto scaleInto = [&](SwsContext*& ctx, AVFrame* dst, const AVFrame* cpu) -> bool {
+            if (!ctx) {
+                ctx = makeScaler(cpu);
+                if (!ctx) { std::cerr << "[ProxyTranscoder] proxy sws_getContext failed\n"; return false; }
+            }
+            const auto t = StageClock::now();
+            sws_scale(ctx, cpu->data, cpu->linesize, 0, cpu->height, dst->data, dst->linesize);
+            scaleMicros += static_cast<int64_t>(secSince(t) * 1e6);
+            return true;
+        };
+        auto encodeScaled = [&](AVFrame* scaled, double tSec) -> bool {
+            scaled->pts = outIdx++;
+            if (picked->qscale) scaled->quality = enc->global_quality;
+            const auto tEnc = StageClock::now();
+            if (!encodeOne(scaled)) return false;
+            encodeSec += secSince(tEnc);
+            if (progressCb && spanSec > 0.0) {
+                const auto tProg = StageClock::now();
+                double base = (startSec >= 0.0) ? startSec : 0.0;
+                float  p    = static_cast<float>(std::clamp((tSec - base) / spanSec, 0.0, 1.0));
+                progressCb(p);
+                progressSec += secSince(tProg);
+            }
+            return true;
+        };
+
+        // Decode stage: reads, decodes, range-trims and downloads hw frames,
+        // handing each kept CPU frame to `sink`. Returns false on a decode
+        // error, a cancellation, or when `sink` refuses a frame.
+        const double kEps = 1e-6;
+        std::atomic<bool> cancelled{false};
+        auto decodeAll = [&](const std::function<bool(AVFrame*, double)>& sink) -> bool {
+            AVPacket* rpkt    = av_packet_alloc();
+            bool      flushed = false;
+            bool      okLoop  = (rpkt != nullptr);
+            bool      done    = !okLoop;
+            while (!done) {
+                int rr = av_read_frame(s.fmt, rpkt);
+                if (rr < 0) {
+                    if (!flushed) { avcodec_send_packet(s.dec, nullptr); flushed = true; }
+                } else if (rpkt->stream_index != s.streamIdx) {
+                    av_packet_unref(rpkt);
+                    continue;
+                } else {
+                    avcodec_send_packet(s.dec, rpkt);
+                    av_packet_unref(rpkt);
+                }
+
+                while (true) {
+                    int gr = avcodec_receive_frame(s.dec, decFrame);
+                    if (gr == AVERROR(EAGAIN)) break;
+                    if (gr == AVERROR_EOF) { done = true; break; }
+                    if (gr < 0) { logAvErr("avcodec_receive_frame (proxy) failed", gr); done = true; break; }
+
+                    int64_t tsRaw = (decFrame->best_effort_timestamp != AV_NOPTS_VALUE)
+                                        ? decFrame->best_effort_timestamp
+                                        : decFrame->pts;
+                    double tSec = (tsRaw != AV_NOPTS_VALUE) ? tsRaw * av_q2d(ist->time_base) : 0.0;
+
+                    if (shouldCancel && shouldCancel()) {
+                        cancelled = true;
+                        av_frame_unref(decFrame); done = true; okLoop = false; break;
+                    }
+
+                    // Cheap range trim BEFORE the (expensive) GPU→sysmem download.
+                    if (startSec >= 0.0 && tSec < startSec - kEps) { av_frame_unref(decFrame); continue; }
+                    if (endSec   >= 0.0 && tSec >= endSec - kEps)  { av_frame_unref(decFrame); done = true; break; }
+
+                    // Download to system memory if this is a D3D11VA hw frame.
+                    AVFrame* cpu = mapToCpu(s, decFrame);
+                    if (!cpu) { av_frame_unref(decFrame); done = true; okLoop = false; break; }
+
+                    const bool accepted = sink(cpu, tSec);
+                    av_frame_unref(decFrame);
+                    if (!accepted) { done = true; okLoop = false; break; }
+                }
+
+                if (rr < 0 && flushed) break;   // drained the decoder at EOF
+            }
+            if (rpkt) av_packet_free(&rpkt);
+            return okLoop;
+        };
+
+        bool encodeErr = false;
+        if (!pipelined) {
+            // Historical single-thread path (small machines / XLETH_HW_PROXY_PIPELINE=0).
+            if (!decodeAll([&](AVFrame* cpu, double tSec) {
+                    return av_frame_make_writable(encFrame) >= 0
+                        && scaleInto(sws, encFrame, cpu)
+                        && encodeScaled(encFrame, tSec);
+                }))
+                encodeErr = true;
+        } else {
+            // decode thread ──(decoded, bounded)──▶ N scale workers ──(scaled,
+            // reordered by sequence, bounded)──▶ this thread encodes in order.
+            // The decode thread owns `s` and decFrame; each worker owns its
+            // scaler; this thread owns enc/oc. Frames cross as owned refs.
+            struct Item { AVFrame* f; double t; int64_t seq; };
+            std::mutex              qm;
+            std::condition_variable qcv;
+            std::deque<Item>        decoded;
+            std::map<int64_t, Item> scaled;
+            const size_t  kDecodedCap = static_cast<size_t>(scaleWorkers) * 2 + 2;
+            const int64_t kScaledWindow = static_cast<int64_t>(scaleWorkers) * 2 + 4;
+            int64_t produced     = 0;      // frames pushed by the decoder
+            int64_t nextToEncode = 0;
+            bool    producerDone = false;
+            bool    producerOk   = true;
+            bool    abortAll     = false;
+            bool    scaleFailed  = false;
+
+            std::thread producer([&] {
+                lowerHelperThreadPriority();
+                const bool okDec = decodeAll([&](AVFrame* cpu, double tSec) -> bool {
+                    AVFrame* own = av_frame_alloc();
+                    if (!own) return false;
+                    av_frame_move_ref(own, cpu);   // takes decFrame's (or the hw download's) buffers
+                    std::unique_lock<std::mutex> lk(qm);
+                    qcv.wait(lk, [&] { return decoded.size() < kDecodedCap || abortAll; });
+                    if (abortAll) { av_frame_free(&own); return false; }
+                    decoded.push_back({own, tSec, produced++});
+                    qcv.notify_all();
+                    return true;
+                });
+                std::lock_guard<std::mutex> lk(qm);
+                producerDone = true;
+                producerOk   = okDec;
+                qcv.notify_all();
+            });
+
+            std::vector<std::thread> workers;
+            workers.reserve(static_cast<size_t>(scaleWorkers));
+            for (int w = 0; w < scaleWorkers; ++w) {
+                workers.emplace_back([&] {
+                    lowerHelperThreadPriority();
+                    SwsContext* ctx = nullptr;
+                    while (true) {
+                        Item it{nullptr, 0.0, -1};
+                        {
+                            std::unique_lock<std::mutex> lk(qm);
+                            // Only take a frame that fits the reorder window, so a
+                            // slow frame can't let the others run unboundedly ahead.
+                            qcv.wait(lk, [&] {
+                                return abortAll
+                                    || (!decoded.empty() && decoded.front().seq < nextToEncode + kScaledWindow)
+                                    || (decoded.empty() && producerDone);
+                            });
+                            if (abortAll || decoded.empty()) break;
+                            it = decoded.front();
+                            decoded.pop_front();
+                            qcv.notify_all();
+                        }
+                        AVFrame* out = av_frame_alloc();
+                        bool ok = (out != nullptr);
+                        if (ok) {
+                            out->format = enc->pix_fmt;
+                            out->width  = tw;
+                            out->height = th;
+                            ok = av_frame_get_buffer(out, 32) >= 0 && scaleInto(ctx, out, it.f);
+                        }
+                        av_frame_free(&it.f);
+                        std::lock_guard<std::mutex> lk(qm);
+                        if (!ok) {
+                            if (out) av_frame_free(&out);
+                            scaleFailed = true;
+                            abortAll    = true;
+                            qcv.notify_all();
+                            break;
+                        }
+                        scaled.emplace(it.seq, Item{out, it.t, it.seq});
+                        qcv.notify_all();
+                    }
+                    if (ctx) sws_freeContext(ctx);
+                });
             }
 
             while (true) {
-                int gr = avcodec_receive_frame(s.dec, decFrame);
-                if (gr == AVERROR(EAGAIN)) break;
-                if (gr == AVERROR_EOF) { done = true; break; }
-                if (gr < 0) { logAvErr("avcodec_receive_frame (proxy) failed", gr); done = true; break; }
-
-                int64_t tsRaw = (decFrame->best_effort_timestamp != AV_NOPTS_VALUE)
-                                    ? decFrame->best_effort_timestamp
-                                    : decFrame->pts;
-                double tSec = (tsRaw != AV_NOPTS_VALUE) ? tsRaw * av_q2d(ist->time_base) : 0.0;
-
-                if (shouldCancel && shouldCancel()) {
-                    std::cout << "[ProxyTranscoder] Cancelled mid-transcode after "
-                              << outIdx << " frame(s) — discarding " << tmpPath << "\n";
-                    av_frame_unref(decFrame); done = true; encodeErr = true; break;
+                Item it{nullptr, 0.0, -1};
+                {
+                    std::unique_lock<std::mutex> lk(qm);
+                    const auto tWait = StageClock::now();
+                    qcv.wait(lk, [&] {
+                        return abortAll
+                            || scaled.count(nextToEncode) != 0
+                            || (producerDone && nextToEncode >= produced);
+                    });
+                    waitSec += secSince(tWait);
+                    if (abortAll) break;
+                    auto found = scaled.find(nextToEncode);
+                    if (found == scaled.end()) break;      // all produced frames encoded
+                    it = found->second;
+                    scaled.erase(found);
+                    ++nextToEncode;
+                    qcv.notify_all();
                 }
-
-                // Cheap range trim BEFORE the (expensive) GPU→sysmem download.
-                if (startSec >= 0.0 && tSec < startSec - kEps) { av_frame_unref(decFrame); continue; }
-                if (endSec   >= 0.0 && tSec >= endSec - kEps)  { av_frame_unref(decFrame); done = true; break; }
-
-                // Download to system memory if this is a D3D11VA hw frame.
-                AVFrame* cpu = mapToCpu(s, decFrame);
-                if (!cpu) { av_frame_unref(decFrame); done = true; encodeErr = true; break; }
-
-                if (!sws) {
-                    sws = sws_getContext(cpu->width, cpu->height,
-                                         static_cast<AVPixelFormat>(cpu->format),
-                                         tw, th, enc->pix_fmt,
-                                         swsFlags, nullptr, nullptr, nullptr);
-                    if (!sws) { std::cerr << "[ProxyTranscoder] proxy sws_getContext failed\n";
-                                av_frame_unref(decFrame); done = true; encodeErr = true; break; }
+                const bool okFrame = encodeScaled(it.f, it.t);
+                av_frame_free(&it.f);
+                if (!okFrame) {
+                    encodeErr = true;
+                    std::lock_guard<std::mutex> lk(qm);
+                    abortAll = true;
+                    qcv.notify_all();
+                    break;
                 }
-
-                if (av_frame_make_writable(encFrame) < 0) { av_frame_unref(decFrame); done = true; encodeErr = true; break; }
-                sws_scale(sws, cpu->data, cpu->linesize, 0, cpu->height,
-                          encFrame->data, encFrame->linesize);
-                encFrame->pts = outIdx++;
-                if (picked->qscale) encFrame->quality = enc->global_quality;
-
-                if (!encodeOne(encFrame)) { av_frame_unref(decFrame); done = true; encodeErr = true; break; }
-
-                if (progressCb && spanSec > 0.0) {
-                    double base = (startSec >= 0.0) ? startSec : 0.0;
-                    float  p    = static_cast<float>(std::clamp((tSec - base) / spanSec, 0.0, 1.0));
-                    progressCb(p);
-                }
-                av_frame_unref(decFrame);
             }
-
-            if (rr < 0 && flushed) break;   // drained the decoder at EOF
+            {
+                // Release every helper (a decode error / cancel ends the producer;
+                // the workers drain or stop on abort).
+                std::lock_guard<std::mutex> lk(qm);
+                if (encodeErr) abortAll = true;
+                qcv.notify_all();
+            }
+            producer.join();
+            {
+                std::lock_guard<std::mutex> lk(qm);
+                qcv.notify_all();
+            }
+            for (std::thread& t : workers) t.join();
+            for (Item& left : decoded) av_frame_free(&left.f);
+            for (auto& kv : scaled)    av_frame_free(&kv.second.f);
+            decoded.clear();
+            scaled.clear();
+            if (!producerOk || scaleFailed) encodeErr = true;
         }
+
+        std::cout << "[ProxyTranscoder] stages: " << outIdx << " frames in "
+                  << secSince(jobStart) << " s — scale " << (scaleMicros.load() / 1e6)
+                  << " s cpu over " << (pipelined ? scaleWorkers : 1) << " worker(s), encode "
+                  << encodeSec << " s, encoder waiting " << waitSec << " s, progress "
+                  << progressSec << " s"
+                  << (pipelined ? " [pipelined]" : " [serial]") << "\n";
+        if (cancelled)
+            std::cout << "[ProxyTranscoder] Cancelled mid-transcode after "
+                      << outIdx << " frame(s) — discarding " << tmpPath << "\n";
 
         if (encodeErr) goto cleanup;
         encodeOne(nullptr);                 // flush the encoder

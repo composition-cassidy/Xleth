@@ -28,8 +28,8 @@ describe('layout at a narrow CSS viewport (high UI scale)', () => {
     expect(read('components/TitleBar.jsx')).toMatch(/<TitleBarRegions className=\{styles\.dock\}/);
   });
 
-  it('drops the detail dock tab glyphs (not the names) below 800 CSS px so the tabs fit', () => {
-    const css = read('windowing/components/DetailDock.module.css');
-    expect(css).toMatch(/@media \(max-width: 800px\)\s*\{\s*\.tabButton > svg\s*\{\s*display:\s*none;/);
+  it('detail dock tabs are the panel name alone: no glyph beside it, at any width', () => {
+    expect(read('windowing/components/DetailDock.tsx')).not.toContain('entry.icon');
+    expect(read('windowing/components/DetailDock.module.css')).not.toMatch(/\.tabButton\s*>\s*svg/);
   });
 });

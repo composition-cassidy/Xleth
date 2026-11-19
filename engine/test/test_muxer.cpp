@@ -6,11 +6,15 @@
 
 extern "C" {
 #include <libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
+#include <libswscale/swscale.h>
 #include <libavutil/mathematics.h>
+#include <libavutil/pixfmt.h>
 }
 
 // Force assert even in Release builds (NDEBUG is defined)
 #undef NDEBUG
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <string>
@@ -66,6 +70,130 @@ static std::vector<ProbedPacket> probePackets(const std::string& path)
     av_packet_free(&pkt);
     avformat_close_input(&fmt);
     return out;
+}
+
+// Decode the first audio stream of `path` and return its left channel as float.
+// Goes through the demuxer + decoder the way a player does, so container edit
+// lists and codec priming (skip-samples side data) are applied: sample 0 of the
+// result is sample 0 of the presented audio.
+static std::vector<float> decodeAudioLeft(const std::string& path, int* outRate)
+{
+    std::vector<float> out;
+    AVFormatContext* fmt = nullptr;
+    if (avformat_open_input(&fmt, path.c_str(), nullptr, nullptr) < 0) return out;
+    if (avformat_find_stream_info(fmt, nullptr) < 0) { avformat_close_input(&fmt); return out; }
+    const int si = av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+    if (si < 0) { avformat_close_input(&fmt); return out; }
+    AVStream* st = fmt->streams[si];
+    const AVCodec* dec = avcodec_find_decoder(st->codecpar->codec_id);
+    AVCodecContext* ctx = dec ? avcodec_alloc_context3(dec) : nullptr;
+    if (!ctx) { avformat_close_input(&fmt); return out; }
+    avcodec_parameters_to_context(ctx, st->codecpar);
+    ctx->pkt_timebase = st->time_base;
+    if (avcodec_open2(ctx, dec, nullptr) < 0) {
+        avcodec_free_context(&ctx); avformat_close_input(&fmt); return out;
+    }
+    if (outRate) *outRate = ctx->sample_rate;
+
+    AVPacket* pkt = av_packet_alloc();
+    AVFrame*  frm = av_frame_alloc();
+    auto take = [&]() {
+        while (avcodec_receive_frame(ctx, frm) >= 0) {
+            const int n = frm->nb_samples;
+            const uint8_t* d = frm->extended_data[0];
+            switch (static_cast<AVSampleFormat>(frm->format)) {
+                case AV_SAMPLE_FMT_FLT: case AV_SAMPLE_FMT_FLTP: {
+                    const int step = (frm->format == AV_SAMPLE_FMT_FLT) ? frm->ch_layout.nb_channels : 1;
+                    const float* p = reinterpret_cast<const float*>(d);
+                    for (int i = 0; i < n; ++i) out.push_back(p[i * step]);
+                    break; }
+                case AV_SAMPLE_FMT_S16: case AV_SAMPLE_FMT_S16P: {
+                    const int step = (frm->format == AV_SAMPLE_FMT_S16) ? frm->ch_layout.nb_channels : 1;
+                    const int16_t* p = reinterpret_cast<const int16_t*>(d);
+                    for (int i = 0; i < n; ++i) out.push_back(p[i * step] / 32768.0f);
+                    break; }
+                case AV_SAMPLE_FMT_S32: case AV_SAMPLE_FMT_S32P: {
+                    const int step = (frm->format == AV_SAMPLE_FMT_S32) ? frm->ch_layout.nb_channels : 1;
+                    const int32_t* p = reinterpret_cast<const int32_t*>(d);
+                    for (int i = 0; i < n; ++i) out.push_back(static_cast<float>(p[i * step] / 2147483648.0));
+                    break; }
+                default: break;
+            }
+            av_frame_unref(frm);
+        }
+    };
+    while (av_read_frame(fmt, pkt) >= 0) {
+        if (pkt->stream_index == si && avcodec_send_packet(ctx, pkt) >= 0) take();
+        av_packet_unref(pkt);
+    }
+    avcodec_send_packet(ctx, nullptr);
+    take();
+
+    av_frame_free(&frm);
+    av_packet_free(&pkt);
+    avcodec_free_context(&ctx);
+    avformat_close_input(&fmt);
+    return out;
+}
+
+// Decode the first video frame of `path` and convert its centre pixel to RGB
+// with the given YUV matrix (limited range). Reports the matrix the stream is
+// tagged with through *taggedSpace.
+static bool decodeCentrePixel(const std::string& path, AVColorSpace decodeWith,
+                              AVColorSpace* taggedSpace, uint8_t rgb[3])
+{
+    AVFormatContext* fmt = nullptr;
+    if (avformat_open_input(&fmt, path.c_str(), nullptr, nullptr) < 0) return false;
+    if (avformat_find_stream_info(fmt, nullptr) < 0) { avformat_close_input(&fmt); return false; }
+    const int si = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    if (si < 0) { avformat_close_input(&fmt); return false; }
+    AVStream* st = fmt->streams[si];
+    if (taggedSpace) *taggedSpace = st->codecpar->color_space;
+    const AVCodec* dec = avcodec_find_decoder(st->codecpar->codec_id);
+    AVCodecContext* ctx = dec ? avcodec_alloc_context3(dec) : nullptr;
+    if (!ctx) { avformat_close_input(&fmt); return false; }
+    avcodec_parameters_to_context(ctx, st->codecpar);
+    bool ok = false;
+    if (avcodec_open2(ctx, dec, nullptr) >= 0) {
+        AVPacket* pkt = av_packet_alloc();
+        AVFrame*  frm = av_frame_alloc();
+        auto convert = [&]() {
+            SwsContext* sws = sws_getContext(frm->width, frm->height,
+                                             static_cast<AVPixelFormat>(frm->format),
+                                             frm->width, frm->height, AV_PIX_FMT_RGB24,
+                                             SWS_BILINEAR, nullptr, nullptr, nullptr);
+            if (!sws) return;
+            const int* coeffs = sws_getCoefficients(
+                decodeWith == AVCOL_SPC_BT709 ? SWS_CS_ITU709 : SWS_CS_ITU601);
+            int* inv = nullptr; int* tbl = nullptr; int sr = 0, dr = 0, b = 0, c = 0, sat = 0;
+            sws_getColorspaceDetails(sws, &inv, &sr, &tbl, &dr, &b, &c, &sat);
+            sws_setColorspaceDetails(sws, coeffs, /*src limited*/0, coeffs, /*dst full*/1, b, c, sat);
+            std::vector<uint8_t> buf(static_cast<size_t>(frm->width) * frm->height * 3);
+            uint8_t* dstData[4] = { buf.data(), nullptr, nullptr, nullptr };
+            int dstLines[4] = { frm->width * 3, 0, 0, 0 };
+            sws_scale(sws, frm->data, frm->linesize, 0, frm->height, dstData, dstLines);
+            const uint8_t* p = buf.data() + (static_cast<size_t>(frm->height / 2) * frm->width
+                                             + frm->width / 2) * 3;
+            rgb[0] = p[0]; rgb[1] = p[1]; rgb[2] = p[2];
+            sws_freeContext(sws);
+            ok = true;
+        };
+        while (!ok && av_read_frame(fmt, pkt) >= 0) {
+            if (pkt->stream_index == si && avcodec_send_packet(ctx, pkt) >= 0
+                && avcodec_receive_frame(ctx, frm) >= 0)
+                convert();
+            av_packet_unref(pkt);
+        }
+        if (!ok) {
+            avcodec_send_packet(ctx, nullptr);
+            if (avcodec_receive_frame(ctx, frm) >= 0) convert();
+        }
+        av_frame_free(&frm);
+        av_packet_free(&pkt);
+    }
+    avcodec_free_context(&ctx);
+    avformat_close_input(&fmt);
+    return ok;
 }
 
 int main()
@@ -488,6 +616,281 @@ int main()
         std::filesystem::remove(serialPath);
         std::filesystem::remove(asyncPath);
         std::fprintf(stderr, "[TEST:Muxer] Test 6: PASSED\n");
+    }
+
+    // ── Test 7: mix rate != encode rate — length and alignment ─────────────
+    // The engine mixes at the session rate and the muxer resamples to the
+    // encoded rate. An impulse placed at a known time must come back at the
+    // same TIME in the file, and the stream must last as long as the input:
+    // the old per-frame swr call capped its output at one encoder frame, so at
+    // 44.1 -> 48 kHz it left 8% of the audio inside the resampler and the
+    // track ran progressively late and ended early.
+    {
+        std::fprintf(stderr, "\n[TEST:Muxer] --- Test 7: resample length + alignment ---\n");
+
+        struct Case { int mixRate; int outRate; ExportSettings::AudioCodec codec; const char* name;
+                      int tolSamples; };
+        const Case cases[] = {
+            { 48000, 44100, ExportSettings::AudioCodec::FLAC, "48k->44.1k flac", 1 },
+            { 44100, 48000, ExportSettings::AudioCodec::FLAC, "44.1k->48k flac", 1 },
+            { 96000, 48000, ExportSettings::AudioCodec::FLAC, "96k->48k flac",   1 },
+            { 48000, 48000, ExportSettings::AudioCodec::FLAC, "48k->48k flac",   0 },
+            { 48000, 44100, ExportSettings::AudioCodec::AAC,  "48k->44.1k aac",  48 },
+            { 48000, 48000, ExportSettings::AudioCodec::AAC,  "48k->48k aac",    48 },
+        };
+
+        for (const Case& c : cases) {
+            const std::string path = "test_muxer_resample.mp4";
+            ExportSettings s;
+            s.outputPath    = path;
+            s.videoCodec    = ExportSettings::VideoCodec::MPEG4;
+            s.width = WIDTH; s.height = HEIGHT; s.fpsNum = FPS; s.fpsDen = 1;
+            s.crf = -1; s.videoBitrate = 500000;
+            s.audioCodec    = c.codec;
+            s.sampleRate    = c.outRate;
+            s.mixSampleRate = c.mixRate;
+            s.audioBitrate  = 256;
+            s.fragmentedMP4 = true;     // the export's real container mode
+
+            FFmpegMuxer muxer;
+            assert(muxer.init(s) && "resample init should succeed");
+            assert(muxer.audioEncoderSampleRate() == c.outRate);
+
+            const int64_t total = static_cast<int64_t>(c.mixRate) * 2;          // 2 s
+            const int64_t impulseAt = static_cast<int64_t>(c.mixRate * 0.7) + 3; // off any block edge
+            std::vector<float> sig(static_cast<size_t>(total), 0.0f);
+            sig[static_cast<size_t>(impulseAt)] = 0.8f;
+
+            std::vector<uint8_t> bgra(WIDTH * HEIGHT * 4, 90);
+            const int chunkSizes[] = { 512, 137, 1024, 33, 2048 };   // deliberately ragged
+            int64_t pos = 0; int ci = 0; int64_t frame = 0;
+            while (pos < total) {
+                const int n = static_cast<int>(std::min<int64_t>(chunkSizes[ci++ % 5], total - pos));
+                const float* ch[2] = { sig.data() + pos, sig.data() + pos };
+                assert(muxer.writeAudio(ch, n, pos));
+                pos += n;
+                while (frame * c.mixRate < pos * FPS) {        // keep video in step
+                    assert(muxer.writeVideo(bgra.data(), WIDTH * 4, frame));
+                    ++frame;
+                }
+            }
+            assert(muxer.finalize());
+
+            int rate = 0;
+            const std::vector<float> dec = decodeAudioLeft(path, &rate);
+            assert(rate == c.outRate && "encoded stream is at the requested rate");
+            assert(!dec.empty());
+
+            // Length: the whole 2 s is there (lossy codecs may round to a frame).
+            const int64_t expectLen = total * c.outRate / c.mixRate;
+            const int64_t lenTol = (c.codec == ExportSettings::AudioCodec::AAC) ? 1100 : 96;
+            const int64_t gotLen = static_cast<int64_t>(dec.size());
+            std::fprintf(stderr, "[TEST:Muxer] %-16s len=%lld (expect %lld)",
+                         c.name, (long long)gotLen, (long long)expectLen);
+            assert(std::llabs(gotLen - expectLen) <= lenTol && "audio length preserved");
+
+            // Alignment: the impulse lands where it was put, in TIME.
+            size_t peak = 0;
+            for (size_t i = 1; i < dec.size(); ++i)
+                if (std::fabs(dec[i]) > std::fabs(dec[peak])) peak = i;
+            const double expectPeak = static_cast<double>(impulseAt) * c.outRate / c.mixRate;
+            std::fprintf(stderr, "  peak=%zu (expect %.1f)\n", peak, expectPeak);
+            assert(std::fabs(static_cast<double>(peak) - expectPeak) <= c.tolSamples + 0.6
+                   && "impulse is time-aligned after resampling + codec priming");
+
+            std::filesystem::remove(path);
+        }
+        std::fprintf(stderr, "[TEST:Muxer] Test 7: PASSED\n");
+    }
+
+    // ── Test 8: an Opus request never reaches FFmpeg's experimental encoder ─
+    // Without libopus, AV_CODEC_ID_OPUS resolves to the built-in "opus"
+    // encoder, which overruns its lookahead queue on ordinary 20 ms frames and
+    // drops most of the audio. The muxer must use libopus or fall back to AAC,
+    // and either way the audio that goes in must come out.
+    {
+        std::fprintf(stderr, "\n[TEST:Muxer] --- Test 8: Opus request ---\n");
+        const std::string path = "test_muxer_opus.mp4";
+        ExportSettings s;
+        s.outputPath    = path;
+        s.videoCodec    = ExportSettings::VideoCodec::MPEG4;
+        s.width = WIDTH; s.height = HEIGHT; s.fpsNum = FPS; s.fpsDen = 1;
+        s.crf = -1; s.videoBitrate = 500000;
+        s.audioCodec    = ExportSettings::AudioCodec::OPUS;
+        s.sampleRate    = 44100;        // what the old Discord preset asked for
+        s.mixSampleRate = 44100;
+        s.audioBitrate  = 256;
+
+        FFmpegMuxer muxer;
+        assert(muxer.init(s) && "an Opus request must still produce a file");
+        const std::string enc = muxer.audioEncoderName();
+        std::fprintf(stderr, "[TEST:Muxer] Opus request -> encoder '%s' @ %d Hz (fallback=%d)\n",
+                     enc.c_str(), muxer.audioEncoderSampleRate(), (int)muxer.isAudioCodecFallback());
+        assert(enc != "opus" && "the experimental built-in Opus encoder must never be used");
+        assert((enc == "libopus") != muxer.isAudioCodecFallback()
+               && "fallback flag reports exactly the substituted case");
+        if (enc == "libopus") assert(muxer.audioEncoderSampleRate() == 48000);
+
+        const int total = 44100 * 2;
+        std::vector<float> sig(total);
+        for (int i = 0; i < total; ++i)
+            sig[i] = 0.5f * static_cast<float>(std::sin(2.0 * M_PI * FREQ * i / 44100.0));
+        std::vector<uint8_t> bgra(WIDTH * HEIGHT * 4, 90);
+        for (int f = 0; f < FPS * 2; ++f) {
+            assert(muxer.writeVideo(bgra.data(), WIDTH * 4, f));
+            const float* ch[2] = { sig.data() + f * 1470, sig.data() + f * 1470 };
+            assert(muxer.writeAudio(ch, 1470, f * 1470));
+        }
+        assert(muxer.finalize());
+
+        int rate = 0;
+        const std::vector<float> dec = decodeAudioLeft(path, &rate);
+        assert(rate > 0 && !dec.empty());
+        const double seconds = static_cast<double>(dec.size()) / rate;
+        // RMS over the LAST half second: the broken encoder kept the first
+        // second or so and lost the rest.
+        double acc = 0.0; const size_t from = dec.size() - static_cast<size_t>(rate / 2);
+        for (size_t i = from; i < dec.size() - static_cast<size_t>(rate / 20); ++i)
+            acc += static_cast<double>(dec[i]) * dec[i];
+        const double rms = std::sqrt(acc / (dec.size() - rate / 20 - from));
+        std::fprintf(stderr, "[TEST:Muxer] decoded %.3fs, tail RMS=%.4f (input 0.3536)\n", seconds, rms);
+        assert(seconds > 1.95 && seconds < 2.08 && "all two seconds of audio are in the file");
+        assert(rms > 0.30 && rms < 0.40 && "the audio at the END is the audio that went in");
+
+        std::filesystem::remove(path);
+        std::fprintf(stderr, "[TEST:Muxer] Test 8: PASSED\n");
+    }
+
+    // ── Test 9: zero-copy submit == writeVideo, serial and pipelined ───────
+    {
+        std::fprintf(stderr, "\n[TEST:Muxer] --- Test 9: acquire/submit == writeVideo ---\n");
+        const int kFrames = 40;
+        auto fill = [&](uint8_t* dst, int f) {
+            for (int y = 0; y < HEIGHT; ++y)
+                for (int x = 0; x < WIDTH; ++x) {
+                    uint8_t* p = dst + (y * WIDTH + x) * 4;
+                    p[0] = static_cast<uint8_t>(x + f * 3);
+                    p[1] = static_cast<uint8_t>(y * 2 + f * 5);
+                    p[2] = static_cast<uint8_t>((x ^ y) + f * 7);
+                    p[3] = 255;
+                }
+        };
+        auto runExport = [&](const std::string& path, int queueDepth, bool zeroCopy) {
+            ExportSettings s;
+            s.outputPath    = path;
+            s.videoCodec    = ExportSettings::VideoCodec::MPEG4;
+            s.width = WIDTH; s.height = HEIGHT; s.fpsNum = FPS; s.fpsDen = 1;
+            s.crf = -1; s.videoBitrate = 800000;
+            s.audioCodec    = ExportSettings::AudioCodec::AAC;
+            s.sampleRate    = SR;
+            FFmpegMuxer muxer;
+            assert(muxer.init(s));
+            muxer.enableAsyncVideo(queueDepth);
+            assert(muxer.videoBufferBytes() == static_cast<size_t>(WIDTH) * HEIGHT * 4);
+            std::vector<uint8_t> bgra(WIDTH * HEIGHT * 4);
+            std::vector<float> silence(SR / FPS, 0.0f);
+            for (int f = 0; f < kFrames; ++f) {
+                if (zeroCopy) {
+                    if (f == 5) {                       // an abandoned buffer costs nothing
+                        uint8_t* junk = muxer.acquireVideoBuffer();
+                        assert(junk != nullptr);
+                        muxer.releaseVideoBuffer();
+                    }
+                    uint8_t* dst = muxer.acquireVideoBuffer();
+                    assert(dst != nullptr);
+                    assert(muxer.acquireVideoBuffer() == nullptr && "only one buffer out at a time");
+                    fill(dst, f);
+                    assert(muxer.submitVideoBuffer(f));
+                    assert(!muxer.submitVideoBuffer(f) && "nothing held after a submit");
+                } else {
+                    fill(bgra.data(), f);
+                    assert(muxer.writeVideo(bgra.data(), WIDTH * 4, f));
+                }
+                const float* ch[2] = { silence.data(), silence.data() };
+                assert(muxer.writeAudio(ch, SR / FPS, static_cast<int64_t>(f) * (SR / FPS)));
+            }
+            assert(muxer.finalize());
+        };
+
+        const std::string refPath = "test_muxer_zc_ref.mp4";
+        runExport(refPath, 0, false);
+        const auto ref = probePackets(refPath);
+        assert(!ref.empty());
+        const struct { int depth; const char* name; } variants[] = {
+            { 0, "zero-copy serial" }, { 3, "zero-copy pipelined" } };
+        for (const auto& v : variants) {
+            const std::string path = "test_muxer_zc.mp4";
+            runExport(path, v.depth, true);
+            const auto got = probePackets(path);
+            assert(got.size() == ref.size() && "zero-copy changed the packet count");
+            for (size_t i = 0; i < ref.size(); ++i) {
+                assert(got[i].streamIndex == ref[i].streamIndex);
+                assert(got[i].pts == ref[i].pts && got[i].dts == ref[i].dts);
+                assert(got[i].data == ref[i].data && "zero-copy payload differs");
+            }
+            std::fprintf(stderr, "[TEST:Muxer] %s: %zu packets identical to writeVideo\n",
+                         v.name, got.size());
+            std::filesystem::remove(path);
+        }
+        std::filesystem::remove(refPath);
+        std::fprintf(stderr, "[TEST:Muxer] Test 9: PASSED\n");
+    }
+
+    // ── Test 10: the stream says what its YUV means, and it is true ────────
+    // HD output is tagged BT.709 and converted with BT.709; SD with BT.601.
+    // Decoding with the tagged matrix must give back the RGB that went in.
+    {
+        std::fprintf(stderr, "\n[TEST:Muxer] --- Test 10: colour tagging ---\n");
+        struct Case { int w, h; AVColorSpace space; const char* name; };
+        const Case cases[] = {
+            { 1280, 720, AVCOL_SPC_BT709,     "720p -> BT.709" },
+            {  320, 240, AVCOL_SPC_SMPTE170M, "240p -> BT.601" },
+        };
+        const uint8_t inB = 60, inG = 200, inR = 40;   // saturated green: 601 vs 709 differ most
+        for (const Case& c : cases) {
+            const std::string path = "test_muxer_colour.mp4";
+            ExportSettings s;
+            s.outputPath    = path;
+            s.videoCodec    = ExportSettings::VideoCodec::MPEG4;
+            s.width = c.w; s.height = c.h; s.fpsNum = FPS; s.fpsDen = 1;
+            s.crf = -1; s.videoBitrate = 8000000;
+            s.audioCodec    = ExportSettings::AudioCodec::AAC;
+            s.sampleRate    = SR;
+            FFmpegMuxer muxer;
+            assert(muxer.init(s));
+            std::vector<uint8_t> bgra(static_cast<size_t>(c.w) * c.h * 4);
+            for (size_t i = 0; i < bgra.size(); i += 4) {
+                bgra[i] = inB; bgra[i + 1] = inG; bgra[i + 2] = inR; bgra[i + 3] = 255;
+            }
+            std::vector<float> silence(SR / FPS, 0.0f);
+            for (int f = 0; f < 6; ++f) {
+                assert(muxer.writeVideo(bgra.data(), c.w * 4, f));
+                const float* ch[2] = { silence.data(), silence.data() };
+                assert(muxer.writeAudio(ch, SR / FPS, static_cast<int64_t>(f) * (SR / FPS)));
+            }
+            assert(muxer.finalize());
+
+            AVColorSpace taggedSpace = AVCOL_SPC_UNSPECIFIED;
+            uint8_t rgbTagged[3] = {0, 0, 0}, rgbOther[3] = {0, 0, 0};
+            const AVColorSpace other = (c.space == AVCOL_SPC_BT709) ? AVCOL_SPC_SMPTE170M
+                                                                    : AVCOL_SPC_BT709;
+            assert(decodeCentrePixel(path, c.space, &taggedSpace, rgbTagged));
+            assert(decodeCentrePixel(path, other,   nullptr,      rgbOther));
+            std::fprintf(stderr,
+                "[TEST:Muxer] %-15s tag=%d  in=(%d,%d,%d)  tagged-matrix=(%d,%d,%d)  "
+                "other-matrix=(%d,%d,%d)\n", c.name, (int)taggedSpace, inR, inG, inB,
+                rgbTagged[0], rgbTagged[1], rgbTagged[2], rgbOther[0], rgbOther[1], rgbOther[2]);
+            assert(taggedSpace == c.space && "stream carries the expected colour-matrix tag");
+            const int tol = 6;
+            assert(std::abs(rgbTagged[0] - inR) <= tol && std::abs(rgbTagged[1] - inG) <= tol
+                   && std::abs(rgbTagged[2] - inB) <= tol
+                   && "decoding with the tagged matrix returns the input colour");
+            const int wrongErr = std::max({ std::abs(rgbOther[0] - inR), std::abs(rgbOther[1] - inG),
+                                            std::abs(rgbOther[2] - inB) });
+            assert(wrongErr > tol && "the matrix matters: the other one visibly shifts this colour");
+            std::filesystem::remove(path);
+        }
+        std::fprintf(stderr, "[TEST:Muxer] Test 10: PASSED\n");
     }
 
     // ── Cleanup ─────────────────────────────────────────────────────────────

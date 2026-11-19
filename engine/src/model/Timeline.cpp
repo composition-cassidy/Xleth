@@ -50,6 +50,9 @@ static void sourceToJson(nlohmann::json& j, const SourceMedia& s) {
         {"previewProxyReady",  s.previewProxyReady},
         {"previewProxyHeight", s.previewProxyHeight}
     };
+    // Source Color Grade. Written only when it is not the default.
+    if (!s.colorGrade.isDefault())
+        j["colorGrade"] = xleth::grade::colorGradeToJson(s.colorGrade);
 }
 
 static void sourceFromJson(const nlohmann::json& j, SourceMedia& s) {
@@ -81,6 +84,9 @@ static void sourceFromJson(const nlohmann::json& j, SourceMedia& s) {
     s.previewProxyPath   = j.value("previewProxyPath", std::string{});
     s.previewProxyReady  = j.value("previewProxyReady", false);
     s.previewProxyHeight = j.value("previewProxyHeight", 0);
+    // Source Color Grade. Missing = neutral.
+    s.colorGrade = j.contains("colorGrade")
+        ? xleth::grade::colorGradeFromJson(j.at("colorGrade")) : ColorGrade{};
 }
 
 // ─── Constructor ──────────────────────────────────────────────────────────────
@@ -241,7 +247,11 @@ std::vector<const TrackInfo*> Timeline::getAllTracks() const {
     return out;
 }
 
-bool Timeline::setTrackOrder(const std::vector<int>& trackIdsInOrder) {
+bool Timeline::setTrackOrder(const std::vector<int>& requestedOrder) {
+    if (requestedOrder.size() != m_tracks.size())
+        return false;
+    // Clones stay directly under their source (see setTrackLayout).
+    const std::vector<int> trackIdsInOrder = clones::withClonesAfterSources(requestedOrder, *this);
     if (trackIdsInOrder.size() != m_tracks.size())
         return false;
 
@@ -366,8 +376,11 @@ bool Timeline::validateTrackLayout(const TrackLayout& layout, bool requireKnownF
 }
 
 bool Timeline::setTrackLayout(const TrackLayout& layout) {
-    if (!validateTrackLayout(layout)) return false;
-    return restoreTrackLayout(layout);
+    // Clones (model/Clone.h) always sit directly under their source: an edit
+    // that moves a source carries its Clones. A no-op without Clones.
+    const TrackLayout grouped = clones::withClonesAfterSources(layout, *this);
+    if (!validateTrackLayout(grouped)) return false;
+    return restoreTrackLayout(grouped);
 }
 
 bool Timeline::restoreTrackLayout(const TrackLayout& layout) {
@@ -496,6 +509,17 @@ int Timeline::addClip(Clip clip) {
     }
     if (m_regions.find(clip.regionId) == m_regions.end()) {
         std::cout << "[Timeline] ERROR addClip: regionId=" << clip.regionId << " not found\n";
+        return -1;
+    }
+    // A clip has to have length, start at or after zero, and read from at or
+    // after the start of its region. None of these is ever a legitimate value,
+    // and each one breaks arithmetic further down (zero-length source windows,
+    // reads before the buffer). No project on disk carries one; refusing here
+    // means a caller's bad arithmetic cannot create the first.
+    if (clip.duration.ticks <= 0 || clip.position.ticks < 0 || clip.regionOffset.ticks < 0) {
+        std::cout << "[Timeline] ERROR addClip: invalid geometry position="
+                  << clip.position.ticks << " duration=" << clip.duration.ticks
+                  << " regionOffset=" << clip.regionOffset.ticks << "\n";
         return -1;
     }
     normalizeClipFadePercents(clip);
@@ -632,6 +656,11 @@ bool Timeline::moveClip(int clipId, int newTrackId, TickTime newPosition) {
                   << " is a Pattern track; clips cannot move onto pattern tracks\n";
         return false;
     }
+    if (newPosition.ticks < 0) {
+        std::cout << "[Timeline] ERROR moveClip: id=" << clipId
+                  << " negative position " << newPosition.ticks << "\n";
+        return false;
+    }
     int oldTrackId  = it->second.trackId;
     TickTime oldPos = it->second.position;
     it->second.trackId  = newTrackId;
@@ -651,6 +680,11 @@ bool Timeline::resizeClip(int clipId, TickTime newDuration) {
         std::cout << "[Timeline] ERROR resizeClip: id=" << clipId << " not found\n";
         return false;
     }
+    if (newDuration.ticks <= 0) {
+        std::cout << "[Timeline] ERROR resizeClip: id=" << clipId
+                  << " non-positive duration " << newDuration.ticks << "\n";
+        return false;
+    }
     TickTime oldDur = it->second.duration;
     it->second.duration = newDuration;
     m_clipTopologyGeneration.fetch_add(1, std::memory_order_relaxed);
@@ -665,6 +699,13 @@ bool Timeline::resizeClipLeft(int clipId, TickTime newPosition,
     auto it = m_clips.find(clipId);
     if (it == m_clips.end()) {
         std::cout << "[Timeline] ERROR resizeClipLeft: id=" << clipId << " not found\n";
+        return false;
+    }
+    if (newDuration.ticks <= 0 || newPosition.ticks < 0 || newRegionOffset.ticks < 0) {
+        std::cout << "[Timeline] ERROR resizeClipLeft: id=" << clipId
+                  << " invalid geometry position=" << newPosition.ticks
+                  << " duration=" << newDuration.ticks
+                  << " regionOffset=" << newRegionOffset.ticks << "\n";
         return false;
     }
     it->second.position     = newPosition;
@@ -872,6 +913,11 @@ bool Timeline::resizePatternBlock(int id, TickTime newDuration) {
         std::cout << "[Timeline] ERROR resizePatternBlock: id=" << id << " not found\n";
         return false;
     }
+    if (newDuration.ticks <= 0) {
+        std::cout << "[Timeline] ERROR resizePatternBlock: id=" << id
+                  << " non-positive duration " << newDuration.ticks << "\n";
+        return false;
+    }
     TickTime oldDur = it->second.duration;
     it->second.duration = newDuration;
     std::cout << "[Timeline] Resized patternBlock id=" << id
@@ -884,6 +930,12 @@ bool Timeline::resizePatternBlockLeft(int id, TickTime newPosition, TickTime new
     auto it = m_patternBlocks.find(id);
     if (it == m_patternBlocks.end()) {
         std::cout << "[Timeline] ERROR resizePatternBlockLeft: id=" << id << " not found\n";
+        return false;
+    }
+    if (newDuration.ticks <= 0 || newPosition.ticks < 0) {
+        std::cout << "[Timeline] ERROR resizePatternBlockLeft: id=" << id
+                  << " invalid geometry position=" << newPosition.ticks
+                  << " duration=" << newDuration.ticks << "\n";
         return false;
     }
     it->second.position = newPosition;
@@ -1215,6 +1267,21 @@ bool Timeline::setTrackVideoHoldLastFrameThresholdBeats(int trackId, double thre
     return true;
 }
 
+bool Timeline::setTrackVideoHoldBehavior(int trackId, bool smart, bool keepPlaying) {
+    auto it = m_tracks.find(trackId);
+    if (it == m_tracks.end()) {
+        std::cout << "[Timeline] ERROR setTrackVideoHoldBehavior: trackId="
+                  << trackId << " not found\n";
+        return false;
+    }
+    it->second.videoHoldSmart       = smart;
+    it->second.videoHoldKeepPlaying = keepPlaying;
+    std::cout << "[Timeline] Set track id=" << trackId
+              << " videoHoldSmart=" << (smart ? "true" : "false")
+              << " videoHoldKeepPlaying=" << (keepPlaying ? "true" : "false") << "\n";
+    return true;
+}
+
 bool Timeline::setTrackFxMode(int trackId, TrackFxMode mode) {
     auto it = m_tracks.find(trackId);
     if (it == m_tracks.end()) {
@@ -1431,6 +1498,14 @@ int Timeline::addVisualEffect(int trackId, VisualEffect::Type type)
     if (static_cast<int>(chain.size()) >= 16) return -1;  // enforce max chain length
 
     VisualEffect fx;
+    // A uid never handed out in this session, and above every uid already in the chain
+    // (a chain copied from another track brings its own).
+    {
+        int next = it->second.nextFxUid;
+        for (const VisualEffect& c : chain) next = std::max(next, c.uid + 1);
+        fx.uid = next;
+        it->second.nextFxUid = next + 1;
+    }
     fx.type     = type;
     fx.bypassed = false;
     // Initialize sensible defaults per effect type
@@ -1622,6 +1697,12 @@ bool Timeline::insertVisualEffectAt(int trackId, int index, const VisualEffect& 
     auto& chain = it->second.visualEffectChain;
     if (index < 0 || index > static_cast<int>(chain.size())) return false;
     chain.insert(chain.begin() + index, fx);
+    if (chain[index].uid <= 0) {
+        int next = it->second.nextFxUid;
+        for (const VisualEffect& c : chain) next = std::max(next, c.uid + 1);
+        chain[index].uid = next;
+        it->second.nextFxUid = next + 1;
+    }
     return true;
 }
 
@@ -2315,6 +2396,74 @@ void Timeline::setGlobalStretchMethod(int method) {
     m_globalStretchMethod = sanitizeProjectGlobalStretchMethod(method);
 }
 
+void Timeline::setMotionBlur(const MotionBlurSettings& m) {
+    m_motionBlur.enabled         = m.enabled;
+    m_motionBlur.shutterAngleDeg = MotionBlurSettings::sanitizeShutter(m.shutterAngleDeg);
+}
+
+// ─── Color Grade ──────────────────────────────────────────────────────────────
+
+const ColorGrade* Timeline::getColorGrade(xleth::grade::Level level, int id) const {
+    using xleth::grade::Level;
+    switch (level) {
+        case Level::Source: {
+            const auto it = m_sources.find(id);
+            return it != m_sources.end() ? &it->second.colorGrade : nullptr;
+        }
+        case Level::Clip: {
+            const Clip* c = getClip(id);
+            return c ? &c->colorGrade : nullptr;
+        }
+        case Level::Region: {
+            const auto it = m_regions.find(id);
+            return it != m_regions.end() ? &it->second.colorGrade : nullptr;
+        }
+        case Level::Layer: {
+            const auto it = m_tracks.find(id);
+            return it != m_tracks.end() ? &it->second.colorGrade : nullptr;
+        }
+        case Level::Master:
+            return &m_masterColorGrade;
+    }
+    return nullptr;
+}
+
+bool Timeline::setColorGrade(xleth::grade::Level level, int id, const ColorGrade& gradeIn) {
+    using xleth::grade::Level;
+    ColorGrade grade = gradeIn;
+    xleth::grade::sanitizeColorGrade(grade);
+    switch (level) {
+        case Level::Source: {
+            const auto it = m_sources.find(id);
+            if (it == m_sources.end()) return false;
+            it->second.colorGrade = grade;
+            return true;
+        }
+        case Level::Clip: {
+            Clip* c = getClipMutable(id);
+            if (!c) return false;
+            c->colorGrade = grade;
+            return true;
+        }
+        case Level::Region: {
+            const auto it = m_regions.find(id);
+            if (it == m_regions.end()) return false;
+            it->second.colorGrade = grade;
+            return true;
+        }
+        case Level::Layer: {
+            const auto it = m_tracks.find(id);
+            if (it == m_tracks.end()) return false;
+            it->second.colorGrade = grade;
+            return true;
+        }
+        case Level::Master:
+            m_masterColorGrade = grade;
+            return true;
+    }
+    return false;
+}
+
 // ─── Restore (undo/redo) ──────────────────────────────────────────────────────
 
 bool Timeline::restoreClip(const Clip& clip) {
@@ -2812,6 +2961,10 @@ nlohmann::json Timeline::toJSON() const {
     j["timeSigDen"]    = m_timeSigDen;
     j["declickMs"]     = m_declickMs;
     j["globalStretchMethod"] = m_globalStretchMethod;
+    j["motionBlur"]    = motionBlurToJson(m_motionBlur);
+    // Master Color Grade. Written only when it is not the default.
+    if (!m_masterColorGrade.isDefault())
+        j["masterColorGrade"] = xleth::grade::colorGradeToJson(m_masterColorGrade);
     j["tempoLocked"]   = m_tempoLocked;
     j["nextId"]        = m_nextId;
 
@@ -3093,6 +3246,12 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
             m_tempoLocked = true; // old project: default on (preserves prior behavior)
         setGlobalStretchMethod(j.value("globalStretchMethod",
             static_cast<int>(StretchMethod::PSOLA)));
+        // Missing (every project before motion blur) = off.
+        m_motionBlur = j.contains("motionBlur")
+            ? motionBlurFromJson(j.at("motionBlur")) : MotionBlurSettings{};
+        // Missing (every project before Color Grade) = neutral.
+        m_masterColorGrade = j.contains("masterColorGrade")
+            ? xleth::grade::colorGradeFromJson(j.at("masterColorGrade")) : ColorGrade{};
 
         m_sources.clear();
         for (const auto& s : j.at("sources")) {
@@ -3738,6 +3897,8 @@ void Timeline::clear() {
     m_timeSigDen = 4;
     m_declickMs  = 0.5;
     m_globalStretchMethod = static_cast<int>(StretchMethod::PSOLA);
+    m_motionBlur = MotionBlurSettings{};
+    m_masterColorGrade = ColorGrade{};
     m_nextId     = 1;
     m_trackTopologyGeneration.fetch_add(1, std::memory_order_relaxed);
     m_clipTopologyGeneration.fetch_add(1, std::memory_order_relaxed);
@@ -3767,6 +3928,40 @@ TrackOutputRoute Timeline::getTrackOutputRoute(int sourceTrackId) const
 {
     const TrackInfo* t = getTrack(sourceTrackId);
     return t ? t->outputRoute : TrackOutputRoute{};
+}
+
+xleth::RoutingValidationResult Timeline::setTrackRoutes(int sourceTrackId,
+                                                         int targetTrackId,
+                                                         const std::vector<TrackSend>& sends)
+{
+    auto result = xleth::validateTrackRoutes(*this, sourceTrackId, targetTrackId, sends);
+    if (!result.ok())
+        return result;
+    TrackInfo* t = getTrackMutable(sourceTrackId);
+    if (!t)
+        return { xleth::RoutingValidationReason::unknown_track };
+    t->outputRoute.targetTrackId = targetTrackId;
+    t->sends = sends;
+    for (auto& send : t->sends)
+        send.gain = xleth::clampSidechainGain(send.gain);
+    return result;
+}
+
+xleth::RoutingValidationResult Timeline::setTrackSendGain(int sourceTrackId,
+                                                           int targetTrackId,
+                                                           float gain)
+{
+    if (!std::isfinite(gain))
+        return { xleth::RoutingValidationReason::invalid_gain };
+    TrackInfo* t = getTrackMutable(sourceTrackId);
+    if (!t)
+        return { xleth::RoutingValidationReason::unknown_track };
+    for (auto& send : t->sends) {
+        if (send.targetTrackId != targetTrackId) continue;
+        send.gain = xleth::clampSidechainGain(gain);
+        return { xleth::RoutingValidationReason::ok };
+    }
+    return { xleth::RoutingValidationReason::unknown_route };
 }
 
 // ─── Sidechain routes (Prompt 4B) ────────────────────────────────────────────

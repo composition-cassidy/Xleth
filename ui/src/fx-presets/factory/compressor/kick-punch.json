@@ -1,0 +1,21 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "compressor",
+  "name": "Kick Punch",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "threshold": -18,
+      "ratio": 4,
+      "attack": 20,
+      "release": 50,
+      "knee": 2,
+      "makeup": 2,
+      "mix": 100,
+      "mix_linked": 1,
+      "detect_mode": 0,
+      "lookahead": 0
+    }
+  }
+}

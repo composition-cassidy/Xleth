@@ -3,8 +3,12 @@
 #include "dsp/DspPrimitives.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
+#include <memory>
+#include <mutex>
+#include <vector>
 
 // ─── Design notes (stage 1) ─────────────────────────────────────────────────────────────────────
 // Detector
@@ -254,8 +258,95 @@ void Core::buildSharedGrid()
     }
 }
 
-// Everything frequency-dependent one tier's detector and renderer need, computed once per prepare().
+namespace
+{
+std::atomic<bool> g_tableCacheEnabled { true };
+}
+
+void Core::setTableCacheEnabled(bool enabled) noexcept
+{
+    g_tableCacheEnabled.store(enabled, std::memory_order_relaxed);
+}
+
+// One tier of one instance: the shared tables (from the cache, or built and stored), then this instance's own FFT object and running state.
 void Core::buildEngine(Engine& e, FrameTier tier)
+{
+    // The tables are a pure function of this key (buildEngineTables() and buildSharedGrid() read nothing else), so a stored result IS the result a fresh build
+    // would produce here, bit for bit. A project with twenty EQs used to solve the same notch tables twenty times on load (~60 ms each, all three tiers).
+    struct Key
+    {
+        double sampleRate; int tier; float tauMs, fastTauMs;
+        bool operator==(const Key& o) const noexcept
+        { return sampleRate == o.sampleRate && tier == o.tier && tauMs == o.tauMs && fastTauMs == o.fastTauMs; }
+    };
+    struct Entry { Key key; std::shared_ptr<const EngineTables> tables; };
+    static std::mutex cacheMutex;
+    static std::vector<Entry> cache;
+    constexpr size_t kMaxEntries = 24;   // 3 tiers x 8 (rate, time-constant) combinations; each entry is a few hundred kB at most
+
+    const Key key { sampleRate_, static_cast<int>(tier), detectorTauMs_, fastTauMs_ };
+    const bool useCache = g_tableCacheEnabled.load(std::memory_order_relaxed);
+    std::shared_ptr<const EngineTables> hit;
+    if (useCache)
+    {
+        std::lock_guard<std::mutex> lock(cacheMutex);
+        for (const auto& c : cache) if (c.key == key) { hit = c.tables; break; }
+    }
+    if (hit)
+    {
+        static_cast<EngineTables&>(e) = *hit;   // outside the lock: the entry is immutable and kept alive by `hit`
+    }
+    else
+    {
+        buildEngineTables(e, tier);
+        if (useCache)
+        {
+            auto stored = std::make_shared<const EngineTables>(static_cast<const EngineTables&>(e));
+            std::lock_guard<std::mutex> lock(cacheMutex);
+            bool present = false;   // two instances preparing at once may both have built it
+            for (const auto& c : cache) if (c.key == key) { present = true; break; }
+            if (!present)
+            {
+                if (cache.size() >= kMaxEntries) cache.erase(cache.begin());
+                cache.push_back({ key, std::move(stored) });
+            }
+        }
+    }
+
+    int order = 0;
+    while ((1 << order) < e.N) ++order;
+    e.fft = std::make_unique<juce::dsp::FFT>(order);
+
+    // --- per-channel state and per-band statistics ---
+    const int N = e.N, H = e.H, nb = N / 2 + 1;
+    const auto Bs = static_cast<size_t>(numBands_);
+    for (int c = 0; c < kMaxChannels; ++c)
+    {
+        auto& ch = e.ch[c];
+        ch.outAcc.assign(static_cast<size_t>(N), 0.0f);
+        ch.outFifo.assign(static_cast<size_t>(H), 0.0f);
+        ch.fftBuf.assign(static_cast<size_t>(N) * 2, 0.0f);
+        ch.binGain.assign(static_cast<size_t>(nb), 1.0f);
+        ch.powAvg.assign(static_cast<size_t>(nb), 0.0f);
+        ch.powAvgF.assign(static_cast<size_t>(nb), 0.0f);
+        ch.levelDb.assign(Bs, 0.0f);
+        ch.baseDb.assign(Bs, 0.0f);
+        ch.levelFDb.assign(Bs, 0.0f);
+        ch.baseFDb.assign(Bs, 0.0f);
+        ch.fastOwns.assign(Bs, 0);
+        ch.redDb.assign(Bs, 0.0f);
+        ch.smoothDb.assign(Bs, 0.0f);
+        ch.outDb.assign(Bs, 0.0f);
+        ch.exAdjDb.assign(Bs, 0.0f);
+        ch.lfRed.assign(static_cast<size_t>(e.lfBins), 0.0f);
+        ch.lfOut.assign(static_cast<size_t>(e.lfBins), 0.0f);
+    }
+    e.sigmaE.assign(Bs, 0.0f);
+    e.sigmaEF.assign(Bs, 0.0f);
+}
+
+// Everything frequency-dependent one tier's detector and renderer need: the EngineTables half of an Engine, from scratch.
+void Core::buildEngineTables(Engine& e, FrameTier tier)
 {
     e.N = fftSizeFor(sampleRate_, tier);
     e.H = e.N / 4;
@@ -265,9 +356,6 @@ void Core::buildEngine(Engine& e, FrameTier tier)
         e.slowPeriod = std::clamp(static_cast<int>(std::lround(kSlowBaselineRefreshMs / hopMs)), 1, 32);
         e.fastPeriod = std::clamp(static_cast<int>(std::lround(kFastBaselineRefreshMs / hopMs)), 1, 32);
     }
-    int order = 0;
-    while ((1 << order) < e.N) ++order;
-    e.fft = std::make_unique<juce::dsp::FFT>(order);
 
     const int N = e.N, H = e.H, nb = N / 2 + 1;
     // sqrt of the periodic Hann window, used for analysis and (with the normalisation) synthesis.
@@ -500,32 +588,6 @@ void Core::buildEngine(Engine& e, FrameTier tier)
         e.binBand[static_cast<size_t>(k)] = j;
         e.binFrac[static_cast<size_t>(k)] = static_cast<float>(t);
     }
-
-    // --- per-channel state and per-band statistics ---
-    const auto Bs = static_cast<size_t>(B);
-    for (int c = 0; c < kMaxChannels; ++c)
-    {
-        auto& ch = e.ch[c];
-        ch.outAcc.assign(static_cast<size_t>(N), 0.0f);
-        ch.outFifo.assign(static_cast<size_t>(H), 0.0f);
-        ch.fftBuf.assign(static_cast<size_t>(N) * 2, 0.0f);
-        ch.binGain.assign(static_cast<size_t>(nb), 1.0f);
-        ch.powAvg.assign(static_cast<size_t>(nb), 0.0f);
-        ch.powAvgF.assign(static_cast<size_t>(nb), 0.0f);
-        ch.levelDb.assign(Bs, 0.0f);
-        ch.baseDb.assign(Bs, 0.0f);
-        ch.levelFDb.assign(Bs, 0.0f);
-        ch.baseFDb.assign(Bs, 0.0f);
-        ch.fastOwns.assign(Bs, 0);
-        ch.redDb.assign(Bs, 0.0f);
-        ch.smoothDb.assign(Bs, 0.0f);
-        ch.outDb.assign(Bs, 0.0f);
-        ch.exAdjDb.assign(Bs, 0.0f);
-        ch.lfRed.assign(static_cast<size_t>(e.lfBins), 0.0f);
-        ch.lfOut.assign(static_cast<size_t>(e.lfBins), 0.0f);
-    }
-    e.sigmaE.assign(Bs, 0.0f);
-    e.sigmaEF.assign(Bs, 0.0f);
 }
 
 // Low-frequency tables of one tier (prepare(), non-audio thread). All indexed in bins of THIS tier's window.

@@ -420,7 +420,9 @@ void to_json(nlohmann::json& j, const TrackInfo& t) {
         {"type",              trackTypeToString(t.type)},
         {"fxMode",            trackFxModeToString(t.fxMode)},
         {"videoHoldLastFrame", t.videoHoldLastFrame},
-        {"videoHoldLastFrameThresholdBeats", t.videoHoldLastFrameThresholdBeats}
+        {"videoHoldLastFrameThresholdBeats", t.videoHoldLastFrameThresholdBeats},
+        {"videoHoldSmart",       t.videoHoldSmart},
+        {"videoHoldKeepPlaying", t.videoHoldKeepPlaying}
     };
     // videoFlipConfig is a nested object — append after the flat initializer.
     j["videoFlipConfig"] = videoFlipConfigToJson(t.videoFlipConfig);
@@ -440,6 +442,12 @@ void to_json(nlohmann::json& j, const TrackInfo& t) {
     // Sweep (P11): written only when keyed, so a project with no Sweep saves
     // exactly as it did before the lane existed.
     if (!t.sweep.keys.empty()) j["sweep"] = lensroam::sweepTrackToJson(t.sweep);
+    // Parent (Motion view, schema v9): written only when set, so a project
+    // with no parents saves exactly as before.
+    if (t.parentTrackId >= 0) j["parentTrackId"] = t.parentTrackId;
+    // Clone (schema v10): cloneOf / cloneKind / lensMode or the Trail fields,
+    // written only on a Clone, so every other track saves exactly as before.
+    clones::cloneFieldsToJson(j, t);
 
     // ── Track color (Pass 6D + 6F) ──────────────────────────────────────
     // Always emit mode; emit slot only for PaletteSlot mode and trackColorCustom
@@ -498,6 +506,7 @@ void to_json(nlohmann::json& j, const TrackInfo& t) {
         {"presetName",           t.zoomPanRot.presetName},
     };
     j["zoomPanRot"]["tracks"] = zprTracksToJson(t.zoomPanRot.tracks);
+    j["zoomPanRot"]["motionBlur"] = motionBlurToJson(t.zoomPanRot.motionBlur);
 
     {
         const auto& sb = t.slideNoteEffect.bounce;
@@ -566,21 +575,47 @@ void to_json(nlohmann::json& j, const TrackInfo& t) {
         };
     }
 
+    // Layer Color Grade. Written only when it is not the default.
+    if (!t.colorGrade.isDefault())
+        j["colorGrade"] = xleth::grade::colorGradeToJson(t.colorGrade);
+
+    // Video effect param keys: only those whose effect is still in the chain, and the
+    // uid of exactly those effects (an unkeyed effect's uid is not saved: it is handed
+    // out again at load). A project with no fx keys writes neither, as before.
+    std::vector<FxKey> liveFxKeys;
+    for (const FxKey& k : t.fxKeys)
+        for (const auto& fx : t.visualEffectChain)
+            if (fx.uid == k.uid) { liveFxKeys.push_back(k); break; }
+    auto fxKeyed = [&](int uid) {
+        for (const FxKey& k : liveFxKeys) if (k.uid == uid) return true;
+        return false;
+    };
+
     nlohmann::json chain = nlohmann::json::array();
     for (const auto& fx : t.visualEffectChain) {
         nlohmann::json f;
         f["type"]     = visualEffectTypeToString(fx.type);
         f["bypassed"] = fx.bypassed;
         f["params"]   = visualEffectParamsToNamedJson(fx.type, fx.params);
+        if (fx.uid > 0 && fxKeyed(fx.uid)) f["uid"] = fx.uid;
         chain.push_back(f);
     }
     j["visualEffectChain"] = chain;
+    if (!liveFxKeys.empty()) j["fxKeys"] = lensroam::fxKeysToJson(liveFxKeys);
 
     // ── Mixer output routing (Prompt 2A) ──────────────────────────────────
     // Omit outputRoute entirely when default (Master) for project compactness.
-    // sends remain reserved; always empty, always omitted.
     if (t.outputRoute.targetTrackId != -1)
         j["outputRoute"] = { {"targetTrackId", t.outputRoute.targetTrackId} };
+
+    // ── Sends (FL multi-wiring) ───────────────────────────────────────────
+    // Extra audible destinations; omitted when empty.
+    if (!t.sends.empty()) {
+        nlohmann::json arr = nlohmann::json::array();
+        for (const auto& send : t.sends)
+            arr.push_back({ {"targetTrackId", send.targetTrackId}, {"gain", send.gain} });
+        j["sends"] = arr;
+    }
 
     // ── Sidechain routes (Prompt 4B) ──────────────────────────────────────
     // Silent detector/key routes owned by this (source) track, addressed by a
@@ -640,6 +675,8 @@ void from_json(const nlohmann::json& j, TrackInfo& t) {
     t.videoHoldLastFrameThresholdBeats = j.value(
         "videoHoldLastFrameThresholdBeats",
         TrackInfo::kHoldLastFrameThresholdUnlimited);
+    t.videoHoldSmart       = j.value("videoHoldSmart", false);
+    t.videoHoldKeepPlaying = j.value("videoHoldKeepPlaying", false);
 
     // ── VideoFlipConfig migration (spec §3.5) ─────────────────────────────
     // v2+ projects carry "videoFlipConfig"; v1 projects carry "videoFlipMode".
@@ -676,6 +713,18 @@ void from_json(const nlohmann::json& j, TrackInfo& t) {
                                           : std::map<int, LensTrack>{};
     t.sweep     = j.contains("sweep") ? lensroam::sweepTrackFromJson(j.at("sweep"))
                                       : SweepTrack{};
+    // Parent (Motion view, schema v9). Tolerant: missing, non-integer, < -1 or
+    // the track's own id -> -1 (no parent). A dangling id loads as is and
+    // resolves as "no parent" wherever it is read.
+    t.parentTrackId = -1;
+    if (j.contains("parentTrackId") && j.at("parentTrackId").is_number()) {
+        const double p = j.at("parentTrackId").get<double>();
+        if (std::isfinite(p) && p >= 0.0 && p <= 2147483647.0 && p == std::floor(p)
+            && static_cast<int>(p) != t.id)
+            t.parentTrackId = static_cast<int>(p);
+    }
+    // Clone (schema v10). Tolerant: missing / malformed = an ordinary track.
+    clones::cloneFieldsFromJson(j, t);
 
     // ── Track color (Pass 6D + 6F) ──────────────────────────────────────
     // Old projects (no fields) → Auto. Invalid mode / slot / custom-hex
@@ -756,6 +805,9 @@ void from_json(const nlohmann::json& j, TrackInfo& t) {
             jz.value("retriggerMode", static_cast<int>(ZoomPanRotSettings::RetriggerMode::Restart)));
         t.zoomPanRot.retriggerCrossfadeMs = jz.value("retriggerCrossfadeMs", 50.0f);
         t.zoomPanRot.presetName      = jz.value("presetName", std::string());
+        // Missing (every project before motion blur) = off.
+        t.zoomPanRot.motionBlur      = jz.contains("motionBlur")
+            ? motionBlurFromJson(jz.at("motionBlur")) : MotionBlurSettings{};
         loadOrMigrateZprTracks(jz, t.zoomPanRot);
     } else {
         // No zoomPanRot block at all — struct defaults, but the tracks still
@@ -863,6 +915,10 @@ void from_json(const nlohmann::json& j, TrackInfo& t) {
         if (jn.contains("fadeOut")) readSide(jn.at("fadeOut"), nf.fadeOut);
     }
 
+    // Layer Color Grade. Missing = neutral.
+    t.colorGrade = j.contains("colorGrade")
+        ? xleth::grade::colorGradeFromJson(j.at("colorGrade")) : ColorGrade{};
+
     t.visualEffectChain.clear();
     if (j.contains("visualEffectChain") && j.at("visualEffectChain").is_array()) {
         for (const auto& fj : j.at("visualEffectChain")) {
@@ -874,7 +930,28 @@ void from_json(const nlohmann::json& j, TrackInfo& t) {
             } else {
                 for (int i = 0; i < 16; ++i) fx.params[i] = 0.0f;
             }
+            const int savedUid = fj.value("uid", 0);
+            fx.uid = savedUid > 0 ? savedUid : 0;
             t.visualEffectChain.push_back(fx);
+        }
+    }
+    // Hand every effect a uid: the saved ones are kept (a duplicate loses its uid),
+    // the rest get fresh ones above the highest. Keys for an effect that is gone drop.
+    {
+        int maxUid = 0;
+        for (auto& fx : t.visualEffectChain) maxUid = std::max(maxUid, fx.uid);
+        for (std::size_t a = 0; a < t.visualEffectChain.size(); ++a) {
+            if (t.visualEffectChain[a].uid <= 0) { t.visualEffectChain[a].uid = ++maxUid; continue; }
+            for (std::size_t b = 0; b < a; ++b)
+                if (t.visualEffectChain[b].uid == t.visualEffectChain[a].uid) { t.visualEffectChain[a].uid = ++maxUid; break; }
+        }
+        t.nextFxUid = maxUid + 1;
+        t.fxKeys.clear();
+        if (j.contains("fxKeys")) {
+            for (FxKey& k : lensroam::fxKeysFromJson(j.at("fxKeys"))) {
+                for (const auto& fx : t.visualEffectChain)
+                    if (fx.uid == k.uid) { t.fxKeys.push_back(k); break; }
+            }
         }
     }
 
@@ -888,14 +965,36 @@ void from_json(const nlohmann::json& j, TrackInfo& t) {
         if (tid >= -1)
             t.outputRoute.targetTrackId = tid;
     }
+
+    // ── Sends (FL multi-wiring) ───────────────────────────────────────────
+    // Tolerant: drop non-objects, Master/negative targets, self, the primary
+    // target, duplicates and anything past kMaxTrackSends; clamp gain [0,2].
     t.sends.clear();
+    if (j.contains("sends") && j.at("sends").is_array()) {
+        for (const auto& e : j.at("sends")) {
+            if (static_cast<int>(t.sends.size()) >= kMaxTrackSends) break;
+            if (!e.is_object()) continue;
+            TrackSend send;
+            send.targetTrackId = e.value("targetTrackId", -1);
+            if (send.targetTrackId < 0 || send.targetTrackId == t.id) continue;
+            if (send.targetTrackId == t.outputRoute.targetTrackId) continue;
+            bool dup = false;
+            for (const auto& existing : t.sends)
+                if (existing.targetTrackId == send.targetTrackId) { dup = true; break; }
+            if (dup) continue;
+            float g = e.value("gain", 1.0f);
+            if (!std::isfinite(g)) g = 1.0f;
+            send.gain = std::clamp(g, 0.0f, 2.0f);
+            t.sends.push_back(send);
+        }
+    }
 
     // ── Sidechain routes (Prompt 4B) ──────────────────────────────────────
     // Old projects (no key) load as empty. Malformed entries are sanitized
     // conservatively by DROPPING them (never mutate sibling data): an entry is
-    // kept only when it is structurally complete — non-empty unique routeId, a
-    // real (non-master) targetTrackId, and a non-empty targetEffectInstanceId
-    // (empty/track-level targets are deferred past 4B). gain is clamped to the
+    // kept only when it is structurally complete — non-empty unique routeId and
+    // a real (non-master) targetTrackId. An empty targetEffectInstanceId is a
+    // track-level route (FL "Sidechain to this track"). gain is clamped to the
     // safe [0,2] range (non-finite → 1.0); preFader defaults false, enabled
     // defaults true. A structurally-valid route whose target effect is missing
     // at load is NOT dropped here — staleness is reported at read time so user
@@ -912,7 +1011,6 @@ void from_json(const nlohmann::json& j, TrackInfo& t) {
             sc.targetTrackId = e.value("targetTrackId", -1);
             if (sc.targetTrackId < 0) continue;         // missing/master target → drop
             sc.targetEffectInstanceId = e.value("targetEffectInstanceId", std::string{});
-            if (sc.targetEffectInstanceId.empty()) continue; // 4B rejects empty → drop
             float g = e.value("gain", 1.0f);
             if (!std::isfinite(g)) g = 1.0f;
             sc.gain     = std::clamp(g, 0.0f, 2.0f);

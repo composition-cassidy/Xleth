@@ -218,6 +218,10 @@ endif()
 add_library(XlethEngineModel STATIC
     src/model/ParamTrack.cpp
     src/model/LensRoam.cpp
+    src/model/ParentMath.cpp
+    src/model/Clone.cpp
+    src/model/ColorGrade.cpp
+    src/model/ColorGradeSnapshot.cpp
     src/model/TimelineSnapshot.cpp
     src/model/AutomationEnvelope.cpp
     src/model/SampleRegion.cpp
@@ -238,6 +242,7 @@ add_library(XlethEngineModel STATIC
     src/project/RegenerableFiles.cpp
     src/commands/UndoManager.cpp
     src/commands/TimelineCommands.cpp
+    src/commands/ColorGradeCommands.cpp
     src/commands/QuantizeClipsBatchCommand.cpp
     src/commands/AddNotesBatchCommand.cpp
     src/commands/AddClipsBatchCommand.cpp
@@ -369,8 +374,11 @@ add_library(XlethEngineCore STATIC
     src/dsp/ResonanceCore.cpp
     # Mono-safe pseudo-stereo side generator (xleth-spread-spec.md). Fedda is its stock-effect face.
     src/dsp/stereoize/StereoizeCore.cpp
+    # Transport-locked granular reverse pitch echo (xleth-crystal-shift-research.md). Szkrezh is its stock-effect face.
+    src/dsp/szkrezh/SzkrezhCore.cpp
     src/audio/WorldStretchCache.cpp
     src/audio/SlotBakeCache.cpp
+    src/audio/RealtimeWorkerPool.cpp
     # Sample Sandbox offline renderer. Sits here rather than in the model tier
     # because it owns juce::AudioBuffer and a ThreadPool; the op-stack it
     # evaluates comes from XlethEngineModel.
@@ -379,6 +387,7 @@ add_library(XlethEngineCore STATIC
     src/sandbox/SandboxPitchTrack.cpp
     src/video/FrameOutput.cpp
     src/video/FrameServer.cpp
+    src/video/GradeFrameSampler.cpp
     src/FrameCache.cpp
     src/VideoDecoder.cpp
     src/ProxyTranscoder.cpp
@@ -1688,6 +1697,44 @@ target_compile_definitions(test_sampler_legacy_migration PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_sample_bank_batch ───────────────────────────────────────────────────
+# SampleBank::loadSamplesFromSources (the parallel region-audio loader project
+# load uses) against one-at-a-time loadSampleFromSource: same ids, same PCM bit
+# for bit, at every thread count, with failing requests in the mix. Set
+# XLETH_TEST_MEDIA (+ XLETH_TEST_MEDIA_SECONDS) to also run it on a real
+# compressed file. Output prefix: [SampleBankBatch].
+add_executable(test_sample_bank_batch
+    test/test_sample_bank_batch.cpp
+)
+
+target_link_libraries(test_sample_bank_batch PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_include_directories(test_sample_bank_batch PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_compile_definitions(test_sample_bank_batch PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+add_test(NAME test_sample_bank_batch COMMAND test_sample_bank_batch)
+
 # ── test_sampler_modulation ──────────────────────────────────────────────────
 # The modulation system: 6 envelopes, 6 LFOs, VELO/NOTE response curves and the
 # route graph. Exercises the pure evaluators in SamplerModulation.h directly
@@ -2435,6 +2482,49 @@ foreach(_fedda_test test_stereoize_core test_fedda)
     add_test(NAME ${_fedda_test} COMMAND ${_fedda_test})
 endforeach()
 
+# ── test_szkrezh_core / test_szkrezh ────────────────────────────────────────
+# xleth::dsp::szkrezh::Core (src/dsp/szkrezh/SzkrezhCore.*) headless: identity, reverse impulse,
+# recycle staircase, aliasing (Vintage vs Clean), runaway, per-grain latching, transport-locked
+# splice grid (free + sync + bar cut), block-size independence, skipped-block equivalence, Harmony and
+# Keys pitch, gate/duck, freeze, tail hold, zero operator new, CPU. test_szkrezh: the
+# XlethSzkrezhEffect wrapper (parameter contract, state round-trip, zero latency, MIDI channel
+# filter, cross-track Keys lookup, tail-hold flag). Output prefixes: [SzkrezhCore], [Szkrezh].
+foreach(_szkrezh_test test_szkrezh_core test_szkrezh)
+    add_executable(${_szkrezh_test}
+        test/${_szkrezh_test}.cpp
+    )
+
+    target_link_libraries(${_szkrezh_test} PRIVATE
+        XlethEngineCore
+        XlethEngineModel
+        juce::juce_core
+        juce::juce_audio_basics
+        juce::juce_audio_formats
+        juce::juce_audio_processors
+        juce::juce_dsp
+        juce::juce_events
+        juce::juce_gui_basics
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+    )
+
+    target_include_directories(${_szkrezh_test} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+
+    target_compile_definitions(${_szkrezh_test} PRIVATE
+        JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+        JUCE_USE_CURL=0
+        JUCE_WEB_BROWSER=0
+        JUCE_MODAL_LOOPS_PERMITTED=1
+        JUCE_DIRECTSOUND=0
+        JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+        JUCE_STANDALONE_APPLICATION=1
+    )
+
+    add_test(NAME ${_szkrezh_test} COMMAND ${_szkrezh_test})
+endforeach()
+
 # ── test_chain_effect_identity ────────────────────────────────────────────────
 # Prompt 4A: stable chain-mode effectInstanceId — creation, lookup, move, bypass,
 # parameter edit, save/load across APG uid remap, old-project generation,
@@ -2859,6 +2949,48 @@ target_link_libraries(test_apex PRIVATE
 )
 
 target_compile_definitions(test_apex PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_smart_balance ───────────────────────────────────────────────────────
+# SmartBalanceEffect (the gentle 4-band leveller + Warmth). Verifies: balanced
+# material is left alone, an over-bright / dull band is pulled toward the
+# balanced layout within its lift / cut limits, an absent band and the gaps
+# between notes are never lifted, Preserve keeps a hit's crest and stops the
+# post-hit pump, loudness match holds the K-weighted level, Amount 0 / Mix 0 is
+# magnitude-transparent, Warmth adds low-order harmonics below 800 Hz only and
+# is level-independent, the low band never distorts at the fastest Response,
+# block-size independence, robustness, the parameter contract and state.
+# Header-only effect: links JUCE alone (no engine library, no FFmpeg DLLs), so
+# the exe also runs directly: `test_smart_balance --render in.wav out.wav k=v`.
+add_executable(test_smart_balance
+    test/test_smart_balance.cpp
+)
+
+target_link_libraries(test_smart_balance PRIVATE
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_include_directories(test_smart_balance PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_compile_definitions(test_smart_balance PRIVATE
     JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
     JUCE_USE_CURL=0
     JUCE_WEB_BROWSER=0
@@ -3395,6 +3527,77 @@ target_compile_definitions(test_lens_roam PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_clones ──────────────────────────────────────────────────────────────
+# Clones (docs/XLETH_CLONE_SPEC.md, model/Clone.h): voice assignment rules,
+# JSON, event routing to Voice clones, Trail snapshot entries, the collector
+# (Voice cells, Idle, Trails at the delayed time, draw order, tint, mute
+# independence) and the edit commands. Pure CPU.
+add_executable(test_clones
+    test/test_clones.cpp
+)
+
+target_link_libraries(test_clones PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_include_directories(test_clones PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_compile_definitions(test_clones PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_color_grade ─────────────────────────────────────────────────────────
+# Color Grade (model/ColorGrade.h): neutral = no pass, curve monotonicity, the
+# baked transfer against the direct math, level order, owners and independence,
+# one undo step per action incl. bulk apply, save/load at all four levels through
+# ProjectManager, the snapshot every render request copies from, .cube LUT
+# import, and the Auto helper on synthetic aged footage. Pure CPU.
+add_executable(test_color_grade
+    test/test_color_grade.cpp
+)
+
+target_link_libraries(test_color_grade PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_include_directories(test_color_grade PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_compile_definitions(test_color_grade PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_key_curve ───────────────────────────────────────────────────────────
 # The shared keyframe curve engine (model/KeyCurve.h, Lens + Roam P7): empty
 # keys = base, Hold/Linear/EaseOut, Head/Body/Tail anchor mapping for every
@@ -3452,7 +3655,37 @@ target_link_libraries(test_compositor PRIVATE
     dxgi
 )
 
+# main() holds dozens of CellFrameRequests (each carries a mask frame, motion samples
+# and a parent chain): the default 1 MB stack is exhausted by one more test block.
+target_link_options(test_compositor PRIVATE /STACK:8388608)
+
 target_compile_definitions(test_compositor PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_color_grade_gpu ─────────────────────────────────────────────────────
+# Color Grade on a real D3D11 device, through GridCompositor: the shader against
+# the CPU reference (applyBakedGrade) to one 8-bit step, neutral = bit-identical,
+# level order incl. Master, Master over empty areas, exact bypass, two
+# compositors (preview / export) byte-identical, LUT, alpha, texture eviction.
+add_executable(test_color_grade_gpu
+    test/test_color_grade_gpu.cpp
+)
+
+target_link_libraries(test_color_grade_gpu PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    d3d11
+    dxgi
+)
+
+target_compile_definitions(test_color_grade_gpu PRIVATE
     JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
     JUCE_USE_CURL=0
     JUCE_WEB_BROWSER=0
@@ -3812,6 +4045,7 @@ set(XLETH_ENGINE_TESTS
     test_uniflange
     test_limiter
     test_apex
+    test_smart_balance
     test_glue_compressor
     test_opto_compressor
     test_fet_compressor
@@ -3829,12 +4063,15 @@ set(XLETH_ENGINE_TESTS
     test_animation_manager
     test_param_track
     test_lens_roam
+    test_clones
+    test_color_grade
     test_key_curve
     test_export_snapshot
     test_render_clock
     test_automation_clips
     test_sandbox
     test_compositor
+    test_color_grade_gpu
     test_lens_roam_verify
     test_visual_echo
     test_snapshot_transition

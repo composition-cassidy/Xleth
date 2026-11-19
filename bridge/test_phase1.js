@@ -77,10 +77,15 @@ async function main() {
 
   // ── 4. setBPM(140) ────────────────────────────────────────────────────────
   console.log('\n[ timeline.setBPM ]');
+  // A new project is already at 140. Asking for the tempo it already has is
+  // not an edit: it must not leave an undo entry (a Ctrl+Z that does nothing).
+  addon.timeline_setBPM(140);
+  assert(addon.undo_canUndo() === false, 'setBPM to the current tempo leaves no undo entry');
+  addon.timeline_setBPM(128);
+  assert(addon.undo_canUndo() === true, 'canUndo() after a real tempo change');
   addon.timeline_setBPM(140);
   const bpm = addon.timeline_getBPM();
   assertEqual(bpm, 140, 'getBPM() after setBPM(140)');
-  assert(addon.undo_canUndo() === true, 'canUndo() after setBPM');
 
   // ── 5. Add 3 tracks ───────────────────────────────────────────────────────
   console.log('\n[ timeline.addTrack × 3 ]');

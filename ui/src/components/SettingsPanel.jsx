@@ -258,6 +258,9 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
   const [projectStretchMethod, setProjectStretchMethod] = useState(null)
   const [defaultStretchMethod, setDefaultStretchMethod] = useState(null)
   const [formantPreserve, setFormantPreserve] = useState(false)
+  // Project-wide Lens / Roam / Sweep motion blur ({ enabled, shutterAngle }).
+  // null until the engine answers.
+  const [motionBlur, setMotionBlur] = useState(null)
   const [spacebarMode, setSpacebarMode] = useState('play-pause')
   const [autosaveInterval, setAutosaveInterval] = useState(5)
   const [gpuStatus, setGpuStatus] = useState({ state: 'loading', adapters: [] })
@@ -359,6 +362,10 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
     xl?.engine?.getGlobalFormantPreserve?.()
       .then(v => setFormantPreserve(!!v))
       .catch(() => {})
+
+    xl?.timeline?.getMotionBlur?.()
+      .then(m => setMotionBlur({ enabled: !!m?.enabled, shutterAngle: m?.shutterAngle ?? 180 }))
+      .catch(() => setMotionBlur({ enabled: false, shutterAngle: 180 }))
 
     xl?.settings?.get?.('spacebarMode')?.then(v => {
       setSpacebarMode(v === 'play-stop' ? 'play-stop' : 'play-pause')
@@ -544,6 +551,14 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
     const method = sanitizeGlobalStretchMethod(m)
     setDefaultStretchMethod(method)
     await getXleth()?.settings?.set?.('defaultGlobalStretchMethod', method)
+  }
+
+  async function applyMotionBlur(patch) {
+    const next = { ...(motionBlur ?? { enabled: false, shutterAngle: 180 }), ...patch }
+    console.log('[UISettings] project motionBlur changed:', next)
+    setMotionBlur(next)
+    const stored = await getXleth()?.timeline?.setMotionBlur?.(next)
+    if (stored) setMotionBlur({ enabled: !!stored.enabled, shutterAngle: stored.shutterAngle ?? 180 })
   }
 
   async function applyFormant(v) {
@@ -956,6 +971,48 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
         >
           <OnOff id="settings-formant-preserve" label="Formant preservation" on={formantPreserve} onChange={applyFormant} />
         </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title="Motion blur">
+        <SettingsRow
+          label="Lens and Roam motion blur"
+          htmlFor="settings-motion-blur"
+          description="Smears grid cells and fullscreen layers along their Lens, Sweep and Roam moves, in the preview and the export."
+        >
+          <OnOff
+            id="settings-motion-blur"
+            label="Lens and Roam motion blur"
+            on={!!motionBlur?.enabled}
+            onChange={next => applyMotionBlur({ enabled: next })}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Shutter angle"
+          description="How much of each frame the blur spans. 180° is the film look; 360° spans the whole frame."
+        >
+          <NumberBox
+            id="settings-motion-blur-shutter"
+            label="Shutter angle"
+            hideLabel
+            width={88}
+            min={1}
+            max={360}
+            step={1}
+            defaultValue={180}
+            format={v => `${Math.round(v)}°`}
+            parse={t => {
+              const v = Number.parseFloat(String(t).replace(/°/g, ''))
+              return Number.isFinite(v) ? v : null
+            }}
+            quantize={v => Math.round(v)}
+            value={motionBlur?.shutterAngle ?? 180}
+            disabled={!motionBlur?.enabled}
+            onCommit={v => applyMotionBlur({ shutterAngle: Math.round(v) })}
+          />
+        </SettingsRow>
+        <SettingsHint>
+          Zoom/pan/rot has its own motion blur on each track’s device, and this setting does not change it.
+        </SettingsHint>
       </SettingsSection>
 
       <SettingsSection title="Playback">

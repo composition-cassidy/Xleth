@@ -18,6 +18,11 @@
 //              e(u) = 1 - (1 - u)^2, the engine's existing EaseOut
 //              (AnimationManager easeOut; the ParamTrack legacy EaseOut bezier
 //              (1/3, 2/3, 2/3, 1) is the same polynomial).
+//     Bezier   the key's own handles, CSS cubic-bezier(x1, y1, x2, y2)
+//              semantics with fixed (0,0) / (1,1) ends, the same convention as
+//              ParamTrack: x is the segment's time fraction, y its value
+//              fraction (a -> b). x1/x2 are clamped to [0, 1] so time stays
+//              monotone; y1/y2 are not, so a segment may overshoot.
 //   The last key's interp is never read.
 //
 // ── Position (time; ticks at 960 PPQ) ────────────────────────────────────────
@@ -96,7 +101,32 @@ enum class Interp : uint8_t {
     Hold    = 0,
     Linear  = 1,
     EaseOut = 2,
+    Bezier  = 3,
 };
+
+// A Bezier segment's two inner control points. Only read when the key's
+// interp is Bezier. The default is the CSS ease-in-out ("Smooth").
+struct BezierHandles {
+    double x1 = 0.42, y1 = 0.0, x2 = 0.58, y2 = 1.0;
+
+    bool operator==(const BezierHandles& o) const {
+        return x1 == o.x1 && y1 == o.y1 && x2 == o.x2 && y2 == o.y2;
+    }
+    bool operator!=(const BezierHandles& o) const { return !(*this == o); }
+};
+
+// Handles the evaluator can trust: x clamped to [0, 1], a non-finite
+// coordinate replaced by the default's.
+inline BezierHandles sanitizeBezier(const BezierHandles& b) {
+    const BezierHandles d;
+    auto fin = [](double v, double f) { return std::isfinite(v) ? v : f; };
+    BezierHandles o;
+    o.x1 = std::clamp(fin(b.x1, d.x1), 0.0, 1.0);
+    o.y1 = fin(b.y1, d.y1);
+    o.x2 = std::clamp(fin(b.x2, d.x2), 0.0, 1.0);
+    o.y2 = fin(b.y2, d.y2);
+    return o;
+}
 
 enum class TimeBase : uint8_t {
     EventTicks    = 0,  // ticks from the event start
@@ -122,20 +152,70 @@ struct Position {
 };
 
 struct Key {
-    double   value  = 0.0;
-    Interp   interp = Interp::Linear;
-    Position position;
+    double        value  = 0.0;
+    Interp        interp = Interp::Linear;
+    Position      position;
+    BezierHandles bez;          // read only when interp == Bezier
 };
 
 // ─── Interpolation ───────────────────────────────────────────────────────────
 
 inline double easeOut(double u) { return 1.0 - (1.0 - u) * (1.0 - u); }
 
+// One coordinate of a cubic bezier with ends 0 and 1 and inner points c1, c2.
+inline double bezierCoord(double c1, double c2, double s) {
+    const double A = 1.0 + 3.0 * c1 - 3.0 * c2;
+    const double B = 3.0 * c2 - 6.0 * c1;
+    const double C = 3.0 * c1;
+    return ((A * s + B) * s + C) * s;
+}
+
+inline double bezierCoordSlope(double c1, double c2, double s) {
+    const double A = 1.0 + 3.0 * c1 - 3.0 * c2;
+    const double B = 3.0 * c2 - 6.0 * c1;
+    const double C = 3.0 * c1;
+    return (3.0 * A * s + 2.0 * B) * s + C;
+}
+
+// The eased fraction of a Bezier segment at time fraction u: solve x(s) = u
+// for s (Newton, then bisection if Newton leaves [0, 1] or stalls), return
+// y(s). Fixed iteration counts and no state, so the same inputs give the same
+// bits on every thread. `b` must be sanitized (x1, x2 in [0, 1]). The same
+// solver as the UI's lensKeyModel.bezierEase and zprCurveMath.paramTrackEase.
+inline double bezierEase(const BezierHandles& b, double u) {
+    if (!(u > 0.0)) return 0.0;
+    if (u >= 1.0)   return 1.0;
+    double s = u;
+    bool solved = false;
+    for (int i = 0; i < 8; ++i) {
+        const double err = bezierCoord(b.x1, b.x2, s) - u;
+        if (std::fabs(err) < 1e-7) { solved = true; break; }
+        const double d = bezierCoordSlope(b.x1, b.x2, s);
+        if (std::fabs(d) < 1e-12) break;
+        const double next = s - err / d;
+        if (!(next >= 0.0 && next <= 1.0)) break;
+        s = next;
+    }
+    if (!solved) {
+        double lo = 0.0, hi = 1.0;
+        s = u;
+        for (int i = 0; i < 64; ++i) {
+            s = 0.5 * (lo + hi);
+            const double err = bezierCoord(b.x1, b.x2, s) - u;
+            if (std::fabs(err) < 1e-7) break;
+            if (err > 0.0) hi = s; else lo = s;
+            if (hi - lo < 1e-7) break;
+        }
+    }
+    return bezierCoord(b.y1, b.y2, s);
+}
+
 // Value on the segment a -> b at u in [0, 1) (u = 0 is exactly a.value).
 inline double interpolate(const Key& a, const Key& b, double u) {
     switch (a.interp) {
         case Interp::Hold:    return a.value;
         case Interp::EaseOut: return a.value + (b.value - a.value) * easeOut(u);
+        case Interp::Bezier:  return a.value + (b.value - a.value) * bezierEase(a.bez, u);
         case Interp::Linear:
         default:              return a.value + (b.value - a.value) * u;
     }
@@ -376,6 +456,7 @@ inline void compileNoteKeys(std::vector<Key>& keys, const NoteZones& zones) {
             || !std::isfinite(k.value) || !std::isfinite(k.position.v);
     }), keys.end());
     for (Key& k : keys) {
+        k.bez = sanitizeBezier(k.bez);
         switch (k.position.base) {
             case TimeBase::NoteBody: k.position.v = std::clamp(k.position.v, 0.0, 1.0); break;
             case TimeBase::NoteTail: k.position.v = std::clamp(k.position.v, 0.0, T);   break;
@@ -392,6 +473,7 @@ inline void compileTimeKeys(std::vector<Key>& keys) {
         return isNoteAnchor(k.position.base)
             || !std::isfinite(k.value) || !std::isfinite(k.position.v);
     }), keys.end());
+    for (Key& k : keys) k.bez = sanitizeBezier(k.bez);
     sortTimeKeys(keys);
 }
 

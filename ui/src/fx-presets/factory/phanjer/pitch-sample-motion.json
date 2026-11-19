@@ -1,0 +1,34 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "phanjer",
+  "name": "Pitch Sample Motion",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "mode": 0,
+      "f_mix": 50,
+      "f_rate": 0.2,
+      "f_depth": 40,
+      "f_feedback": 15,
+      "f_delay_min": 1,
+      "f_delay_max": 5,
+      "f_sync": 0,
+      "f_sync_div": 2,
+      "f_sync_feel": 0,
+      "p_mix": 60,
+      "p_rate": 0.2,
+      "p_depth": 50,
+      "p_feedback": 15,
+      "p_stages": 6,
+      "p_freq_min": 100,
+      "p_freq_max": 4000,
+      "p_sync": 0,
+      "p_sync_div": 2,
+      "p_sync_feel": 0,
+      "global_mix": 25,
+      "lfo_shape": 0,
+      "chaos": 0
+    }
+  }
+}

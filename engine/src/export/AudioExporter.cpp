@@ -19,6 +19,7 @@ extern "C" {
 #include <libavutil/channel_layout.h>
 #include <libavutil/samplefmt.h>
 #include <libavutil/frame.h>
+#include <libavutil/mathematics.h>
 }
 
 #include <algorithm>
@@ -661,6 +662,64 @@ bool AudioExporter::encodeWithFFmpeg(const juce::AudioBuffer<float>& buf,
 
 // ─── Main entry point ────────────────────────────────────────────────────────
 
+bool AudioExporter::resampleBuffer(const juce::AudioBuffer<float>& in, int inRate, int outRate,
+                                   juce::AudioBuffer<float>& out)
+{
+    const int numCh = in.getNumChannels();
+    const int n     = in.getNumSamples();
+    if (inRate == outRate || inRate <= 0 || outRate <= 0 || numCh <= 0 || n <= 0) {
+        out.makeCopyOf(in);
+        return true;
+    }
+
+    AVChannelLayout layout;
+    av_channel_layout_default(&layout, numCh);
+    SwrContext* swr = nullptr;
+    if (swr_alloc_set_opts2(&swr,
+            &layout, AV_SAMPLE_FMT_FLTP, outRate,
+            &layout, AV_SAMPLE_FMT_FLTP, inRate, 0, nullptr) < 0 || !swr) {
+        return false;
+    }
+    // Offline: spend the taps on a steeper transition band (see FFmpegMuxer).
+    av_opt_set_int(swr, "filter_size", 64, 0);
+    if (swr_init(swr) < 0) { swr_free(&swr); return false; }
+
+    // The output covers exactly the input's span of time.
+    const int target = static_cast<int>(av_rescale_rnd(n, outRate, inRate, AV_ROUND_NEAR_INF));
+    const int cap    = target + 4096;       // room for the filter tail
+    juce::AudioBuffer<float> work(numCh, cap);
+    work.clear();
+
+    std::vector<const uint8_t*> inPtrs(static_cast<size_t>(numCh));
+    std::vector<uint8_t*>       outPtrs(static_cast<size_t>(numCh));
+    for (int ch = 0; ch < numCh; ++ch)
+        inPtrs[static_cast<size_t>(ch)] = reinterpret_cast<const uint8_t*>(in.getReadPointer(ch));
+    auto pointOutAt = [&](int offset) {
+        for (int ch = 0; ch < numCh; ++ch)
+            outPtrs[static_cast<size_t>(ch)] =
+                reinterpret_cast<uint8_t*>(work.getWritePointer(ch) + offset);
+    };
+
+    int produced = 0;
+    pointOutAt(0);
+    int got = swr_convert(swr, outPtrs.data(), cap, inPtrs.data(), n);
+    if (got < 0) { swr_free(&swr); return false; }
+    produced += got;
+    while (produced < cap) {                 // drain the resampler's tail
+        pointOutAt(produced);
+        got = swr_convert(swr, outPtrs.data(), cap - produced, nullptr, 0);
+        if (got <= 0) break;
+        produced += got;
+    }
+    swr_free(&swr);
+
+    out.setSize(numCh, target, false, true, false);
+    const int copyLen = std::min(produced, target);
+    for (int ch = 0; ch < numCh; ++ch)
+        out.copyFrom(ch, 0, work, ch, 0, copyLen);
+    return true;
+}
+
 bool AudioExporter::exportAudio(const Timeline& timeline,
                                  const SampleBank& /*bank*/,
                                  MixEngine& mixer,
@@ -684,7 +743,12 @@ bool AudioExporter::exportAudio(const Timeline& timeline,
     }
 
     const double bpm = timeline.getBPM();
-    const int    sr  = config.sampleRate > 0 ? config.sampleRate : 44100;
+    // `sr` is the MIX rate: the rate the engine renders at and the rate every
+    // sample position below is counted in. `fileSr` is the rate of the file.
+    // They differ when the bridge asks for the session rate to be kept (see
+    // Config::mixSampleRate); the render is resampled between steps 2 and 3.
+    const int    fileSr = config.sampleRate > 0 ? config.sampleRate : 44100;
+    const int    sr     = config.renderRate();
     const double samplesPerBeat = static_cast<double>(sr) * 60.0 / bpm;
     const int64_t startSample = static_cast<int64_t>(startBeat * samplesPerBeat);
     const int64_t endSample   = static_cast<int64_t>(endBeat   * samplesPerBeat);
@@ -706,7 +770,7 @@ bool AudioExporter::exportAudio(const Timeline& timeline,
     }
 
     // 2. Offline render (+ effect-tail capture for tailClamp). The bridge built
-    //    config.tail at this export sample rate, so its sample counts are valid.
+    //    config.tail at the mix rate, so its sample counts are valid.
     juce::AudioBuffer<float> rendered;
     int renderedSamples = 0;
     if (!renderOffline(timeline, mixer, startSample, warmUpStartSample, totalSamples, sr,
@@ -720,6 +784,21 @@ bool AudioExporter::exportAudio(const Timeline& timeline,
     if (renderedSamples < rendered.getNumSamples())
         rendered.setSize(2, renderedSamples, /*keepExisting*/ true, false, true);
 
+    // 2b. Mix rate → file rate. After this point `rendered` is at fileSr, so
+    //     the loudness measurement and the encoder both see the real file.
+    if (sr != fileSr) {
+        juce::AudioBuffer<float> converted;
+        if (!resampleBuffer(rendered, sr, fileSr, converted)) {
+            std::cout << "[AudioExporter] resample " << sr << " -> " << fileSr
+                      << " Hz FAILED\n" << std::flush;
+            return false;
+        }
+        std::cout << "[AudioExporter] mixed at " << sr << " Hz, resampled to " << fileSr
+                  << " Hz (" << rendered.getNumSamples() << " -> "
+                  << converted.getNumSamples() << " samples)\n" << std::flush;
+        rendered = std::move(converted);
+    }
+
     // 3. Loudness normalisation (opt-in). Deliberately here, on the finished
     //    buffer: `rendered` is now exactly what the encoder will see, so this one
     //    site covers the Phase 3A tail path AND the Phase 3B wrap path (whose
@@ -730,7 +809,7 @@ bool AudioExporter::exportAudio(const Timeline& timeline,
     if (config.normalizationEnabled) {
         // Allocates, but this is the offline export thread — never a realtime one.
         const auto measured = xleth::dsp::LoudnessAnalyzer::analyze(
-            rendered, static_cast<double>(sr));
+            rendered, static_cast<double>(fileSr));
 
         normReport = planNormalization(measured.integrated, measured.truePeakDbtp,
                                        config.targetLufs, config.maxDbtp,

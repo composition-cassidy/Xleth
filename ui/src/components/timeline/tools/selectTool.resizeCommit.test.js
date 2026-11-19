@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createSelectTool } from './selectTool.js'
-import { PPQ } from '../../../constants/timeline.js'
+import { PPQ, beatsToTicks } from '../../../constants/timeline.js'
 
 // Regression test for the trim/left-trim scheduling fix: a clip resize drag
 // must preview locally (no IPC) and commit onResizeClip/onResizeClipLeft
@@ -115,5 +115,50 @@ describe('createSelectTool — clip trim (right edge) scheduling', () => {
 
     tool.onMouseUp(60, 0, e)
     expect(onResizeClipLeft).toHaveBeenCalledTimes(1)
+  })
+})
+
+// A reversed clip plays its source window backwards, so its right edge sits on
+// the START of the window and its left edge on the END (clipTrim.js). The
+// commit has to move regionOffset for exactly the edge that sits on the start.
+describe('createSelectTool — which end of the source a trim takes from', () => {
+  function drag(tool, fromX, toX) {
+    const e = mods()
+    tool.onMouseDown(fromX, 0, e)
+    const step = toX > fromX ? 1 : -1
+    for (let x = fromX + step; x !== toX + step; x += step) tool.onMouseMove(x, 0, e)
+    tool.onMouseUp(toX, 0, e)
+  }
+
+  it('forward clip, right edge: the duration alone', () => {
+    const { deps, onResizeClip } = makeDeps()
+    drag(createSelectTool(deps), 158, 2 * PPB)            // 4 beats -> 2 beats
+    expect(onResizeClip).toHaveBeenCalledTimes(1)
+    expect(onResizeClip.mock.calls[0]).toEqual(['c1', beatsToTicks(2)])
+  })
+
+  it('reversed clip, right edge: the region offset advances by what was cut', () => {
+    const { deps, onResizeClip } = makeDeps({ clip: makeClip({ reversed: true }) })
+    drag(createSelectTool(deps), 158, 2 * PPB)
+    expect(onResizeClip).toHaveBeenCalledTimes(1)
+    expect(onResizeClip.mock.calls[0]).toEqual(['c1', beatsToTicks(2), beatsToTicks(2)])
+  })
+
+  it('reversed and stretched, right edge: the offset moves in SOURCE ticks', () => {
+    const { deps, onResizeClip } = makeDeps({ clip: makeClip({ reversed: true, stretchRatio: 2 }) })
+    drag(createSelectTool(deps), 158, 2 * PPB)
+    expect(onResizeClip.mock.calls[0]).toEqual(['c1', beatsToTicks(2), beatsToTicks(1)])
+  })
+
+  it('forward clip, left edge: the region offset advances with the edge', () => {
+    const { deps, onResizeClipLeft } = makeDeps()
+    drag(createSelectTool(deps), 0, PPB)                  // start moves to beat 1
+    expect(onResizeClipLeft.mock.calls[0]).toEqual(['c1', beatsToTicks(1), beatsToTicks(3), beatsToTicks(1)])
+  })
+
+  it('reversed clip, left edge: the region offset stays where it is', () => {
+    const { deps, onResizeClipLeft } = makeDeps({ clip: makeClip({ reversed: true }) })
+    drag(createSelectTool(deps), 0, PPB)
+    expect(onResizeClipLeft.mock.calls[0]).toEqual(['c1', beatsToTicks(1), beatsToTicks(3), 0])
   })
 })

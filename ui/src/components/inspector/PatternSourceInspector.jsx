@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { timelineEvents } from '../../timelineEvents.js'
 import LensPanel from '../lensRoam/LensPanel.jsx'
+import GradeSection from '../colorGrade/GradeSection.jsx'
 import useTrackIdentityColors from './useTrackIdentityColors.js'
 import styles from './Inspector.module.css'
 
@@ -77,6 +78,16 @@ export default function PatternSourceInspector({ selection }) {
             </p>
           </section>
         )}
+        {hasVideo ? (
+          <GradeSection
+            note="The color grades this sample's picture passes through, in order."
+            stack={{
+              source: { id: source.id, name: source.fileName ?? source.name ?? 'Source' },
+              clip: { level: 'region', id: regionId, name: region?.name || 'Sample' },
+              layer: { id: trackId, name },
+            }}
+          />
+        ) : null}
       </div>
     </div>
   )

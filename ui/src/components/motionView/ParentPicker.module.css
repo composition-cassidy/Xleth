@@ -1,0 +1,41 @@
+/* The Parent picker (docs/XLETH_MOTION_VIEW_DESIGN.md 5.3, 5.6): a kit Button that names
+ * the current parent and opens a kit Menu. 24px hit area (the kit sm button), the name
+ * truncates instead of widening the track row. */
+@layer kit {
+  .trigger {
+    min-width: var(--hit-min);
+    max-width: 200px;
+    justify-content: flex-start;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .caret {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    color: var(--ui-ink-2);
+  }
+
+  .menu {
+    max-width: 320px;
+  }
+
+  .note {
+    margin: 0;
+    padding: var(--space-1) var(--space-2);
+    color: var(--ui-ink-3);
+    font-size: var(--type-11);
+    white-space: normal;
+  }
+
+  .note[data-alt] {
+    color: var(--ui-ink);
+  }
+}

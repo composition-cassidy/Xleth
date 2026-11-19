@@ -8,7 +8,7 @@
 
 import { DEFAULT_TRACK_HEIGHT, pixelToTickExact, tickToPixel } from '../../constants/timeline.js'
 import {
-  keysOfChannel, laneValueToY, laneYToValue, roamLaneRange, sortedForDisplay,
+  bezierHandlePoints, keysOfChannel, laneValueToY, laneYToValue, roamLaneRange, sameKeyRef, sortedForDisplay,
 } from '../../lensRoam/roamKeyModel.js'
 
 // Heights are authored at DEFAULT_TRACK_HEIGHT (36) and scale with the track height,
@@ -18,6 +18,8 @@ const LANE_MIN_H = 48
 const LANE_PAD = 6          // above and below the plotted range
 export const ROAM_KEY_R = 4.5      // drawn radius of a key
 export const ROAM_KEY_HIT_R = 11   // hit radius: the 24 px target floor, radius 12 less a hair
+export const ROAM_HANDLE_R = 3.5   // drawn radius of a Bezier handle
+export const ROAM_HANDLE_HIT_R = 9 // a handle sits close to its key; it wins only when nearer
 
 export function roamLaneHeight(trackHeight = DEFAULT_TRACK_HEIGHT) {
   return Math.max(LANE_MIN_H, Math.round(LANE_H * trackHeight / DEFAULT_TRACK_HEIGHT))
@@ -54,16 +56,24 @@ export function lanePointAt(row, range, channel, localX, localY, scrollOffset, p
  * What is under (localX, localY) in a Roam lane?
  *
  * @param {object} args
- * @param {object} args.trackLayout   buildTrackLayout's result (roamRowAtY)
+ * @param {object} args.trackLayout   a lane-row provider supplied by the caller:
+ *   { roamRowAtY, getRoamRows, sweepRowAtY, getSweepRows } (not buildTrackLayout's
+ *   result, which has no Roam / Sweep rows since R17); `*RowAtY(localY)` returns the
+ *   lane row under a y ({ parentTrackId, y, height }) or null
  * @param {(trackId:number)=>({base:object, keys:object[]}|undefined)} args.dataOf   the lane's data (draft applied)
  * @param {(trackId:number)=>string} args.channelOf   the parameter each lane shows
  * @param {'roam'|'sweep'} [args.kind]   which lane: the Roam lane (default) or the Sweep
  *   lane (P11), the same graph over Lens channels
- * @returns {null | { row, trackId, channel, range, key: object|null, tick: number, value: number }}
+ * @param {(ref:{trackId,channel,pos})=>boolean} [args.isSelected]   which keys are selected:
+ *   only a selected Bezier key shows (and so offers) its handles
+ * @returns {null | { row, trackId, channel, range, key: object|null, handle: object|null,
+ *   tick: number, value: number }}
  *   null when the point is not in a Roam lane. `key` is the nearest key of the
  *   lane's channel within the hit radius (the later one wins a tie, like the engine).
+ *   `handle` is { key, next, which: 1|2 } when a shown Bezier handle is nearer than any key.
  */
-export function hitTestRoamLane({ trackLayout, dataOf, channelOf, kind = 'roam' }, localX, localY, scrollOffset, ppb) {
+export function hitTestRoamLane({ trackLayout, dataOf, channelOf, kind = 'roam', isSelected = null },
+  localX, localY, scrollOffset, ppb) {
   const row = (kind === 'sweep' ? trackLayout?.sweepRowAtY : trackLayout?.roamRowAtY)?.(localY)
   if (!row) return null
   const trackId = row.parentTrackId
@@ -78,7 +88,70 @@ export function hitTestRoamLane({ trackLayout, dataOf, channelOf, kind = 'roam' 
     const d = (p.x - localX) ** 2 + (p.y - localY) ** 2
     if (d <= best) { best = d; key = k }
   }
-  return { row, trackId, channel, range, key, tick: at.tick, value: at.value }
+  let handle = null
+  if (isSelected) {
+    let hBest = Math.min(best, ROAM_HANDLE_HIT_R * ROAM_HANDLE_HIT_R)
+    const segs = laneBezierSegments(laneKeys(data.keys, channel),
+      (k) => isSelected({ trackId, channel, pos: k.pos }), row, range, scrollOffset, ppb)
+    for (const s of segs) {
+      for (const which of [1, 2]) {
+        const h = which === 1 ? s.h1 : s.h2
+        const d = (h.x - localX) ** 2 + (h.y - localY) ** 2
+        if (d < hBest) { hBest = d; handle = { key: s.key, next: s.next, which } }
+      }
+    }
+  }
+  return { row, trackId, channel, range, key: handle ? null : key, handle, tick: at.tick, value: at.value }
+}
+
+/**
+ * The Bezier segments whose handles a lane shows: one per SELECTED Bezier key that has
+ * a next key. `keys` are the lane's keys in time order (laneKeys). Each is
+ * { key, next, from, to, h1, h2 } in lane pixels (bezierHandlePoints).
+ */
+export function laneBezierSegments(keys, isSelectedKey, row, range, scrollOffset, ppb) {
+  const inner = roamLaneInner(row)
+  const toX = (k) => tickToPixel(k.pos, scrollOffset, ppb)
+  const toY = (v) => laneValueToY(range, inner, v)
+  const out = []
+  for (let i = 0; i + 1 < keys.length; i++) {
+    const a = keys[i]
+    if (a.interp !== 'Bezier' || !isSelectedKey(a)) continue
+    out.push({ key: a, next: keys[i + 1], ...bezierHandlePoints(a, keys[i + 1], toX, toY) })
+  }
+  return out
+}
+
+/** Is `ref` the lane's selected key or one of its multi-selection? */
+export function refIsSelected(ref, selected, multi) {
+  return sameKeyRef(selected, ref) || (multi ?? []).some((r) => sameKeyRef(r, ref))
+}
+
+/**
+ * The keys inside a marquee (local px rect {x0, y0, x1, y1}, any corner order) over
+ * every lane row of one kind, as refs { trackId, channel, pos }. A row counts when it
+ * overlaps the rect; a key counts when its drawn centre is inside it. `trackLayout` is
+ * the same lane-row provider as hitTestRoamLane's (getRoamRows / getSweepRows).
+ */
+export function keysInMarquee({ trackLayout, dataOf, channelOf, kind = 'roam' }, rect, scrollOffset, ppb) {
+  const rows = (kind === 'sweep' ? trackLayout?.getSweepRows?.() : trackLayout?.getRoamRows?.()) ?? []
+  const x0 = Math.min(rect.x0, rect.x1)
+  const x1 = Math.max(rect.x0, rect.x1)
+  const y0 = Math.min(rect.y0, rect.y1)
+  const y1 = Math.max(rect.y0, rect.y1)
+  const out = []
+  for (const row of rows) {
+    if (row.y > y1 || row.y + row.height < y0) continue
+    const trackId = row.parentTrackId
+    const channel = channelOf(trackId)
+    const data = dataOf(trackId) ?? { base: {}, keys: [] }
+    const range = laneRangeFor(channel, data.keys, data.base)
+    for (const k of keysOfChannel(data.keys, channel)) {
+      const p = keyPixel(k, row, range, scrollOffset, ppb)
+      if (p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1) out.push({ trackId, channel, pos: k.pos })
+    }
+  }
+  return out
 }
 
 /** The keys of the lane's channel in time order, for the painter. */

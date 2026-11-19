@@ -1,52 +1,23 @@
-/* The Devices tab: one horizontal chain, scrolling sideways. Sized so a
- * --device-h device plus its scrollbar fits the dock's default height. */
+/* One lane's chain of devices, left to right. It does not scroll itself: the Devices panel
+ * (windowing/panels/DevicesPanel.module.css) owns the scrolling for both lanes, so a lane's
+ * folder tab can stay pinned. Sized so a --device-h device plus the lane tab and the panel's
+ * scrollbar fits the dock's default height. */
 @layer kit {
   .scroller {
     box-sizing: border-box;
     display: flex;
-    flex: 1 1 auto;
+    flex: 0 0 auto;
     min-width: 0;
     min-height: 0;
-    overflow-x: auto;
-    overflow-y: hidden;
-    /* A well (g0): the device frames in it are the raised chrome (g1). */
-    background: var(--ui-g0);
-  }
-
-  /* A fat, obviously-draggable left/right bar (FL's playlist navigator): a recessed track with a
-   * lighter rounded thumb, so it reads as "this scrolls the chain sideways" at a glance.
-   * Deliberately NOT `scrollbar-width`/`scrollbar-color`: Chromium ignores ::-webkit-scrollbar
-   * the moment either is set. 18px total; the dock has room (1 + 28 + 8 + 256 + 18). */
-  .scroller::-webkit-scrollbar {
-    height: 18px;
-  }
-
-  .scroller::-webkit-scrollbar-track {
-    background: var(--ui-g0);
-    border-top: 1px solid var(--ui-g4);
-  }
-
-  .scroller::-webkit-scrollbar-thumb {
-    min-width: 48px;
-    border: 3px solid var(--ui-g0);
-    border-radius: 999px;
-    background: var(--ui-boundary);
-  }
-
-  .scroller::-webkit-scrollbar-thumb:hover,
-  .scroller::-webkit-scrollbar-thumb:active {
-    background: var(--ui-ink-2);
-  }
-
-  .scroller::-webkit-scrollbar-corner {
-    background: var(--ui-g0);
   }
 
   .row {
     display: flex;
     align-items: flex-start;
-    gap: 2px;
-    padding: var(--space-1);
+    /* A clear strip of the g0 well between neighbours: with a 2px gap the g4 outlines of two
+     * devices read as one shared edge and the chain looked like a single wide panel. */
+    gap: var(--space-3);
+    padding: var(--space-1) var(--space-3) var(--space-1) var(--space-1);
   }
 
   .slot {

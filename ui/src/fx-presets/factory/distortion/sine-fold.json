@@ -1,0 +1,19 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "distortion",
+  "name": "Sine Fold",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "mode": 6,
+      "drive": 9,
+      "tone": 10000,
+      "filter_pos": 1,
+      "mix": 40,
+      "symmetry": 100,
+      "bits": 16,
+      "downsample": 1
+    }
+  }
+}

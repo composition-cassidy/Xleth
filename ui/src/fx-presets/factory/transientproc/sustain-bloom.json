@@ -1,0 +1,17 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "transientproc",
+  "name": "Sustain Bloom",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "attack": -20,
+      "sustain": 50,
+      "attack_speed": 15,
+      "threshold": -40,
+      "mix": 100,
+      "midi_detect": 0
+    }
+  }
+}

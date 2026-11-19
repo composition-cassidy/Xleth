@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { DeviceSection, DisplayWell, SegmentedControl, formatValue } from '../../ui-kit'
+import { DeviceSection, DisplayWell, SegmentedControl, THIN_SPACE, Toggle, formatValue } from '../../ui-kit'
 import AutomatableKnob from './AutomatableKnob.jsx'
 import AutomationTarget from './AutomationTarget.jsx'
 import SmartBalanceCanvas from './SmartBalanceCanvas.jsx'
@@ -10,14 +10,21 @@ import useDeviceUiStore from './deviceUiStore.js'
 import deviceStyles from './deviceBody.module.css'
 import styles from './SmartBalanceDevice.module.css'
 
-// Every id, range and default is SmartBalanceEffect::createLayout() (the editor's
-// table, unchanged). It is a 4-band auto-leveller: an LR4 tree splits the input
-// at 150 Hz / 800 Hz / 4 kHz, each band's RMS is pulled toward its target through
-// a 6 dB soft knee (scaled by Amount and the band's own amount, +-10 dB at most,
-// gated below its Floor), Preserve then restores the original dynamics, and Mix
-// blends the result with the dry signal.
+// Every id, range and default is SmartBalanceEffect::createLayout(). It is a gentle
+// 4-band leveller (the even-it-out half of an OTT chain, without the harshness or
+// the level jump): an LR4 tree splits the input at 150 Hz / 800 Hz / 4 kHz; each
+// band is pulled toward a balanced tone (Relative: a reference measured on
+// finished mixes, following the material's own level; Absolute: a literal dBFS
+// target) and its quiet passages / bursts are evened around its own level, scaled
+// by Amount and the band's own amount, never lifting a band that is not there or
+// the gaps between notes. Preserve lets hits through untouched, Warmth adds a
+// low-mid tilt and gentle harmonics to the lows, Loudness match keeps the output
+// as loud as the input, then Output trims and Mix blends.
 const DEFAULTS = (() => {
-  const d = { amount: 70, preserve: 40, response: 150, mix: 100, mode: 0 }
+  const d = {
+    amount: 60, preserve: 50, response: 150, mix: 100, mode: 0,
+    warmth: 0, output: 0, loudness_match: 1,
+  }
   BANDS.forEach((_, i) => {
     const ids = bandIds(i)
     d[ids.target] = 0
@@ -28,21 +35,23 @@ const DEFAULTS = (() => {
 })()
 
 const MODES = [
-  { value: 0, label: 'Relative', hint: 'Targets are offsets from the overall mix level.' },
-  { value: 1, label: 'Absolute', hint: 'Targets are absolute levels in dBFS.' },
+  { value: 0, label: 'Relative', hint: 'Bands are balanced against the tone of a finished mix, at the material’s own level. Offsets move a band from there.' },
+  { value: 1, label: 'Absolute', hint: 'Each band is pulled toward a fixed level in dBFS.' },
 ]
 const VIEWS = [
   { value: 'levels', label: 'Levels', hint: 'Live band levels, targets, floors and the correction being applied' },
-  { value: 'details', label: 'Details', hint: 'Adds each band’s dry level and dynamics restore' },
+  { value: 'details', label: 'Details', hint: 'Adds each band’s balanced reference, whether it can be lifted, and the loudness match' },
 ]
 
 const WELL_W = 560
 
+const signedDb = (v) => `${formatValue(v, 'dB', { unitless: true, decimals: 1, signed: true })}${THIN_SPACE}dB`
+
 // Signal order: display (hero) -> Measure (mode, response) -> Band -> Correct
-// (Amount is the hero, Preserve) -> Output. The display is live: it draws the
-// engine's per-band RMS and gain meters. Controls keep the old panel's writes
-// (setEffectParameter per change, no automation), now previewed at most once per
-// animation frame with the final value sent on release.
+// (Amount is the hero, Preserve) -> Tone (Warmth) -> Output (Mix, Output, Loudness
+// match). The display is live: it draws the engine's per-band level and gain
+// meters. Controls preview at most once per animation frame and send the final
+// value on release.
 export default function SmartBalanceDevice({ target, registerApplied, deviceKey }) {
   const { params, preview, commit, syncParamsFromPreset } = useDeviceParams('smartbalance', DEFAULTS, target)
   useEffect(() => {
@@ -117,7 +126,7 @@ export default function SmartBalanceDevice({ target, registerApplied, deviceKey 
             />
           </AutomationTarget>
           {knob('response', 'Response', 10, 500, {
-            unit: 'ms', formatOptions: { decimals: 0 }, hint: 'How fast the band levels are measured and followed',
+            unit: 'ms', formatOptions: { decimals: 0 }, hint: 'How fast band levels are followed. Faster evens out more, slower is smoother',
           })}
         </div>
       </DeviceSection>
@@ -135,8 +144,8 @@ export default function SmartBalanceDevice({ target, registerApplied, deviceKey 
             {knob(ids.target, mode === 0 ? 'Offset' : 'Target', TARGET_MIN, TARGET_MAX, {
               width: 72,
               bipolar: mode === 0,
-              format: (v) => `${formatValue(v, 'dB', { unitless: true, decimals: 1, signed: true })} dB`,
-              hint: mode === 0 ? 'Where this band should sit relative to the overall level' : 'The level this band is pulled toward, in dBFS',
+              format: signedDb,
+              hint: mode === 0 ? 'Where this band sits against the balanced tone: above 0 is more of it, below is less' : 'The level this band is pulled toward, in dBFS',
             })}
             {knob(ids.amount, 'Band amount', 0, 100, { width: 72, unit: '%', hint: 'How much of the correction this band gets' })}
             {knob(ids.floor, 'Floor', -96, -20, {
@@ -148,13 +157,42 @@ export default function SmartBalanceDevice({ target, registerApplied, deviceKey 
 
       <DeviceSection title="Correct" width={156}>
         <div className={styles.knobs}>
-          {knob('amount', 'Amount', 0, 100, { size: 56, width: 88, unit: '%', hint: 'Master intensity of the leveling' })}
-          {knob('preserve', 'Preserve', 0, 100, { unit: '%', hint: 'How much of the original dynamics is restored after leveling' })}
+          {knob('amount', 'Amount', 0, 100, {
+            size: 56, width: 88, unit: '%', hint: 'How strongly each band is evened out and pulled toward a balanced tone',
+          })}
+          {knob('preserve', 'Preserve', 0, 100, {
+            unit: '%', hint: 'Lets hits through untouched (up to 100 ms), so drums keep their punch and do not pump the band after them',
+          })}
         </div>
       </DeviceSection>
 
-      <DeviceSection title="Output" width={72}>
-        {knob('mix', 'Mix', 0, 100, { unit: '%' })}
+      <DeviceSection title="Tone" width={80}>
+        {knob('warmth', 'Warmth', 0, 100, {
+          unit: '%', hint: 'Adds low-mid body, softens the top and gives the lows gentle tube-style harmonics. 0 % is off',
+        })}
+      </DeviceSection>
+
+      <DeviceSection title="Output" width={148}>
+        <div className={styles.column}>
+          <div className={styles.knobs}>
+            {knob('mix', 'Mix', 0, 100, { unit: '%' })}
+            {knob('output', 'Output', -12, 12, {
+              bipolar: true,
+              format: signedDb,
+              hint: 'Level after the loudness match',
+            })}
+          </div>
+          <AutomationTarget paramId="loudness_match" target={target}>
+            <Toggle
+              size="sm"
+              on={Number(params.loudness_match) >= 0.5}
+              onChange={(on) => commit('loudness_match', on ? 1 : 0)}
+              hint="Keeps the output as loud as the input (BS.1770), so you hear the balance and not a level change"
+            >
+              Loudness match
+            </Toggle>
+          </AutomationTarget>
+        </div>
       </DeviceSection>
     </>
   )

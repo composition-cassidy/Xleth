@@ -1,0 +1,23 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "amp",
+  "name": "Pitch Sample Clean Body",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "model": 0,
+      "drive": 3,
+      "bass": 4,
+      "mid": 6,
+      "treble": 6,
+      "sag": 5,
+      "tighten": 5,
+      "gate": 0,
+      "cab": 0,
+      "presence": 6,
+      "mix": 35,
+      "output": 2
+    }
+  }
+}

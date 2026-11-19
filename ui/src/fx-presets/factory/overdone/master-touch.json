@@ -1,0 +1,20 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "overdone",
+  "name": "Master Touch",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "depth": 12,
+      "time": 65,
+      "xover_low": 100,
+      "xover_high": 3000,
+      "gain_low": 0,
+      "gain_mid": 0,
+      "gain_high": 0,
+      "inputGain": 0,
+      "outputGain": 0.5
+    }
+  }
+}

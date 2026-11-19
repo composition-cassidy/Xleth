@@ -461,6 +461,11 @@ public:
     bool applySidechainTargetInstances(const std::set<std::string>& enabledInstanceIds,
                                        bool includeWrappedPlugins = false);
 
+    // Wildcard member of `enabledInstanceIds`: a TRACK-LEVEL sidechain route
+    // (FL "Sidechain to this track") targets the track, not one effect, so every
+    // sidechain-capable node on it gets its key bus. Never a real instance id.
+    static constexpr const char* kAllSidechainTargets = "*";
+
 private:
     // ── Node data ───────────────────────────────────────────────────────
 

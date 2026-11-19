@@ -14,14 +14,53 @@
 // draws a small neutral chip there, Nudge "+" and Own "O" (P8). A Follow clip draws
 // nothing and stays uncoloured. The glyph, not a colour, carries the state; chip and
 // glyph are theme tokens (palette.reelBadgeFill / reelBadgeInk).
+//
+// Clones (docs/XLETH_CLONE_SPEC.md): a Clone's row is painted by this same pass
+// (trackLayout.getReelLaneRows); its clips are keyed by the Clone's own track id
+// (row.reelTrackId) and it dims when the Clone's video is hidden (its mute). In a
+// source's lane an OVERFLOW note (more notes sound than the track has voices) is
+// hatched and outlined in the warning colour, so the hatch, not the hue alone,
+// says "add a voice clone"; hovering one says so in the hint bar (reelHoverHint).
 
 import { pixelToTickExact, tickToPixel } from '../../constants/timeline.js'
 import { MUTE_OPACITY } from './timelineDrawing.js'
 import {
   REEL_THUMB_MIN_W, REEL_BADGE_W, REEL_BADGE_MIN_CLIP_W, REEL_MODE_FOLLOW, REEL_MODE_NUDGE,
-  forEachReelClipInRange, reelClipAt, reelClipMode, reelSubRowSpan, reelLanePad,
+  forEachReelClipInRange, reelClipAt, reelClipMode, reelClipOverflows, reelSubRowSpan, reelLanePad,
 } from './reelLaneModel.js'
 import { getReelStill } from './reelStills.js'
+import { formatDelay } from '../../clones/cloneModel.js'
+
+/** The track id whose clips a lane row shows: the Clone itself, or a Reel lane's parent. */
+export function reelLaneTrackId(row) {
+  return row?.reelTrackId ?? row?.parentTrackId ?? null
+}
+
+/** Spacing of the overflow hatch, px. */
+const HATCH_STEP = 4
+
+// Overflow: diagonal hatch plus a 1px outline, both in the warning colour. Called
+// rarely (only overflow clips), so the save/clip/restore per clip is fine. Leaves
+// ctx.fillStyle as `bodyFill`.
+function paintOverflow(ctx, x, y, w, h, palette, bodyFill) {
+  const ink = palette.reelOverflow || palette.warning
+  if (!ink) return
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(x, y, w, h)
+  ctx.clip()
+  ctx.strokeStyle = ink
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  for (let s = -h; s < w; s += HATCH_STEP) {
+    ctx.moveTo(x + s, y + h)
+    ctx.lineTo(x + s + h, y)
+  }
+  ctx.stroke()
+  if (w >= 3 && h >= 3) ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1)
+  ctx.restore()
+  ctx.fillStyle = bodyFill
+}
 
 /** A sub-row shorter than this is too thin for a legible thumbnail. */
 const THUMB_MIN_H = 12
@@ -80,7 +119,7 @@ function paintThumb(ctx, img, x, y, w, h, reserveRight) {
  */
 export function drawReelLanes(view, data) {
   const { ctx, w, h, scrollOffset, ppb, trackLayout, palette, mutedTrackIds } = view
-  const rows = trackLayout?.getReelRows?.()
+  const rows = trackLayout?.getReelLaneRows?.() ?? trackLayout?.getReelRows?.()
   const reel = data?.reel
   if (!rows || rows.length === 0 || !reel) return
   const selection = data.selection ?? {}
@@ -95,10 +134,13 @@ export function drawReelLanes(view, data) {
     if (row.collapsed) continue
     if (row.y >= h) break
     if (row.y + row.height <= 0) continue
-    const track = reel.byTrack.get(row.parentTrackId)
+    const laneTrackId = reelLaneTrackId(row)
+    const track = reel.byTrack.get(laneTrackId)
     if (!track || track.count === 0) continue
 
-    const muted = !!mutedTrackIds?.has(row.parentTrackId)
+    // A Reel lane dims with its muted track; a Clone's row with its own mute,
+    // which hides only that Clone's video (muting the source leaves Clones shown).
+    const muted = !!mutedTrackIds?.has(laneTrackId)
     ctx.save()
     // The lane keeps its clips off the neighbouring rows even at 1px minimum widths.
     ctx.beginPath()
@@ -147,6 +189,7 @@ export function drawReelLanes(view, data) {
         if (cw >= REEL_BADGE_MIN_CLIP_W) {
           paintBadge(ctx, reelClipMode(track, i), reelBadgeRect(x0, y0, cw, ch), palette, bodyFill)
         }
+        if (reelClipOverflows(track, i)) paintOverflow(ctx, x0, y0, cw, ch, palette, bodyFill)
 
         if (wantSelected) {
           if (cw >= 4 && ch >= 4) {
@@ -169,16 +212,18 @@ export function drawReelLanes(view, data) {
 /**
  * What is under (localX, localY) in a Reel lane?
  *
- * @returns {null | { row: object, patternId: number|null, noteId: number|null }}
- *   null when the point is not in a Reel lane at all. `noteId` is null for empty
- *   lane space (or a collapsed strip) inside one.
+ * @returns {null | { row: object, trackId: number|null, patternId: number|null, noteId: number|null, overflow?: boolean }}
+ *   null when the point is not in a Reel lane (or a Clone's row) at all. `trackId`
+ *   is the lane's track (the Clone, or the Reel lane's parent). `noteId` is null for
+ *   empty lane space (or a collapsed strip) inside one.
  */
 export function hitTestReel(reel, trackLayout, localX, localY, scrollOffset, ppb) {
   const row = trackLayout?.reelRowAtY?.(localY)
   if (!row) return null
-  const miss = { row, patternId: null, noteId: null }
+  const trackId = reelLaneTrackId(row)
+  const miss = { row, trackId, patternId: null, noteId: null }
   if (row.collapsed) return miss
-  const track = reel?.byTrack?.get(row.parentTrackId)
+  const track = reel?.byTrack?.get(trackId)
   if (!track || track.count === 0) return miss
 
   const pad = reelLanePad(row.trackHeight)
@@ -192,5 +237,31 @@ export function hitTestReel(reel, trackLayout, localX, localY, scrollOffset, ppb
   const slack = pixelToTickExact(1.5, 0, ppb) - pixelToTickExact(0, 0, ppb)
   const i = reelClipAt(track, tick, subRow, slack)
   if (i < 0) return miss
-  return { row, patternId: track.patternIds[i], noteId: track.noteIds[i] }
+  return {
+    row, trackId, patternId: track.patternIds[i], noteId: track.noteIds[i],
+    overflow: reelClipOverflows(track, i),
+  }
+}
+
+export const REEL_OVERFLOW_HINT = 'Overflow: more notes sound than this track has voices. Add a voice clone'
+const REEL_LANE_MODS = 'Click: select the note in the piano roll · Ctrl+click: add or remove'
+
+/**
+ * The hint-bar text for what a hitTestReel() result is over, or null for none.
+ * `tracks` names the lane's Clone (its kind and Trail delay).
+ */
+export function reelHoverHint(hit, tracks = null) {
+  if (!hit) return null
+  if (hit.overflow) return { hint: REEL_OVERFLOW_HINT, mods: REEL_LANE_MODS }
+  const row = hit.row
+  if (row?.laneKind === 'clone') {
+    if (row.cloneKind === 'Trail') {
+      const clone = Array.isArray(tracks) ? tracks.find((t) => t.id === row.trackId) : null
+      const delay = clone?.clone?.delayTicks
+      const when = Number.isFinite(delay) ? `, ${formatDelay(delay)} later` : ', delayed'
+      return { hint: `Trail clone: the source's notes${when}. Read only: timing comes from notes`, mods: REEL_LANE_MODS }
+    }
+    return { hint: 'Voice clone: the notes this clone plays. Read only: timing comes from notes', mods: REEL_LANE_MODS }
+  }
+  return null
 }

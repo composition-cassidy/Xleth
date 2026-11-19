@@ -42,6 +42,51 @@ export function getHoldThresholdTicks(track) {
   return beats < 0 ? null : beats * PPQ
 }
 
+// ── Smart hold ────────────────────────────────────────────────────────────────
+// Mirror of engine/src/model/SmartHold.h — keep the constants and the rule
+// identical, so the hold zones drawn on the timeline are the gaps the engine
+// actually holds. A gap is held iff gapBeats <= threshold.
+export const SMART_MIN_BLANK_GAP_BEATS = 1
+export const SMART_MIN_BREAK_RATIO = 2
+export const SMART_FALLBACK_THRESHOLD_BEATS = 4
+const SMART_GAP_FLOOR_BEATS = 1 / 16
+const SMART_GAP_EPSILON_BEATS = 1e-6
+
+export function smartHoldThresholdBeats(gaps) {
+  const g = (gaps ?? []).filter((x) => Number.isFinite(x) && x > SMART_GAP_EPSILON_BEATS).sort((a, b) => a - b)
+  if (g.length === 0) return Number.POSITIVE_INFINITY
+  let bestRatio = 0
+  let bestThreshold = 0
+  for (let i = 0; i + 1 < g.length; i++) {
+    const hi = g[i + 1]
+    if (hi < SMART_MIN_BLANK_GAP_BEATS) continue
+    const lo = Math.max(g[i], SMART_GAP_FLOOR_BEATS)
+    const ratio = hi / lo
+    if (ratio >= SMART_MIN_BREAK_RATIO && ratio > bestRatio) {
+      bestRatio = ratio
+      bestThreshold = Math.sqrt(lo * hi)
+    }
+  }
+  if (bestRatio > 0) return bestThreshold
+  if (g[g.length - 1] < SMART_MIN_BLANK_GAP_BEATS) return Number.POSITIVE_INFINITY
+  return SMART_FALLBACK_THRESHOLD_BEATS
+}
+
+// intervals: [[startBeats, endBeats], ...] of one track, any order, overlaps
+// allowed. Gap lengths between the merged busy spans.
+export function gapsBetween(intervals) {
+  const gaps = []
+  if (!intervals || intervals.length < 2) return gaps
+  const sorted = [...intervals].sort((a, b) => a[0] - b[0] || a[1] - b[1])
+  let end = sorted[0][1]
+  for (let i = 1; i < sorted.length; i++) {
+    const [s, e] = sorted[i]
+    if (s > end) gaps.push(s - end)
+    end = Math.max(end, e)
+  }
+  return gaps
+}
+
 // Display label for the threshold in menus / summary chips.
 export function formatHoldThreshold(thresholdBeats) {
   if (isHoldThresholdUnlimited(thresholdBeats)) return 'Unlimited'

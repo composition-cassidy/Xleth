@@ -264,7 +264,8 @@ public:
     void submitJob(int clipId, const CacheKey& key,
                    const juce::AudioBuffer<float>& srcPcm,
                    double sampleRate,
-                   double bufferSampleRate);
+                   double bufferSampleRate,
+                   bool quiet = false);   // true: no per-clip log line (bulk callers print one summary)
 
     // Move every pending miss report into `out` (appends). Message thread.
     void drainMisses(std::vector<int>& out);

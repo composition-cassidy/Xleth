@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState, useCallback, useRef } from 'react'
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useState, useCallback, useRef } from 'react'
 import { pearlPlan } from '../ui-kit/pearlRules'
 import TrackHeaderList from './timeline/TrackHeaderList.jsx'
 import PatternListPanel from './timeline/PatternListPanel.jsx'
@@ -7,12 +7,15 @@ import MacroAutomationLanes from './timeline/MacroAutomationLanes.jsx'
 import { buildTrackLayout } from './timeline/timelineRowLayout.js'
 import { buildReelModel } from './timeline/reelLaneModel.js'
 import useReelLaneStore from '../stores/useReelLaneStore.js'
-import useRoamKeysStore from '../stores/useRoamKeysStore.js'
-import { useRoamLaneData } from '../lensRoam/useLensRoam.js'
-import useSweepKeysStore from '../stores/useSweepKeysStore.js'
-import { setTrackRoamKeys, setTrackSweepKeys } from '../lensRoam/lensRoamApi.js'
+import { isClone } from '../clones/cloneModel.js'
+import { addClone, moveClone } from '../clones/cloneApi.js'
+import { cloneMenuItems, reelLanesKeyFor, trackRemovalSubject } from './timeline/cloneTimeline.js'
+import MotionView, { motionKeyHostClassName } from './motionView/MotionView.jsx'
+import { startMotionViewSession } from './motionView/motionViewSession.js'
+import { useMotionData } from '../motion/useMotionData.js'
+import { useMotionViewStore } from '../motion/motionViewStore.js'
+import { useMotionRevealListener } from './motionView/useMotionReveal.js'
 import { drawLengthForSnap, adoptDrawLength, resetDrawLength } from './timeline/drawLength.js'
-import { sourceTicksForTimelineTicks } from './timeline/clipSourceDomain.js'
 import { tokenValue } from '../theming/tokenValue.ts'
 import TimelineRuler from './timeline/TimelineRuler.jsx'
 import LoopRegionBar, { loopRegionOverlayClassName } from './timeline/LoopRegionBar.jsx'
@@ -22,6 +25,7 @@ import TimelineToolbar from './timeline/TimelineToolbar.jsx'
 import Fader from './controls/Fader.jsx'
 import { quantizedFromNorm } from '../utils/sliderHelpers.js'
 import { pixelsToViewportPan } from './timeline/middleMousePan.js'
+import { withSharedUndoGroup } from './timeline/undoGroup.js'
 import ContextMenu from './ContextMenu.jsx'
 import XlethSelect from './common/XlethSelect.jsx'
 import TrackContextMenu from './timeline/TrackContextMenu.jsx'
@@ -45,9 +49,9 @@ import { timelineEvents } from '../timelineEvents.js'
 import { toNewNoteCopy } from './pianoRoll/pianoRollEdits.js'
 import { installNoteLensDevHook } from '../lensRoam/noteLensOverride.js'
 import {
-  BEATS_PER_BAR, DEFAULT_TRACK_HEIGHT, TRACK_HEIGHT, PPQ, RULER_HEIGHT, ADD_TRACK_ROW_HEIGHT,
+  BEATS_PER_BAR, DEFAULT_TRACK_HEIGHT, PPQ, RULER_HEIGHT, ADD_TRACK_ROW_HEIGHT,
   setTimelineTrackHeight, zoomTrackHeight,
-  pixelToBeat, snapBeatToGrid, snapTickToGrid, beatsToTicks, regionDurationToTicks,
+  pixelToBeat, snapBeatToGrid, snapTickToGrid, beatsToTicks, ticksToBeats, regionDurationToTicks,
   GRANULARITY_BEATS, MAX_PPB, ZOOM_FACTOR,
 } from '../constants/timeline.js'
 import { currentRegime } from './timeline/waveformRegime.js'
@@ -90,7 +94,6 @@ import {
   resolveTimelinePaste,
 } from './timeline/timelineClipboard.js'
 import { planAutomationLoop } from './timeline/automationLoop.js'
-import { deleteUndoSteps, moveUndoSteps, pitchShiftUndoSteps } from './timeline/undoSteps.js'
 import {
   flatTrackLayout,
   moveFolderInLayout,
@@ -122,6 +125,7 @@ import {
   TIMELINE_KEY_COMBOS,
   TIMELINE_PASSTHROUGH_COMMANDS,
   resolveTimelineKeyCommand,
+  timelineCommandRoute,
 } from './timeline/timelineKeymap.js'
 
 const CLIP_CONTROL_TUNER_ENABLED = import.meta.env.VITE_XLETH_CLIP_CONTROL_TUNER === '1'
@@ -285,11 +289,14 @@ export default function TimelineView({
   }, [])
 
   const [patternListCollapsed, setPatternListCollapsed] = useState(false)
-  // How many engine undo entries the last compound edit pushed (split = 3,
-  // paste = overwrite + insert). Ctrl+Z pops them together; Ctrl+Z then hands
-  // the count to compoundRedoCountRef so Ctrl+Y replays exactly as many.
-  const compoundUndoCountRef = useRef(0)
-  const compoundRedoCountRef = useRef(0)
+  // A gesture that takes several engine calls is ONE undo entry: the engine
+  // records everything between undo.beginGroup and undo.endGroup as a single
+  // history entry, so Ctrl+Z and Ctrl+Y always move by exactly one. See
+  // timeline/undoGroup.js for why this replaced counting entries here.
+  // The app's ONE shared grouper: Motion view plans (motionPlan.js) group
+  // through it too, so a Motion edit can never commit an Edit view gesture's
+  // group half-way (two groupers would each close the other's group).
+  const withUndoGroup = withSharedUndoGroup
 
   // Serializes every gesture that resolves an overwrite plan against
   // clipsRef.current / patternBlocks. Those handlers read the CURRENT contents
@@ -300,12 +307,16 @@ export default function TimelineView({
   // advances the edit cursor synchronously (held Ctrl+V must keep stacking
   // forward at key-repeat rate); only the engine half queues.
   const editGateRef = useRef(Promise.resolve())
-  const runSerializedEdit = useCallback((fn) => {
-    // `.then(fn, fn)` — a rejected predecessor must not strand the queue.
-    const run = editGateRef.current.then(fn, fn)
+  const runSerializedEdit = useCallback((fn, label = 'Timeline edit') => {
+    // Every gesture queued here is one undo entry: several of them are an
+    // overwrite followed by an insert or a move, which the engine records as
+    // separate commands.
+    const grouped = () => withUndoGroup(label, fn)
+    // `.then(grouped, grouped)` — a rejected predecessor must not strand the queue.
+    const run = editGateRef.current.then(grouped, grouped)
     editGateRef.current = run.then(() => {}, () => {})
     return run
-  }, [])
+  }, [withUndoGroup])
   const timelineViewRef = useRef(null)
 
   // FXG.4-h: graphStates needed to render macro automation lane clips on the timeline.
@@ -318,6 +329,8 @@ export default function TimelineView({
   const [editingFolderId, setEditingFolderId] = useState(null)
   const trackSelectionAnchorRef = useRef(null)
   const [trackHeight, setTrackHeight] = useState(DEFAULT_TRACK_HEIGHT)
+  const trackHeightRef = useRef(trackHeight)
+  trackHeightRef.current = trackHeight
 
   // FXG.4-h-r1: derive the flattened timeline row model (track rows + macro
   // automation child-lane rows). Threaded into the canvas geometry, hit-testing,
@@ -549,14 +562,12 @@ export default function TimelineView({
   const reelCollapsed = useReelLaneStore((s) => s.collapsed)
   // The layout only needs {has lane, collapsed, deepest overlap} per track. Keyed
   // by a string so a note moving (new model, same depths) does NOT rebuild the row
-  // layout and repaint the grid.
-  const reelLanesKey = useMemo(() => {
-    let key = ''
-    for (const [trackId, lane] of reelModel.byTrack) {
-      key += `${trackId}:${reelCollapsed.has(trackId) ? 1 : 0}:${lane.subRows};`
-    }
-    return key
-  }, [reelModel, reelCollapsed])
+  // layout and repaint the grid. A Clone's lane (its whole row) collapses with its
+  // source's Reel lane: a source and its Clones are one group.
+  const reelLanesKey = useMemo(
+    () => reelLanesKeyFor(reelModel, reelCollapsed, tracks),
+    [reelModel, reelCollapsed, tracks],
+  )
   const reelLanes = useMemo(() => {
     const lanes = {}
     for (const part of reelLanesKey.split(';')) {
@@ -567,83 +578,36 @@ export default function TimelineView({
     return lanes
   }, [reelLanesKey])
 
-  // ── Roam key lanes ─────────────────────────────────────────────────────────
-  // A lane under each track that has a cell, switched on per track (the Roam
-  // inspector's "Key lane" toggle, or the lane header's close button). A track that
-  // arrives with keys shows its lane once, so keys are never hidden by default.
-  const roamTrackIds = useMemo(() => tracks.map((t) => t.id), [tracks])
-  const roamData = useRoamLaneData(roamTrackIds)
-  const roamLaneOpen = useRoamKeysStore((s) => s.laneOpen)
-  const roamSeenKeyed = useRef(new Set())
-  useEffect(() => {
-    for (const [id, d] of roamData.byTrack) {
-      if (d.keys.length > 0 && !roamSeenKeyed.current.has(id)) {
-        roamSeenKeyed.current.add(id)
-        useRoamKeysStore.getState().setLaneOpen(id, true)
-      }
-    }
-  }, [roamData.byTrack])
-  const roamLanes = useMemo(() => {
-    const lanes = {}
-    for (const id of roamLaneOpen) if (roamData.placed.has(id)) lanes[id] = true
-    return lanes
-  }, [roamLaneOpen, roamData.placed])
-  // What the canvas needs: every track's keys, and ONE call to commit a gesture's list.
-  const { applyKeys: applyRoamKeys } = roamData
-  const roamCanvas = useMemo(() => ({
-    byTrack: roamData.byTrack,
-    commitKeys: async (trackId, keys) => {
-      const res = await setTrackRoamKeys(trackId, keys)
-      if (Array.isArray(res?.keys)) applyRoamKeys(trackId, res.keys)
-      useRoamKeysStore.getState().clearDraft()
-      return res
-    },
-  }), [roamData.byTrack, applyRoamKeys])
-
-  // ── Sweep lanes (P11) ──────────────────────────────────────────────────────
-  // A lane directly under the Reel lane of a Pattern track: the track's timeline-
-  // absolute Lens offset for moves that span several notes. Switched on per track
-  // (the Reel header's Sweep toggle); a track that arrives with Sweep keys shows its
-  // lane once, so keys are never hidden by default. Only a track with a Reel lane
-  // (a Pattern track with a video source) can have one.
-  const sweepLaneOpen = useSweepKeysStore((s) => s.laneOpen)
-  const sweepSeenKeyed = useRef(new Set())
-  useEffect(() => {
-    for (const [id, d] of roamData.byTrack) {
-      if (d.sweep?.length > 0 && !sweepSeenKeyed.current.has(id)) {
-        sweepSeenKeyed.current.add(id)
-        useSweepKeysStore.getState().setLaneOpen(id, true)
-      }
-    }
-  }, [roamData.byTrack])
-  const sweepLanes = useMemo(() => {
-    const lanes = {}
-    for (const id of sweepLaneOpen) if (reelLanes[String(id)]) lanes[id] = true
-    return lanes
-  }, [sweepLaneOpen, reelLanes])
-  const { applySweepKeys } = roamData
-  const sweepCanvas = useMemo(() => {
-    const byTrack = new Map()
-    for (const [id, d] of roamData.byTrack) byTrack.set(id, { base: {}, keys: d.sweep ?? [] })
-    return {
-      byTrack,
-      commitKeys: async (trackId, keys) => {
-        const res = await setTrackSweepKeys(trackId, keys)
-        if (Array.isArray(res?.keys)) applySweepKeys(trackId, res.keys)
-        useSweepKeysStore.getState().clearDraft()
-        return res
-      },
-    }
-  }, [roamData.byTrack, applySweepKeys])
+  // ── Motion view (docs/XLETH_MOTION_VIEW_DESIGN.md 5.2, R17-R20) ─────────────
+  // The Roam and Sweep key lanes are gone from the Edit view (R17): motion is
+  // edited in Motion view, which replaces the header column and the canvas when
+  // view === 'motion'. One fetch feeds both: Motion view's rows and the Edit
+  // view's motion marker on the track headers (R18).
+  const timelineView = useMotionViewStore((s) => s.view)
+  const isMotionView = timelineView === 'motion'
+  const motionGraph = useMotionViewStore((s) => s.graph)
+  const motionHeaderWidth = useMotionViewStore((s) => s.motion.headerWidth)
+  const timelineViewNameRef = useRef(timelineView)
+  timelineViewNameRef.current = timelineView
+  const motionViewRef = useRef(null)
+  const [motionKeyHost, setMotionKeyHost] = useState(null)
+  const [motionReveal, setMotionReveal] = useState(null)
 
   const trackLayout = useMemo(
-    () => buildTrackLayout({ tracks, graphStates, folderLayout: normalizedFolderLayout, trackHeight, automationGroups, reelLanes, roamLanes, sweepLanes }),
-    [tracks, graphStates, normalizedFolderLayout, trackHeight, automationGroups, reelLanes, roamLanes, sweepLanes],
+    () => buildTrackLayout({ tracks, graphStates, folderLayout: normalizedFolderLayout, trackHeight, automationGroups, reelLanes }),
+    [tracks, graphStates, normalizedFolderLayout, trackHeight, automationGroups, reelLanes],
   )
+  // Every track's Lens / Roam / Sweep / Parent / Masks (+ every clip's Lens while
+  // Motion view is shown). motionTrackIds = the tracks the Edit header marks (R18).
+  const motionData = useMotionData({
+    tracks, clips, patternBlocks, patterns, regions, includeClipLens: isMotionView,
+  })
+  const motionTrackIds = motionData.motionTrackIds
   const [selectedBlockIds, setSelectedBlockIds] = useState(new Set())
 
   // ── Transport state ────────────────────────────────────────────────────────
-  const [isPlaying, setIsPlaying] = useState(false)
+  // A ref, not state: every reader is an event handler or a frame callback,
+  // and nothing rendered depends on it.
   const isPlayingRef = useRef(false)
   const playheadBeatRef = useRef(0)
   // Snapshots cue lane, pinned under the ruler on the arrangement's own scale.
@@ -729,6 +693,8 @@ export default function TimelineView({
     loopRegionBarRef.current?.applyView()
     cueLaneRef.current?.applyView()
     scrollbarRef.current?.applyView()
+    // Motion view's key area reads the same refs (5.2): same frame, same zoom.
+    motionViewRef.current?.redraw()
   }, [])
 
   const { scrollOffset, scrollOffsetRef, maxScrollRef, applyScroll, scrollBy, scrollTo, setMaxScroll } =
@@ -805,7 +771,10 @@ export default function TimelineView({
   const handleHeaderResizeStart = useCallback((e) => {
     e.preventDefault()
     const startX = e.clientX
-    const startWidth = timelineTrackHeaderWidth
+    // Each view keeps its own header width (R19): Motion view's lives in
+    // motionViewStore (240..720, saved with the project), the Edit view's in uiStore.
+    const motionHeader = timelineViewNameRef.current === 'motion'
+    const startWidth = motionHeader ? useMotionViewStore.getState().motion.headerWidth : timelineTrackHeaderWidth
     const bodyEl = timelineBodyRef.current
 
     if (bodyEl) {
@@ -822,8 +791,12 @@ export default function TimelineView({
 
     const onUp = (upE) => {
       const dx = upE.clientX - startX
-      const newWidth = Math.max(120, Math.min(480, startWidth + dx))
-      setTimelineTrackHeaderWidth(newWidth)
+      if (motionHeader) {
+        useMotionViewStore.getState().setHeaderWidth(startWidth + dx)
+      } else {
+        const newWidth = Math.max(120, Math.min(480, startWidth + dx))
+        setTimelineTrackHeaderWidth(newWidth)
+      }
       setHeaderDragLineX(null)
       document.body.style.cursor = ''
       window.removeEventListener('mousemove', onMove)
@@ -833,6 +806,81 @@ export default function TimelineView({
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
   }, [timelineTrackHeaderWidth, setTimelineTrackHeaderWidth])
+
+  // ── Motion view: saved view state, per-view height and scroll (R19) ─────────
+  // The view state rides the project (motionViewPersistence: load on project
+  // load, debounced push, never undoable or dirtying).
+  useEffect(() => startMotionViewSession(), [])
+
+  // The Edit view's own track height and vertical scroll live in motionViewStore
+  // too, so they survive a view switch and a save. Ours -> the store on change;
+  // the store -> ours only when it changes from OUTSIDE (a project load), never
+  // echoing our own (debounced) scroll writes back into a scroll in progress.
+  useEffect(() => {
+    useMotionViewStore.getState().setEditTrackHeight(trackHeight)
+  }, [trackHeight])
+  const editScrollTopRef = useRef(0)
+  const editScrollWrittenRef = useRef(0)
+  const editScrollTimerRef = useRef(null)
+  const saveEditScroll = useCallback((y, now = false) => {
+    editScrollTopRef.current = y
+    if (editScrollTimerRef.current) clearTimeout(editScrollTimerRef.current)
+    editScrollTimerRef.current = null
+    const write = () => {
+      editScrollTimerRef.current = null
+      editScrollWrittenRef.current = Math.round(Math.max(0, y))
+      useMotionViewStore.getState().setEditScrollY(y)
+    }
+    if (now) write()
+    else editScrollTimerRef.current = setTimeout(write, 200)
+  }, [])
+  useEffect(() => () => { if (editScrollTimerRef.current) clearTimeout(editScrollTimerRef.current) }, [])
+  const restoreEditScroll = useCallback((y) => {
+    const apply = () => {
+      const sc = scrollContainerRef.current
+      if (!sc) return
+      const max = Math.max(0, sc.scrollHeight - sc.clientHeight)
+      sc.scrollTop = Math.max(0, Math.min(max, y))
+      editScrollTopRef.current = sc.scrollTop
+      viewAnimatorRef.current?.setCurrent('scrollY', sc.scrollTop)
+    }
+    apply()
+    // The rows may lay out a frame later (a project just loaded): once more then.
+    requestAnimationFrame(apply)
+  }, [])
+  useEffect(() => useMotionViewStore.subscribe((s, prev) => {
+    if (s.edit.trackHeight !== prev.edit.trackHeight && s.edit.trackHeight !== trackHeightRef.current) {
+      setTimelineTrackHeight(s.edit.trackHeight)
+      setTrackHeight(s.edit.trackHeight)
+    }
+    if (s.edit.scrollY !== prev.edit.scrollY && s.edit.scrollY !== editScrollWrittenRef.current
+      && s.view === 'edit') {
+      editScrollWrittenRef.current = s.edit.scrollY
+      restoreEditScroll(s.edit.scrollY)
+    }
+  }), [restoreEditScroll])
+
+  // A view switch changes no data, no selection, no zoom and no playback: the
+  // Edit view hands its scroll to the store as it goes and takes it back on return.
+  const prevViewRef = useRef(timelineView)
+  useLayoutEffect(() => {
+    const prev = prevViewRef.current
+    prevViewRef.current = timelineView
+    if (prev === timelineView) return
+    if (timelineView === 'motion') saveEditScroll(editScrollTopRef.current, true)
+    else restoreEditScroll(useMotionViewStore.getState().edit.scrollY)
+    // Both views draw from the same zoom / scroll refs: paint the one now shown.
+    requestAnimationFrame(() => commitViewportRedraw('view'))
+  }, [timelineView, saveEditScroll, restoreEditScroll, commitViewportRedraw])
+
+  // 'xleth-motion-reveal' { trackId, path } (Edit header marker, Inspector "Show
+  // in Motion view"): switch to Motion view, open that path, select and scroll to it.
+  useMotionRevealListener(setMotionReveal)
+  // A reveal is one-shot: leaving Motion view drops it, so the next Motion view
+  // mount does not reveal it again (a view switch never changes the selection,
+  // the focused track or the scroll). A reveal sent from the Edit view switches
+  // the view in the same event, so it is still here when Motion view mounts.
+  useEffect(() => { if (!isMotionView) setMotionReveal(null) }, [isMotionView])
 
   // Video-companion FX defaults are read imperatively by seedVideoFxDefaults on
   // a checkbox click, so they have to be in the store before the first click —
@@ -1024,6 +1072,26 @@ export default function TimelineView({
     // a floating clip-FX editor is bound to.
     if (removed?.length) reconcileClipFxEditors(next)
   }, [])
+
+  // Adds clips and splices them in from the engine's reply.
+  //
+  // Goes through pasteClipsBatch with nothing to remove rather than
+  // timeline.addClip: the paste answers with the clips it inserted, addClip
+  // answers with a bare id. That id used to be followed by fetchClips(), which
+  // on a 3000-clip project is ~150 ms of engine time and megabytes across two
+  // process hops, for every single clip drawn with the pencil. Field handling is
+  // identical (both unmarshal through jsToClip) and it is one undo entry either
+  // way.
+  const addClipsAndSplice = useCallback(async (payloads) => {
+    const res = await window.xleth?.timeline?.pasteClipsBatch({ removeClipIds: [], clips: payloads })
+    if (Array.isArray(res?.clips)) {
+      applyClipDelta({ updated: res.clips, removed: res.removedIds ?? [] })
+    } else {
+      // An addon that predates post-state replies: fall back to the refetch.
+      await fetchClips()
+    }
+    return res?.newIds ?? []
+  }, [applyClipDelta, fetchClips])
 
   const fetchRegions = useCallback(async () => {
     try {
@@ -1834,7 +1902,6 @@ export default function TimelineView({
 
     if (s.isPlaying !== isPlayingRef.current) {
       isPlayingRef.current = s.isPlaying
-      setIsPlaying(s.isPlaying)
       if (!s.isPlaying) {
         // Final position at engine-reported stopped position
         const stopBeat = Number.isFinite(s.rawPositionBeats)
@@ -2084,6 +2151,7 @@ export default function TimelineView({
     }
     canvasRef.current?.redrawGrid('visibility')
     canvasRef.current?.redrawContent('visibility')
+    motionViewRef.current?.redraw()
     rulerRef.current?.redraw()
     canvasRef.current?.positionPlayhead(playheadBeatRef.current)
   })
@@ -2096,6 +2164,13 @@ export default function TimelineView({
   //   Shift+wheel = horizontal scroll
   //   plain wheel = vertical track scroll
   const handleWheel = useCallback((e) => {
+    const motionShown = timelineViewNameRef.current === 'motion'
+    if (e.altKey && motionShown) {
+      // Motion view: Alt+wheel is ITS track row height (per view, R19).
+      e.preventDefault()
+      motionViewRef.current?.zoomRowHeight(e)
+      return
+    }
     if (e.altKey) {
       e.preventDefault()
       const sc = scrollContainerRef.current
@@ -2162,8 +2237,8 @@ export default function TimelineView({
     // 1:1 write (like the native overflow-scroll on the header column),
     // not an eased spring — a spring here reads as sluggish/decelerating
     // deceleration compared to the header side, which just scrolls at
-    // native speed.
-    const sc = scrollContainerRef.current
+    // native speed. Each view scrolls its own rows.
+    const sc = motionShown ? motionViewRef.current?.scroller() : scrollContainerRef.current
     if (sc && sc.scrollHeight > sc.clientHeight) {
       e.preventDefault()
       const maxScrollTop = Math.max(0, sc.scrollHeight - sc.clientHeight)
@@ -2345,7 +2420,10 @@ export default function TimelineView({
   // only lit track = everything back on. Works on the mute flags; any legacy solo flag is cleared
   // in the same action so what is lit is what is heard.
   const handlePearl = useCallback(async (id, action) => {
-    const changes = pearlPlan(tracks.map((t) => ({ id: t.id, muted: !!t.muted, soloed: !!t.solo })), id, action)
+    // Clones make no sound and their mute only hides their video, so they are
+    // not part of what is heard: soloing a source must not hide its Clones.
+    const heard = tracks.filter((t) => !isClone(t))
+    const changes = pearlPlan(heard.map((t) => ({ id: t.id, muted: !!t.muted, soloed: !!t.solo })), id, action)
     if (changes.length === 0) return
     const tl = window.xleth?.timeline
     if (tl?.setTrackMuted) {
@@ -2466,8 +2544,10 @@ export default function TimelineView({
     // confirmation cascades here. Cancelling aborts the whole removal.
     try {
       const { confirmTrackRemoval } = await import('./mixer/automationDeletionGuard.js')
-      const trackName = tracks.find((t) => t.id === id)?.name
-      const proceed = await confirmTrackRemoval(id, trackName)
+      const track = tracks.find((t) => t.id === id)
+      // A source's Clones go with it in the same undo step (engine); the
+      // confirmation, when there is one, names them too.
+      const proceed = await confirmTrackRemoval(id, track?.name, { subject: trackRemovalSubject(track, tracks) })
       if (!proceed) return
     } catch (e) {
       console.warn('[Timeline] automation deletion guard failed:', e?.message)
@@ -2475,30 +2555,15 @@ export default function TimelineView({
     console.log(`[Timeline] Track ${id} removed`)
     if (window.xleth?.timeline?.removeTrack) {
       try {
-        await window.xleth.timeline.removeTrack(id)
+        // Its children (Parent, R6) are detached in the same undo step and keep
+        // their place on screen at the playhead.
+        const keepOnScreenTick = Math.max(0, Math.round(beatsToTicks(playheadBeatRef.current || 0)))
+        await window.xleth.timeline.removeTrack(id, { keepOnScreenTick })
         await fetchTracks()
         return
       } catch { /* fall through */ }
     }
     setTracks((prev) => prev.filter((t) => t.id !== id))
-  }, [fetchTracks, tracks])
-
-  const handleReorder = useCallback((fromIndex, toIndex) => {
-    if (fromIndex < 0 || toIndex < 0 || fromIndex >= tracks.length || toIndex >= tracks.length) return
-    const next = [...tracks]
-    const [moved] = next.splice(fromIndex, 1)
-    next.splice(toIndex, 0, moved)
-    const nextTrackIds = next.map((track) => track.id)
-    setTracks(next)
-    useMixerStore.getState().syncFromTimeline(next)
-    if (window.xleth?.timeline?.setTrackOrder) {
-      window.xleth.timeline.setTrackOrder(nextTrackIds).then((ok) => {
-        if (ok === false) fetchTracks()
-      }).catch((e) => {
-        console.warn('[Timeline] setTrackOrder failed', e)
-        fetchTracks()
-      })
-    }
   }, [fetchTracks, tracks])
 
   // ── Pattern-track conversion helpers ───────────────────────────────────────
@@ -2543,13 +2608,15 @@ export default function TimelineView({
   // for the confirmation UI when the track has clips.
   const performConvertToPatternTrack = useCallback(async (trackId) => {
     try {
-      // Delete existing clips on that track
-      const existing = clipsRef.current.filter(c => c.trackId === trackId)
-      for (const c of existing) {
-        await window.xleth?.timeline?.removeClip(c.id)
-      }
-      // Convert track (no region binding — pattern tracks are sample-agnostic)
-      await window.xleth?.timeline?.convertToPatternTrack(trackId)
+      // Clearing the track and converting it is one edit: it used to be one
+      // undo entry per clip plus one for the conversion, so Ctrl+Z gave back a
+      // Pattern track's type but not its clips (or one clip at a time).
+      await withUndoGroup('Convert to Pattern track', async () => {
+        const existing = clipsRef.current.filter(c => c.trackId === trackId).map(c => c.id)
+        if (existing.length > 0) await window.xleth?.timeline?.removeClipsBatch(existing)
+        // Convert track (no region binding — pattern tracks are sample-agnostic)
+        await window.xleth?.timeline?.convertToPatternTrack(trackId)
+      })
       console.log(`[Timeline] Converted track ${trackId} → Pattern`)
       // Notify all listeners
       await fetchTracks()
@@ -2561,7 +2628,7 @@ export default function TimelineView({
       console.error('[Timeline] convertToPatternTrack failed:', err)
       return false
     }
-  }, [fetchTracks, fetchClips])
+  }, [fetchTracks, fetchClips, withUndoGroup])
 
   const handleAddTrack = useCallback(async (trackType = 'Clip') => {
     const num = nextTrackNum.current++
@@ -2705,9 +2772,33 @@ export default function TimelineView({
     revealInspector()
   }, [])
 
+  // Clones (docs/XLETH_CLONE_SPEC.md): one engine command each (one undo step).
+  // cloneApi dispatches the change events; the refetch keeps this view in step
+  // even when the event lands before the engine's next getTracks.
+  const handleAddClone = useCallback(async (sourceTrackId, kind) => {
+    const res = await addClone(sourceTrackId, kind)
+    if (res) await fetchTracks()
+  }, [fetchTracks])
+
+  const handleMoveClone = useCallback(async (cloneId, delta) => {
+    const res = await moveClone(tracks, cloneId, delta)
+    if (res) await fetchTracks()
+  }, [tracks, fetchTracks])
+
   const buildTrackMenuItems = useCallback((track) => {
     if (!track) return []
     const items = []
+
+    // A Clone owns no pattern blocks (the engine refuses them), so it has no
+    // pattern, conversion or hold items: only its order among its source's
+    // Clones, the Inspector and delete.
+    if (isClone(track)) {
+      return cloneMenuItems(track, tracks, {
+        moveClone: (delta) => handleMoveClone(track.id, delta),
+        showInInspector: () => selectTrackInInspector(track.id),
+        remove: () => handleRemove(track.id),
+      })
+    }
 
     if (track.type === 'Pattern') {
       const allPatterns = Object.values(patterns).sort((a, b) => a.id - b.id)
@@ -2725,6 +2816,12 @@ export default function TimelineView({
           onClick: () => handleSelectPatternForTrack(track.id, p.id),
         })),
       })
+      items.push({ type: 'separator' })
+      // Extra video cells driven by this track: a Voice clone shows the notes it
+      // cannot (polyphony), a Trail clone replays it later.
+      items.push(...(cloneMenuItems(track, tracks, {
+        addClone: (kind) => handleAddClone(track.id, kind),
+      }) ?? []))
       items.push({ type: 'separator' })
       items.push({
         label: 'Convert to Clip Track',
@@ -2766,7 +2863,7 @@ export default function TimelineView({
       onClick: () => handleRemove(track.id),
     })
     return items
-  }, [patterns, currentPatternIdByTrack, handleNewPatternForTrack, handleSelectPatternForTrack, handleSetVideoHoldLastFrame, handleConvertToClipTrack, confirmAndConvertToPatternTrack, handleRemove, selectTrackInInspector])
+  }, [tracks, patterns, currentPatternIdByTrack, handleNewPatternForTrack, handleSelectPatternForTrack, handleSetVideoHoldLastFrame, handleConvertToClipTrack, confirmAndConvertToPatternTrack, handleRemove, selectTrackInInspector, handleAddClone, handleMoveClone])
 
   // ── Seek via ruler ─────────────────────────────────────────────────────────
 
@@ -2799,16 +2896,17 @@ export default function TimelineView({
     const { regionOffsetTicks = 0, velocity = 1.0, pitchOffset = 0, syllableIndex = -1 } = opts
     console.log(`[PencilTool] Creating clip: region=${regionId}, track=${trackId}, pos=${positionTicks}t, dur=${durationTicks}t`)
     try {
-      const clipId = await window.xleth?.timeline?.addClip({
+      const [clipId] = await addClipsAndSplice([{
         trackId, regionId, positionTicks, durationTicks,
         regionOffsetTicks, velocity, pitchOffset, syllableIndex,
-      })
+      }])
       console.log(`[PencilTool] Clip created: id=${clipId}`)
-      await fetchClips()
     } catch (err) {
       console.error('[PencilTool] addClip failed:', err)
+      // The engine may or may not have taken the clip: resync rather than guess.
+      await fetchClips()
     }
-  }, [fetchClips])
+  }, [addClipsAndSplice, fetchClips])
 
   const handleDeleteClip = useCallback(async (clipId) => {
     console.log(`[DeleteTool] Deleting clip ${clipId}`)
@@ -2839,13 +2937,16 @@ export default function TimelineView({
       const byId = new Map(moves.map(m => [m.clipId, m]))
       // A move overwrites what it lands on, exactly like a paste. The moved
       // clips carry their own durations over from the pre-move snapshot —
-      // `moves` only names a destination.
+      // `moves` only names a destination. One pass to index those durations: a
+      // find() per move walked the whole clip list once per moved clip.
+      const durationById = new Map()
+      for (const c of clipsRef.current) if (byId.has(c.id)) durationById.set(c.id, c.durationTicks)
       const { doomedClipIds } = resolveOverwritePlan({
         existingClips: clipsRef.current,
         clipPlacements: moves.map(m => ({
           trackId: m.trackId,
           positionTicks: m.positionTicks,
-          durationTicks: clipsRef.current.find(c => c.id === m.clipId)?.durationTicks ?? 0,
+          durationTicks: durationById.get(m.clipId) ?? 0,
         })),
         movingClipIds: new Set(byId.keys()),
       })
@@ -2875,10 +2976,6 @@ export default function TimelineView({
         // The optimistic repaint above is now a guess: resync against the engine.
         await fetchClips()
       }
-      compoundUndoCountRef.current = moveUndoSteps({
-        doomedCount: doomedClipIds.length, moveCount: moves.length,
-        batchedRemove: true, batchedMove: true,
-      })
       if (doomedClipIds.length > 0) {
         console.log(`[SelectTool] Move overwrote ${doomedClipIds.length} clip(s)`)
       }
@@ -2910,7 +3007,6 @@ export default function TimelineView({
           removeClipIds: doomedClipIds,
           clips: payloads,
         })
-        compoundUndoCountRef.current = 1
         applyClipDelta({ updated: res?.clips ?? [], removed: res?.removedIds ?? [] })
         setSelectedClipIds(new Set(res?.newIds ?? []))
         if (doomedClipIds.length > 0) {
@@ -2923,10 +3019,15 @@ export default function TimelineView({
     })
   }, [fetchClips, applyClipDelta, runSerializedEdit])
 
-  const handleResizeClip = useCallback(async (clipId, newDurationTicks) => {
-    console.log(`[SelectTool] Resizing clip ${clipId}: dur=${newDurationTicks}t`)
+  // newRegionOffset is only passed for a reversed clip, whose right edge sits
+  // on the START of its source window (timeline/clipTrim.js).
+  const handleResizeClip = useCallback(async (clipId, newDurationTicks, newRegionOffset) => {
+    console.log(`[SelectTool] Resizing clip ${clipId}: dur=${newDurationTicks}t`
+      + (newRegionOffset != null ? `, offset=${newRegionOffset}t` : ''))
     try {
-      const updated = await window.xleth?.timeline?.resizeClip(clipId, newDurationTicks)
+      const updated = newRegionOffset != null
+        ? await window.xleth?.timeline?.resizeClip(clipId, newDurationTicks, newRegionOffset)
+        : await window.xleth?.timeline?.resizeClip(clipId, newDurationTicks)
       applyClipDelta({ updated: updated ? [updated] : [] })
     } catch (err) {
       console.error(`[SelectTool] resizeClip(${clipId}) failed:`, err)
@@ -2934,47 +3035,38 @@ export default function TimelineView({
     }
   }, [fetchClips, applyClipDelta])
 
-  const handleSplitClip = useCallback(async (clipId, leftDuration, rightDuration) => {
+  // Splitting is the engine's job (model/ClipSplit.h). It knows which piece
+  // keeps which part of the source, including on stretched and reversed clips,
+  // and what happens to the fades; this used to rebuild both halves here from a
+  // snapshot, a second copy of that arithmetic that handed a reversed clip's
+  // halves each other's audio and put both fades on both pieces. One call, one
+  // undo entry, and the reply carries the two new clips.
+  const splitClipsAt = useCallback(async (entries) => {
+    const res = await window.xleth?.timeline?.spliceClipsAtPlayhead(entries)
+    const pairs = Array.isArray(res) ? res : (res?.pairs ?? [])
+    if (Array.isArray(res?.clips)) {
+      applyClipDelta({ updated: res.clips, removed: res.removedIds ?? [] })
+    } else {
+      // An engine that still answers with bare id pairs: resync the old way.
+      await fetchClips()
+    }
+    return pairs
+  }, [applyClipDelta, fetchClips])
+
+  const handleSplitClip = useCallback(async (clipId, leftDuration) => {
     const clip = clipsRef.current.find((c) => c.id === clipId)
     if (!clip) return
-    console.log(`[SplitTool] Splitting clip ${clipId}: left=${leftDuration}t, right=${rightDuration}t`)
+    const splitTick = clip.positionTicks + leftDuration
+    console.log(`[SplitTool] Splitting clip ${clipId} at ${splitTick}t`)
     try {
-      const originalOffset = clip.regionOffsetTicks ?? 0
-      // regionOffsetTicks is SOURCE time, leftDuration is TIMELINE time: a
-      // stretched clip only consumes leftDuration / stretchRatio source ticks
-      // over its left half. Both halves keep the original stretchRatio — a split
-      // is a cut through already-stretched audio, not a re-stretch. Mirrors the
-      // engine splice path (timeline_spliceClipsAtPlayhead).
-      const leftSourceDuration = sourceTicksForTimelineTicks(
-        leftDuration, clip.stretchRatio ?? 1.0)
-
-      // One atomic pasteClipsBatch, not removeClip + addClip + addClip. Three
-      // round trips became one, and — the real fix — three undo entries became
-      // one: compoundUndoCountRef had to carry a hardcoded 3 so Ctrl+Z did not
-      // stop halfway through the split, leaving the clip deleted and only its
-      // left half re-added. Both halves inherit every field through
-      // clipPayloadFromSnapshot, so a field added to a clip cannot go missing
-      // across a split the way a hand-copied payload list allows.
-      const res = await window.xleth?.timeline?.pasteClipsBatch({
-        removeClipIds: [clipId],
-        clips: [
-          { ...clipPayloadFromSnapshot(clip, clip.trackId, clip.positionTicks),
-            durationTicks: leftDuration,
-            regionOffsetTicks: originalOffset },
-          { ...clipPayloadFromSnapshot(clip, clip.trackId, clip.positionTicks + leftDuration),
-            durationTicks: rightDuration,
-            regionOffsetTicks: originalOffset + leftSourceDuration },
-        ],
-      })
-      compoundUndoCountRef.current = 1
+      await splitClipsAt([{ clipId, splitTick }])
       setSelectedClipIds(new Set())
-      applyClipDelta({ updated: res?.clips ?? [], removed: res?.removedIds ?? [clipId] })
       console.log(`[SplitTool] Split complete`)
     } catch (err) {
       console.error(`[SplitTool] split failed:`, err)
       await fetchClips()
     }
-  }, [fetchClips, applyClipDelta])
+  }, [fetchClips, splitClipsAt])
 
   // Splits every selected clip that the transport playhead currently intersects.
   // Returns true if at least one clip was split (used to decide S key fallback).
@@ -2987,15 +3079,13 @@ export default function TimelineView({
     if (qualifying.length === 0) return false
     const entries = qualifying.map((c) => ({ clipId: c.id, splitTick }))
     try {
-      const pairs = await window.xleth.timeline.spliceClipsAtPlayhead(entries)
-      const newIds = pairs.flat()
-      setSelectedClipIds(new Set(newIds))
-      await fetchClips()
+      const pairs = await splitClipsAt(entries)
+      setSelectedClipIds(new Set(pairs.flat()))
     } catch (err) {
       console.error('[Splice] spliceClipsAtPlayhead failed:', err)
     }
     return true
-  }, [selectedClipIds, fetchClips])
+  }, [selectedClipIds, splitClipsAt])
 
   // ── Pattern Block mutations (used by tools) ────────────────────────────────
 
@@ -3048,12 +3138,8 @@ export default function TimelineView({
       }
       // There is still no movePatternBlocksBatch RPC — only the ADD side was
       // batched (addPatternBlocksBatch / pastePatternBlocksBatch) — so every
-      // remove and every move here is its own engine entry and Ctrl+Z has to
-      // pop all of them. The calls are at least pipelined.
-      compoundUndoCountRef.current = moveUndoSteps({
-        doomedCount: doomedBlockIds.length, moveCount: moves.length,
-        batchedRemove: false, batchedMove: false,
-      })
+      // remove and every move here is its own engine command. They are one
+      // undo entry all the same: runSerializedEdit groups the gesture.
       await fetchPatternBlocks()
       timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
       if (doomedBlockIds.length > 0) {
@@ -3088,7 +3174,6 @@ export default function TimelineView({
           })),
         })
         const newIds = (res?.blocks ?? []).map(b => b.id)
-        compoundUndoCountRef.current = 1
         applyPatternBlockDelta({ updated: res?.blocks ?? [], removed: res?.removedIds ?? [] })
         timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
         setSelectedBlockIds(new Set(newIds))
@@ -3266,7 +3351,6 @@ export default function TimelineView({
           offsetTicks: clip.offsetTicks ?? 0,
         })))
       const newIds = (landed ?? []).map(c => c.id)
-      compoundUndoCountRef.current = newIds.length > 0 ? 1 : 0
       await fetchAutomationClips()
       timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
       if (newIds.length > 0) setSelectedAutomationClipIds(new Set(newIds))
@@ -3440,9 +3524,11 @@ export default function TimelineView({
       const doomed = new Set(automationClipIdList)
       setAutomationClips(prev => prev.filter(c => !doomed.has(c.id)))
     }
-    // One undo entry for the whole clip selection — Ctrl+Z used to put back
-    // exactly one clip out of however many were deleted.
-    await Promise.all([
+    // One undo entry for the whole selection. Clips go through one batch call;
+    // pattern blocks and automation clips are still one call each, so the
+    // gesture is grouped — Ctrl+Z used to put back exactly one item, and a
+    // selection larger than the history could not be restored at all.
+    await withUndoGroup('Delete selection', () => Promise.all([
       clipIdList.length > 0
         ? xl.timeline.removeClipsBatch(clipIdList).catch(err =>
             console.error(`[Keyboard] removeClipsBatch(${clipIdList.length}) failed:`, err))
@@ -3457,13 +3543,7 @@ export default function TimelineView({
           console.error(`[Keyboard] automation.removeClip(${id}) failed:`, err)
         )
       ),
-    ])
-    // Blocks and automation clips have no batch RPC yet, so this gesture pushed
-    // one engine entry PER item and Ctrl+Z would otherwise put back exactly one
-    // of them. Ctrl+X inherits the count from here.
-    compoundUndoCountRef.current = deleteUndoSteps({
-      clipIds: clipIdList, blockIds: blockIdList, automationClipIds: automationClipIdList,
-    })
+    ]))
     // No refetch: the optimistic removal above already dropped exactly these
     // clips, and reconcileClipFxEditors still has to run for any floating clip-FX
     // editor bound to one of them.
@@ -3478,10 +3558,18 @@ export default function TimelineView({
     }
     return true
   }, [applyClipDelta, fetchPatternBlocks, fetchAutomationClips, selectedBlockIds, selectedClipIds,
-      selectedAutomationClipIds, selectedAutomationPoint, handleRemoveAutomationPoint])
+      selectedAutomationClipIds, selectedAutomationPoint, handleRemoveAutomationPoint, withUndoGroup])
 
+  // Edit > Delete. In Motion view the Edit selection (clips, blocks, automation)
+  // is hidden, so the command goes to Motion view's key delete (R20) and never
+  // touches it; false = nothing to delete there.
   useEffect(() => (
-    registerEditorCommand('timeline', 'deleteSelected', deleteSelectedTimelineItems)
+    registerEditorCommand('timeline', 'deleteSelected', () => {
+      if (timelineViewNameRef.current === 'motion') {
+        return motionViewRef.current?.handleKeyCommand({ id: 'delete' }) === true
+      }
+      return deleteSelectedTimelineItems()
+    })
   ), [deleteSelectedTimelineItems])
 
   const handleSplitPatternBlock = useCallback(async (blockId, splitPositionTicks) => {
@@ -3496,21 +3584,25 @@ export default function TimelineView({
     const splitOffsetInPattern = (baseOffset + leftDur) % patLen
     console.log(`[SplitTool] Splitting block ${blockId}: leftDur=${leftDur}, rightDur=${rightDur}, secondOffset=${splitOffsetInPattern}`)
     try {
-      // Resize first half
-      await window.xleth?.timeline?.resizePatternBlock(blockId, leftDur)
-      // Create second half
-      await window.xleth?.timeline?.addPatternBlock({
-        trackId: block.trackId,
-        patternId: block.patternId,
-        positionTicks: splitPositionTicks,
-        durationTicks: rightDur,
-        offsetTicks: splitOffsetInPattern,
+      // Two engine commands, one edit: undoing a split used to take two
+      // presses, and the first left a shortened block with nothing after it.
+      await withUndoGroup('Split pattern block', async () => {
+        // Resize first half
+        await window.xleth?.timeline?.resizePatternBlock(blockId, leftDur)
+        // Create second half
+        await window.xleth?.timeline?.addPatternBlock({
+          trackId: block.trackId,
+          patternId: block.patternId,
+          positionTicks: splitPositionTicks,
+          durationTicks: rightDur,
+          offsetTicks: splitOffsetInPattern,
+        })
       })
       timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
     } catch (err) {
       console.error('[SplitTool] splitPatternBlock failed:', err)
     }
-  }, [patternBlocks, patterns])
+  }, [patternBlocks, patterns, withUndoGroup])
 
   const handleResizeClipLeft = useCallback(async (clipId, newPositionTicks, newDurationTicks, newRegionOffset) => {
     console.log(`[SelectTool] Left-resize clip ${clipId}: pos=${newPositionTicks}t, dur=${newDurationTicks}t, offset=${newRegionOffset}t`)
@@ -3665,28 +3757,32 @@ export default function TimelineView({
       const durationTicks = regionDurationToTicks(0, src.duration || 0, bpmRef.current)
       console.log(`[TimelineClips] Source drop: "${src.fileName}" on track "${track.name}" at beat ${snappedBeat.toFixed(2)} (pos=${positionTicks}t, dur=${durationTicks}t)`)
       try {
-        const regionId = await window.xleth?.timeline?.addRegion({
-          sourceId:  src.sourceId,
-          startTime: 0,
-          endTime:   src.duration || 0,
-          label:     'Custom',
-          name:      src.fileName,
+        // The region and its clip are one drop, so they are one undo entry.
+        const created = await withUndoGroup('Add source clip', async () => {
+          const regionId = await window.xleth?.timeline?.addRegion({
+            sourceId:  src.sourceId,
+            startTime: 0,
+            endTime:   src.duration || 0,
+            label:     'Custom',
+            name:      src.fileName,
+          })
+          if (typeof regionId !== 'number' || regionId < 0) {
+            console.warn('[TimelineClips] addRegion returned invalid id:', regionId)
+            return null
+          }
+          const [clipId] = await addClipsAndSplice([{
+            trackId: track.id,
+            regionId,
+            positionTicks,
+            durationTicks,
+            velocity: 1.0,
+          }])
+          return { regionId, clipId }
         })
-        if (typeof regionId !== 'number' || regionId < 0) {
-          console.warn('[TimelineClips] addRegion returned invalid id:', regionId)
-          return
-        }
-        const clipId = await window.xleth?.timeline?.addClip({
-          trackId: track.id,
-          regionId,
-          positionTicks,
-          durationTicks,
-          velocity: 1.0,
-        })
-        console.log(`[TimelineClips] Source clip created: region=${regionId} clip=${clipId}`)
+        if (!created) return
+        console.log(`[TimelineClips] Source clip created: region=${created.regionId} clip=${created.clipId}`)
         // rebuildAudioMappings() picks up the new region and loads it into SampleBank.
         timelineEvents.dispatchEvent(new Event('timeline-regions-changed'))
-        await fetchClips()
       } catch (err) {
         console.error('[TimelineClips] source drop failed:', err)
       }
@@ -3764,19 +3860,18 @@ export default function TimelineView({
     console.log(`[TimelineClips] Clip created via drop: "${data.name}" on track "${track.name}" at beat ${snappedBeat.toFixed(2)} (pos=${positionTicks}t, dur=${durationTicks}t)`)
 
     try {
-      const clipId = await window.xleth?.timeline?.addClip({
+      const [clipId] = await addClipsAndSplice([{
         trackId: track.id,
         regionId: data.regionId,
         positionTicks,
         durationTicks,
         velocity: 1.0,
-      })
+      }])
       console.log(`[TimelineClips] Clip created: id=${clipId}`)
-      await fetchClips()
     } catch (err) {
       console.error('[TimelineClips] addClip failed:', err)
     }
-  }, [visibleTracks, trackLayout, fetchClips, fetchPatterns, patterns, currentPatternIdByTrack, nextPatternName, setCurrentPatternIdByTrack])
+  }, [visibleTracks, trackLayout, addClipsAndSplice, fetchPatterns, patterns, currentPatternIdByTrack, nextPatternName, setCurrentPatternIdByTrack, withUndoGroup])
 
   // ── Drag leave (clear preview) ─────────────────────────────────────────────
 
@@ -3819,53 +3914,62 @@ export default function TimelineView({
     }
   }
 
+  // Everything an undo or redo can have touched.
+  //
+  // Tracks and clips are requested together, so the two reads reach the engine
+  // back to back instead of one waiting on the other's reply. Pattern blocks and
+  // automation are NOT fetched here: the events below already make this
+  // component's own listeners refetch them (the same events the Piano Roll, the
+  // mixer and the automation store follow), so fetching them here as well did
+  // each of those reads twice per keypress.
+  const refreshAfterHistoryStep = async () => {
+    const core = Promise.all([fetchTracks(), fetchClips()])
+    timelineEvents.dispatchEvent(new Event('timeline-track-layout-changed'))
+    timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
+    // Pattern notes are undo-tracked too, note Lens overrides (Nudge / Own keys)
+    // included: without this Motion view and the Edit header's motion marker
+    // keep drawing an undone override.
+    timelineEvents.dispatchEvent(new Event('timeline-patterns-changed'))
+    // Automation lanes/clips/envelopes are undo-tracked too — without this an
+    // undone point edit stays on the canvas (and, worse, the canvas hit-tests
+    // against points the engine no longer has).
+    timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
+    await core
+  }
+
   const runTimelineKeyCommand = async (command) => {
+      // ── View switch and graph (R20) ───────────────────────────────────
+      if (command.id === 'toggleView') {
+        useMotionViewStore.getState().toggleView()
+        return
+      }
+      if (command.id === 'toggleGraph') {
+        useMotionViewStore.getState().toggleGraph()
+        return
+      }
+
       // ── Undo / Redo (global, no focus gate) ───────────────────────────
       if (command.id === 'undo') {
-        // A compound edit (paste = overwrite + insert, split = 3) pushed more
-        // than one engine entry. Pop them together, and hand the same count to
-        // redo — popping N but replaying 1 would leave the timeline in the
-        // half-applied state between the two halves of the edit.
-        const count = Math.max(1, compoundUndoCountRef.current)
-        compoundUndoCountRef.current = 0
-        for (let i = 0; i < count; i++) await window.xleth?.undo?.undo()
-        compoundRedoCountRef.current = count
-        console.log(count > 1 ? `[Keyboard] Undo (compound edit ×${count})` : '[Keyboard] Undo')
-        await fetchTracks()
-        await fetchClips()
-        await fetchPatternBlocks()
-        // Automation lanes/clips/envelopes are undo-tracked too — without this
-        // an undone point edit stays on the canvas (and, worse, the canvas
-        // hit-tests against points the engine no longer has).
-        await fetchAutomationAll()
-        timelineEvents.dispatchEvent(new Event('timeline-track-layout-changed'))
-        timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
-        timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
+        // One entry per press. A gesture made of several engine calls is one
+        // entry already (see withUndoGroup).
+        await window.xleth?.undo?.undo()
+        console.log('[Keyboard] Undo')
+        await refreshAfterHistoryStep()
         return
       }
       if (command.id === 'redo') {
-        const count = Math.max(1, compoundRedoCountRef.current)
-        compoundRedoCountRef.current = 0
-        for (let i = 0; i < count; i++) await window.xleth?.undo?.redo()
-        // Re-arm undo so Ctrl+Z after Ctrl+Y is symmetric again.
-        compoundUndoCountRef.current = count
-        console.log(count > 1 ? `[Keyboard] Redo (compound edit ×${count})` : '[Keyboard] Redo')
-        await fetchTracks()
-        await fetchClips()
-        await fetchPatternBlocks()
-        // Automation lanes/clips/envelopes are undo-tracked too — without this
-        // an undone point edit stays on the canvas (and, worse, the canvas
-        // hit-tests against points the engine no longer has).
-        await fetchAutomationAll()
-        timelineEvents.dispatchEvent(new Event('timeline-track-layout-changed'))
-        timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
-        timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
+        await window.xleth?.undo?.redo()
+        console.log('[Keyboard] Redo')
+        await refreshAfterHistoryStep()
         return
       }
 
       // ── Select all (global) ───────────────────────────────────────────
       if (command.id === 'selectAll') {
         setSelectedClipIds(new Set(clipsRef.current.map((c) => c.id)))
+        // Pattern blocks are timeline items like any other: Select All used to
+        // skip them, so Ctrl+A then Delete (or a drag) left every block behind.
+        setSelectedBlockIds(new Set((patternBlocksRef.current ?? []).map((b) => b.id)))
         setSelectedAutomationClipIds(new Set((automationClipsRef.current ?? []).map((c) => c.id)))
         console.log('[Keyboard] Select all')
         return
@@ -3944,7 +4048,6 @@ export default function TimelineView({
         // stacking forward even while the engine is still catching up.
         await runSerializedEdit(async () => {
           const xl = window.xleth?.timeline
-          let undoSteps = 0
           try {
             const { doomedClipIds: doomedClips, doomedBlockIds: doomedBlocks } = resolveOverwritePlan({
               existingClips: clipsRef.current,
@@ -3961,7 +4064,6 @@ export default function TimelineView({
                 removeClipIds: doomedClips,
                 clips: payloads,
               })
-              undoSteps++
               applyClipDelta({ updated: res?.clips ?? [], removed: res?.removedIds ?? [] })
               setSelectedClipIds(new Set(res?.newIds ?? []))
             }
@@ -3985,7 +4087,6 @@ export default function TimelineView({
                   loopEnabled: p.item.loopEnabled ?? false,
                 })),
               })
-              undoSteps++
               applyPatternBlockDelta({ updated: res?.blocks ?? [], removed: res?.removedIds ?? [] })
               timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
               setSelectedBlockIds(new Set((res?.blocks ?? []).map(b => b.id)))
@@ -4009,7 +4110,6 @@ export default function TimelineView({
                   durationTicks: p.durationTicks,
                   offsetTicks: p.item.offsetTicks ?? 0,
                 })))
-              if ((landed ?? []).length > 0) undoSteps++
               await fetchAutomationClips()
               timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
               setSelectedAutomationClipIds(new Set((landed ?? []).map(c => c.id)))
@@ -4020,9 +4120,6 @@ export default function TimelineView({
           } catch (err) {
             console.error('[Keyboard] Paste failed:', err)
           }
-          // Ctrl+Z must undo the paste whole, not peel off the insert and leave
-          // the overwritten items deleted.
-          compoundUndoCountRef.current = undoSteps
         })
 
         const messages = []
@@ -4075,7 +4172,6 @@ export default function TimelineView({
           })
 
           try {
-            let steps = 0
             if (srcClips.length > 0 || doomedClipIds.length > 0) {
               const payloads = srcClips.map(c =>
                 clipPayloadFromSnapshot(c, c.trackId, c.positionTicks + shift))
@@ -4085,7 +4181,6 @@ export default function TimelineView({
                 removeClipIds: doomedClipIds,
                 clips: payloads,
               })
-              steps++
               applyClipDelta({ updated: res?.clips ?? [], removed: res?.removedIds ?? [] })
               setSelectedClipIds(new Set(res?.newIds ?? []))
             }
@@ -4103,7 +4198,6 @@ export default function TimelineView({
                   loopEnabled: b.loopEnabled ?? false,
                 })),
               })
-              steps++
               applyPatternBlockDelta({ updated: res?.blocks ?? [], removed: res?.removedIds ?? [] })
               timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
               setSelectedBlockIds(new Set((res?.blocks ?? []).map(b => b.id)))
@@ -4124,12 +4218,10 @@ export default function TimelineView({
                   durationTicks: c.durationTicks,
                   offsetTicks: c.offsetTicks ?? 0,
                 })))
-              if ((landed ?? []).length > 0) steps++
               await fetchAutomationClips()
               timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
               setSelectedAutomationClipIds(new Set((landed ?? []).map(c => c.id)))
             }
-            compoundUndoCountRef.current = steps
             handleSeek((spanEnd + shift) / PPQ)
             console.log(`[Keyboard] Duplicated ${srcClips.length} clip(s) + `
               + `${srcBlocks.length} block(s) + ${srcAutomation.length} automation clip(s) by ${shift}t `
@@ -4167,18 +4259,17 @@ export default function TimelineView({
       if (command.id === 'pitch') {
         const { direction, semitones: semis, cents, unit } = command
         const ids = [...selectedClipIds]
-        // N× pitchShiftClip, N engine entries — every branch below.
-        compoundUndoCountRef.current = pitchShiftUndoSteps(ids)
         // Shift +/- = ±12 semitones (one octave); Ctrl +/- = ±1 cent; bare = ±1 semitone.
         // pitchShiftClip answers with the clip's post-state, so the whole
         // selection reconciles from the replies — no getClips over the project.
-        const shifted = await Promise.all(ids.map(id =>
+        // One call per clip, one undo entry for the selection.
+        const shifted = await withUndoGroup('Pitch shift', () => Promise.all(ids.map(id =>
           window.xleth?.timeline?.pitchShiftClip(id, semis, cents)
             .catch(err => {
               console.error(`[Keyboard] pitchShiftClip(${id}) failed:`, err)
               return null
             })
-        ))
+        )))
         applyClipDelta({ updated: shifted.filter(Boolean) })
         console.log(`[Keyboard] Pitch ${direction > 0 ? '+' : '-'}${unit} on ${ids.length} clip(s)`)
         return
@@ -4219,7 +4310,18 @@ export default function TimelineView({
   const timelineKeyHandlerRef = useRef(null)
   timelineKeyHandlerRef.current = (e) => {
     const command = resolveTimelineKeyCommand(e)
-    if (!command || !timelineKeyCommandApplies(command)) return false
+    // Which view the key belongs to (R20): Motion view sends the key edits to its
+    // own handle and ignores the clip tools; the Edit view leaves the Motion-only
+    // keys (G, arrows, Escape, Backspace) unclaimed.
+    const route = timelineCommandRoute(command, timelineViewNameRef.current)
+    if (!route) return false
+    if (route === 'motion') {
+      if (motionViewRef.current?.handleKeyCommand(command) !== true) return false
+      e.preventDefault()
+      e.stopPropagation()
+      return true
+    }
+    if (route === 'edit' && !timelineKeyCommandApplies(command)) return false
     e.preventDefault()
     if (!TIMELINE_PASSTHROUGH_COMMANDS.has(command.id)) e.stopPropagation()
     runTimelineKeyCommand(command)
@@ -4262,20 +4364,10 @@ export default function TimelineView({
         console.warn('[Timeline] Auto-Trim failed:', result?.reason)
         return
       }
-      await fetchClips()
-      window.dispatchEvent(new CustomEvent('timeline-clips-changed'))
+      if (result.clip) applyClipDelta({ updated: [result.clip] })
+      else if (result.trimmed) await fetchClips()   // an engine without post-state
     } catch (err) {
       console.error('[Timeline] Auto-Trim error:', err)
-    }
-  }, [fetchClips])
-
-  const handlePitchShiftClip = useCallback(async (clipId, semiDelta, centsDelta = 0) => {
-    try {
-      const updated = await window.xleth.timeline.pitchShiftClip(clipId, semiDelta, centsDelta)
-      applyClipDelta({ updated: updated ? [updated] : [] })
-    } catch (err) {
-      console.error('[Timeline] pitchShiftClip error:', err)
-      await fetchClips()
     }
   }, [fetchClips, applyClipDelta])
 
@@ -4636,6 +4728,10 @@ export default function TimelineView({
         onOpenQuantize={() => setQuantizeOpen(true)}
         quantizeSelectionCount={selectedClipIds.size + selectedBlockIds.size}
         onOpenQuickNotation={handleOpenQuickNotation}
+        view={timelineView}
+        onViewChange={(v) => useMotionViewStore.getState().setView(v)}
+        graph={motionGraph}
+        onGraphChange={(g) => useMotionViewStore.getState().setGraph(g)}
       />
 
       {/* ── Body ─────────────────────────────────────────────────────────── */}
@@ -4659,7 +4755,35 @@ export default function TimelineView({
               onRename={handlePatternRename}
             />
 
-            {/* Left: track headers */}
+            {/* Left: track headers (Edit view) or the property tree (Motion view,
+                which also portals its key area into motionKeyHost below). */}
+            {isMotionView ? (
+              <MotionView
+                ref={motionViewRef}
+                tracks={visibleTracks}
+                allTracks={tracks}
+                data={motionData.data}
+                refresh={motionData.refresh}
+                adopt={motionData.adopt}
+                keyHost={motionKeyHost}
+                width={motionHeaderWidth}
+                ppbRef={pixelsPerBeatRef}
+                scrollOffsetRef={scrollOffsetRef}
+                snapGranularity={snapGranularity}
+                focusedTrackId={focusedTrackId}
+                onFocusTrack={setFocusedTrackId}
+                onPearl={handlePearl}
+                onViewportWheel={handleWheel}
+                onSeekTick={(tick) => handleSeek(ticksToBeats(tick))}
+                reveal={motionReveal}
+                pinnedHeader={(
+                  <SnapshotCueLaneHeader
+                    onAddCue={snapshotCues.addCueAtPlayhead}
+                    disabled={!snapshotCues.activeSnapshotId}
+                  />
+                )}
+              />
+            ) : (
             <TrackHeaderList
               tracks={tracks}
               folderLayout={normalizedFolderLayout}
@@ -4690,8 +4814,8 @@ export default function TimelineView({
               trackHeight={trackHeight}
               macroRows={trackLayout.macroRows}
               reelRows={trackLayout.reelRows}
-              roamRows={trackLayout.roamRows}
-              sweepRows={trackLayout.sweepRows}
+              cloneRows={trackLayout.cloneRows}
+              motionTrackIds={motionTrackIds}
               onToggleReelLane={handleToggleReelLane}
               onHideMacroLane={(trackId, macroNodeId) =>
                 useEffectChainStore.getState().hideMacroAutomationLaneForTrack?.(trackId, macroNodeId)}
@@ -4708,6 +4832,7 @@ export default function TimelineView({
                 />
               )}
             />
+            )}
 
             {/* Resize handle — 4px drag zone between header column and canvas */}
             <div
@@ -4755,10 +4880,15 @@ export default function TimelineView({
                 onSetCueLandings={snapshotCues.setCueLandings}
                 onReflowCueLandings={snapshotCues.reflowCueLandings}
               />
+              {isMotionView ? (
+                <div className={motionKeyHostClassName} ref={setMotionKeyHost} data-testid="motion-key-host" />
+              ) : (
               <div
                 className="timeline-canvas-scroll"
                 ref={scrollContainerRef}
                 onScroll={(e) => {
+                  // The Edit view's own scroll, kept per view (R19).
+                  saveEditScroll(e.currentTarget.scrollTop)
                   // Sync vertical scroll to track headers
                   const headerScroll = document.querySelector('.timeline-header-scroll')
                   if (headerScroll && headerScroll.scrollTop !== e.currentTarget.scrollTop) {
@@ -4844,8 +4974,6 @@ export default function TimelineView({
                   pixelsPerBeat={pixelsPerBeat}
                   trackLayout={trackLayout}
                   reel={reelModel}
-                  roam={roamCanvas}
-                  sweep={sweepCanvas}
                   setSelectedClipIds={setSelectedClipIds}
                   onFocusTrack={setFocusedTrackId}
                   pencilTemplateRef={pencilTemplateRef}
@@ -4883,6 +5011,7 @@ export default function TimelineView({
                     scrolling to the bottom. */}
                 <div className="timeline-canvas-footer-spacer" style={{ height: ADD_TRACK_ROW_HEIGHT + 6 }} />
               </div>
+              )}
               <TimelineScrollbar
                 ref={scrollbarRef}
                 scrollOffsetRef={scrollOffsetRef}

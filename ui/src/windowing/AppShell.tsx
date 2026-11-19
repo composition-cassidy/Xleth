@@ -49,6 +49,7 @@ const SplitSyllablesPanel = React.lazy(() => import('./panels/SplitSyllablesPane
 const SampleSandboxPanel = React.lazy(() => import('./panels/SampleSandboxPanel'));
 const InspectorPanel = React.lazy(() => import('./panels/InspectorPanel'));
 const DevicesPanel = React.lazy(() => import('./panels/DevicesPanel'));
+const ColorGradeWindowPanel = React.lazy(() => import('./panels/ColorGradeWindowPanel'));
 
 // Exhaustive by construction: a panel added to the catalog without a body here
 // is a type error rather than a panel that toggles in the top bar and never
@@ -68,6 +69,7 @@ const PANEL_BODIES: Record<PanelId, React.LazyExoticComponent<React.FC>> = {
   sampleSandbox: SampleSandboxPanel,
   inspector: InspectorPanel,
   devices: DevicesPanel,
+  colorGrade: ColorGradeWindowPanel,
 };
 
 function workAreaRectsEqual(a: WorkAreaRect | null, b: WorkAreaRect): boolean {

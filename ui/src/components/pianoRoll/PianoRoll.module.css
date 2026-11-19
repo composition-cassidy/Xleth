@@ -55,6 +55,8 @@
   .selectSmall { width: 68px; flex: none; }
   .selectRoot { width: 56px; flex: none; }
   .selectMode { width: 132px; flex: none; }
+  /* Voice of the selected notes (Clones): wide enough for "Lead · Clone 1". */
+  .selectVoice { width: 132px; flex: none; }
 
   .field {
     display: flex;

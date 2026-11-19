@@ -1,6 +1,6 @@
 import { useMemo, useRef } from 'react';
 import type { CSSProperties } from 'react';
-import { hintAttrs, VALUE_HINT_MODS } from './hint';
+import { hintAttrs, valueHintMods } from './hint';
 import styles from './Fader.module.css';
 import { useValueDrag } from './useValueDrag';
 import { ariaNumbers, resolveValue, type DataAttrs, type ValueControlProps } from './valueProps';
@@ -22,6 +22,7 @@ export default function Fader(props: FaderProps) {
     label, value, defaultValue = 0, disabled = false, width = 28, hint, hintMods, className,
     onChange, onCommit, onCancel,
     min, max, scale = dbTaperScale, unit = 'dB', formatOptions, format, parse, codec, step, stepNorm, quantize,
+    wheel = true,
     ...rest
   } = props;
   const railRef = useRef<HTMLDivElement | null>(null);
@@ -46,6 +47,7 @@ export default function Fader(props: FaderProps) {
     disabled,
     format: resolved.format,
     parse: resolved.parse,
+    wheel,
     onChange,
     onCommit,
     onCancel,
@@ -73,7 +75,7 @@ export default function Fader(props: FaderProps) {
       aria-disabled={disabled || undefined}
       data-dragging={drag.dragging}
       data-disabled={disabled || undefined}
-      {...hintAttrs({ hint, hintMods: hintMods ?? VALUE_HINT_MODS })}
+      {...hintAttrs({ hint, hintMods: hintMods ?? valueHintMods(wheel) })}
       {...drag.handlers}
     >
       <div ref={railRef} className={styles.rail}>

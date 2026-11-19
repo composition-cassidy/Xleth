@@ -1,7 +1,7 @@
 import { useMemo, useRef } from 'react';
 import type { CSSProperties, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { ARC_START_DEG, ARC_SWEEP_DEG, arcPath, knobGeometry, minimalDialGeometry } from './arc';
-import { hintAttrs, VALUE_HINT_MODS } from './hint';
+import { hintAttrs, valueHintMods } from './hint';
 import styles from './Knob.module.css';
 import { MOD_HINT_MODS, modAttrs, modRangeNorm, useModRing, type ControlMod } from './modRing';
 import { useValueDrag } from './useValueDrag';
@@ -53,7 +53,7 @@ export default function Knob(props: KnobProps) {
   const {
     label, value, defaultValue, disabled = false, bipolar = false, centre, size = 32, width = 56, hideLabel = false,
     hideValue = false, minimal = false, pxPerRange = DEFAULT_KNOB_PX, hint, hintMods, className, onChange, onCommit, onCancel,
-    min, max, scale, unit, formatOptions, format, parse, codec, step, stepNorm, quantize, mod = null,
+    min, max, scale, unit, formatOptions, format, parse, codec, step, stepNorm, quantize, mod = null, wheel = true,
     ...rest
   } = props;
   const resolved = useMemo(
@@ -72,6 +72,7 @@ export default function Knob(props: KnobProps) {
     disabled,
     format: resolved.format,
     parse: resolved.parse,
+    wheel,
     onChange,
     onCommit,
     onCancel,
@@ -148,7 +149,7 @@ export default function Knob(props: KnobProps) {
       {...modAttrs(mod)}
       {...hintAttrs({
         hint: routed && mod?.tooltip ? mod.tooltip : hint,
-        hintMods: routed ? MOD_HINT_MODS : (hintMods ?? VALUE_HINT_MODS),
+        hintMods: routed ? MOD_HINT_MODS : (hintMods ?? valueHintMods(wheel)),
       })}
       {...handlers}
     >

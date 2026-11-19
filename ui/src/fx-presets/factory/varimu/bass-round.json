@@ -1,0 +1,15 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "varimu",
+  "name": "Bass Round",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "input": 8,
+      "output": -5,
+      "time_constant": 2,
+      "mode": 0
+    }
+  }
+}

@@ -1,0 +1,341 @@
+/* The track Inspector (TrackVideoProperties and the sections it hosts: Roam,
+ * Roam keys, Video flip). Sections are separated by one hairline and air, not
+ * by grey strips; each folds from its name. Inside: label / value rows for
+ * switches and choices, a two-column field grid (label above the box) for
+ * paired numbers. No transitions: every control here is in the edit loop
+ * (DESIGN.md motion gate). */
+@layer kit {
+  .root {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    overflow-y: auto;
+    background: var(--ui-g1);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+  }
+
+  /* ── Identity: colour edge, name, what it is and where it sits ─────────── */
+  .head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: 44px;
+    padding: var(--space-1) var(--space-3);
+    background: var(--ui-g2);
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .swatch {
+    flex: 0 0 auto;
+    width: 4px;
+    align-self: stretch;
+    margin: 2px 0;
+    border-radius: var(--ui-radius-0);
+    background: var(--ui-g4);
+  }
+
+  .headText {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .title {
+    margin: 0;
+    overflow: hidden;
+    color: var(--ui-ink);
+    font-size: var(--type-13);
+    font-weight: var(--weight-semibold);
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .meta {
+    overflow: hidden;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .headActions {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  /* Sections flow into columns at least 300px wide when the region is dragged
+   * wide (one column in the usual Inspector); a section never splits. */
+  .body {
+    flex: 0 0 auto;
+    columns: 300px 3;
+    column-gap: 0;
+    column-rule: 1px solid var(--ui-g4);
+  }
+
+  /* ── Section: a foldable name, a quiet summary, its own switch ─────────── */
+  .section {
+    display: flex;
+    flex-direction: column;
+    border-bottom: 1px solid var(--ui-g4);
+    break-inside: avoid;
+  }
+
+  .sectionHead {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: var(--panel-header-h);
+    margin: 0;
+    padding: 0 var(--space-3) 0 var(--space-1);
+  }
+
+  .fold {
+    display: inline-flex;
+    flex: 0 1 auto;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+    min-height: 24px;
+    padding: 0 var(--space-1) 0 0;
+    border: 0;
+    border-radius: 2px;
+    background: none;
+    color: var(--ui-ink);
+    font: inherit;
+    font-size: var(--type-12);
+    font-weight: var(--weight-semibold);
+    cursor: pointer;
+  }
+
+  .fold:not(button) {
+    cursor: default;
+  }
+
+  .fold:hover .chevron {
+    color: var(--ui-ink);
+  }
+
+  .fold:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 1px;
+  }
+
+  .chevron {
+    flex: 0 0 auto;
+    width: 16px;
+    height: 16px;
+    color: var(--ui-ink-2);
+  }
+
+  /* A switch-only section has nothing to fold: keep the name on the same column. */
+  .chevronSpacer {
+    flex: 0 0 auto;
+    width: 16px;
+  }
+
+  .sectionName {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .summary {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sectionActions {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: var(--space-1);
+    margin-left: auto;
+  }
+
+  .actionLabel {
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+  }
+
+  .sectionBody {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: 0 var(--space-3) var(--space-3) calc(var(--space-1) + 18px);
+  }
+
+  .sectionBody[data-off] {
+    opacity: var(--ui-mute-opacity);
+  }
+
+  /* A nested block inside a section body keeps the body's rhythm. */
+  .keys {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  /* The flip preview strip (its cells are styled in Inspector.module.css). */
+  .sectionBody .preview {
+    padding: var(--space-1) 0 0;
+  }
+
+  /* ── Label / value rows ─────────────────────────────────────────────────── */
+  .row {
+    display: grid;
+    grid-template-columns: 76px minmax(0, 1fr);
+    align-items: center;
+    column-gap: var(--space-2);
+    min-height: 28px;
+  }
+
+  .rowLabel {
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+  }
+
+  .rowControl {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1) var(--space-2);
+    min-width: 0;
+  }
+
+  /* A read-only value in a row (the grid gap in use, a style name). */
+  .value {
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Field grid: paired numbers, label above the box ───────────────────── */
+  .fields {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-2) var(--space-3);
+    padding: 2px 0 var(--space-1);
+  }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+  }
+
+  .fieldLabel {
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    line-height: 1.2;
+  }
+
+  .fieldControl {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    min-width: 0;
+  }
+
+  /* Number boxes and menus fill their column, so the grid reads as two aligned columns. */
+  .fieldControl[data-stretch] > * {
+    width: 100%;
+    min-width: 0;
+  }
+
+  /* ── Actions, notes, readouts ───────────────────────────────────────────── */
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1) var(--space-2);
+    padding-top: var(--space-1);
+  }
+
+  .actionsEnd {
+    justify-content: flex-end;
+  }
+
+  .actions .readout {
+    margin-left: auto;
+  }
+
+  .readout {
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .note {
+    margin: 0;
+    color: var(--ui-ink-3);
+    font-size: var(--type-11);
+    line-height: 1.45;
+  }
+
+  /* The selected key: a recessed well, so it reads as "this one key". */
+  .well {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    margin-top: var(--space-1);
+    padding: var(--space-2);
+    border: 1px solid var(--ui-g4);
+    border-radius: 2px;
+    background: var(--ui-g0);
+  }
+
+  .wellHead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    min-height: 24px;
+    color: var(--ui-ink);
+    font-size: var(--type-11);
+    font-weight: var(--weight-semibold);
+  }
+
+  .wellEmpty {
+    margin-top: var(--space-1);
+    padding: var(--space-2);
+    border: 1px dashed var(--ui-g4);
+    border-radius: 2px;
+  }
+
+  .empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    min-height: 0;
+    padding: var(--space-4);
+    background: var(--ui-g1);
+  }
+
+  .emptyText {
+    max-width: 28ch;
+    margin: 0;
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    line-height: 1.5;
+    text-align: center;
+  }
+}

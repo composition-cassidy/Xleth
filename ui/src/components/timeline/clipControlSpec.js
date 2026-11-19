@@ -545,6 +545,16 @@ export function computeClipControlGeometry({ clip, rect, values = null, spec = C
   }
 }
 
+// Below this many pixels of remaining travel a fade handle is treated as stuck.
+const FADE_FROZEN_TRAVEL_PX = 2
+
+// True when the OPPOSITE fade leaves this fade less than FADE_FROZEN_TRAVEL_PX of
+// room to grow, i.e. dragging it could not change anything.
+export function isFadeHandleFrozen(oppositePercent, clipWidth) {
+  const travelPx = Math.max(0, 100 - clampNumber(oppositePercent, 0, 100)) / 100 * Math.max(0, Number(clipWidth) || 0)
+  return travelPx < FADE_FROZEN_TRAVEL_PX
+}
+
 export function hitTestClipControl({ localX, localY, clip, rect, spec = CLIP_CONTROL_DEFAULTS, allowGain = true, allowFade = true }) {
   const normalized = normalizeClipControlSpec(spec)
   const geometry = computeClipControlGeometry({ clip, rect, spec: normalized })
@@ -567,8 +577,11 @@ export function hitTestClipControl({ localX, localY, clip, rect, spec = CLIP_CON
   const radius = normalized.interaction.fadeHandleHalfWidth + normalized.interaction.fadeExtraSlop
   const inDistance = Math.abs(localX - geometry.fadeIn.anchor.x)
   const outDistance = Math.abs(localX - geometry.fadeOut.anchor.x)
-  const inHit = inDistance <= radius
-  const outHit = outDistance <= radius
+  // A fade whose opposite already covers (nearly) the whole clip has no travel
+  // left, and its handle sits on top of the opposite one. Leave it ungrabbable so
+  // the handle that CAN move wins the overlap instead of losing it to a tie-break.
+  const inHit = inDistance <= radius && !isFadeHandleFrozen(geometry.fades.fadeOutPercent, w)
+  const outHit = outDistance <= radius && !isFadeHandleFrozen(geometry.fades.fadeInPercent, w)
   if (!inHit && !outHit) return null
   if (inHit && outHit) {
     if (Math.abs(inDistance - outDistance) < 1e-6) {

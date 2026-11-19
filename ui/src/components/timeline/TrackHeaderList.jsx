@@ -1,10 +1,7 @@
 import { useCallback, useMemo, useRef, useState, useEffect } from 'react'
-import { IconButton, Toggle, isHeard } from '../../ui-kit'
+import { IconButton, isHeard } from '../../ui-kit'
 import Disclosure from '../browser/Disclosure.jsx'
 import TrackHeader from './TrackHeader.jsx'
-import RoamLaneHeader from './RoamLaneHeader.jsx'
-import SweepLaneHeader from './SweepLaneHeader.jsx'
-import useSweepKeysStore from '../../stores/useSweepKeysStore.js'
 import TrackColorPopover from './TrackColorPopover.jsx'
 import TrackContextMenu from './TrackContextMenu.jsx'
 import { RULER_HEIGHT, HEADER_WIDTH, ADD_TRACK_ROW_HEIGHT, TIMELINE_HSCROLL_HEIGHT } from '../../constants/timeline.js'
@@ -14,6 +11,8 @@ import { FOLDER_ROW_HEIGHT } from './timelineRowLayout.js'
 import { tokenValue } from '../../theming/tokenValue.ts'
 import styles from './TrackHeaderList.module.css'
 import { iconComponent } from '../../ui-kit/icons'
+import { cloneKindOf, isClone, parseTint } from '../../clones/cloneModel.js'
+import { draggableTrackIds } from './cloneTimeline.js'
 
 const IcEyeSlash = iconComponent('eye-slash')
 const IcFolder = iconComponent('folder')
@@ -21,6 +20,20 @@ const IcLock = iconComponent('lock-simple')
 const IcPlus = iconComponent('plus')
 const IcTrash = iconComponent('trash')
 const IcXAutomation = iconComponent('xleth-automation')
+
+const NO_MOTION = new Set()
+/**
+ * `motionTrackIds` (a Set, an array or null) as a Set of String(trackId), so a numeric
+ * id and its string form both match. Anything that is not a list means "no motion".
+ */
+function motionTrackIdSet(ids) {
+  if (ids == null || typeof ids[Symbol.iterator] !== 'function' || typeof ids === 'string') return NO_MOTION
+  const out = new Set()
+  for (const id of ids) {
+    if (id != null) out.add(String(id))
+  }
+  return out
+}
 
 export default function TrackHeaderList({
   tracks,
@@ -46,10 +59,14 @@ export default function TrackHeaderList({
   // per such track, and the collapse toggle.
   reelRows = [],
   onToggleReelLane,
-  // Roam key lane (a track with a cell, the lane switched on): one row per such track.
-  roamRows = [],
-  // Sweep lane (a Pattern track with a Reel lane, the lane switched on): one row per such track.
-  sweepRows = [],
+  // Clone rows (timelineRowLayout laneKind 'clone'): a Clone's header takes its
+  // row's height, which follows its lane (and collapses with its source's Reel lane).
+  cloneRows = [],
+  // The Roam and Sweep key lanes are gone from the Edit view (docs/XLETH_MOTION_VIEW_DESIGN.md
+  // R17): motion is edited in Motion view. Old `roamRows` / `sweepRows` props are ignored.
+  // Tracks that have motion (R18: keys, a non-identity Roam base, Parent, Masks...): their
+  // header shows the motion marker. A Set or an array of track ids; null = none.
+  motionTrackIds = null,
   onHideMacroLane,
   automationGroupRows = [],
   automationLaneRows = [],
@@ -62,7 +79,9 @@ export default function TrackHeaderList({
   onAddClipTrack,
   onAddPatternTrack,
 }) {
-  const pearlItems = (tracks ?? []).map((t) => ({ id: t.id, muted: !!t.muted, soloed: !!t.solo }))
+  // What is heard: Clones make no sound, so they never take part in the pearl rules.
+  const pearlItems = (tracks ?? []).filter((t) => !isClone(t))
+    .map((t) => ({ id: t.id, muted: !!t.muted, soloed: !!t.solo }))
   const dragRef = useRef(null)
   const trackById = useMemo(() => new Map(tracks.map(track => [track.id, track])), [tracks])
   const folderById = useMemo(() => folderMapForLayout(folderLayout), [folderLayout])
@@ -84,20 +103,28 @@ export default function TrackHeaderList({
     return map
   }, [reelRows])
 
-  const roamByTrack = useMemo(() => {
+  const cloneRowByTrack = useMemo(() => {
     const map = new Map()
-    for (const row of roamRows) map.set(row.parentTrackId, row)
+    for (const row of cloneRows) map.set(row.trackId, row)
     return map
-  }, [roamRows])
+  }, [cloneRows])
 
-  const sweepByTrack = useMemo(() => {
+  // sourceId -> { all, voice } Clone counts, for the source's Reel lane header.
+  const cloneCounts = useMemo(() => {
     const map = new Map()
-    for (const row of sweepRows) map.set(row.parentTrackId, row)
+    for (const t of tracks ?? []) {
+      if (!isClone(t)) continue
+      const c = map.get(t.cloneOf) ?? { all: 0, voice: 0 }
+      c.all++
+      if (cloneKindOf(t) === 'Voice') c.voice++
+      map.set(t.cloneOf, c)
+    }
     return map
-  }, [sweepRows])
-  // Which Sweep lanes are open: the Reel header carries the switch (the lane sits under it).
-  const sweepLaneOpen = useSweepKeysStore((s) => s.laneOpen)
-  const toggleSweepLane = useSweepKeysStore((s) => s.toggleLane)
+  }, [tracks])
+  const cloneCountOf = (sourceId) => cloneCounts.get(sourceId)?.all ?? 0
+  const voiceCloneCountOf = (sourceId) => cloneCounts.get(sourceId)?.voice ?? 0
+
+  const motionIds = useMemo(() => motionTrackIdSet(motionTrackIds), [motionTrackIds])
 
   const lanesByTrack = useMemo(() => {
     const map = new Map()
@@ -150,13 +177,19 @@ export default function TrackHeaderList({
   }, [])
 
   const beginTrackDrag = useCallback((event, trackId) => {
-    const ids = selectedTrackIds.has(trackId)
+    // Clones follow their source (the engine keeps them under it), so a selected
+    // Clone never moves on its own.
+    const ids = draggableTrackIds(selectedTrackIds.has(trackId)
       ? flatVisibleIds.filter(id => selectedTrackIds.has(id))
-      : [trackId]
+      : [trackId], tracks)
+    if (ids.length === 0) {
+      event.preventDefault()
+      return
+    }
     dragRef.current = { kind: 'tracks', trackIds: ids }
     event.dataTransfer.effectAllowed = 'move'
     event.dataTransfer.setData('text/plain', `tracks:${ids.join(',')}`)
-  }, [flatVisibleIds, selectedTrackIds])
+  }, [flatVisibleIds, selectedTrackIds, tracks])
 
   const beginFolderDrag = useCallback((event, folderId) => {
     dragRef.current = { kind: 'folder', folderId }
@@ -228,40 +261,56 @@ export default function TrackHeaderList({
     )
   }
 
+  const resolvedColorOf = (track) => {
+    const index = Math.max(0, tracks.findIndex(item => item.id === track.id))
+    return resolveAutoTrackColor(track, index, trackPalette, TRACK_PALETTE_FALLBACK[index % 16])
+  }
+
+  // A Clone's chip and stripe: its source's colour for a Voice clone (it is the
+  // same picture), its tint for a Trail clone (what its copy is tinted with).
+  const cloneColorOf = (clone) => {
+    if (cloneKindOf(clone) === 'Trail' && parseTint(clone.clone?.tint)) return clone.clone.tint.toUpperCase()
+    const source = trackById.get(clone.cloneOf)
+    return source ? resolvedColorOf(source) : resolvedColorOf(clone)
+  }
+
   const renderTrack = (trackId, target) => {
     const track = trackById.get(trackId)
     if (!track) return null
     const canonicalIndex = Math.max(0, tracks.findIndex(item => item.id === track.id))
-    const color = resolveAutoTrackColor(
-      track, canonicalIndex, trackPalette, TRACK_PALETTE_FALLBACK[canonicalIndex % 16])
+    const clone = isClone(track)
+    const color = clone ? cloneColorOf(track) : resolvedColorOf(track)
     const laneRows = lanesByTrack.get(track.id) ?? []
-    const reelRow = reelByTrack.get(track.id)
-    const roamRow = roamByTrack.get(track.id)
-    const sweepRow = sweepByTrack.get(track.id)
+    const reelRow = clone ? null : reelByTrack.get(track.id)
+    // A Clone's row is its lane: the header takes the row's height (the canvas
+    // row model's), so the two columns stay in lockstep.
+    const rowHeight = clone ? (cloneRowByTrack.get(track.id)?.height ?? trackHeight) : trackHeight
     return (
       <div key={track.id} className="track-header-group">
         <TrackHeader
           track={track}
           index={canonicalIndex}
-          trackHeight={trackHeight}
+          trackHeight={rowHeight}
           trackColor={color}
           labelInks={labelInks}
           isFocused={focusedTrackId === track.id}
           isSelected={selectedTrackIds.has(track.id)}
+          hasMotion={motionIds.has(String(track.id))}
+          cloneKind={clone ? cloneKindOf(track) : null}
           onMute={onMute}
           onSolo={onSolo}
           onPearl={onPearl}
-          lit={isHeard({ id: track.id, muted: !!track.muted, soloed: !!track.solo }, pearlItems)}
+          lit={clone ? undefined : isHeard({ id: track.id, muted: !!track.muted, soloed: !!track.solo }, pearlItems)}
           onVisualOnly={onVisualOnly}
           onRename={onRename}
           onRequestContextMenu={onRequestContextMenu}
           onFocus={onFocusTrack}
           onSelect={onSelectTrack}
           onOpenInMixer={onOpenInMixer}
-          onDragStart={(event) => beginTrackDrag(event, track.id)}
+          onDragStart={clone ? undefined : (event) => beginTrackDrag(event, track.id)}
           onDragOver={allowDrop}
           onDrop={(event) => dropAt(event, target)}
-          onOpenColorPicker={openColorPicker}
+          onOpenColorPicker={clone ? undefined : openColorPicker}
         />
         {reelRow && (
           <div
@@ -278,24 +327,19 @@ export default function TrackHeaderList({
               aria-expanded={!reelRow.collapsed}
               aria-label={reelRow.collapsed ? 'Expand Reel lane' : 'Collapse Reel lane'}
               data-hint={reelRow.collapsed ? 'Expand the Reel lane' : 'Collapse the Reel lane'}
+              data-hint-mods={cloneCountOf(track.id) > 0
+                ? `Its clones' lanes ${reelRow.collapsed ? 'expand' : 'collapse'} with it`
+                : undefined}
             >
               <Disclosure open={!reelRow.collapsed} />
             </button>
             <span className={styles.reelLabel}>Reel</span>
             <IcLock size={12} className={styles.groupIcon} aria-hidden="true" />
-            <span className={styles.reelHint}>Timing comes from notes</span>
-            <Toggle
-              size="sm" on={sweepLaneOpen.has(track.id)} onChange={() => toggleSweepLane(track.id)}
-              aria-label={`Sweep lane for ${track.name ?? 'track'}`}
-              hint="Show the Sweep lane: a Lens offset that runs across several notes."
-              hintMods="Keys sit on the timeline, not on a note. Zoom multiplies each note's framing; centre and rotation add."
-            >
-              Sweep
-            </Toggle>
+            <span className={styles.reelHint}>
+              {voiceCloneCountOf(track.id) > 0 ? 'Voice 0. Timing comes from notes' : 'Timing comes from notes'}
+            </span>
           </div>
         )}
-        {sweepRow && <SweepLaneHeader key={sweepRow.id} row={sweepRow} color={color} trackName={track.name} />}
-        {roamRow && <RoamLaneHeader key={roamRow.id} row={roamRow} color={color} trackName={track.name} />}
         {renderAutomationGroup(track.id)}
         {laneRows.map(lane => (
           <div

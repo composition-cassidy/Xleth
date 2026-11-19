@@ -19,9 +19,14 @@ import {
 } from './samplePreview.js'
 import styles from './browser/Browser.module.css'
 import { iconComponent } from '../ui-kit/icons'
+import { openColorGrade } from '../colorGrade/gradeActions.js'
+import { getGrade } from '../colorGrade/gradeApi.js'
+import BulkApplyDialog from './colorGrade/BulkApplyDialog.jsx'
 
 const IcArrowsClockwise = iconComponent('arrows-clockwise')
 const IcFolderOpen = iconComponent('folder-open')
+const IcPalette = iconComponent('palette')
+const IcWand = iconComponent('magic-wand')
 const IcPlay = iconComponent('play')
 const IcPlus = iconComponent('plus')
 const IcStopFill = iconComponent('stop', 'fill')
@@ -51,6 +56,8 @@ export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
   const [importing, setImporting] = useState(false)
   const [contextMenu, setContextMenu] = useState(null) // { x, y, source }
   const [labelPickerMenu, setLabelPickerMenu] = useState(null) // { x, y, source }
+  // Color Grade bulk apply: { fromSourceId, fromName, grade, preselected? } while its dialog is open.
+  const [bulkApply, setBulkApply] = useState(null)
   const [selectedId, setSelectedId] = useState(null)
   const autoPreview = useBrowserStore((s) => s.autoPreview)
   const prevSourceIds = useRef(new Set())
@@ -248,6 +255,37 @@ export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
         // Future: dedicated re-transcode endpoint
       },
     },
+    // ── Color Grade (only for sources with a picture) ─────────────────────
+    ...(contextMenu.source.hasVideo !== false ? [
+      { type: 'separator' },
+      {
+        label: 'Color Grade…',
+        icon: IcPalette,
+        onClick: () => {
+          const s = contextMenu.source
+          openColorGrade({ level: 'source', id: s.id }, {
+            name: s.name, stack: { source: { id: s.id, name: s.name } },
+          })
+        },
+      },
+      {
+        label: 'Apply This Grade to Other Sources…',
+        icon: IcPalette,
+        onClick: async () => {
+          const s = contextMenu.source
+          const res = await getGrade({ level: 'source', id: s.id })
+          if (res?.grade) setBulkApply({ fromSourceId: s.id, fromName: s.name, grade: res.grade })
+        },
+      },
+      {
+        label: 'Auto Grade Sources…',
+        icon: IcWand,
+        onClick: () => {
+          // Each ticked source is analysed on its own; this one starts ticked.
+          setBulkApply({ fromSourceId: null, fromName: '', grade: null, preselected: [contextMenu.source.id] })
+        },
+      },
+    ] : []),
     { type: 'separator' },
     {
       label: 'Remove',
@@ -386,6 +424,17 @@ export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
           <SelectionStrip source={selected} thumbnail={thumbnails[selected.id] || null} />
         )}
 
+        {/* ── Color Grade: bulk apply / Auto across sources ───────────── */}
+        {bulkApply && (
+          <BulkApplyDialog
+            fromSourceId={bulkApply.fromSourceId}
+            fromName={bulkApply.fromName}
+            grade={bulkApply.grade}
+            preselected={bulkApply.preselected ?? null}
+            onClose={() => setBulkApply(null)}
+          />
+        )}
+
         {/* ── Context menu ────────────────────────────────────────────── */}
         {contextMenu && (
           <ContextMenu
@@ -448,6 +497,18 @@ function SelectionStrip({ source, thumbnail }) {
           {source.proxyReady ? 'Proxy ready' : 'Transcoding proxy…'}
         </span>
       </div>
+      {isVideo && (
+        <IconButton
+          size="sm"
+          label="Color grade"
+          hint="Open this source's color grade: fix the footage once, and every clip and sample cut from it gets the fix"
+          onClick={() => openColorGrade({ level: 'source', id: source.id }, {
+            name: source.name, stack: { source: { id: source.id, name: source.name } },
+          })}
+        >
+          <IcPalette size={14} aria-hidden="true" />
+        </IconButton>
+      )}
       <IconButton
         size="sm"
         label={playing ? 'Stop preview' : 'Preview sound'}

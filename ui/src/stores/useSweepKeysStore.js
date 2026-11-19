@@ -38,6 +38,11 @@ const useSweepKeysStore = create((set, get) => ({
   selected: null,
   select: (selected) => set({ selected }),
 
+  /** The multi-selection: [{ trackId, channel, pos }] (see useRoamKeysStore.multi). */
+  multi: [],
+  setMulti: (multi) => set({ multi: multi ?? [] }),
+  clearMulti: () => { if (get().multi.length) set({ multi: [] }) },
+
   /** A gesture's local preview of a track's whole key list: { trackId, keys } or null. */
   draft: null,
   setDraft: (trackId, keys) => set({ draft: { trackId, keys } }),

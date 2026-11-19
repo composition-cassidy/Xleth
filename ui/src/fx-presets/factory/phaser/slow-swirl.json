@@ -1,0 +1,21 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "phaser",
+  "name": "Slow Swirl",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "rate": 0.4,
+      "depth": 85,
+      "stages": 2,
+      "feedback": 0,
+      "resonance": 1,
+      "width": 0,
+      "mix": 100,
+      "freq_low": 200,
+      "freq_high": 2000,
+      "spread": 0
+    }
+  }
+}

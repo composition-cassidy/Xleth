@@ -28,6 +28,7 @@ void AddClipsBatchCommand::execute(Timeline& timeline) {
             timeline.restoreClip(clip);
         }
     }
+    setApplied(!assignedIds_.empty());
     std::cout << "[Timeline] Added " << assignedIds_.size() << " clip(s) (batch)\n";
 }
 

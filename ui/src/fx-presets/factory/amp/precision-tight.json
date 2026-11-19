@@ -1,0 +1,23 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "amp",
+  "name": "Precision Tight",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "model": 5,
+      "drive": 6,
+      "bass": 4,
+      "mid": 5,
+      "treble": 6,
+      "sag": 5,
+      "tighten": 7,
+      "gate": 5,
+      "cab": 0,
+      "presence": 5,
+      "mix": 100,
+      "output": -3
+    }
+  }
+}

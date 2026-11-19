@@ -3,6 +3,9 @@ import { RESPONSE_SIZE } from '../components/mixer/eqGeometry.js'
 
 export const BAND_TYPES = ['Bell', 'Low Shelf', 'High Shelf', 'Low Pass', 'High Pass', 'Notch', 'Tilt']
 export const BAND_MODES = ['Static', 'Dynamic', 'Spectral']
+// Low Pass / High Pass steepness (b{i}_slope, 0..8). Only those two band types
+// read it; 1 (12 dB/oct) is the filter every older state has.
+export { BAND_SLOPES, DEFAULT_SLOPE, isCutBandType } from '../components/mixer/eqSlope.js'
 
 // Per-band channel routing. 'stereo' is the default: the band processes the
 // full stereo signal exactly as it always has. Array order IS the engine's
@@ -279,6 +282,7 @@ export const eqStoreInitializer = (set, get) => ({
     if (newIdx < 0) return
     await get().setBandChannel(newIdx, band.channel || 'stereo')
     await get().setBandParam(newIdx, 'q', band.q)
+    if (band.slope != null && band.slope !== 1) await get().setBandParam(newIdx, 'slope', band.slope)
     await get().setBandParam(newIdx, 'mode', band.mode)
     await get().setBandParam(newIdx, 'enabled', band.enabled)
     if (band.mode === 1) {

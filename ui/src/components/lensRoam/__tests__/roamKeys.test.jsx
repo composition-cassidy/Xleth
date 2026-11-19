@@ -186,7 +186,7 @@ describe('Roam inspector: keys', () => {
     await flush()
   }
 
-  it('Auto-key is a toggle shared with the lane header', async () => {
+  it('Auto-key is a toggle in the section header', async () => {
     await mountPanel()
     expect(useRoamKeysStore.getState().autoKey).toBe(false)
     const toggle = [...container.querySelectorAll('[aria-pressed]')].find((b) => /^(On|Off)$/.test(b.textContent.trim()))
@@ -206,18 +206,63 @@ describe('Roam inspector: keys', () => {
     expect(useRoamKeysStore.getState().selected).toEqual({ trackId: 7, channel: 'offsetX', pos: 960 })
   })
 
-  it('a keyed parameter is read-only with Auto-key off and says why; the lane toggle shows and hides', async () => {
+  it('a keyed parameter is read-only with Auto-key off and says why, pointing at Motion view', async () => {
     store.keys = [K('offsetX', 0, 0), K('offsetX', BAR, 2)]
     setPlayheadTick(BAR)
     await mountPanel()
     expect(byLabel('Offset X').getAttribute('aria-disabled')).toBe('true')
     expect(byLabel('Offset X').getAttribute('aria-valuetext')).toContain('2.00')     // the value AT THE PLAYHEAD, not the base
     expect(byLabel('Offset Y').getAttribute('aria-disabled')).toBeNull()
-    expect(container.querySelector('[data-testid="roam-keyed-note"]').textContent).toMatch(/Offset X is keyed/)
-    const lane = [...container.querySelectorAll('[aria-pressed]')].find((b) => /^(Shown|Hidden)$/.test(b.textContent.trim()))
-    expect(lane.textContent.trim()).toBe('Hidden')
-    await act(async () => { lane.click() })
-    expect(useRoamKeysStore.getState().laneOpen.has(7)).toBe(true)
+    const note = container.querySelector('[data-testid="roam-keyed-note"]').textContent
+    expect(note).toMatch(/Offset X is keyed/)
+    expect(note).toMatch(/Motion view/)
+    expect(note).not.toMatch(/\blane\b/)
+  })
+
+  // docs/XLETH_MOTION_VIEW_DESIGN.md R17 / 5.6: the Edit view has no key lane; the
+  // inspector's "Key lane" switch became "Show in Motion view".
+  it('"Show in Motion view" asks for the reveal of this track\'s Roam rows; no lane switch is left', async () => {
+    store.keys = [K('offsetX', 0, 0), K('offsetX', BAR, 2)]
+    const seen = []
+    const onReveal = (e) => seen.push(e.detail)
+    window.addEventListener('xleth-motion-reveal', onReveal)
+    try {
+      await mountPanel()
+      expect([...container.querySelectorAll('[aria-pressed]')].some((b) => /^(Shown|Hidden)$/.test(b.textContent.trim()))).toBe(false)
+      expect(byLabel('Key lane')).toBeNull()
+      const show = button('Show in Motion view')
+      expect(show).toBeTruthy()
+      expect(show.getAttribute('data-testid')).toBe('roam-show-in-motion')
+      expect(show.getAttribute('data-hint')).toMatch(/Motion view \(`\)/)
+      expect(show.disabled).toBe(false)
+      const before = useRoamKeysStore.getState()
+      await act(async () => { show.click() })
+      expect(seen).toEqual([{ trackId: 7, path: ['roam'] }])
+      // A view request only: no engine write, no lane state, no key selection change.
+      expect(timeline.setTrackRoamKeys).not.toHaveBeenCalled()
+      expect(timeline.setTrackRoam).not.toHaveBeenCalled()
+      expect(useRoamKeysStore.getState().laneOpen).toBe(before.laneOpen)
+      expect(useRoamKeysStore.getState().selected).toBe(before.selected)
+    } finally {
+      window.removeEventListener('xleth-motion-reveal', onReveal)
+    }
+  })
+
+  it('a track with no cell can still be shown in Motion view; the hint says it moves nothing yet', async () => {
+    timeline.getGridLayout = vi.fn(async () => ({ ...LAYOUT, slots: [] }))
+    const seen = []
+    const onReveal = (e) => seen.push(e.detail)
+    window.addEventListener('xleth-motion-reveal', onReveal)
+    try {
+      await mountPanel()
+      const show = button('Show in Motion view')
+      expect(show.disabled).toBe(false)
+      expect(show.getAttribute('data-hint')).toMatch(/no cell on the grid/)
+      await act(async () => { show.click() })
+      expect(seen).toEqual([{ trackId: 7, path: ['roam'] }])
+    } finally {
+      window.removeEventListener('xleth-motion-reveal', onReveal)
+    }
   })
 
   it('with Auto-key on a keyed box edits through a key at the playhead', async () => {

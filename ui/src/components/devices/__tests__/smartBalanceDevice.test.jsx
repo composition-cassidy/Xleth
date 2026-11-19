@@ -45,7 +45,10 @@ beforeEach(() => {
     getEffectParameters: vi.fn(async () => engineParams),
     setEffectParameter: vi.fn(),
     getEffectMeter: vi.fn(async () => [-20, -22, -25, -30, 1, 0, -1, 0]),
-    smartBalanceGetDebug: vi.fn(async () => ({ dryRms: [-20, -22, -25, -30], dynDelta: [0, 0, 0, 0], transient: [0, 0, 0, 0], overallRms: -18 })),
+    smartBalanceGetDebug: vi.fn(async () => ({
+      level: [-20, -22, -25, -30], ref: [-23, -24, -27, -31], presence: [1, 1, 1, 0.5],
+      transient: [false, false, false, false], program: -18, makeup: 0.4,
+    })),
     setEffectBypass: vi.fn(async () => true),
   }
   window.xleth = { audio, timeline: { getTracks: async () => [] } }
@@ -80,12 +83,31 @@ describe('Smart Balance device in the chain', () => {
     expect(aria('Mix')).toBe(`Mix, 100${T}%`)
   })
 
-  it('sections run in signal order: Measure, Band, Correct, Output', async () => {
+  it('sections run in signal order: Measure, Band, Correct, Tone, Output', async () => {
     await mount()
     const titles = Array.from(container.querySelectorAll('[role="heading"][aria-level="3"]')).map((h) => h.textContent)
-    const order = ['Measure', 'Band', 'Correct', 'Output'].map((t) => titles.indexOf(t))
+    const order = ['Measure', 'Band', 'Correct', 'Tone', 'Output'].map((t) => titles.indexOf(t))
     expect(order.every((i) => i >= 0)).toBe(true)
     expect([...order].sort((a, b) => a - b)).toEqual(order)
+  })
+
+  it('Warmth, Output and Loudness match: engine ranges, hydrated values, one write each', async () => {
+    engineParams = params({ warmth: 35, output: -2.5, loudness_match: 1 })
+    await mount()
+    expect(aria('Warmth')).toBe(`Warmth, 35${T}%`)
+    expect(aria('Output')).toBe(`Output, −2.5${T}dB`)
+    const range = (label) => [slider(label).getAttribute('aria-valuemin'), slider(label).getAttribute('aria-valuemax')]
+    expect(range('Warmth')).toEqual(['0', '100'])
+    expect(range('Output')).toEqual(['-12', '12'])
+
+    act(() => { slider('Warmth').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true })) })
+    expect(audio.setEffectParameter.mock.calls.some((c) => c[2] === 'warmth')).toBe(true)
+
+    const toggle = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Loudness match')
+    expect(toggle).toBeDefined()
+    expect(toggle.getAttribute('aria-pressed')).toBe('true')
+    act(() => toggle.click())
+    expect(audio.setEffectParameter).toHaveBeenCalledWith(3, 7, 'loudness_match', 0)
   })
 
   it('the Band block follows the selector: one block of three knobs for four bands', async () => {

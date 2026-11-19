@@ -1,0 +1,24 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "reverb",
+  "name": "Bus Glue Room",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "decay": 0.5,
+      "predelay": 0,
+      "size": 40,
+      "damping": 55,
+      "mod_rate": 30,
+      "mod_depth": 20,
+      "er_level": 60,
+      "er_late": 50,
+      "hicut": 8000,
+      "locut": 200,
+      "mix": 8,
+      "smoothness": 20,
+      "style": 1
+    }
+  }
+}

@@ -11,7 +11,9 @@
     flex: 0 0 auto;
     width: var(--device-w, auto);
     height: var(--device-h);
-    border: 1px solid var(--ui-g4);
+    /* A full outline (not the decorative g4 divider) so each device reads as its own
+     * object against the g0 well it sits in. */
+    border: 1px solid var(--ui-boundary);
     background: var(--ui-g1);
     color: var(--ui-ink);
     font-family: var(--ui-font);

@@ -32,6 +32,12 @@ export interface ValueControlProps extends HintProps {
   disabled?: boolean;
   /** Pixels for the full sweep. Knob 180, number box 200, fader its rail length. */
   pxPerRange?: number;
+  /**
+   * The wheel steps the value (default true). False leaves the wheel to the
+   * container, so a value cell inside a scrolling list (Motion view's property
+   * tree) scrolls the list instead of eating the wheel; drag, keys and typing still work.
+   */
+  wheel?: boolean;
   /** Live, at most once per animation frame. */
   onChange?: (value: number) => void;
   /** Once per gesture: pointerup, reset, wheel step, key nudge, Enter / blur after typing. The undo boundary. */

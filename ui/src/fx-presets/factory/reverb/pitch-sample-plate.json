@@ -1,0 +1,24 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "reverb",
+  "name": "Pitch Sample Plate",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "decay": 1.4,
+      "predelay": 35,
+      "size": 50,
+      "damping": 45,
+      "mod_rate": 30,
+      "mod_depth": 20,
+      "er_level": 50,
+      "er_late": 100,
+      "hicut": 7000,
+      "locut": 250,
+      "mix": 18,
+      "smoothness": 30,
+      "style": 2
+    }
+  }
+}

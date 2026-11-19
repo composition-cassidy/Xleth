@@ -171,6 +171,9 @@ void to_json(nlohmann::json& j, const Clip& c) {
     // Lens (schema v8). Always written, so a v8 file states every clip's
     // framing explicitly and "missing" below can only mean pre-v8.
     j["lens"] = lensroam::lensTrackToJson(c.lens);
+    // Color grade: written only when it is not the default (most clips).
+    if (!c.colorGrade.isDefault())
+        j["colorGrade"] = xleth::grade::colorGradeToJson(c.colorGrade);
 }
 
 void from_json(const nlohmann::json& j, Clip& c) {
@@ -222,4 +225,9 @@ void from_json(const nlohmann::json& j, Clip& c) {
     // which is the new-clip default (Cover).
     c.lens = j.contains("lens") ? lensroam::lensTrackFromJson(j.at("lens"))
                                 : LensTrack{};
+
+    // Color grade. Missing (every clip before the feature, and every ungraded
+    // clip since) = neutral.
+    c.colorGrade = j.contains("colorGrade")
+        ? xleth::grade::colorGradeFromJson(j.at("colorGrade")) : ColorGrade{};
 }

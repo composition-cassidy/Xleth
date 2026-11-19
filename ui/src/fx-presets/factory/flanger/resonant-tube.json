@@ -1,0 +1,17 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "flanger",
+  "name": "Resonant Tube",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "rate": 0.08,
+      "depth": 40,
+      "delay": 4.5,
+      "feedback": 90,
+      "width": 20,
+      "mix": 45
+    }
+  }
+}

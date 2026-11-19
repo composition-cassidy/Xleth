@@ -628,7 +628,7 @@ const useSandboxStore = create((set, get) => ({
         bufferSampleRate: res.bufferSampleRate,
         region: { ...region, audioFilePath: filePath, startTime, endTime },
       })
-      set((state) => ({ layers: [...state.layers, layer], activeLayerId: layer.id, selection: null }))
+      set((state) => ({ layers: [...state.layers.filter((l) => l.id !== layer.id), layer], activeLayerId: layer.id, selection: null }))
       get().renderLayer(layer.id, 'open')
       get().refreshHistory()
       return layer
@@ -1074,7 +1074,19 @@ const useSandboxStore = create((set, get) => ({
   // the manual renderComposite() action and the auto-render pipeline, which
   // need different rules for when to apply (or discard) the result.
   async _fetchCompositeRender() {
-    const res = await window.xleth?.sandbox?.renderComposite()
+    let res = await window.xleth?.sandbox?.renderComposite()
+    // Self-heal: the engine refuses to mix while ANY of its layers is
+    // unrendered, including one this store never learned about (a renderer
+    // reload that raced an openTarget, an engine-side add, ...). Adopt the
+    // strays, let them render, and retry once, rather than failing every mix
+    // for the rest of the session on a layer the user cannot even see.
+    if (!res?.ready && /not rendered yet/.test(res?.reason || '')) {
+      const adopted = await get().adoptUnknownEngineLayers()
+      if (adopted > 0) {
+        await get()._waitForLayersSettled()
+        res = await window.xleth?.sandbox?.renderComposite()
+      }
+    }
     if (!res?.ready) throw new Error(res?.reason || 'composite render rejected')
     return {
       numChannels: res.numChannels,
@@ -2103,7 +2115,7 @@ const useSandboxStore = create((set, get) => ({
         bufferSampleRate: res.bufferSampleRate,
         region: null,
       })
-      set((state) => ({ layers: [...state.layers, layer], activeLayerId: layer.id, selection: null }))
+      set((state) => ({ layers: [...state.layers.filter((l) => l.id !== layer.id), layer], activeLayerId: layer.id, selection: null }))
       get().renderLayer(layer.id, 'open')
       get().refreshHistory()
     } catch (e) {
@@ -2239,6 +2251,39 @@ const useSandboxStore = create((set, get) => ({
         : (layers[0]?.id ?? null)
       return { layers, activeLayerId, selection: null }
     })
+  },
+
+  // Additive resync: adopt engine layers this store has never seen, leaving
+  // every layer it already holds untouched. Unlike reloadFromEngine (a
+  // wholesale replace, only safe when nothing local is in flight) this can run
+  // at any time, including while addSourceFromRegion is mid-add, because it
+  // only ever ADDS ids absent from the store at commit time. Each adopted,
+  // bound layer gets its render kicked off so the composite can include it.
+  // Returns the number of layers adopted.
+  async adoptUnknownEngineLayers() {
+    try {
+      let ws = await window.xleth?.sandbox?.getWorkspace?.()
+      if (typeof ws === 'string') ws = JSON.parse(ws)
+      if (!ws || !Array.isArray(ws.layers)) return 0
+      const known = new Set(get().layers.map((l) => l.id))
+      const strays = ws.layers.filter((wl) => !known.has(wl.id)).map((wl) => layerFromWorkspace(wl))
+      if (strays.length === 0) return 0
+      let adopted = []
+      set((state) => {
+        const have = new Set(state.layers.map((l) => l.id))
+        adopted = strays.filter((l) => !have.has(l.id))
+        if (adopted.length === 0) return {}
+        const layers = [...state.layers, ...adopted]
+        return { layers, activeLayerId: state.activeLayerId ?? layers[0]?.id ?? null }
+      })
+      for (const l of adopted) {
+        if (l.sourceBufferId >= 0) get().renderLayer(l.id, 'adopt')
+      }
+      return adopted.length
+    } catch (e) {
+      console.warn('[SampleSandbox] adoptUnknownEngineLayers failed:', e?.message || e)
+      return 0
+    }
   },
 
   // Pull the engine's workspace and adopt it wholesale. The project-load entry

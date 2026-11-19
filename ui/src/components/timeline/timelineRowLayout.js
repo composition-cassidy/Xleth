@@ -20,10 +20,15 @@
 // helper is PURE: no React, no store, no DOM. Parent-track rows keep the exact
 // TRACK_HEIGHT they always had — child rows only INSERT extra space, so the
 // arrangement of audio/pattern clips is unchanged when a track has no lanes.
+//
+// The Edit view has no Roam or Sweep key lanes (docs/XLETH_MOTION_VIEW_DESIGN.md
+// R17): motion keys are edited in Motion view. Old `roamLanes` / `sweepLanes`
+// inputs are ignored, so a caller that still passes them gets the same rows as
+// one that does not.
 
 import { DEFAULT_TRACK_HEIGHT, TRACK_HEIGHT } from '../../constants/timeline.js'
-import { reelLaneHeight } from './reelLaneModel.js'
-import { roamLaneHeight } from './roamLaneModel.js'
+import { cloneLaneHeight, reelLaneHeight } from './reelLaneModel.js'
+import { cloneKindOf, isClone } from '../../clones/cloneModel.js'
 
 // Child macro automation lanes are shorter than full tracks — enough vertical
 // room for a clip body + a small curve preview, but visibly subordinate to the
@@ -121,8 +126,6 @@ export function buildTimelineRows({
   automationLaneHeight = Math.round(AUTOMATION_LANE_HEIGHT * trackHeight / DEFAULT_TRACK_HEIGHT),
   automationGroupHeaderHeight = AUTOMATION_GROUP_HEADER_HEIGHT,
   reelLanes = null,
-  roamLanes = null,
-  sweepLanes = null,
 } = {}) {
   const rows = []
   if (!Array.isArray(tracks)) return rows
@@ -143,6 +146,45 @@ export function buildTimelineRows({
   const appendTrack = (track) => {
     const trackIndex = visibleTrackIndex++
     const trackId = track?.id
+    // A Clone (docs/XLETH_CLONE_SPEC.md) is a track whose row IS a read-only Reel
+    // lane: it owns no blocks, so its row shows the ghost clips of the notes its
+    // cell plays (reelLanes[cloneId], from buildReelModel) and resolves to no
+    // track index for tools and drops. It keeps its track index, so trackTop and
+    // the visibleTracks order still line up. It collapses with its source's Reel
+    // lane (the caller passes the source's state in its entry).
+    if (isClone(track)) {
+      const lane = reelLanes?.[String(trackId)]
+      const laneCollapsed = lane?.collapsed === true
+      const subRows = Math.max(1, (lane?.subRows | 0) || 1)
+      const height = cloneLaneHeight({ subRows, collapsed: laneCollapsed, trackHeight })
+      rows.push({
+        id: `track:${trackId}`,
+        rowType: 'track',
+        laneKind: 'clone',
+        trackId,
+        trackIndex,
+        parentTrackId: null,
+        sourceTrackId: track.cloneOf,
+        cloneKind: cloneKindOf(track),
+        reelTrackId: trackId,
+        macroNodeId: null,
+        laneId: null,
+        y,
+        height,
+        trackHeight,
+        visible: true,
+        collapsed: laneCollapsed,
+        subRows,
+        label: track?.name ?? '',
+      })
+      y += height
+      if (collapsedSet?.has(trackId)) return
+      y = pushAutomationGroupRows(rows, {
+        ownerTrackId: trackId, ownerLabel: track?.name ?? '', y, automationGroups,
+        laneHeight: automationLaneHeight, headerHeight: automationGroupHeaderHeight,
+      })
+      return
+    }
     rows.push({
       id: `track:${trackId}`,
       rowType: 'track',
@@ -187,49 +229,6 @@ export function buildTimelineRows({
         label: 'Reel',
       })
       y += reelHeight
-    }
-
-    // Sweep lane (P11; a Pattern track with a Reel lane, the lane switched on): the
-    // child row directly under the Reel lane. A graph of ONE Lens parameter on the
-    // arrangement's ticks: the track's timeline-absolute Lens offset.
-    if (sweepLanes?.[String(trackId)]) {
-      const sweepHeight = roamLaneHeight(trackHeight)
-      rows.push({
-        id: `sweep:${trackId}`,
-        rowType: 'sweep',
-        laneKind: 'sweep',
-        trackId: null,
-        trackIndex: null,
-        parentTrackId: trackId,
-        parentTrackIndex: trackIndex,
-        y,
-        height: sweepHeight,
-        trackHeight,
-        visible: true,
-        label: 'Sweep',
-      })
-      y += sweepHeight
-    }
-
-    // Roam key lane (a track with a cell, the lane switched on): the next child row,
-    // under the Reel lane. A graph of ONE Roam parameter on the arrangement's ticks.
-    if (roamLanes?.[String(trackId)]) {
-      const roamHeight = roamLaneHeight(trackHeight)
-      rows.push({
-        id: `roam:${trackId}`,
-        rowType: 'roam',
-        laneKind: 'roam',
-        trackId: null,
-        trackIndex: null,
-        parentTrackId: trackId,
-        parentTrackIndex: trackIndex,
-        y,
-        height: roamHeight,
-        trackHeight,
-        visible: true,
-        label: 'Roam',
-      })
-      y += roamHeight
     }
 
     // Automation lanes group directly under their owning track row.
@@ -302,14 +301,16 @@ export function buildTimelineRows({
 // shifted geometry is identical everywhere.
 export function buildTrackLayout({
   tracks, graphStates = {}, collapsed = null, folderLayout = null, trackHeight = TRACK_HEIGHT,
-  automationGroups = null, reelLanes = null, roamLanes = null, sweepLanes = null,
+  automationGroups = null, reelLanes = null,
 } = {}) {
-  const rows = buildTimelineRows({ tracks, graphStates, collapsed, folderLayout, trackHeight, automationGroups, reelLanes, roamLanes, sweepLanes })
+  const rows = buildTimelineRows({ tracks, graphStates, collapsed, folderLayout, trackHeight, automationGroups, reelLanes })
   const trackRows = rows.filter((r) => r.rowType === 'track')
   const macroRows = rows.filter((r) => r.rowType === 'macroAutomation')
   const reelRows = rows.filter((r) => r.rowType === 'reel')
-  const roamRows = rows.filter((r) => r.rowType === 'roam')
-  const sweepRows = rows.filter((r) => r.rowType === 'sweep')
+  // Clone rows are track rows whose band is a Reel-style lane.
+  const cloneRows = rows.filter((r) => r.laneKind === 'clone')
+  // Every row that paints ghost clips (Reel lanes and Clone rows), top to bottom.
+  const reelLaneRows = rows.filter((r) => r.rowType === 'reel' || r.laneKind === 'clone')
   const folderRows = rows.filter((r) => r.rowType === 'folder')
   const automationGroupRows = rows.filter((r) => r.rowType === 'automationGroupHeader')
   const automationLaneRows = rows.filter((r) => r.rowType === 'automationLane')
@@ -337,12 +338,16 @@ export function buildTrackLayout({
   // The Reel lane resolves to -1, like the automation lanes: it is read-only, so
   // no tool may act on the parent track's blocks through it (a click that fell
   // through to the parent would select or drag a block the pointer is not over).
+  // A Clone's row resolves to -1 for the same reason: it is a read-only lane, and
+  // the engine refuses pattern blocks on a Clone, so nothing may be drawn,
+  // dropped or pasted onto it.
   function trackIndexAtY(y) {
     if (trackCount === 0) return -1
     if (y < 0) return 0
     for (const r of rows) {
       if (y >= r.y && y < r.y + r.height) {
-        if (r.rowType === 'folder' || r.rowType === 'automationGroupHeader' || r.rowType === 'automationLane' || r.rowType === 'reel' || r.rowType === 'roam' || r.rowType === 'sweep') return -1
+        if (r.rowType === 'folder' || r.rowType === 'automationGroupHeader' || r.rowType === 'automationLane' || r.rowType === 'reel') return -1
+        if (r.laneKind === 'clone') return -1
         return r.rowType === 'track' ? r.trackIndex : r.parentTrackIndex
       }
     }
@@ -357,28 +362,10 @@ export function buildTrackLayout({
     return null
   }
 
-  // Returns the Roam key lane row whose band contains Y, else null. Like the Reel
-  // lane it resolves to no track (-1) in trackIndexAtY: a click in it must never
-  // fall through to the parent track's blocks.
-  function roamRowAtY(y) {
-    for (const r of roamRows) {
-      if (y >= r.y && y < r.y + r.height) return r
-    }
-    return null
-  }
-
-  // Returns the Sweep lane row whose band contains Y, else null. Like the Roam lane
-  // it resolves to no track (-1): a click in it never reaches the parent's blocks.
-  function sweepRowAtY(y) {
-    for (const r of sweepRows) {
-      if (y >= r.y && y < r.y + r.height) return r
-    }
-    return null
-  }
-
-  // Returns the Reel lane row whose band contains Y, else null.
+  // Returns the Reel lane row (a Reel lane, or a Clone's row) whose band contains
+  // Y, else null. `row.reelTrackId ?? row.parentTrackId` names the lane's clips.
   function reelRowAtY(y) {
-    for (const r of reelRows) {
+    for (const r of reelLaneRows) {
       if (y >= r.y && y < r.y + r.height) return r
     }
     return null
@@ -399,8 +386,8 @@ export function buildTrackLayout({
     trackRows,
     macroRows,
     reelRows,
-    roamRows,
-    sweepRows,
+    cloneRows,
+    reelLaneRows,
     folderRows,
     automationGroupRows,
     automationLaneRows,
@@ -412,10 +399,8 @@ export function buildTrackLayout({
     macroRowAtY,
     reelRowAtY,
     getReelRows: () => reelRows,
-    roamRowAtY,
-    getRoamRows: () => roamRows,
-    sweepRowAtY,
-    getSweepRows: () => sweepRows,
+    getCloneRows: () => cloneRows,
+    getReelLaneRows: () => reelLaneRows,
     automationLaneRowAtY,
     folderRowAtY: (y) => folderRows.find(r => y >= r.y && y < r.y + r.height) ?? null,
     automationGroupRowAtY: (y) => automationGroupRows.find(r => y >= r.y && y < r.y + r.height) ?? null,

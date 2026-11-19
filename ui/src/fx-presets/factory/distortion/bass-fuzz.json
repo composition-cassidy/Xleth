@@ -1,0 +1,19 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "distortion",
+  "name": "Bass Fuzz",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "mode": 5,
+      "drive": 18,
+      "tone": 3500,
+      "filter_pos": 1,
+      "mix": 20,
+      "symmetry": 100,
+      "bits": 16,
+      "downsample": 1
+    }
+  }
+}

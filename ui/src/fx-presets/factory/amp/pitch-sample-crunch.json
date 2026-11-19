@@ -1,0 +1,23 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "amp",
+  "name": "Pitch Sample Crunch",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "model": 1,
+      "drive": 6,
+      "bass": 4,
+      "mid": 7,
+      "treble": 6,
+      "sag": 5,
+      "tighten": 5,
+      "gate": 0,
+      "cab": 0,
+      "presence": 6,
+      "mix": 60,
+      "output": 0
+    }
+  }
+}

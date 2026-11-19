@@ -2334,6 +2334,76 @@ void testHopPhaseAcrossSwitch()
     }
 }
 
+// T-C: the process-wide tier-table cache (Core::setTableCacheEnabled) is invisible. A Core prepared from the cache (a hit) and the one whose prepare() filled it
+// (a miss) must produce the samples a cache-less Core does, bit for bit, on every tier and across live tier switches (which read all three engines' tables), at
+// several sample rates. Also prints what the cache saves per prepare(). Runs first so the miss path is really a miss for the rates used here.
+void testTableCacheBitIdentity()
+{
+    const double rates[] = { 32000.0, 44100.0, 48000.0, 96000.0 };
+    const Core::FrameTier tiers[] = { Core::FrameTier::Fast, Core::FrameTier::Normal, Core::FrameTier::High };
+    Params p; p.depth = 0.9f; p.sensitivity = 0.8f; p.hardKnee = true;
+    for (double sr : rates)
+    {
+        Stereo in = makePink(static_cast<int>(2.0 * sr), -18.0, 4242);
+        for (int c = 0; c < 2; ++c) { applyPeak(in.ch[c], sr, 90.0, 9.0, 14.0); applyPeak(in.ch[c], sr, 1300.0, 12.0, 12.0); applyPeak(in.ch[c], sr, 6200.0, 10.0, 10.0); }
+        const std::vector<int> sched = { 64, 480, 1, 1024, 37 };
+        auto run = [&](Core& core, Core::FrameTier start, std::vector<float>& bandsOut)
+        {
+            core.setFrameTier(start);
+            core.prepare(sr, 1024, 2);
+            // First half on the prepare-time tier, then two live switches so the other two engines' tables are read as well.
+            Stereo out = in;
+            const int n = in.size();
+            size_t si = 0; int switches = 0;
+            for (int pos = 0; pos < n;)
+            {
+                if (switches == 0 && pos >= n / 2)     { core.requestTier(static_cast<Core::FrameTier>((static_cast<int>(start) + 1) % 3)); ++switches; }
+                if (switches == 1 && pos >= 3 * n / 4) { core.requestTier(static_cast<Core::FrameTier>((static_cast<int>(start) + 2) % 3)); ++switches; }
+                const int b = std::min(sched[si++ % sched.size()], n - pos);
+                float* ptrs[2] = { out.ch[0].data() + pos, out.ch[1].data() + pos };
+                core.process(ptrs, 2, b, p);
+                pos += b;
+            }
+            bandsOut.clear();
+            for (int c = 0; c < 2; ++c) { const float* r = core.bandReductionDb(c); bandsOut.insert(bandsOut.end(), r, r + core.numBands()); }
+            return out;
+        };
+        bool same = true, cut = false;
+        double freshMs = 0.0, hitMs = 0.0;
+        for (Core::FrameTier t : tiers)
+        {
+            std::vector<float> bRef, bMiss, bHit;
+            Core::setTableCacheEnabled(false);
+            Core ref;
+            const auto t0 = std::chrono::steady_clock::now();
+            const Stereo yRef = run(ref, t, bRef);
+            Core::setTableCacheEnabled(true);
+            Core miss, hit;
+            const Stereo yMiss = run(miss, t, bMiss);
+            const Stereo yHit  = run(hit, t, bHit);
+            (void) t0;
+            same = same && sameDiff(yRef, yMiss).maxAbs == 0.0 && sameDiff(yRef, yHit).maxAbs == 0.0
+                        && bRef.size() == bHit.size() && std::memcmp(bRef.data(), bHit.data(), bRef.size() * sizeof(float)) == 0
+                        && std::memcmp(bRef.data(), bMiss.data(), bRef.size() * sizeof(float)) == 0;
+            cut = cut || sameDiff(yRef, in).maxAbs > 1.0e-3;   // the detector really engaged: this is not an identity-vs-identity comparison
+        }
+        {
+            // prepare() cost: from scratch, and from the cache.
+            Core::setTableCacheEnabled(false);
+            Core a; auto t0 = std::chrono::steady_clock::now(); a.prepare(sr, 1024, 2);
+            freshMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            Core::setTableCacheEnabled(true);
+            Core b; t0 = std::chrono::steady_clock::now(); b.prepare(sr, 1024, 2);
+            hitMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        }
+        char buf[320];
+        std::snprintf(buf, sizeof buf, "T-C table cache at %.0f Hz: cache miss and cache hit both bit-identical to a cache-less Core (output and band reductions, 3 start tiers, "
+                                       "2 live switches each)%s; prepare() %.2f ms from scratch, %.2f ms from the cache", sr, cut ? "" : " [DETECTOR NEVER ENGAGED]", freshMs, hitMs);
+        check(same && cut, buf);
+    }
+    Core::setTableCacheEnabled(true);
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -2345,7 +2415,7 @@ int main(int argc, char** argv)
     if (!only.empty())
     {
         struct G { const char* name; void (*fn)(); };
-        const G groups[] = { { "testFixedTierBitIdentity", testFixedTierBitIdentity }, { "testParamHardening", testParamHardening },
+        const G groups[] = { { "testTableCacheBitIdentity", testTableCacheBitIdentity }, { "testFixedTierBitIdentity", testFixedTierBitIdentity }, { "testParamHardening", testParamHardening },
                              { "testHopPhaseAcrossSwitch", testHopPhaseAcrossSwitch }, { "testTierSwitchAllocations", testTierSwitchAllocations },
                              { "testTierSwitchTransitions", testTierSwitchTransitions }, { "testMidSideAcrossSwitch", testMidSideAcrossSwitch }, { "testTierSwitchContinuity", testTierSwitchContinuity },
                              { "testTierSwitchStress", testTierSwitchStress }, { "testLowFreqPath", testLowFreqPath } };
@@ -2353,6 +2423,7 @@ int main(int argc, char** argv)
         std::printf("[ResCore] --- %d passed, %d failed ---\n", g_pass, g_fail);
         return g_fail == 0 ? 0 : 1;
     }
+    testTableCacheBitIdentity();
     testLatency();
     testTierSizes();
     testIdentityAndCola();

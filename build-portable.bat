@@ -51,6 +51,14 @@ echo [build-portable] Output: dist\Xleth-%XLETH_VERSION%-portable.exe
 echo.
 
 pushd ui
+call node scripts/brand-engine-host.cjs --strict
+set "RC=!ERRORLEVEL!"
+if not "!RC!"=="0" (
+    popd
+    echo [build-portable] Engine host branding failed ^(!RC!^)
+    exit /b !RC!
+)
+
 call npm run build
 set "RC=!ERRORLEVEL!"
 if not "!RC!"=="0" (

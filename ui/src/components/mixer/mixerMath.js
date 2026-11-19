@@ -60,8 +60,8 @@ export function insertLabel(chain, fxMode) {
 export const GAIN_FORMAT = Object.freeze({ signed: true })
 
 // A strip's rows other than its insert list and its fader, in px (MixerStrip.module.css:
-// head 21, M/S/V 24, knobs 24, volume 24, cable 20, output 26, seven 1px gaps).
-export const STRIP_FIXED_H = 146
+// head 21, M/S/V 24, width knob 24, pan slider 24, volume 24, cable 20, output 26, eight 1px gaps).
+export const STRIP_FIXED_H = 171
 export const INSERT_ROW_H = 16
 export const FADER_MIN_H = 64
 /** On a dock too short for three rows above a 64px fader, the fader may go down to this. */

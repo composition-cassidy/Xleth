@@ -1,0 +1,382 @@
+/* Motion view (docs/XLETH_MOTION_VIEW_DESIGN.md 5.3, 5.7): the property tree in the
+ * header column (DOM) and the key area (canvas, sized to the visible viewport).
+ * Tokens only; text 11-12 px, tabular numerals; 24 px rows and hit areas; no
+ * animation on any edit-loop action; no box-shadow (docked surface). */
+@layer kit {
+  /* ── Header column ─────────────────────────────────────────────────────── */
+  .column {
+    box-sizing: border-box;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border-right: 1px solid var(--ui-g4);
+    background: var(--ui-g1);
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .spacer {
+    box-sizing: border-box;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 0 var(--space-1) 0 var(--space-2);
+    border-bottom: 1px solid var(--ui-g4);
+    background: var(--ui-g2);
+    color: var(--ui-ink-3);
+    font-size: var(--type-11);
+  }
+
+  .spacerLabel {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .spacerValue {
+    flex: none;
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  .spacerNav {
+    flex: none;
+    width: calc(var(--hit-min) * 3);
+  }
+
+  .treeScroll {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-width: none;
+  }
+
+  .treeScroll::-webkit-scrollbar {
+    display: none;
+  }
+
+  .treeBody {
+    position: relative;
+    width: 100%;
+  }
+
+  .footer {
+    box-sizing: border-box;
+    flex-shrink: 0;
+    border-top: 1px solid var(--ui-g4);
+    background: var(--ui-g2);
+  }
+
+  .empty {
+    padding: var(--space-3);
+    color: var(--ui-ink-3);
+    font-size: var(--type-12);
+  }
+
+  /* ── Rows ──────────────────────────────────────────────────────────────── */
+  .row {
+    box-sizing: border-box;
+    position: absolute;
+    left: 0;
+    right: 0;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding-right: var(--space-1);
+    border-bottom: 1px solid var(--ui-g2);
+    background: var(--ui-g1);
+    color: var(--ui-ink-2);
+    white-space: nowrap;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  .row[data-kind="track"] {
+    gap: var(--space-1);
+    border-bottom-color: var(--ui-g4);
+    background: var(--ui-g2);
+    color: var(--ui-ink);
+    font-weight: 500;
+  }
+
+  .row[data-kind="group"] {
+    color: var(--ui-ink);
+  }
+
+  .row[data-kind="track"][data-focused="true"] {
+    background: var(--ui-g3);
+  }
+
+  .row[data-animated="true"] .labelText {
+    color: var(--ui-ink);
+  }
+
+  .row[data-selected="true"] {
+    background: color-mix(in srgb, var(--ui-select) 14%, var(--ui-g1));
+  }
+
+  .row[data-kind="track"][data-selected="true"] {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+    background: var(--ui-g2);
+  }
+
+  .row[data-selected="true"]::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: var(--ui-select);
+  }
+
+  .row[data-kind="track"][data-selected="true"]::before {
+    content: none;
+  }
+
+  .row[data-muted="true"] .chip {
+    opacity: var(--ui-mute-opacity);
+  }
+
+  /* The disclosure / the empty slot it leaves on property rows: 24 px. */
+  .twirl {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--hit-min);
+    height: var(--hit-min);
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--ui-ink-2);
+    cursor: pointer;
+  }
+
+  .twirl:hover {
+    color: var(--ui-ink);
+  }
+
+  .twirl:focus-visible,
+  .stopwatch:focus-visible,
+  .label:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  .twirlIcon {
+    flex: none;
+  }
+
+  .twirlIcon[data-open="true"] {
+    transform: rotate(90deg);
+  }
+
+  .slot {
+    flex: none;
+    width: var(--hit-min);
+    height: var(--hit-min);
+  }
+
+  .chip {
+    flex: none;
+    width: 4px;
+    height: 14px;
+    border-radius: 1px;
+    background: var(--track-chip, var(--ui-ink-3));
+  }
+
+  .label {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    height: var(--hit-min);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: default;
+  }
+
+  .labelText {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* A mask row's inline name field (Rename). */
+  .nameField {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .tag {
+    flex: none;
+    padding: 0 var(--space-1);
+    border: 1px solid var(--ui-g4);
+    border-radius: 2px;
+    color: var(--ui-ink-3);
+    font-size: var(--type-11);
+    font-weight: 400;
+    line-height: 14px;
+  }
+
+  .count {
+    flex: none;
+    color: var(--ui-ink-3);
+    font-size: var(--type-11);
+    font-weight: 400;
+  }
+
+  .trackTools {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .parent {
+    max-width: 128px;
+  }
+
+  /* A Trail clone's "follows <source>", where other tracks have the Parent picker. */
+  .follows {
+    display: inline-block;
+    max-width: 128px;
+    line-height: var(--hit-min);
+    padding: 0 var(--space-1);
+    overflow: hidden;
+    color: var(--ui-ink-3);
+    font-size: var(--type-11);
+    font-weight: 400;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* A read-only group line (a Linked Voice clone's Lens). */
+  .row[data-readonly="true"] .labelText {
+    color: var(--ui-ink-3);
+  }
+
+  /* ── Key toggle (stopwatch, R3) ────────────────────────────────────────── */
+  .stopwatch {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--hit-min);
+    height: var(--hit-min);
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 2px;
+    background: transparent;
+    color: var(--ui-ink-3);
+    cursor: pointer;
+  }
+
+  .stopwatch:hover {
+    color: var(--ui-ink);
+  }
+
+  .stopwatch[aria-pressed="true"] {
+    color: var(--ui-value);
+  }
+
+  .stopwatch:disabled {
+    cursor: default;
+    opacity: var(--ui-mute-opacity);
+  }
+
+  .glyph {
+    display: block;
+  }
+
+  /* ── Value cell (R4) ───────────────────────────────────────────────────── */
+  .value {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .valueText {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    height: var(--hit-min);
+    padding: 0 var(--space-1);
+    color: var(--ui-ink-3);
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+
+  /* ── Key navigation (prev / add-or-at-key / next) ──────────────────────── */
+  .nav {
+    flex: none;
+    display: flex;
+    align-items: center;
+  }
+
+  .navHidden {
+    visibility: hidden;
+  }
+
+  .navBtn[data-at-key="true"] {
+    color: var(--ui-value);
+  }
+
+  /* ── Key area (canvas column) ──────────────────────────────────────────── */
+  .keyHost {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .keyScroll {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  .keySpacer {
+    position: relative;
+    width: 100%;
+  }
+
+  .stage {
+    position: sticky;
+    top: 0;
+    left: 0;
+    width: 100%;
+    overflow: hidden;
+  }
+
+  .canvas {
+    position: absolute;
+    left: 0;
+    top: 0;
+    display: block;
+  }
+
+  .canvas[data-layer="overlay"] {
+    cursor: default;
+  }
+}

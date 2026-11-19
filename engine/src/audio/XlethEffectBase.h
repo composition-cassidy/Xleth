@@ -264,6 +264,48 @@ public:
     // in the graph); effects read onset events from this pointer instead.
     static void setCurrentMidiBuffer(juce::MidiBuffer* buf) { sCurrentMidi_ = buf; }
 
+    // ── Every track's MidiBuffer this block (set by MixEngine) ──────────────
+    // The per-track onset buffers above are filled for ALL tracks before any chain
+    // runs, so an effect can read another track's notes for the same block (the
+    // Szkrezh "Keys" source). MixEngine publishes the table right after filling the
+    // buffers and clears it when the block ends; outside that window
+    // findTrackMidi() returns nullptr. Audio thread only, never stored.
+    struct TrackMidiRef
+    {
+        int                     trackId = 0;
+        const juce::MidiBuffer* midi    = nullptr;
+    };
+
+    static void setTrackMidiDirectory(const TrackMidiRef* refs, int count) noexcept
+    {
+        sTrackMidiRefs_  = refs;
+        sTrackMidiCount_ = refs != nullptr ? count : 0;
+    }
+
+    static const juce::MidiBuffer* findTrackMidi(int trackId) noexcept
+    {
+        for (int i = 0; i < sTrackMidiCount_; ++i)
+            if (sTrackMidiRefs_[i].trackId == trackId)
+                return sTrackMidiRefs_[i].midi;
+        return nullptr;
+    }
+
+    // ── Tail hold (audio thread) ────────────────────────────────────────────
+    // MixEngine stops running a track's chain once its content has ended and the
+    // chain output has stayed under -60 dB for 50 ms. An effect whose output can be
+    // silent for longer than that while it still holds material it WILL play (a
+    // granular echo whose next grain has not reached the audio yet) raises this
+    // during processEffect; MixEngine clears it before the chain runs and reads it
+    // after, and a raised flag counts that block as not silent. The drain's 30 s
+    // hard cap still applies.
+    static void raiseTailHold() noexcept { sTailHold_ = true; }
+    static bool takeTailHold() noexcept
+    {
+        const bool held = sTailHold_;
+        sTailHold_ = false;
+        return held;
+    }
+
     // ── Smoothing registration ───────────────────────────────────────────────
     // Call from the subclass constructor (after the base constructor has run).
     // Pointers are resolved and smoothers initialised in prepareToPlay().
@@ -946,6 +988,11 @@ private:
     // ── Per-block MidiBuffer pointer (audio-thread only, single-threaded) ──
     static inline juce::MidiBuffer* sCurrentMidi_ = nullptr;
     static inline thread_local RealtimeTimingContext sRealtimeTimingContext_ {};
+
+    // ── Per-block track MIDI table and tail-hold flag (audio thread) ──────────
+    static inline thread_local const TrackMidiRef* sTrackMidiRefs_  = nullptr;
+    static inline thread_local int                 sTrackMidiCount_ = 0;
+    static inline thread_local bool                sTailHold_       = false;
 
     // ── Data members ─────────────────────────────────────────────────────────
     std::string       pluginId_;

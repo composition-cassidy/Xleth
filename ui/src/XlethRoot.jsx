@@ -28,6 +28,11 @@ import { load as loadShortcutOverrides, resolveCombos } from './windowing/manage
 import { ElectronAdapter } from './windowing/managers/StatePersistence'
 import * as StatePersistence from './windowing/managers/StatePersistence'
 import { DEFAULT_PRESET_ID } from './windowing/managers/PresetManager'
+import {
+  beforeMotionViewProjectSwitch,
+  cancelMotionViewProjectSwitch,
+  flushMotionViewState,
+} from './components/motionView/motionViewSession.js'
 
 const EXPORT_AUDIO_LABEL = 'Export Audio…'
 const EXPORT_VIDEO_LABEL = 'Export Video…'
@@ -90,6 +95,8 @@ async function saveCurrentProject(showToast, setProjectName, openFilePicker = op
       const dir = getPickerPath(picked)
       if (!dir) return 'cancelled'
       const name = dir.split(/[\\/]/).pop() || 'Untitled'
+      // A Motion view change still in its push debounce goes into this save.
+      await flushMotionViewState()
       const ok = await xl.project.saveAs(dir, name)
       if (ok) {
         setProjectName(name)
@@ -98,6 +105,7 @@ async function saveCurrentProject(showToast, setProjectName, openFilePicker = op
       showToast?.('Save failed - could not write to the chosen folder.', 'error')
       return false
     }
+    await flushMotionViewState()
     const ok = await xl.project.save()
     if (!ok) {
       showToast?.('Save failed. Check that the project folder is writable.', 'error')
@@ -198,8 +206,18 @@ export async function handleXlethRootMenuAction(label, {
         }
       }
 
-      const res = await xl.project.switchToNew?.()
+      // Motion view: the pending push lands in THIS project, then pushes wait
+      // for the new project's state to load (no old view in the new project).
+      await beforeMotionViewProjectSwitch()
+      let res
+      try {
+        res = await xl.project.switchToNew?.()
+      } catch (e) {
+        cancelMotionViewProjectSwitch()
+        throw e
+      }
       if (!res || !res.ok) {
+        cancelMotionViewProjectSwitch()
         showToast?.(`New Project failed: ${res?.error || 'unknown error'}`, 'error')
         return
       }
@@ -238,7 +256,18 @@ export async function handleXlethRootMenuAction(label, {
       })
       const dir = getPickerPath(picked)
       if (!dir) return
-      await xl.project.switchToLoad(dir)
+      await beforeMotionViewProjectSwitch()
+      let loaded
+      try {
+        loaded = await xl.project.switchToLoad(dir)
+      } catch (e) {
+        cancelMotionViewProjectSwitch()
+        throw e
+      }
+      // switchToLoad resolves false (or { ok: false }) when the project did not open.
+      if (loaded === false || (loaded && typeof loaded === 'object' && loaded.ok === false)) {
+        cancelMotionViewProjectSwitch()
+      }
       // "Delete regenerable files when closing a project": say what it freed.
       await reportPurgeOnClose({ xl, showToast })
       const info = await xl.project.getInfo()
@@ -288,6 +317,7 @@ export async function handleXlethRootMenuAction(label, {
       const dir = getPickerPath(picked)
       if (!dir) return
       const name = dir.split(/[\\/]/).pop() || 'Untitled'
+      await flushMotionViewState()
       const ok = await xl.project.saveAs(dir, name)
       if (ok) {
         setProjectName?.(name)

@@ -3,6 +3,7 @@ import { channelNumberProps, pctFmt, ticksFmt } from '../../lensRoam/lensFormats
 import { NOTE_ANCHORS, anchorReached, noteSpan, reanchorKey } from '../../lensRoam/lensKeyModel.js'
 import styles from '../inspector/Inspector.module.css'
 import lens from './lensRoam.module.css'
+import BezierShapeSelect, { BEZIER_INTERP_OPTION } from './BezierShapeSelect.jsx'
 
 // The selected key's numbers: value, anchor, position, interpolation. The same
 // edit the lane's drag makes, typed. Every field is ONE commit (one undo step);
@@ -20,6 +21,7 @@ const INTERP_OPTIONS = [
   { value: 'Hold', label: 'Hold', hint: 'Keep this key\'s value until the next key, then step.' },
   { value: 'Linear', label: 'Linear', hint: 'A straight line to the next key.' },
   { value: 'EaseOut', label: 'Ease out', hint: 'Fast off this key, settling into the next one.' },
+  BEZIER_INTERP_OPTION,
 ]
 
 function Row({ label, children }) {
@@ -109,6 +111,11 @@ export default function LensKeyInspector({ keyObj, kind, zones, lengthTicks, onO
           hint="The shape of the segment leaving this key."
         />
       </Row>
+      {keyObj.interp === 'Bezier' && (
+        <Row label="Shape">
+          <BezierShapeSelect bez={keyObj.bez} onChange={(bez) => update({ bez })} />
+        </Row>
+      )}
       {!reached && (
         <p className={lens.note} data-testid="lens-key-unreached">
           This key is cut off at this note length (Cut). A longer note plays it.

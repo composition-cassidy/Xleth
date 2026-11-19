@@ -1,0 +1,23 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "amp",
+  "name": "Parallel Drum Smash",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "model": 2,
+      "drive": 8,
+      "bass": 3,
+      "mid": 6,
+      "treble": 5,
+      "sag": 8,
+      "tighten": 5,
+      "gate": 0,
+      "cab": 3,
+      "presence": 5,
+      "mix": 20,
+      "output": 0
+    }
+  }
+}

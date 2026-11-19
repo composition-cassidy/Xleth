@@ -32,6 +32,7 @@
 #include "clip_fx_test_scenarios.h"
 
 #include "audio/ClipRenderCache.h"
+#include "HardwareTier.h"
 #include "commands/TimelineCommands.h"
 #include "commands/UndoManager.h"
 #include "dsp/DryWetAlign.h"
@@ -699,7 +700,10 @@ static void testLruCap()
     auto& e = *rig.engine;
     auto& cache = e.getClipRenderCache();
     std::cout << "    default cap: " << cache.maxBytes() / (1024 * 1024) << " MB\n";
-    CHECK(cache.maxBytes() == 512ull * 1024 * 1024, "default cap is 512 MB");
+    // MixEngine sizes the cache by the RAM tier (512 MB below 24 GB, 2x/4x above).
+    CHECK(cache.maxBytes() == xleth::hw::scaledCacheBytes(ClipRenderCache::kDefaultMaxBytes),
+          "default cap is the RAM-tiered 512 MB base");
+    CHECK(cache.maxBytes() >= 512ull * 1024 * 1024, "default cap never below 512 MB");
 
     Clip proto = *rig.timeline->getClip(rig.clipId);
     std::vector<int> ids { rig.clipId };

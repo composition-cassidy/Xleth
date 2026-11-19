@@ -1,0 +1,89 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "xletheq",
+  "name": "Pitch Sample Clean-Up",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "bands": [
+      {
+        "freq": 100,
+        "gain": 0,
+        "q": 0.707,
+        "type": 4,
+        "enabled": 1,
+        "channel": 0,
+        "mode": 0,
+        "dyn_thresh": -20,
+        "dyn_ratio": 4,
+        "dyn_attack": 10,
+        "dyn_release": 100,
+        "dyn_range": 12,
+        "spec_sens": 0.5,
+        "spec_sel": 5,
+        "spec_attack": 10,
+        "spec_release": 100
+      },
+      {
+        "freq": 300,
+        "gain": -3,
+        "q": 1,
+        "type": 0,
+        "enabled": 1,
+        "channel": 0,
+        "mode": 0,
+        "dyn_thresh": -20,
+        "dyn_ratio": 4,
+        "dyn_attack": 10,
+        "dyn_release": 100,
+        "dyn_range": 12,
+        "spec_sens": 0.5,
+        "spec_sel": 5,
+        "spec_attack": 10,
+        "spec_release": 100
+      },
+      {
+        "freq": 3500,
+        "gain": 2,
+        "q": 0.9,
+        "type": 0,
+        "enabled": 1,
+        "channel": 0,
+        "mode": 0,
+        "dyn_thresh": -20,
+        "dyn_ratio": 4,
+        "dyn_attack": 10,
+        "dyn_release": 100,
+        "dyn_range": 12,
+        "spec_sens": 0.5,
+        "spec_sel": 5,
+        "spec_attack": 10,
+        "spec_release": 100
+      },
+      {
+        "freq": 11000,
+        "gain": 2.5,
+        "q": 0.707,
+        "type": 2,
+        "enabled": 1,
+        "channel": 0,
+        "mode": 0,
+        "dyn_thresh": -20,
+        "dyn_ratio": 4,
+        "dyn_attack": 10,
+        "dyn_release": 100,
+        "dyn_range": 12,
+        "spec_sens": 0.5,
+        "spec_sel": 5,
+        "spec_attack": 10,
+        "spec_release": 100
+      }
+    ],
+    "global": {
+      "linphase": 0,
+      "oversample": 0,
+      "spectral_engine": 0,
+      "spectral_quality": 1
+    }
+  }
+}

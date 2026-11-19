@@ -18,7 +18,7 @@ const IcSquareHalfBottom = iconComponent('square-half-bottom')
 export const REGION_TOGGLES = ['sampleSelector', 'preview', 'inspector']
 
 /** The floating tools behind the Tools menu. */
-export const TOOL_PANELS = ['sampleSandbox', 'quickNotation', 'splitSyllables']
+export const TOOL_PANELS = ['sampleSandbox', 'quickNotation', 'splitSyllables', 'colorGrade']
 
 /** Shortcut text for a panel: its F-key, or nothing when it has none. */
 export function panelShortcut(id) {

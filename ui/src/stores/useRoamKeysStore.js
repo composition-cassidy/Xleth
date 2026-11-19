@@ -39,6 +39,15 @@ const useRoamKeysStore = create((set, get) => ({
   selected: null,
   select: (selected) => set({ selected }),
 
+  /**
+   * The multi-selection: [{ trackId, channel, pos }], across tracks and channels.
+   * Built with Ctrl/Shift-click and Ctrl/Shift-drag on the lane; the lane's right-click
+   * menu (interp, Bezier, delete) acts on it. Empty = only `selected` is selected.
+   */
+  multi: [],
+  setMulti: (multi) => set({ multi: multi ?? [] }),
+  clearMulti: () => { if (get().multi.length) set({ multi: [] }) },
+
   /** A gesture's local preview of a track's whole key list: { trackId, keys } or null. */
   draft: null,
   setDraft: (trackId, keys) => set({ draft: { trackId, keys } }),

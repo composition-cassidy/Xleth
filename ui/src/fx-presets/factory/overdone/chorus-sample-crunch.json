@@ -1,0 +1,20 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "overdone",
+  "name": "Chorus Sample Crunch",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "depth": 55,
+      "time": 30,
+      "xover_low": 120,
+      "xover_high": 2500,
+      "gain_low": 0,
+      "gain_mid": 1,
+      "gain_high": 0,
+      "inputGain": 0,
+      "outputGain": 2
+    }
+  }
+}

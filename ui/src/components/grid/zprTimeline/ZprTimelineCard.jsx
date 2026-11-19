@@ -99,6 +99,10 @@ const DEG_FMT = {
   parse: (t) => parseValue(String(t).replace(/°/g, ''), 'dB'),
 }
 const PCT_FMT = { format: (v) => formatValue(v, '%', { decimals: 1 }), parse: (t) => parseValue(t, '%') }
+const SHUTTER_FMT = {
+  format: (v) => `${Math.round(v)}°`,
+  parse: (t) => parseValue(String(t).replace(/°/g, ''), 'dB'),
+}
 const ZOOM_SCALE = logScale(0.01, 64)
 
 const CHANNELS_ALL = ['panX', 'panY', 'zoomLog2', 'rotationDeg']
@@ -249,6 +253,10 @@ export default function ZprTimelineCard({
   const onEndMode = zpr?.onEndMode ?? 0
   const retriggerMode = zpr?.retriggerMode ?? 0
   const retriggerCrossfadeMs = zpr?.retriggerCrossfadeMs ?? 50
+  // This track's own ZPR motion blur. Independent of the project's Lens/Roam
+  // motion blur (Settings > Project), which never switches this on or off.
+  const motionBlurOn = !!zpr?.motionBlur?.enabled
+  const shutterAngle = zpr?.motionBlur?.shutterAngle ?? 180
 
   // In slide mode the window is the slide's, not this config's — and under
   // "Follow Slide" its length is a property of the note that fires, unknown
@@ -595,6 +603,32 @@ export default function ZprTimelineCard({
     </div>
   )
 
+  // Whole-object write, so the other field is carried along unchanged.
+  const applyMotionBlur = (patch) => applyScalar({
+    motionBlur: { enabled: motionBlurOn, shutterAngle, ...patch },
+  })
+  const blurControls = (
+    <div className={styles.fieldStack}>
+      <Toggle
+        size="sm"
+        on={motionBlurOn}
+        onChange={(next) => applyMotionBlur({ enabled: next })}
+        hint="Smear the picture along this track’s zoom, pan and rotation moves. Set here per track; the project’s Lens and Roam motion blur does not affect it."
+      >
+        Motion blur
+      </Toggle>
+      <NumberBox
+        label="Shutter" hideLabel width={100}
+        value={shutterAngle} min={1} max={360} step={1} defaultValue={180}
+        format={SHUTTER_FMT.format} parse={SHUTTER_FMT.parse}
+        quantize={(v) => Math.round(v)}
+        disabled={!motionBlurOn}
+        onCommit={(v) => applyMotionBlur({ shutterAngle: Math.round(v) })}
+        hint="Shutter angle: how much of each frame the blur spans. 180° is the film look, 360° a whole frame."
+      />
+    </div>
+  )
+
   // Live = local state only (no IPC); commit = one setTrackZprTracks.
   const field = (channel, toInternal) => ({
     onChange: (v) => fieldLiveChange(channel, toInternal, v),
@@ -679,6 +713,7 @@ export default function ZprTimelineCard({
         </DisplayWell>
         {isSlide ? null : <DeviceSection title="Length" width={116}>{lengthControls}</DeviceSection>}
         {isSlide ? null : <DeviceSection title="Ends" width={124}>{endControls}</DeviceSection>}
+        {isSlide ? null : <DeviceSection title="Blur" width={116}>{blurControls}</DeviceSection>}
         <DeviceSection title="At playhead" width={184}>
           {playheadFields}
           <p className={styles.note}>
@@ -702,6 +737,7 @@ export default function ZprTimelineCard({
         <div className={styles.windowHeader}>
           <DeviceSection title="Length" width={150}>{lengthControls}</DeviceSection>
           <DeviceSection title="Ends" width={160}>{endControls}</DeviceSection>
+          <DeviceSection title="Motion blur" width={150}>{blurControls}</DeviceSection>
         </div>
       )}
 

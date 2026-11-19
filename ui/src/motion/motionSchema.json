@@ -1,0 +1,83 @@
+{
+  "$comment": "XLETH motion property schema (docs/XLETH_MOTION_VIEW_DESIGN.md section 4). The ONE definition of every animatable / motion property. The UI imports this file directly; the engine includes engine/src/model/MotionSchema.generated.inc, generated from it by scripts/generate-motion-schema.js (checked in, staleness-tested). Add a property = add one entry here and regenerate.",
+  "version": 1,
+  "groups": [
+    { "id": "lens",  "label": "Lens",  "owner": "content" },
+    { "id": "roam",  "label": "Roam",  "owner": "track" },
+    { "id": "mask",  "label": "Mask",  "owner": "mask" },
+    { "id": "sweep", "label": "Sweep", "owner": "track" },
+    { "id": "trail", "label": "Trail", "owner": "clone" }
+  ],
+  "units": {
+    "mul":      { "suffix": "×", "decimals": 2, "signed": false, "space": true },
+    "cells":    { "suffix": "c",      "decimals": 2, "signed": true,  "space": true },
+    "deg":      { "suffix": "°", "decimals": 1, "signed": false, "space": false },
+    "srcNorm":  { "suffix": "",       "decimals": 2, "signed": false, "space": false },
+    "srcDelta": { "suffix": "",       "decimals": 2, "signed": true,  "space": false },
+    "pct":      { "suffix": "%",      "decimals": 0, "signed": false, "space": true, "factor": 100 },
+    "cellDist": { "suffix": "c",      "decimals": 3, "signed": false, "space": true },
+    "cellDistSigned": { "suffix": "c", "decimals": 3, "signed": true, "space": true },
+    "none":     { "suffix": "",       "decimals": 0, "signed": false, "space": false },
+    "fxPlain0": { "suffix": "",       "decimals": 0, "signed": false, "space": false },
+    "fxPlain1": { "suffix": "",       "decimals": 1, "signed": false, "space": false },
+    "fxPlain2": { "suffix": "",       "decimals": 2, "signed": false, "space": false },
+    "fxPlain3": { "suffix": "",       "decimals": 3, "signed": false, "space": false },
+    "fxPlain4": { "suffix": "",       "decimals": 4, "signed": false, "space": false },
+    "fxPx":     { "suffix": "px",     "decimals": 1, "signed": false, "space": true },
+    "ticks":    { "suffix": "",       "decimals": 0, "signed": false, "space": false }
+  },
+  "properties": [
+    { "id": "clipLens.fit",          "group": "lens",  "owner": "clip",   "channel": "fit",         "label": "Fit",       "type": "enum",   "options": ["Stretch", "Cover", "Contain"], "identity": "Stretch", "animatable": false, "timeBase": "static" },
+    { "id": "clipLens.zoom",         "group": "lens",  "owner": "clip",   "channel": "zoom",        "label": "Zoom",      "type": "scalar", "unit": "mul",     "identity": 1,   "range": [0.1, 16],   "clamp": [0.001, 1000], "log": true,  "animatable": true,  "timeBase": "event",    "blend": "absolute", "engineIndex": 2 },
+    { "id": "clipLens.centerX",      "group": "lens",  "owner": "clip",   "channel": "centerX",     "label": "Center X",  "type": "scalar", "unit": "srcNorm", "identity": 0.5, "range": [0, 1],     "clamp": [0, 1],        "log": false, "animatable": true,  "timeBase": "event",    "blend": "absolute", "engineIndex": 0 },
+    { "id": "clipLens.centerY",      "group": "lens",  "owner": "clip",   "channel": "centerY",     "label": "Center Y",  "type": "scalar", "unit": "srcNorm", "identity": 0.5, "range": [0, 1],     "clamp": [0, 1],        "log": false, "animatable": true,  "timeBase": "event",    "blend": "absolute", "engineIndex": 1 },
+    { "id": "clipLens.rotationDeg",  "group": "lens",  "owner": "clip",   "channel": "rotationDeg", "label": "Rotation",  "type": "scalar", "unit": "deg",     "identity": 0,   "range": [-360, 360], "clamp": null,          "log": false, "animatable": true,  "timeBase": "event",    "blend": "absolute", "engineIndex": 3 },
+    { "id": "clipLens.flip",         "group": "lens",  "owner": "clip",   "channel": "flip",        "label": "Flip",      "type": "enum",   "options": ["FollowTrack", "None", "Horizontal", "Vertical"], "identity": "FollowTrack", "animatable": false, "timeBase": "static" },
+
+    { "id": "sourceLens.fit",        "group": "lens",  "owner": "source", "channel": "fit",         "label": "Fit",       "type": "enum",   "options": ["Stretch", "Cover", "Contain"], "identity": "Stretch", "animatable": false, "timeBase": "static" },
+    { "id": "sourceLens.zoom",       "group": "lens",  "owner": "source", "channel": "zoom",        "label": "Zoom",      "type": "scalar", "unit": "mul",     "identity": 1,   "range": [0.1, 16],   "clamp": [0.001, 1000], "log": true,  "animatable": true,  "timeBase": "note",     "blend": "multiply", "layerRange": [0.05, 16], "engineIndex": 2 },
+    { "id": "sourceLens.centerX",    "group": "lens",  "owner": "source", "channel": "centerX",     "label": "Center X",  "type": "scalar", "unit": "srcNorm", "identity": 0.5, "range": [0, 1],     "clamp": [0, 1],        "log": false, "animatable": true,  "timeBase": "note",     "blend": "add",      "layerRange": [-2, 2],    "engineIndex": 0 },
+    { "id": "sourceLens.centerY",    "group": "lens",  "owner": "source", "channel": "centerY",     "label": "Center Y",  "type": "scalar", "unit": "srcNorm", "identity": 0.5, "range": [0, 1],     "clamp": [0, 1],        "log": false, "animatable": true,  "timeBase": "note",     "blend": "add",      "layerRange": [-2, 2],    "engineIndex": 1 },
+    { "id": "sourceLens.rotationDeg","group": "lens",  "owner": "source", "channel": "rotationDeg", "label": "Rotation",  "type": "scalar", "unit": "deg",     "identity": 0,   "range": [-360, 360], "clamp": null,          "log": false, "animatable": true,  "timeBase": "note",     "blend": "add",      "layerRange": [-720, 720], "engineIndex": 3 },
+    { "id": "sourceLens.flip",       "group": "lens",  "owner": "source", "channel": "flip",        "label": "Flip",      "type": "enum",   "options": ["FollowTrack", "None", "Horizontal", "Vertical"], "identity": "FollowTrack", "animatable": false, "timeBase": "static" },
+
+    { "id": "roam.offsetX",          "group": "roam",  "owner": "track",  "channel": "offsetX",     "label": "Offset X",  "type": "scalar", "unit": "cells",   "identity": 0,   "range": [-8, 8],     "clamp": null,          "log": false, "animatable": true,  "timeBase": "timeline", "blend": "absolute", "engineIndex": 0 },
+    { "id": "roam.offsetY",          "group": "roam",  "owner": "track",  "channel": "offsetY",     "label": "Offset Y",  "type": "scalar", "unit": "cells",   "identity": 0,   "range": [-8, 8],     "clamp": null,          "log": false, "animatable": true,  "timeBase": "timeline", "blend": "absolute", "engineIndex": 1 },
+    { "id": "roam.scale",            "group": "roam",  "owner": "track",  "channel": "scale",       "label": "Scale",     "type": "scalar", "unit": "mul",     "identity": 1,   "range": [0.05, 16],  "clamp": [0.001, 1000], "log": true,  "animatable": true,  "timeBase": "timeline", "blend": "absolute", "engineIndex": 2 },
+    { "id": "roam.rotationDeg",      "group": "roam",  "owner": "track",  "channel": "rotationDeg", "label": "Rotation",  "type": "scalar", "unit": "deg",     "identity": 0,   "range": [-720, 720], "clamp": null,          "log": false, "animatable": true,  "timeBase": "timeline", "blend": "absolute", "engineIndex": 3 },
+    { "id": "roam.scaleY",           "group": "roam",  "owner": "track",  "channel": "scaleY",      "label": "Scale Y",   "type": "scalar", "unit": "mul",     "identity": 1,   "range": [0.05, 16],  "clamp": [0.001, 1000], "log": true,  "animatable": true,  "timeBase": "timeline", "blend": "absolute", "engineIndex": 4 },
+    { "id": "roam.scaleLinked",      "group": "roam",  "owner": "track",  "channel": "scaleLinked", "label": "Link scale","type": "bool",   "identity": true, "animatable": false, "timeBase": "static" },
+    { "id": "roam.cropLeft",         "group": "roam",  "owner": "track",  "channel": "cropLeft",    "label": "Crop left",   "type": "scalar", "unit": "pct",   "identity": 0,   "range": [0, 0.99],    "clamp": [0, 0.99],     "log": false, "animatable": true,  "timeBase": "timeline", "blend": "absolute", "engineIndex": 5 },
+    { "id": "roam.cropRight",        "group": "roam",  "owner": "track",  "channel": "cropRight",   "label": "Crop right",  "type": "scalar", "unit": "pct",   "identity": 0,   "range": [0, 0.99],    "clamp": [0, 0.99],     "log": false, "animatable": true,  "timeBase": "timeline", "blend": "absolute", "engineIndex": 6 },
+    { "id": "roam.cropTop",          "group": "roam",  "owner": "track",  "channel": "cropTop",     "label": "Crop top",    "type": "scalar", "unit": "pct",   "identity": 0,   "range": [0, 0.99],    "clamp": [0, 0.99],     "log": false, "animatable": true,  "timeBase": "timeline", "blend": "absolute", "engineIndex": 7 },
+    { "id": "roam.cropBottom",       "group": "roam",  "owner": "track",  "channel": "cropBottom",  "label": "Crop bottom", "type": "scalar", "unit": "pct",   "identity": 0,   "range": [0, 0.99],    "clamp": [0, 0.99],     "log": false, "animatable": true,  "timeBase": "timeline", "blend": "absolute", "engineIndex": 8 },
+    { "id": "roam.bounds",           "group": "roam",  "owner": "track",  "channel": "bounds",      "label": "Bounds",    "type": "enum",   "options": ["Clip", "Float"], "identity": "Clip", "animatable": false, "timeBase": "static" },
+    { "id": "roam.layer",            "group": "roam",  "owner": "track",  "channel": "layer",       "label": "Layer",     "type": "enum",   "options": ["GridOrder", "AboveNeighbours", "Top"], "identity": "GridOrder", "animatable": false, "timeBase": "static" },
+    { "id": "roam.motionBlur",       "group": "roam",  "owner": "project","channel": "motionBlur",  "label": "Project blur", "type": "motionBlur", "identity": "Off", "animatable": false, "timeBase": "static" },
+
+    { "id": "mask.shape",            "group": "mask",  "owner": "mask",   "channel": "shape",       "label": "Shape",     "type": "shape",  "options": ["Rectangle", "Ellipse", "Path"], "identity": "Rectangle", "animatable": true, "timeBase": "timeline", "blend": "absolute" },
+    { "id": "mask.feather",          "group": "mask",  "owner": "mask",   "channel": "feather",     "label": "Feather",   "type": "scalar", "unit": "cellDist", "identity": 0,  "range": [0, 1],      "clamp": [0, 1],        "log": false, "animatable": true,  "timeBase": "timeline", "blend": "absolute", "engineIndex": 0 },
+    { "id": "mask.expansion",        "group": "mask",  "owner": "mask",   "channel": "expansion",   "label": "Expansion", "type": "scalar", "unit": "cellDistSigned", "identity": 0, "range": [-1, 1], "clamp": [-1, 1],    "log": false, "animatable": true,  "timeBase": "timeline", "blend": "absolute", "engineIndex": 1 },
+    { "id": "mask.opacity",          "group": "mask",  "owner": "mask",   "channel": "opacity",     "label": "Opacity",   "type": "scalar", "unit": "pct",     "identity": 1,   "range": [0, 1],      "clamp": [0, 1],        "log": false, "animatable": true,  "timeBase": "timeline", "blend": "absolute", "engineIndex": 2 },
+    { "id": "mask.mode",             "group": "mask",  "owner": "mask",   "channel": "mode",        "label": "Mode",      "type": "enum",   "options": ["Add", "Subtract", "Intersect"], "identity": "Add", "animatable": false, "timeBase": "static" },
+    { "id": "mask.invert",           "group": "mask",  "owner": "mask",   "channel": "invert",      "label": "Invert",    "type": "bool",   "identity": false, "animatable": false, "timeBase": "static" },
+
+    { "id": "sweep.zoom",            "group": "sweep", "owner": "track",  "channel": "zoom",        "label": "Zoom",      "type": "scalar", "unit": "mul",     "identity": 1,   "range": [0.05, 16],  "clamp": [0.001, 1000], "log": true,  "animatable": true,  "timeBase": "timeline", "blend": "multiply", "layerOnly": true, "engineIndex": 2 },
+    { "id": "sweep.centerX",         "group": "sweep", "owner": "track",  "channel": "centerX",     "label": "Center X",  "type": "scalar", "unit": "srcDelta","identity": 0,   "range": [-2, 2],     "clamp": null,          "log": false, "animatable": true,  "timeBase": "timeline", "blend": "add",      "layerOnly": true, "engineIndex": 0 },
+    { "id": "sweep.centerY",         "group": "sweep", "owner": "track",  "channel": "centerY",     "label": "Center Y",  "type": "scalar", "unit": "srcDelta","identity": 0,   "range": [-2, 2],     "clamp": null,          "log": false, "animatable": true,  "timeBase": "timeline", "blend": "add",      "layerOnly": true, "engineIndex": 1 },
+    { "id": "sweep.rotationDeg",     "group": "sweep", "owner": "track",  "channel": "rotationDeg", "label": "Rotation",  "type": "scalar", "unit": "deg",     "identity": 0,   "range": [-720, 720], "clamp": null,          "log": false, "animatable": true,  "timeBase": "timeline", "blend": "add",      "layerOnly": true, "engineIndex": 3 },
+    { "id": "sweep.motionBlur",      "group": "sweep", "owner": "project","channel": "motionBlur",  "label": "Project blur", "type": "motionBlur", "identity": "Off", "animatable": false, "timeBase": "static" },
+
+    { "id": "trail.delay",           "group": "trail", "owner": "clone",  "channel": "delayTicks",  "label": "Delay",     "type": "scalar", "unit": "ticks",   "identity": 480, "range": [1, 245760], "clamp": [1, 245760],  "log": false, "animatable": false, "timeBase": "static",   "blend": "absolute", "engineIndex": -1 },
+    { "id": "trail.tint",            "group": "trail", "owner": "clone",  "channel": "tint",        "label": "Tint",      "type": "color",  "identity": "#FFFFFF", "animatable": false, "timeBase": "static" },
+    { "id": "trail.opacity",         "group": "trail", "owner": "clone",  "channel": "opacity",     "label": "Opacity",   "type": "scalar", "unit": "pct",     "identity": 1,   "range": [0, 1],      "clamp": [0, 1],        "log": false, "animatable": true,  "timeBase": "timeline", "blend": "absolute", "engineIndex": 0 }
+  ],
+  "interps": ["Hold", "Linear", "EaseOut", "Bezier"],
+  "limits": {
+    "maxParentDepth": 4,
+    "maxMasksPerTrack": 8,
+    "maxVerticesPerMask": 32,
+    "maxMaskVerticesPerTrack": 64,
+    "minVerticesPerMask": 3
+  }
+}

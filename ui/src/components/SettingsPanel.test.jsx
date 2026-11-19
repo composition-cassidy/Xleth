@@ -213,6 +213,38 @@ describe('SettingsPanel consolidated shell', () => {
     }
   })
 
+  it('shows the project motion blur and writes it to the engine, keeping the shutter', async () => {
+    const setMotionBlur = vi.fn().mockImplementation(async (m) => m)
+    window.xleth.settings = { get: vi.fn().mockResolvedValue(null), set: vi.fn() }
+    window.xleth.timeline = {
+      getMotionBlur: vi.fn().mockResolvedValue({ enabled: false, shutterAngle: 270 }),
+      setMotionBlur,
+    }
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+
+    try {
+      await act(async () => {
+        root.render(<SettingsPanel initialCategory="project" onClose={() => {}} />)
+      })
+      expect(container.textContent).toContain('Lens and Roam motion blur')
+      expect(container.textContent).toContain('270°')
+      // The ZPR one is per track and says so.
+      expect(container.textContent).toContain('Zoom/pan/rot has its own motion blur')
+
+      const toggle = container.querySelector('#settings-motion-blur')
+      expect(toggle).not.toBeNull()
+      await act(async () => {
+        toggle.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      })
+      expect(setMotionBlur).toHaveBeenCalledWith({ enabled: true, shutterAngle: 270 })
+    } finally {
+      await act(async () => root.unmount())
+      container.remove()
+    }
+  })
+
   it('warns when H.264 is selected but no H.264 encoder is available', async () => {
     window.xleth.settings = { get: vi.fn().mockResolvedValue(null), set: vi.fn() }
     window.xleth.proxy = {

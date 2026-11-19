@@ -33,7 +33,7 @@ describe('top bar panel controls', () => {
   })
 
   it('puts the floating tools in the menu with their own F-keys unchanged', () => {
-    expect(TOOL_PANELS).toEqual(['sampleSandbox', 'quickNotation', 'splitSyllables'])
+    expect(TOOL_PANELS).toEqual(['sampleSandbox', 'quickNotation', 'splitSyllables', 'colorGrade'])
     expect(panelShortcut('sampleSandbox')).toBe('F10')
     expect(panelShortcut('preview')).toBe('F8')
     expect(panelShortcut('inspector')).toBe('')

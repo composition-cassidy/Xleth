@@ -63,6 +63,7 @@ export const EFFECT_CATEGORIES = [
     label: 'Pitch',
     submenu: [
       { label: 'Pitch Shifter', id: 'pitchshifter' },
+      { label: 'Szkrezh', id: 'szkrezh' },
     ],
   },
   {

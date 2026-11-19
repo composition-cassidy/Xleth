@@ -392,6 +392,21 @@ describe('KeyboardManager', () => {
     expect(undo).toHaveBeenCalledTimes(1);
   });
 
+  it('a "`" binding matches the physical Backquote key on any layout', () => {
+    // German '^', Russian 'ё', French '²': the key left of 1 still means '`'.
+    const toggle = vi.fn(() => 'handled' as const);
+    register({ scope: 'global', combo: '`', handler: toggle });
+    handleKeyEvent(shortcutEvent('^', { code: 'Backquote' } as Partial<KeyboardEvent>));
+    handleKeyEvent(shortcutEvent('ё', { code: 'Backquote' } as Partial<KeyboardEvent>));
+    handleKeyEvent(shortcutEvent('`', { code: 'Backquote' } as Partial<KeyboardEvent>));
+    expect(toggle).toHaveBeenCalledTimes(3);
+    // A '`' printed by some OTHER key cap matches on event.key as before; another key does not.
+    handleKeyEvent(shortcutEvent('`', { code: 'Equal' } as Partial<KeyboardEvent>));
+    expect(toggle).toHaveBeenCalledTimes(4);
+    handleKeyEvent(shortcutEvent('^', { code: 'Digit6' } as Partial<KeyboardEvent>));
+    expect(toggle).toHaveBeenCalledTimes(4);
+  });
+
   it('rebind moves a binding', () => {
     expect(rebind('F9', 'F13')).toBe(true);
 

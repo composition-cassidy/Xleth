@@ -17,6 +17,7 @@ import {
   formatHoldThreshold,
 } from './holdLastFrame.js'
 import { iconComponent } from '../../ui-kit/icons'
+import { isTrailClone } from '../../clones/cloneModel.js'
 
 const IcDotsSixVertical = iconComponent('dots-six-vertical')
 const IcSlidersHorizontal = iconComponent('sliders-horizontal')
@@ -54,8 +55,11 @@ export default function VideoTrackList({ tracks = [], layout, identity: identity
 
   const [menu, setMenu] = useState(null) // { track, x, y }
 
+  // A Trail clone has no grid cell of its own (it always draws under its source,
+  // docs/XLETH_CLONE_SPEC.md), so it is neither listed nor placeable here. A Voice
+  // clone owns a cell like any track.
   const { placed, unplaced } = useMemo(
-    () => partitionAndSortTracks(tracks, layout),
+    () => partitionAndSortTracks((tracks ?? []).filter((t) => !isTrailClone(t)), layout),
     [tracks, layout]
   )
 

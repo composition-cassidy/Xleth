@@ -1,0 +1,21 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "compressor",
+  "name": "Snare Even",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "threshold": -20,
+      "ratio": 5,
+      "attack": 5,
+      "release": 90,
+      "knee": 3,
+      "makeup": 3,
+      "mix": 100,
+      "mix_linked": 1,
+      "detect_mode": 0,
+      "lookahead": 0
+    }
+  }
+}

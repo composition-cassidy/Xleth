@@ -1,0 +1,19 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "fedda",
+  "name": "Master Subtle Sheen",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "width": 15,
+      "character": 1,
+      "size": 8,
+      "low_bypass": 300,
+      "low_slope": 1,
+      "hf_damp": 20000,
+      "guard": 50,
+      "loudness_match": 0
+    }
+  }
+}

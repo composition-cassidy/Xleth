@@ -447,16 +447,32 @@ describe('Advanced: the Sweep layer (P11)', () => {
     expect(cell('resolved', 'centerX')).toBe('60.0\u2009%')    // 0.5 + 0.1
   })
 
-  it('the lane switch is one click and opens the Sweep lane of THIS track', async () => {
-    await mountSource()
-    const btn = () => container.querySelector('[data-testid="lens-sweep-lane-toggle"]')
-    expect(btn().textContent).toBe('Edit Sweep in the lane')
-    expect(useSweepKeysStore.getState().laneOpen.has(7)).toBe(false)
-    await click(btn())
-    expect(useSweepKeysStore.getState().laneOpen.has(7)).toBe(true)
-    expect(btn().textContent).toBe('Hide Sweep lane')
-    await click(btn())
-    expect(useSweepKeysStore.getState().laneOpen.has(7)).toBe(false)
+  // docs/XLETH_MOTION_VIEW_DESIGN.md R17 / 5.6: the Edit view has no Sweep lane; the
+  // button opens THIS track's Sweep rows in Motion view instead.
+  it('"Edit Sweep in Motion view" is one click and asks for the reveal of THIS track\'s Sweep rows', async () => {
+    const seen = []
+    const onReveal = (e) => seen.push(e.detail)
+    window.addEventListener('xleth-motion-reveal', onReveal)
+    try {
+      await mountSource()
+      expect(container.querySelector('[data-testid="lens-sweep-lane-toggle"]')).toBeNull()
+      const btn = () => container.querySelector('[data-testid="lens-sweep-show-in-motion"]')
+      expect(btn().textContent).toBe('Edit Sweep in Motion view')
+      expect(btn().hasAttribute('aria-pressed')).toBe(false)          // an action, not a switch
+      expect(btn().getAttribute('data-hint')).toMatch(/Motion view \(`\)/)
+      const laneOpen = useSweepKeysStore.getState().laneOpen
+      await click(btn())
+      expect(seen).toEqual([{ trackId: 7, path: ['sweep'] }])
+      expect(btn().textContent).toBe('Edit Sweep in Motion view')    // it does not flip
+      expect(useSweepKeysStore.getState().laneOpen).toBe(laneOpen)   // no lane state is touched
+      expect(timeline.setHitCurve).not.toHaveBeenCalled()
+      // The same button in note mode (notes selected).
+      await select({ 1: new Set([1]) })
+      await click(btn())
+      expect(seen).toEqual([{ trackId: 7, path: ['sweep'] }, { trackId: 7, path: ['sweep'] }])
+    } finally {
+      window.removeEventListener('xleth-motion-reveal', onReveal)
+    }
   })
 
   it('a Clip Track event reads the same layer at its own tick (clip start + t)', async () => {

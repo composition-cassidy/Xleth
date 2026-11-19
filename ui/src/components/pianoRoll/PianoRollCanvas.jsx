@@ -284,6 +284,8 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
   onDropFsc,
   scale = DEFAULT_SCALE,
   noteColor = null, labelMode = 'pitch', refSlot = null, ghosts = null,
+  // Voice clones of the track playing this pattern: a pinned note shows "V1" etc.
+  voiceCount = 0,
   snap = '1/16', onPan,
   timeSel = null, onClearTimeSel, onCommitNotes, onScrub, onSwitchToGhost,
 }, ref) {
@@ -377,9 +379,10 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
   // Note look (step 12.3): read by both draw paths from refs, like every other
   // draw input, so the imperative per-frame redraw never sees stale values.
   const lookRef = useRef(null)
-  lookRef.current = { noteColor, labelMode, refSlot, ghosts }
+  lookRef.current = { noteColor, labelMode, refSlot, ghosts, voiceCount }
   const noteStyleFor = (palette) => noteStyle({
     color: lookRef.current.noteColor, palette, labelMode: lookRef.current.labelMode, refSlot: lookRef.current.refSlot,
+    voiceCount: lookRef.current.voiceCount,
   })
 
   // Apply DPR sizing
@@ -472,7 +475,7 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
   useEffect(() => {
     redraw()
   }, [notes, selectedNoteIds, width, height, patternLengthTicks, themeTick, dprEpoch,
-      scale.enabled, scale.root, scale.mode, noteColor, labelMode, refSlot, ghosts, timeSel])
+      scale.enabled, scale.root, scale.mode, noteColor, labelMode, refSlot, ghosts, timeSel, voiceCount])
 
   // Redraw all canvases when the active theme changes — tokenValue() reads
   // CSS variables at draw time, but the draw effects only rerun on prop/state

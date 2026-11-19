@@ -1,0 +1,37 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "waveshaper",
+  "name": "Asymmetric Warmth",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "pregain": 3,
+      "postgain": -3,
+      "mix": 100,
+      "preset": 0
+    },
+    "points": [
+      [
+        -1,
+        -0.7
+      ],
+      [
+        -0.5,
+        -0.45
+      ],
+      [
+        0,
+        0
+      ],
+      [
+        0.5,
+        0.55
+      ],
+      [
+        1,
+        0.95
+      ]
+    ]
+  }
+}

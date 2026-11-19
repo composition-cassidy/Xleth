@@ -14,6 +14,7 @@ import { uiCanvasFont } from '../styles/typography.js'
 import { getPickerPath, openFilePicker } from './filePicker/filePickerService.js'
 import { VIDEO_EXTENSIONS } from './filePicker/filePickerHelpers.js'
 import { subscribe, completePick, cancelPick } from './grid/chromaKeyEyedropper.js'
+import { setPreviewFrameReader } from '../colorGrade/frameFeed.js'
 import styles from './VideoPreview.module.css'
 import { iconComponent } from '../ui-kit/icons'
 
@@ -617,6 +618,18 @@ export default function VideoPreview({ headerActions = null, headerSlot = null }
         // shm frames are BGRA (see the pixel-diag labelling above).
         return { r: frame[o + 2] / 255, g: frame[o + 1] / 255, b: frame[o] / 255 }
       }
+
+      // ── Color Grade scopes / curves histogram ──────────────────────────
+      // The same frame, whole, for the scopes: the finished picture with
+      // every grade applied. Synced on demand (a few times a second, only
+      // while a scope is open), at the live size the tick loop draws.
+      setPreviewFrameReader(() => {
+        const idx = shm.readIndex()
+        shm.syncFrame(idx)
+        const frame = (idx === 0) ? bufA : bufB
+        if (!frame || sabWidth <= 0 || sabHeight <= 0) return null
+        return { data: frame, width: sabWidth, height: sabHeight }
+      })
     }
 
     // ── Set up WebGL (fallback: Canvas2D) ────────────────────────────────
@@ -863,6 +876,7 @@ export default function VideoPreview({ headerActions = null, headerSlot = null }
       tickRef.current = null
       pickPixelRef.current = null
       applyShmResizeRef.current = null
+      setPreviewFrameReader(null)
       window.removeEventListener('xleth-theme-changed', handleThemeChange)
       canvas.removeEventListener('webglcontextlost', onContextLost)
       canvas.removeEventListener('webglcontextrestored', onContextRestored)

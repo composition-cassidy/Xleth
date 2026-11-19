@@ -1,0 +1,19 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "distortion",
+  "name": "Master Soft Saturate",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "mode": 1,
+      "drive": 2,
+      "tone": 18000,
+      "filter_pos": 1,
+      "mix": 60,
+      "symmetry": 100,
+      "bits": 16,
+      "downsample": 1
+    }
+  }
+}

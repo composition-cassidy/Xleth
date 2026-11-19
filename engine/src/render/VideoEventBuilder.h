@@ -38,6 +38,7 @@ struct BuildStats {
     int slideEvents   = 0;   // SlideAnimationEvents emitted
     int clipsSkipped  = 0;   // clips with no track / region / video source
     int blocksSkipped = 0;   // pattern blocks with no pattern / region / video source
+    int voiceCloneEvents = 0; // note events routed to a Voice clone's cell (model/Clone.h)
 };
 
 struct BuildResult {

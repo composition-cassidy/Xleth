@@ -5,8 +5,10 @@ export { formatValue, formatValueText, THIN_SPACE, MINUS } from './format';
 export type { Unit, FormatOptions } from './format';
 export { parseValue, parseSyncDivision, syncBeats, syncCodec, syncLabel } from './parse';
 export type { Codec, SyncDivision } from './parse';
-export { hintAttrs, resolveHint, VALUE_HINT_MODS } from './hint';
-export type { HintProps } from './hint';
+export {
+  hintAttrs, resolveHint, VALUE_HINT_MODS, VALUE_HINT_MODS_NO_WHEEL, valueHintMods, HINT_REFRESH_EVENT, requestHintRefresh,
+} from './hint';
+export type { HintProps, HintRefreshDetail } from './hint';
 export { dbTaperScale, linearScale, logScale, skewScale } from './valueScale';
 export type { Scale } from './valueScale';
 export { useValueDrag } from './useValueDrag';
@@ -20,6 +22,8 @@ export { default as NumberBox } from './NumberBox';
 export type { NumberBoxProps } from './NumberBox';
 export { default as Fader } from './Fader';
 export type { FaderProps } from './Fader';
+export { default as Slider } from './Slider';
+export type { SliderProps } from './Slider';
 export { default as Meter, MeterScale, meterWidth, visibleScaleMarks } from './Meter';
 export type { MeterProps, MeterScaleMode, MeterScaleProps, MeterSubscribe } from './Meter';
 export { default as FaderMeter } from './FaderMeter';

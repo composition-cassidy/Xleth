@@ -1,0 +1,17 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "pitchshifter",
+  "name": "Granular Grit Down",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "mode": 0,
+      "mix": 1,
+      "semitones": -12,
+      "cents": 0,
+      "size": 30,
+      "formant": 1
+    }
+  }
+}

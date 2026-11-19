@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import ContextMenu from '../ContextMenu.jsx'
 import useEffectChainStore from '../../stores/effectChainStore.js'
 import { PPQ } from '../../constants/timeline.js'

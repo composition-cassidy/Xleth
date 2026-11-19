@@ -81,11 +81,3 @@ export function getReelStill(desc) {
   begin(key, desc)
   return null
 }
-
-// Test-only.
-export function __resetReelStillsForTests() {
-  images.clear()
-  failed.clear()
-  pending.clear()
-  listeners.clear()
-}

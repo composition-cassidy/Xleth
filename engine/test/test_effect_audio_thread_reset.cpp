@@ -99,7 +99,7 @@ static const char* const kStockIds[] = {
     "compressor", "limiter", "overdone", "transientproc", "xletheq", "xlethfilter",
     "distortion", "waveshaper", "uniflange", "chorus", "flanger", "phaser",
     "phanjer", "delay", "reverb", "resonancesuppressor", "smartbalance", "apex",
-    "amp", "pitchshifter", "gloss", "glue", "fedda",
+    "amp", "pitchshifter", "gloss", "glue", "fedda", "szkrezh",
 };
 
 static std::mt19937 g_rng(7);

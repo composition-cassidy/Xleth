@@ -13,6 +13,7 @@
       "knee": 6,
       "makeup": 2,
       "mix": 100,
+      "mix_linked": 1,
       "detect_mode": 1
     }
   }

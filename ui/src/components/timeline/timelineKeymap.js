@@ -44,6 +44,23 @@ export function logicalKey(event) {
 export const TIMELINE_PASSTHROUGH_COMMANDS = new Set(['splitOrSelect', 'tool', 'syllable'])
 
 /**
+ * Commands only Motion view acts on (docs/XLETH_MOTION_VIEW_DESIGN.md R20). In the
+ * Edit view they are not the timeline's: Backspace, the arrows and Escape keep
+ * going wherever they went before.
+ */
+export const MOTION_ONLY_COMMANDS = new Set(['toggleGraph', 'nudge', 'escape'])
+
+/**
+ * The physical Backquote key (the one left of 1), whatever the layout prints on
+ * it. A synthetic event with no code falls back to the character.
+ */
+export function isBackquoteKey(event) {
+  const code = typeof event?.code === 'string' ? event.code : ''
+  if (code) return code === 'Backquote'
+  return event?.key === '`'
+}
+
+/**
  * Maps a keydown to a timeline command, or null when the key is not the
  * timeline's.
  *
@@ -56,6 +73,11 @@ export const TIMELINE_PASSTHROUGH_COMMANDS = new Set(['splitOrSelect', 'tool', '
  *                          else the Select tool)
  *   P / C / D              Pencil / Split / Delete tool
  *   1-9                    syllable pick (Pencil on a Quote sample)
+ *   `  (physical key)      toggleView: Edit <-> Motion view (R20)
+ *   G                      toggleGraph (Motion view only)
+ *   Backspace              delete (Motion view only: selected keys)
+ *   Left / Right           nudge selected keys one grid step; Shift = 1/4 step (Motion view)
+ *   Escape                 escape: cancel a key gesture, else clear the key selection (Motion view)
  *
  * Meta stands in for Ctrl throughout. Alt is never part of a timeline shortcut.
  */
@@ -64,6 +86,16 @@ export function resolveTimelineKeyCommand(event) {
   const primary = Boolean(event.ctrlKey || event.metaKey)
   const shift = Boolean(event.shiftKey)
   const key = logicalKey(event)
+
+  if (!primary && !shift && isBackquoteKey(event)) return { id: 'toggleView' }
+  if (!primary) {
+    if (key === 'ArrowLeft' || key === 'ArrowRight') {
+      return { id: 'nudge', direction: key === 'ArrowLeft' ? -1 : 1, fine: shift }
+    }
+    if (!shift && key === 'Escape') return { id: 'escape' }
+    if (!shift && key === 'Backspace') return { id: 'delete', key: 'Backspace' }
+    if (!shift && key === 'g') return { id: 'toggleGraph' }
+  }
 
   if (PITCH_UP_KEYS.has(key) || PITCH_DOWN_KEYS.has(key)) {
     // Ctrl+Shift+plus/minus is the window zoom, not a pitch step.
@@ -132,4 +164,38 @@ export const TIMELINE_KEY_COMBOS = [
   'Shift++', 'Shift+=', 'Shift+-', 'Shift+_',
   // Syllable pick
   '1', '2', '3', '4', '5', '6', '7', '8', '9',
+  // Motion view (R20): the view switch, the graph, and the key-editing keys
+  '`',
+  ...bothCases('g'),
+  'Backspace', 'Escape',
+  'ArrowLeft', 'ArrowRight', 'Shift+ArrowLeft', 'Shift+ArrowRight',
 ]
+
+/**
+ * Whether a timeline command reaches the Motion view's key handling (the
+ * imperative handle) instead of the Edit view's clip handling.
+ */
+export const MOTION_ROUTED_COMMANDS = new Set(['delete', 'copy', 'cut', 'paste', 'selectAll', 'nudge', 'escape'])
+
+/**
+ * What a command means in a view, before anything acts on it:
+ *   'global'  undo / redo / the view switch: the same in both views
+ *   'motion'  Motion view: goes to MotionView's handle (which may decline it)
+ *   'edit'    Edit view: the arrangement's own handling
+ *   null      not the timeline's in this view (the key goes on to whoever else binds it)
+ * In Motion view the clip tools, pitch, syllable, loop, duplicate and split keys
+ * are ignored; in the Edit view the Motion-only keys (G, arrows, Escape,
+ * Backspace) are not claimed.
+ */
+export function timelineCommandRoute(command, view) {
+  if (!command) return null
+  const id = command.id
+  if (id === 'undo' || id === 'redo' || id === 'toggleView') return 'global'
+  if (view === 'motion') {
+    if (id === 'toggleGraph') return 'global'
+    return MOTION_ROUTED_COMMANDS.has(id) ? 'motion' : null
+  }
+  if (MOTION_ONLY_COMMANDS.has(id)) return null
+  if (id === 'delete' && command.key === 'Backspace') return null
+  return 'edit'
+}

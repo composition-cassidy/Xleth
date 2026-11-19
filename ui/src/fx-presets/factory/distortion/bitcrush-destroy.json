@@ -1,0 +1,19 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "distortion",
+  "name": "Bitcrush Destroy",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "mode": 4,
+      "drive": 3,
+      "tone": 20000,
+      "filter_pos": 1,
+      "mix": 100,
+      "symmetry": 100,
+      "bits": 5,
+      "downsample": 28
+    }
+  }
+}

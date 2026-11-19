@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { timelineEvents } from '../../timelineEvents.js'
 import useTrackIdentityColors from '../inspector/useTrackIdentityColors.js'
 import { buildGhostNotes } from './pianoRollNotes.js'
+import { isClone, voiceClonesOf } from '../../clones/cloneModel.js'
 
 // What the Piano Roll needs to know about where its pattern sits, all through
 // existing read-only calls (getTracks, getPatternBlocks, getPattern):
@@ -9,8 +10,31 @@ import { buildGhostNotes } from './pianoRollNotes.js'
 //              (null when the pattern is not placed: the notes fall back to the
 //              value colour);
 //   ghosts     notes of other patterns overlapping that block (pianoRollNotes).
+//   voices     Clones (docs/XLETH_CLONE_SPEC.md): the track playing this pattern
+//              that has Voice clones, { sourceId, count, tracks }, or null when no
+//              track playing it has any (then there is nothing to pin notes to).
 // Nothing here runs during a drag: refetches follow the timeline's own change
 // events, which fire after a commit.
+
+/**
+ * The source whose Voice clones this pattern's notes can be pinned to: of the
+ * tracks that play the pattern, the anchor (first block) when it has Voice clones,
+ * else the one with the most. Null when none has any.
+ */
+export function voiceSourceFor(tracks, blocks, patternId, anchorTrackId = null) {
+  if (!Array.isArray(tracks) || !Array.isArray(blocks)) return null
+  const ids = new Set(blocks.filter((b) => b.patternId === patternId).map((b) => b.trackId))
+  let best = null
+  for (const id of ids) {
+    const track = tracks.find((t) => t.id === id)
+    if (!track || isClone(track)) continue
+    const count = voiceClonesOf(tracks, id).length
+    if (count === 0) continue
+    if (id === anchorTrackId) return { sourceId: id, count }
+    if (!best || count > best.count || (count === best.count && id < best.sourceId)) best = { sourceId: id, count }
+  }
+  return best
+}
 
 function overlappingPatternIds(blocks, patternId) {
   const mine = blocks.filter((b) => b.patternId === patternId)
@@ -113,9 +137,16 @@ export default function usePatternContext(patternId, pattern, { ghostsEnabled = 
     return list.length ? list : null
   }, [valid, ghostsEnabled, pattern, patternId, blocks, others])
 
+  const voices = useMemo(() => {
+    if (!valid) return null
+    const v = voiceSourceFor(tracks, blocks, patternId, anchorTrackId)
+    return v ? { ...v, tracks } : null
+  }, [valid, tracks, blocks, patternId, anchorTrackId])
+
   return {
     noteColor: anchorTrackId != null ? identity[anchorTrackId] || null : null,
     ghosts,
     placed: anchorTrackId != null,
+    voices,
   }
 }

@@ -20,7 +20,7 @@ const FPS_OPTIONS = [
 ]
 
 /**
- * Discord preset — MP4/H.264/Opus 44.1 kHz 256 kbps, auto bitrate to hit the
+ * Discord preset — MP4/H.264/AAC 48 kHz 256 kbps, auto bitrate to hit the
  * tier limit with 12% headroom. Warns when quality would be unusable.
  */
 export default function DiscordTab({
@@ -75,7 +75,7 @@ export default function DiscordTab({
 
   return (
     <div className={styles.panel}>
-      <div className={styles.desc}>MP4 · H.264 · Opus 44.1 kHz 256 kbps. Auto-fitted to the chosen tier.</div>
+      <div className={styles.desc}>MP4 · H.264 · AAC 48 kHz 256 kbps. Auto-fitted to the chosen tier.</div>
 
       <Row label="Tier">
         <SegmentedControl

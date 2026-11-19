@@ -11,6 +11,10 @@
 //              sampler applies to the reference slot's sample, in semitones
 //              ("Root", "+7", "−12"), which is what pitch-sample work reads.
 //   Slide    = a ramp glyph at the right end; the note keeps its colour.
+//   Voice    = a note pinned to a voice (Clones) shows "V0" (the source) or
+//              "V1", "V2"… (its Voice clones) at its right end, before the slide
+//              glyph, when the pattern's track has Voice clones. Auto notes show
+//              nothing. Text, not colour, carries the pin.
 //   Ghosts   = notes of OTHER patterns placed over this pattern's first block:
 //              solid grey when they play the same sample region, outlined when
 //              they play another sample.
@@ -19,6 +23,7 @@ import { ticksToBeats } from '../../constants/timeline.js'
 import { pickLabelInk } from '../../ui-kit/colorMath.ts'
 import { PITCH_MAX, pitchLabel } from './pianoRollGeometry.js'
 import { drawIcon } from '../../ui-kit/icons/canvas.ts'
+import { voicePinMark } from './voicePin.js'
 
 const MINUS = '−'
 const HEX6 = /^#[0-9a-f]{6}$/i
@@ -73,7 +78,7 @@ function rgba(hex, alpha) {
  * Build the note style for a redraw: identity colour, label inks per velocity
  * bucket (the label is solved against the composited fill, not the raw hue).
  */
-export function noteStyle({ color, palette, labelMode = 'pitch', refSlot = null }) {
+export function noteStyle({ color, palette, labelMode = 'pitch', refSlot = null, voiceCount = 0 }) {
   const base = HEX6.test(color) ? color : (HEX6.test(palette.value) ? palette.value : '#33CED6')
   const ground = HEX6.test(palette.g0) ? palette.g0 : '#141414'
   const light = HEX6.test(palette.ink) ? palette.ink : '#E6E6E6'
@@ -83,6 +88,7 @@ export function noteStyle({ color, palette, labelMode = 'pitch', refSlot = null 
     color: base,
     labelMode,
     refSlot,
+    voiceCount,
     select: palette.select,
     font: palette.font,
     ghostFill: palette.g4,
@@ -146,9 +152,15 @@ export function drawNotes(ctx, w, h, notes, selectedNoteIds, ppb, pps, scrollX, 
     const room = wid - 6 - glyphW
     if (room <= 0) continue
     const tw = ctx.measureText?.(text)?.width ?? 0
-    if (tw > room) continue
+    // The voice pin sits at the right end. The note name wins when both do not fit.
+    const mark = style.voiceCount > 0 ? voicePinMark(note, style.voiceCount) : null
+    const mw = mark ? (ctx.measureText?.(mark)?.width ?? 0) : 0
+    const nameFits = tw <= room
+    const markFits = mark && (nameFits ? tw + 4 + mw <= room : mw <= room)
+    if (!nameFits && !markFits) continue
     ctx.fillStyle = ink
-    ctx.fillText(text, x + 3, y + pps / 2 + 0.5)
+    if (nameFits) ctx.fillText(text, x + 3, y + pps / 2 + 0.5)
+    if (markFits) ctx.fillText(mark, x + wid - 3 - glyphW - mw, y + pps / 2 + 0.5)
   }
 }
 

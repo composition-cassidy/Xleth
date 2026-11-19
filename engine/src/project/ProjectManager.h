@@ -84,7 +84,39 @@
 //     handles described) and the handles are ignored. Each trackLens entry
 //     carries "zones" {headTicks, tailTicks, shortNote: Squash|Cut}; missing
 //     = the spec default (120, 240, Squash). Nothing wrote keys before P7.
-inline constexpr int XLETH_PROJECT_SCHEMA_VERSION = 8;
+//     Bezier keys (no bump, additive): "interp": "Bezier" plus "bez"
+//     [x1, y1, x2, y2] (CSS cubic-bezier handles; missing/malformed = the
+//     ease-in-out default). Written only on Bezier keys, so a project with
+//     none saves byte-identical. An OLDER build reads "Bezier" as an unknown
+//     interp and falls back to Linear.
+// v9: Motion view (docs/XLETH_MOTION_VIEW_DESIGN.md R16, 2.1-2.3). All
+//     additive and written only when set, so a project that uses none of it
+//     re-saves byte-identical apart from schema_version:
+//       - a track MAY carry "parentTrackId" (int, written only when >= 0;
+//         missing / malformed / < -1 / its own id -> -1 = no parent; a
+//         dangling id resolves as no parent);
+//       - "roam" MAY carry "masks" [{id, name, kind, base{shape{closed,
+//         vertices}, feather, expansion, opacity, mode, invert}, keys,
+//         shapeKeys}] (written only when non-empty; tolerant read, see
+//         lensroam::masksFromJson);
+//       - top-level "motionView": opaque Motion view UI state owned by the
+//         renderer (<= 256 KB), written only when a non-empty object, not
+//         undoable, not dirtying (like masterVolume).
+//     Missing fields load as identity: no masks, no parent, no UI state. No
+//     migration step. The bump makes an older build warn that unknown fields
+//     will be dropped on save.
+// v10: Clones (docs/XLETH_CLONE_SPEC.md, model/Clone.h). Additive, written only
+//     when used, so a project with no Clones re-saves byte-identical apart from
+//     schema_version and renders bit-identically:
+//       - a Clone track carries "cloneOf" (source track id), "cloneKind"
+//         (Voice|Trail) and, for a Voice clone, "lensMode" (Linked|Own); a Trail
+//         clone "delayTicks", "tint" ("#RRGGBB"), "opacity" and, when keyed,
+//         "opacityKeys" [{pos, value, interp, bez?}]. Its added Roam is the
+//         track's ordinary "roam". Missing / malformed "cloneOf" = an ordinary
+//         track; an unknown "cloneKind" (newer build) also loads as one;
+//       - a pattern note MAY carry "voicePin" (int >= 0; absent = Auto).
+//     No migration step.
+inline constexpr int XLETH_PROJECT_SCHEMA_VERSION = 10;
 
 class ProjectManager {
 public:
@@ -111,11 +143,16 @@ public:
     // Timeline field behind it — the Sample Sandbox workspace is not timeline
     // content — so it has to be passed in explicitly to be persisted. Written
     // only when it actually holds layers.
+    // motionViewState is the Motion view UI state (schema v9, top-level key
+    // "motionView"): opaque renderer-owned JSON with no Timeline field behind
+    // it, passed in explicitly like sandboxWorkspace and written only when it
+    // is a non-empty object.
     bool saveProject(const Timeline& timeline,
                      const nlohmann::json& effectChains     = nlohmann::json::object(),
                      const nlohmann::json& masterEffectChain = nlohmann::json(),
                      float masterVolume = 1.0f,
-                     const nlohmann::json& sandboxWorkspace = nlohmann::json());
+                     const nlohmann::json& sandboxWorkspace = nlohmann::json(),
+                     const nlohmann::json& motionViewState = nlohmann::json());
 
     // Save the timeline to a NEW project directory with a NEW name.
     // Creates the directory structure (same as createProject) and writes
@@ -128,7 +165,8 @@ public:
                        const nlohmann::json& effectChains      = nlohmann::json::object(),
                        const nlohmann::json& masterEffectChain = nlohmann::json(),
                        float masterVolume = 1.0f,
-                       const nlohmann::json& sandboxWorkspace = nlohmann::json());
+                       const nlohmann::json& sandboxWorkspace = nlohmann::json(),
+                       const nlohmann::json& motionViewState = nlohmann::json());
 
     // Whether a project directory has been set (via create/load/saveAs).
     bool hasProjectDir() const;
@@ -157,6 +195,12 @@ public:
     // project saved before v7 or one that never opened the Sandbox — both of
     // which fromJson accepts as "no layers", not as an error.
     const nlohmann::json& getLoadedSandboxWorkspace() const;
+
+    // Motion view UI state ("motionView", schema v9) read during the last
+    // successful loadProject(): the stored object, or null when the project
+    // has none. Reset to null at the start of every load and by resetToBlank,
+    // so a project never inherits the previous one's state.
+    const nlohmann::json& getLoadedMotionViewState() const;
 
     // Per-media validation result. Covers both Media Pool sources and the
     // per-region swapped/extracted audio that lives inside the project folder.
@@ -237,6 +281,7 @@ private:
     nlohmann::json loadedMasterEffectChain_ = nlohmann::json();
     float          loadedMasterVolume_      = 1.0f;
     nlohmann::json loadedSandboxWorkspace_  = nlohmann::json::object();
+    nlohmann::json loadedMotionViewState_   = nlohmann::json();   // null = none
 
     int         videoWidth_  = 1920;
     int         videoHeight_ = 1080;

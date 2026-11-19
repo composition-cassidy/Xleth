@@ -25,14 +25,25 @@ const { getNewProjectGlobalStretchMethodDefault } = require('./settings');
 // them directly when orchestrating the workspace-window hide/splash/show
 // sequence for in-app project switches (xleth:project:switchToLoad/New) —
 // see openWorkspaceWindow/switchProjectWindow in main.js.
+// Injected by main.js (init). A workspace window that is still booting gets
+// its own xleth:project-loaded once it has mounted (see main.js, "Workspace
+// window boot"); broadcasting to it here as well would hydrate it twice.
+let shouldBroadcastTo = () => true;
+let onLoadStart = null;
+let onLoadEnd = null;
+
+function broadcastProjectLoaded() {
+  for (const wc of webContents.getAllWebContents()) {
+    if (!wc.isDestroyed() && shouldBroadcastTo(wc)) wc.send('xleth:project-loaded');
+  }
+}
+
 async function loadProject(dir) {
   const result = await callWorker('project_load', [dir]);
   // Notify all renderers that the project was loaded — all effect chain
   // nodeIds have been reassigned by AudioGraph::fromJSON and any cached
   // nodeIds in the UI are now stale.
-  for (const wc of webContents.getAllWebContents()) {
-    if (!wc.isDestroyed()) wc.send('xleth:project-loaded');
-  }
+  broadcastProjectLoaded();
   restartAutosaveTimer();
   return result;
 }
@@ -42,9 +53,7 @@ async function newBlankProject() {
   // Broadcast so renderers drop any stale per-project state (plugin editor
   // refs, piano roll / mixer selections, etc.) — same pattern as project:load.
   if (result && result.ok) {
-    for (const wc of webContents.getAllWebContents()) {
-      if (!wc.isDestroyed()) wc.send('xleth:project-loaded');
-    }
+    broadcastProjectLoaded();
     restartAutosaveTimer();
   }
   return result;
@@ -52,8 +61,25 @@ async function newBlankProject() {
 
 function init(deps) {
   const { safeHandler } = deps;
+  if (typeof deps.shouldBroadcastTo === 'function') shouldBroadcastTo = deps.shouldBroadcastTo;
+  if (typeof deps.onLoadStart === 'function') onLoadStart = deps.onLoadStart;
+  if (typeof deps.onLoadEnd === 'function') onLoadEnd = deps.onLoadEnd;
 
-  ipcMain.handle('xleth:project:load', safeHandler((_, dir) => loadProject(dir)));
+  // onLoadStart / onLoadEnd bracket a load requested over IPC, so main.js can
+  // start booting the workspace window while the engine is still loading (the
+  // Welcome → workspace hand-off). onLoadEnd always fires, with ok=false when
+  // the load returned false or threw.
+  ipcMain.handle('xleth:project:load', safeHandler(async (event, dir) => {
+    if (onLoadStart) onLoadStart(event, dir);
+    let ok = false;
+    try {
+      const result = await loadProject(dir);
+      ok = !!result;
+      return result;
+    } finally {
+      if (onLoadEnd) onLoadEnd(event, dir, ok);
+    }
+  }));
   ipcMain.handle('xleth:project:newBlank', safeHandler(() => newBlankProject()));
 }
 

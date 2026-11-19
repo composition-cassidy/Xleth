@@ -1,0 +1,22 @@
+FST (Free Studio Technology) - reverse-engineered VST2 header
+Version:   v0.115.0 (FST_MAJOR/MINOR/MICRO_VERSION in fst/fst.h = 0.115.0)
+Tag:       v0.115.0 (annotated tag object 870a31c66061d0656394384b3f7bc7953b794a70)
+Commit:    9d89b9713548b6184d68eefa9391a33371b14600
+License:   GPL-3.0-or-later (LICENSE = GPLv3 text; README.md and the fst.h header say "version 3 or later")
+Upstream:  https://git.iem.at/zmoelnig/FST  (IOhannes m zmoelnig, IEM)
+Fetched from: https://github.com/pierreguillot/FTS, a GitHub fork of the upstream, tag v0.115.0 (snapshot of 2020-11-10)
+Fetched on: 2026-11-12
+
+Provenance note: git.iem.at refuses automated clients, so the upstream could not be queried and this tag was
+taken from the GitHub fork instead (approved by the project owner). It was NOT compared against upstream, and
+newer upstream tags may exist. Contents were not modified.
+
+Vendored: LICENSE, README.md, fst/aeffect.h, fst/aeffectx.h, fst/fst.h.
+Left out: docs/, src/ (FstHost, FstPlugin, FstProxy, JstHost, JstPlugin, fst_utils.h), tools/, .gitattributes, .gitignore.
+
+SHA-256 of the vendored files (as downloaded, LF line endings):
+815a52d83c22a1d2c41920d29f33254c7300b4c90877295cafdb2c722cb1cb6b  LICENSE
+c6d16d6799b5c8ef7815195e926124b5800b73527a481db85823877d6f56e355  README.md
+059d40211d46c66eea35424c919e4b475a6fce0618b6be2097bd9f2ea2f9af85  fst/aeffect.h
+059d40211d46c66eea35424c919e4b475a6fce0618b6be2097bd9f2ea2f9af85  fst/aeffectx.h
+3ef8e9f4207b4f867cfd186b22fd1c18151c2d6ef5b00b1afb39ebe318e25ca4  fst/fst.h

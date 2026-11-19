@@ -10,11 +10,17 @@
  *
  * Two encode paths:
  *   Video: BGRA → sws_scale → encoder pix_fmt → avcodec → muxer
- *   Audio: float planar → swr_convert → encoder sample_fmt → avcodec → muxer
+ *   Audio: float planar @ mix rate → swr (format + sample-rate conversion)
+ *          → FIFO @ encoder rate → encoder frames → avcodec → muxer
  *
- * Audio frame buffering: AAC requires exactly 1024 samples per frame.
- * Incoming audio is staged in a float buffer; when a full frame accumulates
- * it is resampled and encoded.  Residual samples are zero-padded at finalize().
+ * Audio is a real streaming resampler, not a per-frame format shim: the caller
+ * feeds PCM at ExportSettings::mixSampleRate in chunks of any size, swr turns
+ * it into the encoder's format AND rate, and whatever it produces is queued in
+ * a FIFO that is cut into encoder-sized frames (AAC needs exactly 1024). The
+ * mix rate, the requested output rate and the rate the codec can actually run
+ * at are three separate numbers and none of them has to match another. PTS
+ * counts samples at the ENCODER rate, so A/V sync holds whatever the ratio.
+ * finalize() drains the resampler and sends the last short frame as-is.
  *
  * Encoder flushing: NULL frame → drain loop → AVERROR_EOF.  Critical for
  * H.264/H.265 where B-frame reordering delays the last few frames.
@@ -110,7 +116,16 @@ struct ExportSettings {
     // ── Audio ──────────────────────────────────────────────────────────────
     enum class AudioCodec { AAC, OPUS, FLAC, PCM_S16LE };
     AudioCodec  audioCodec      = AudioCodec::AAC;
+    // Sample rate of the ENCODED audio stream the user asked for. The codec may
+    // not support it (Opus only runs at 48 kHz) — the muxer then picks the
+    // nearest supported rate and resamples to that instead.
     int         sampleRate      = 48000;
+    // Sample rate of the PCM handed to writeAudio() — the rate the mix was
+    // rendered at. 0 = same as sampleRate. Keeping this separate is what lets
+    // the renderer mix at the session rate (so an export sounds exactly like
+    // playback, at any output rate) and leave the conversion to the muxer.
+    int         mixSampleRate   = 0;
+    int audioInputRate() const { return mixSampleRate > 0 ? mixSampleRate : sampleRate; }
     int         audioBitrate    = 192;      // kbps (AAC/OPUS)
     int         audioChannels   = 2;
 
@@ -186,6 +201,26 @@ public:
     bool writeVideo(const uint8_t* bgraPixels, int stride, int64_t frameIndex);
 
     /**
+     * Zero-copy variant of writeVideo() for a producer that can render straight
+     * into the muxer's memory (GridCompositor::readback with a destination).
+     *
+     * acquireVideoBuffer() returns a tightly packed width×height×4 BGRA buffer
+     * (stride = width×4). On the async path it is one of the pooled queue
+     * buffers, so it blocks exactly where writeVideo() would have blocked — when
+     * the producer is a full queue ahead of the encoder. Fill it, then either
+     * submitVideoBuffer() it (queued/encoded as frame `frameIndex`) or
+     * releaseVideoBuffer() it unused. Returns nullptr once encoding has failed.
+     * At most one buffer is out at a time; do not interleave with writeVideo()
+     * while one is held.
+     */
+    uint8_t* acquireVideoBuffer();
+    bool     submitVideoBuffer(int64_t frameIndex);
+    void     releaseVideoBuffer();
+
+    /** Bytes in one acquireVideoBuffer() frame (width × height × 4). */
+    size_t videoBufferBytes() const;
+
+    /**
      * Finding 6a — enable the pipelined video encode path.
      *
      * Must be called AFTER a successful init() and BEFORE the first
@@ -208,12 +243,15 @@ public:
     bool isAsyncVideo() const { return videoWorkerRunning_; }
 
     /**
-     * Encode audio samples.  Internally buffers to match the encoder's
-     * frame_size requirement (e.g. 1024 for AAC).
+     * Encode audio samples at ExportSettings::audioInputRate(). Resamples to
+     * the encoder's rate/format and buffers to its frame_size requirement
+     * (e.g. 1024 for AAC).
      *
      * @param channels        Channel pointers: channels[0]=L, channels[1]=R
+     *                        (channels[1] may be null: mono is duplicated)
      * @param numSamples      Number of samples in this chunk (any count)
-     * @param samplesWritten  Cumulative sample count BEFORE this chunk (PTS base)
+     * @param samplesWritten  Unused — PTS is derived from the samples actually
+     *                        encoded. Kept for source compatibility.
      */
     bool writeAudio(const float* const* channels, int numSamples,
                     int64_t samplesWritten);
@@ -240,6 +278,14 @@ public:
     /** Name of the audio encoder actually selected. */
     const char* audioEncoderName() const;
 
+    /** True when the requested audio codec had no usable encoder in this FFmpeg
+     *  build and AAC was used instead (Opus without libopus: FFmpeg's built-in
+     *  Opus encoder is experimental and drops audio, so it is never used). */
+    bool isAudioCodecFallback() const { return audioCodecFallback_; }
+
+    /** Sample rate of the encoded audio stream (may differ from the request). */
+    int audioEncoderSampleRate() const;
+
     bool isInitialized() const { return initialized_; }
 
 private:
@@ -254,7 +300,10 @@ private:
     AVCodecContext*  audioCodecCtx_ = nullptr;
     AVStream*        audioStream_   = nullptr;
     AVFrame*         audioFrame_    = nullptr;    // encoder sample_fmt
-    SwrContext*      swrCtx_        = nullptr;    // float planar → encoder fmt
+    SwrContext*      swrCtx_        = nullptr;    // float planar @ mix rate → encoder fmt @ encoder rate
+    struct AVAudioFifo* audioFifo_  = nullptr;    // converted samples awaiting a full encoder frame
+    uint8_t**        audioConv_     = nullptr;    // swr output scratch (encoder fmt)
+    int              audioConvCap_  = 0;          // samples audioConv_ can hold
 
     AVPacket*        pkt_           = nullptr;    // shared encode → mux packet
 
@@ -288,10 +337,12 @@ private:
     int64_t                  videoAsyncFailFrame_ = -1;
 
     // ── Audio frame buffering ──────────────────────────────────────────────
-    std::vector<float> audioStagingL_;
-    std::vector<float> audioStagingR_;
-    int  audioBufferSamples_ = 0;     // samples currently in staging
     int  audioFrameSize_     = 0;     // encoder frame_size (1024 for AAC)
+    bool audioCodecFallback_ = false;
+
+    // ── Zero-copy video submit ─────────────────────────────────────────────
+    std::vector<uint8_t> videoHeld_;          // buffer handed out by acquireVideoBuffer()
+    bool                 videoHeldOut_ = false;
 
     // ── PTS tracking ───────────────────────────────────────────────────────
     int64_t videoPts_ = 0;
@@ -326,8 +377,16 @@ private:
     void videoWorkerLoop();
     void stopVideoWorker();   // drains the queue, then joins. Idempotent.
     bool flushEncoder(AVCodecContext* encCtx, AVStream* stream);
-    bool encodeAudioFrame();
+    // Resample `numSamples` of input (or drain the resampler when in == null)
+    // into audioFifo_.
+    bool convertAudioIntoFifo(const uint8_t* const* in, int numSamples);
+    // Pop `numSamples` (<= frame size) from audioFifo_ and encode them.
+    bool encodeAudioFromFifo(int numSamples);
+    // Queue (async) or encode (sync) an owned BGRA frame.
+    bool enqueueVideoBuffer(std::vector<uint8_t>&& pixels, int stride, int64_t frameIndex);
     void cleanup();
 
-    static const void* findAudioEncoder(ExportSettings::AudioCodec codec);
+    // Resolves the encoder for `codec`; sets *fellBack when a different codec
+    // had to be substituted.
+    static const void* findAudioEncoder(ExportSettings::AudioCodec codec, bool* fellBack);
 };

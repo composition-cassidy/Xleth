@@ -16,6 +16,8 @@
  * These helpers are pure so the geometry is testable without an engine.
  */
 
+import { isClone } from '../../clones/cloneModel.js'
+
 /** Fields carried through a clip copy. Anything omitted resets to its engine default. */
 const CLIP_SNAPSHOT_FIELDS = [
   'regionId', 'durationTicks', 'regionOffsetTicks', 'syllableIndex',
@@ -110,6 +112,9 @@ export function buildTimelineClipboard({ clips = [], patternBlocks = [], automat
       // Lens {base, keys} — copied whole, or paste/split/duplicate rebuild the
       // clip at the new-clip default (fit = Cover) and lose its framing.
       snap.lens = clip.lens ?? null
+      // Clip Color Grade: present only on a graded clip (the engine omits a
+      // default grade), carried so a pasted or duplicated clip keeps its look.
+      snap.colorGrade = clip.colorGrade ?? null
       return snap
     })
 
@@ -190,7 +195,8 @@ export function resolveTimelinePaste({
 
   for (const item of clipboard.patternBlocks ?? []) {
     const track = destFor(item.trackOffset ?? 0)
-    if (track?.type !== 'Pattern') { skipped.typeMismatchBlock++; continue }
+    // A Clone is a Pattern track the engine refuses blocks on (it plays its source's).
+    if (track?.type !== 'Pattern' || isClone(track)) { skipped.typeMismatchBlock++; continue }
     blockPlacements.push({
       item,
       trackId: track.id,
@@ -293,6 +299,7 @@ export function clipPayloadFromSnapshot(item, trackId, positionTicks) {
   for (const f of CLIP_SNAPSHOT_FIELDS) payload[f] = item[f] ?? CLIP_DEFAULTS[f]
   if (item.modulation) payload.modulation = item.modulation
   if (item.lens) payload.lens = item.lens
+  if (item.colorGrade) payload.colorGrade = item.colorGrade
   return payload
 }
 

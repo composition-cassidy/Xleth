@@ -51,6 +51,7 @@ import OptoCompPanel from './OptoCompPanel.jsx'
 import FetCompPanel from './FetCompPanel.jsx'
 import VariMuCompPanel from './VariMuCompPanel.jsx'
 import FeddaPanel from './FeddaPanel.jsx'
+import SzkrezhPanel from './SzkrezhPanel.jsx'
 
 export default function EffectEditorHost() {
   return (
@@ -81,6 +82,7 @@ export default function EffectEditorHost() {
       <FetCompPanel />
       <VariMuCompPanel />
       <FeddaPanel />
+      <SzkrezhPanel />
     </div>
   )
 }

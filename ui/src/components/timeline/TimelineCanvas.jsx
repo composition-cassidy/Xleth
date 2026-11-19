@@ -4,14 +4,9 @@ import { buildResolvedTrackColorMap } from './trackColorResolver.js'
 import useWorldProcessingStore from '../../stores/worldProcessingStore.js'
 import useGhostClipStore from '../../stores/ghostClipStore.js'
 import useNoteSelectionStore from '../../stores/useNoteSelectionStore.js'
-import { drawReelLanes, hitTestReel } from './reelLaneDrawing.js'
+import { drawReelLanes, hitTestReel, reelHoverHint } from './reelLaneDrawing.js'
+import { requestHintRefresh } from '../../ui-kit/hint'
 import { subscribeReelStills } from './reelStills.js'
-import { drawRoamLanes } from './roamLaneDrawing.js'
-import { hitTestRoamLane } from './roamLaneModel.js'
-import { beginRoamLaneGesture, removeKeyAt } from './roamLaneGesture.js'
-import useRoamKeysStore, { DEFAULT_ROAM_CHANNEL } from '../../stores/useRoamKeysStore.js'
-import useSweepKeysStore, { DEFAULT_SWEEP_CHANNEL } from '../../stores/useSweepKeysStore.js'
-import useInspectorStore from '../../stores/useInspectorStore.js'
 import { TRACK_HEIGHT, beatToPixel, beatToPlayheadPixel, tickToPixel } from '../../constants/timeline.js'
 import { clipHasFxIntent } from './clipGeometry.js'
 import {
@@ -86,11 +81,9 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     pixelsPerBeat,   // state value — used for badge re-positioning on zoom
     trackLayout,     // FXG.4-h-r1: derived row layout (track + macro lane rows)
     // Reel lane model (reelLaneModel.js buildReelModel): ghost clips derived from the notes.
+    // (The Roam and Sweep key lanes are not drawn here any more: motion keys are edited in
+    // Motion view, docs/XLETH_MOTION_VIEW_DESIGN.md R17. Old `roam` / `sweep` props are ignored.)
     reel,
-    // Roam key lanes (P10): { byTrack: Map<trackId, {base, keys}>, commitKeys(trackId, keys) }.
-    roam,
-    // Sweep lanes (P11): the same shape over the Lens channels, { byTrack, commitKeys }.
-    sweep,
     // Automation clips (Phase B)
     automationClips, automationEnvelopesById, automationBindingLabelsById,
     selectedAutomationClipIds, setSelectedAutomationClipIds,
@@ -148,38 +141,6 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   // handler read the current value without re-creating anything.
   const reelRef = useRef(reel)
   reelRef.current = reel
-  // Roam key lanes: the committed keys per track (a prop), and the lane/gesture state
-  // (stores/useRoamKeysStore). Read through refs and getState(), so the draw path and
-  // the pointer handler see the current value without re-creating anything.
-  const roamRef = useRef(roam)
-  roamRef.current = roam
-  const roamDataOf = useCallback((trackId) => {
-    const committed = roamRef.current?.byTrack?.get(trackId)
-    const draft = useRoamKeysStore.getState().draft
-    return {
-      base: committed?.base ?? {},
-      keys: draft && draft.trackId === trackId ? draft.keys : (committed?.keys ?? []),
-    }
-  }, [])
-  const roamChannelOf = useCallback(
-    (trackId) => useRoamKeysStore.getState().channelByTrack[trackId] ?? DEFAULT_ROAM_CHANNEL,
-    [],
-  )
-  // Sweep lanes: the same two accessors over the Sweep store.
-  const sweepRef = useRef(sweep)
-  sweepRef.current = sweep
-  const sweepDataOf = useCallback((trackId) => {
-    const committed = sweepRef.current?.byTrack?.get(trackId)
-    const draft = useSweepKeysStore.getState().draft
-    return {
-      base: committed?.base ?? {},
-      keys: draft && draft.trackId === trackId ? draft.keys : (committed?.keys ?? []),
-    }
-  }, [])
-  const sweepChannelOf = useCallback(
-    (trackId) => useSweepKeysStore.getState().channelByTrack[trackId] ?? DEFAULT_SWEEP_CHANNEL,
-    [],
-  )
   const noteSelection = useNoteSelectionStore((s) => s.byPattern)
   const noteSelectionRef = useRef(noteSelection)
   noteSelectionRef.current = noteSelection
@@ -411,13 +372,6 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       selectedBlockIds: selectedBlockIdsRef.current,
     })
     drawReelLanes(view, { reel: reelRef.current, selection: noteSelectionRef.current })
-    drawRoamLanes(view, {
-      dataOf: roamDataOf, channelOf: roamChannelOf, selected: useRoamKeysStore.getState().selected,
-    })
-    drawRoamLanes(view, {
-      kind: 'sweep', dataOf: sweepDataOf, channelOf: sweepChannelOf,
-      selected: useSweepKeysStore.getState().selected,
-    })
     if (automationClipsRef.current?.length) {
       const laneRows = trackLayoutRef.current?.getAutomationLaneRows?.() ?? []
       const laneRowsByLaneId = new Map(laneRows.map((r) => [r.laneId, r]))
@@ -701,27 +655,6 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   // A still finished decoding: the plain block it replaces gets its thumbnail.
   useEffect(() => subscribeReelStills(() => requestContentRedraw('reel-still')), [])
 
-  // ── Redraw when the Roam lanes' keys, a gesture's draft, the key selection or a
-  // lane's parameter change. The draft changes once per frame while a key is dragged,
-  // so it is a store subscription (no React render), not a prop.
-  useEffect(() => {
-    requestContentRedraw('roam')
-  }, [roam])
-  useEffect(() => useRoamKeysStore.subscribe((s, prev) => {
-    if (s.draft !== prev.draft || s.selected !== prev.selected || s.channelByTrack !== prev.channelByTrack) {
-      requestContentRedraw('roam-state')
-    }
-  }), [])
-  // The Sweep lanes redraw on the same three things.
-  useEffect(() => {
-    requestContentRedraw('sweep')
-  }, [sweep])
-  useEffect(() => useSweepKeysStore.subscribe((s, prev) => {
-    if (s.draft !== prev.draft || s.selected !== prev.selected || s.channelByTrack !== prev.channelByTrack) {
-      requestContentRedraw('sweep-state')
-    }
-  }), [])
-
   // ── Redraw when notation ghost clips change ───────────────────────────────
   useEffect(() => {
     requestContentRedraw('ghost-clips')
@@ -811,63 +744,18 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     const pos = getLocalXY(e)
     if (!pos) return
 
-    // ── Roam and Sweep key lanes: their own gestures, whatever tool is active. A
-    // left-click adds a key or grabs one (drag to move: local preview, ONE commit on
-    // mouseup); a right-click on a key deletes it. Like the Reel lane they never fall
-    // through to the parent track's blocks. The Sweep lane (P11) is the Roam lane's
-    // gesture over the Lens channels, on its own store and its own commit.
-    if (e.button === 0 || e.button === 2) {
-      for (const kind of ['roam', 'sweep']) {
-        const lane = kind === 'sweep'
-          ? { ref: sweepRef, dataOf: sweepDataOf, channelOf: sweepChannelOf, store: useSweepKeysStore }
-          : { ref: roamRef, dataOf: roamDataOf, channelOf: roamChannelOf, store: useRoamKeysStore }
-        const laneHit = hitTestRoamLane(
-          { trackLayout: trackLayoutRef.current, dataOf: lane.dataOf, channelOf: lane.channelOf, kind },
-          pos.localX, pos.localY, scrollOffsetRef.current, pixelsPerBeatRef.current,
-        )
-        if (!laneHit) continue
-        e.preventDefault()
-        onFocusTrack?.(laneHit.trackId)
-        const committed = lane.ref.current?.byTrack?.get(laneHit.trackId) ?? { base: {}, keys: [] }
-        if (e.button === 2) {
-          const next = laneHit.key ? removeKeyAt(committed.keys, laneHit.key) : null
-          if (next) {
-            lane.store.getState().select(null)
-            lane.ref.current?.commitKeys?.(laneHit.trackId, next)
-          }
-          return
-        }
-        useInspectorStore.getState().requestTrackSelection(laneHit.trackId)
-        const rect = containerRef.current?.getBoundingClientRect()
-        beginRoamLaneGesture({
-          event: e,
-          hit: laneHit,
-          data: committed,
-          view: () => ({ scrollOffset: scrollOffsetRef.current, ppb: pixelsPerBeatRef.current }),
-          localOf: (ev) => {
-            const r = containerRef.current?.getBoundingClientRect() ?? rect
-            return { localX: ev.clientX - (r?.left ?? 0), localY: ev.clientY - (r?.top ?? 0) }
-          },
-          granularity: () => snapGranularityRef.current,
-          setDraft: (keys) => lane.store.getState().setDraft(laneHit.trackId, keys),
-          clearDraft: () => lane.store.getState().clearDraft(),
-          commit: (keys) => lane.ref.current?.commitKeys?.(laneHit.trackId, keys),
-          select: (sel) => lane.store.getState().select(sel),
-        })
-        return
-      }
-    }
-
     // ── Reel lane: read-only. A click only SELECTS the note behind the ghost
     // clip (shared with the Piano Roll); there is no drag, no resize and no
     // tool dispatch, whatever tool is active, so nothing can be moved from here.
+    // A Clone's row is the same kind of lane: its clips are the SOURCE pattern's
+    // notes, so the selection is keyed by that pattern like the source's lane.
     if (e.button === 0) {
       const reelHit = hitTestReel(
         reelRef.current, trackLayoutRef.current,
         pos.localX, pos.localY, scrollOffsetRef.current, pixelsPerBeatRef.current,
       )
       if (reelHit) {
-        onFocusTrack?.(reelHit.row.parentTrackId)
+        onFocusTrack?.(reelHit.trackId ?? reelHit.row.parentTrackId)
         const sel = useNoteSelectionStore.getState()
         const additive = e.ctrlKey || e.metaKey || e.shiftKey
         if (reelHit.noteId != null) {
@@ -1005,6 +893,17 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     redrawContent('clip-control-hover')
   }, [])
 
+  // The hint-bar text for the Reel lane / Clone row under the pointer (an
+  // overflow note says how to fix it). Only dispatched when it changes; null
+  // hands the bar back to the canvas's own data-hint.
+  const reelHintRef = useRef(null)
+  const updateReelHint = useCallback((next) => {
+    const key = next ? `${next.hint}|${next.mods}` : null
+    if (key === reelHintRef.current) return
+    reelHintRef.current = key
+    requestHintRefresh(next)
+  }, [])
+
   const handleMouseMove = useCallback((e) => {
     // Only handle hover (non-dragging) moves here; dragging is captured on window
     if (isDraggingRef.current) return
@@ -1014,12 +913,17 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       ? clipControlHandlersRef.current.hitTest?.(pos.localX, pos.localY)
       : null
     updateHoveredClipControl(hit)
+    updateReelHint(reelHoverHint(hitTestReel(
+      reelRef.current, trackLayoutRef.current,
+      pos.localX, pos.localY, scrollOffsetRef.current, pixelsPerBeatRef.current,
+    ), tracksRef.current))
     toolRef.current?.onMouseMove(pos.localX, pos.localY, e)
-  }, [activeTool, getLocalXY, updateHoveredClipControl])
+  }, [activeTool, getLocalXY, updateHoveredClipControl, updateReelHint])
 
   const handleMouseLeave = useCallback(() => {
     if (!isDraggingRef.current) updateHoveredClipControl(null)
-  }, [updateHoveredClipControl])
+    updateReelHint(null)
+  }, [updateHoveredClipControl, updateReelHint])
 
   const handleDoubleClick = useCallback((e) => {
     const pos = getLocalXY(e)
@@ -1098,11 +1002,6 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   const handleContextMenu = useCallback((e) => {
     const pos = getLocalXY(e)
     if (!pos) return
-    // A right-click in a Roam key lane is a verb (delete a key, done on mousedown), not a menu.
-    if (trackLayoutRef.current?.roamRowAtY?.(pos.localY) || trackLayoutRef.current?.sweepRowAtY?.(pos.localY)) {
-      e.preventDefault()
-      return
-    }
     // Focus shift before any menu opens — keeps right-click paste consistent
     if (onFocusTrack) {
       const tks = tracksRef.current

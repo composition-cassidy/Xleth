@@ -100,11 +100,14 @@ export function getSidechainStatusText({
   route,
   routeError,
   sourceTrack,
+  mixerSourceNames = '',
 }) {
   if (routeError) return routeError
   if (route?.status && route.status !== 'ok') return mapSidechainRouteStatus(route.status) ?? 'Route stale'
   if (!externalEnabled) return 'Sidechain: Off'
-  if (!route) return 'Sidechain: Off'
+  // No route of its own: the key from the mixer's sidechain routes into this
+  // track (right-click on a route arrow) still reaches it.
+  if (!route) return mixerSourceNames ? `Sidechain: ${mixerSourceNames} (mixer)` : 'Sidechain: Off'
   if (!sourceTrack) return 'Route stale'
   if (route.enabled === false) return 'Sidechain: Off'
   return `Sidechain: ${sourceTrack.name || `Track ${route.sourceTrackId}`}`
@@ -232,6 +235,12 @@ export function useEffectSidechain({ effect, storeKey }) {
     [targetTrackId, tracks, trackOrder, outputRoutes, sidechainRoutes],
   )
   const sourceTrack = route ? tracks[route.sourceTrackId] : null
+  // Track-level routes (the mixer's right-click "sidechain here") key every
+  // sidechain-capable effect on this track: listed so the section can say so.
+  const mixerSourceNames = useMemo(() => sidechainRoutes
+    .filter(r => r.targetTrackId === targetTrackId && !r.targetEffectInstanceId && r.enabled !== false)
+    .map(r => tracks[r.sourceTrackId]?.name || `Track ${r.sourceTrackId}`)
+    .join(', '), [sidechainRoutes, targetTrackId, tracks])
   const selectedSourceValue = route?.sourceTrackId != null ? String(route.sourceTrackId) : ''
   const hasSelectableSource = eligibleSources.length > 0 || Boolean(route && sourceTrack)
   const statusText = getSidechainStatusText({
@@ -239,6 +248,7 @@ export function useEffectSidechain({ effect, storeKey }) {
     route,
     routeError,
     sourceTrack,
+    mixerSourceNames,
   })
 
   useEffect(() => {
@@ -314,6 +324,7 @@ export function useEffectSidechain({ effect, storeKey }) {
     selectedSourceValue,
     hasSelectableSource,
     statusText,
+    mixerSourceNames,
     applySidechain,
   }
 }

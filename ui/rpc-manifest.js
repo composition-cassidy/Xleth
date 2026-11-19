@@ -131,6 +131,23 @@ const METHODS = [
     returns: 'value',
     binary: null,
   },
+  // A gesture made of several calls is one undo entry between these two.
+  {
+    method: 'undo_beginGroup',
+    channels: ['xleth:undo:beginGroup'],
+    api: { 'undo.beginGroup': 'xleth:undo:beginGroup' },
+    handler: 'Undo_BeginGroup',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'undo_endGroup',
+    channels: ['xleth:undo:endGroup'],
+    api: { 'undo.endGroup': 'xleth:undo:endGroup' },
+    handler: 'Undo_EndGroup',
+    returns: 'value',
+    binary: null,
+  },
 
   // ── Phase 0 transport / status compatibility (AUDIT.md S1) ───────────────
   {
@@ -393,6 +410,106 @@ const METHODS = [
     returns: 'void',
     binary: null,
   },
+  // Project-wide motion blur for Lens / Roam / Sweep (render/MotionBlur.h).
+  // { enabled, shutterAngle }; set merges the fields given and returns the
+  // stored, sanitized settings. Zoom/pan/rot has its own, per track, on
+  // timeline_setTrackZoomPanRotSettings ("motionBlur").
+  {
+    method: 'timeline_getMotionBlur',
+    channels: ['xleth:timeline:getMotionBlur'],
+    api: { 'timeline.getMotionBlur': 'xleth:timeline:getMotionBlur' },
+    handler: 'Timeline_GetMotionBlur',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_setMotionBlur',
+    channels: ['xleth:timeline:setMotionBlur'],
+    api: { 'timeline.setMotionBlur': 'xleth:timeline:setMotionBlur' },
+    handler: 'Timeline_SetMotionBlur',
+    returns: 'value',
+    binary: null,
+  },
+  // ── Color Grade (engine/src/model/ColorGrade.h) ──────────────────────────
+  // Colour correction at four levels: Source -> Clip (or Region) -> Layer ->
+  // Master. A target is { level: 'source'|'clip'|'region'|'layer'|'master', id }.
+  // preview / commit / cancel are one drag: preview writes live with no undo
+  // entry, commit ends it as ONE undo step, cancel restores what was there.
+  // setMany writes several targets as one undo step (bulk apply, paste, Auto
+  // over a selection). setCompare is preview-only (hold to compare) and is
+  // never saved or exported.
+  {
+    method: 'colorGrade_get',
+    channels: ['xleth:colorGrade:get'],
+    api: { 'colorGrade.get': 'xleth:colorGrade:get' },
+    handler: 'ColorGrade_Get',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'colorGrade_getAll',
+    channels: ['xleth:colorGrade:getAll'],
+    api: { 'colorGrade.getAll': 'xleth:colorGrade:getAll' },
+    handler: 'ColorGrade_GetAll',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'colorGrade_preview',
+    channels: ['xleth:colorGrade:preview'],
+    api: { 'colorGrade.preview': 'xleth:colorGrade:preview' },
+    handler: 'ColorGrade_Preview',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'colorGrade_commit',
+    channels: ['xleth:colorGrade:commit'],
+    api: { 'colorGrade.commit': 'xleth:colorGrade:commit' },
+    handler: 'ColorGrade_Commit',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'colorGrade_cancel',
+    channels: ['xleth:colorGrade:cancel'],
+    api: { 'colorGrade.cancel': 'xleth:colorGrade:cancel' },
+    handler: 'ColorGrade_Cancel',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'colorGrade_setMany',
+    channels: ['xleth:colorGrade:setMany'],
+    api: { 'colorGrade.setMany': 'xleth:colorGrade:setMany' },
+    handler: 'ColorGrade_SetMany',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'colorGrade_analyze',
+    channels: ['xleth:colorGrade:analyze'],
+    api: { 'colorGrade.analyze': 'xleth:colorGrade:analyze' },
+    handler: 'ColorGrade_Analyze',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'colorGrade_setCompare',
+    channels: ['xleth:colorGrade:setCompare'],
+    api: { 'colorGrade.setCompare': 'xleth:colorGrade:setCompare' },
+    handler: 'ColorGrade_SetCompare',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'colorGrade_checkLut',
+    channels: ['xleth:colorGrade:checkLut'],
+    api: { 'colorGrade.checkLut': 'xleth:colorGrade:checkLut' },
+    handler: 'ColorGrade_CheckLut',
+    returns: 'value',
+    binary: null,
+  },
   {
     method: 'timeline_setLoopRegion',
     channels: ['xleth:timeline:setLoopRegion'],
@@ -506,6 +623,22 @@ const METHODS = [
     binary: null,
   },
   {
+    method: 'timeline_setTrackRoutes',
+    channels: ['xleth:timeline:setTrackRoutes'],
+    api: { 'timeline.setTrackRoutes': 'xleth:timeline:setTrackRoutes' },
+    handler: 'Timeline_SetTrackRoutes',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_setTrackSendGain',
+    channels: ['xleth:timeline:setTrackSendGain'],
+    api: { 'timeline.setTrackSendGain': 'xleth:timeline:setTrackSendGain' },
+    handler: 'Timeline_SetTrackSendGain',
+    returns: 'value',
+    binary: null,
+  },
+  {
     method: 'timeline_addSidechainRoute',
     channels: ['xleth:timeline:addSidechainRoute'],
     api: { 'timeline.addSidechainRoute': 'xleth:timeline:addSidechainRoute' },
@@ -606,6 +739,14 @@ const METHODS = [
     channels: ['xleth:timeline:setVideoHoldLastFrameThreshold'],
     api: { 'timeline.setVideoHoldLastFrameThreshold': 'xleth:timeline:setVideoHoldLastFrameThreshold' },
     handler: 'Timeline_SetVideoHoldLastFrameThreshold',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'timeline_setVideoHoldBehavior',
+    channels: ['xleth:timeline:setVideoHoldBehavior'],
+    api: { 'timeline.setVideoHoldBehavior': 'xleth:timeline:setVideoHoldBehavior' },
+    handler: 'Timeline_SetVideoHoldBehavior',
     returns: 'void',
     binary: null,
   },
@@ -829,6 +970,73 @@ const METHODS = [
     channels: ['xleth:timeline:setTrackSweepKeys'],
     api: { 'timeline.setTrackSweepKeys': 'xleth:timeline:setTrackSweepKeys' },
     handler: 'Timeline_SetTrackSweepKeys',
+    returns: 'value',
+    binary: null,
+  },
+  // ── Motion view: video effect param keys (TimelineTicks, uid + params index) ──
+  {
+    method: 'timeline_setTrackFxKeys',
+    channels: ['xleth:timeline:setTrackFxKeys'],
+    api: { 'timeline.setTrackFxKeys': 'xleth:timeline:setTrackFxKeys' },
+    handler: 'Timeline_SetTrackFxKeys',
+    returns: 'value',
+    binary: null,
+  },
+  // ── Motion view: Parent and Masks (docs/XLETH_MOTION_VIEW_DESIGN.md 3.1) ──
+  {
+    method: 'timeline_setTrackParent',
+    channels: ['xleth:timeline:setTrackParent'],
+    api: { 'timeline.setTrackParent': 'xleth:timeline:setTrackParent' },
+    handler: 'Timeline_SetTrackParent',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_setTrackMasks',
+    channels: ['xleth:timeline:setTrackMasks'],
+    api: { 'timeline.setTrackMasks': 'xleth:timeline:setTrackMasks' },
+    handler: 'Timeline_SetTrackMasks',
+    returns: 'value',
+    binary: null,
+  },
+  // ── Clones (docs/XLETH_CLONE_SPEC.md, engine model/Clone.h) ──
+  {
+    method: 'timeline_addClone',
+    channels: ['xleth:timeline:addClone'],
+    api: { 'timeline.addClone': 'xleth:timeline:addClone' },
+    handler: 'Timeline_AddClone',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_setCloneSettings',
+    channels: ['xleth:timeline:setCloneSettings'],
+    api: { 'timeline.setCloneSettings': 'xleth:timeline:setCloneSettings' },
+    handler: 'Timeline_SetCloneSettings',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_reorderClones',
+    channels: ['xleth:timeline:reorderClones'],
+    api: { 'timeline.reorderClones': 'xleth:timeline:reorderClones' },
+    handler: 'Timeline_ReorderClones',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_setNotesVoicePin',
+    channels: ['xleth:timeline:setNotesVoicePin'],
+    api: { 'timeline.setNotesVoicePin': 'xleth:timeline:setNotesVoicePin' },
+    handler: 'Timeline_SetNotesVoicePin',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_getVoiceAssignment',
+    channels: ['xleth:timeline:getVoiceAssignment'],
+    api: { 'timeline.getVoiceAssignment': 'xleth:timeline:getVoiceAssignment' },
+    handler: 'Timeline_GetVoiceAssignment',
     returns: 'value',
     binary: null,
   },
@@ -1181,6 +1389,24 @@ const METHODS = [
     channels: ['xleth:project:isDirty'],
     api: { 'project.isDirty': 'xleth:project:isDirty' },
     handler: 'Project_IsDirty',
+    returns: 'value',
+    binary: null,
+  },
+  // ── Motion view UI state (design R19): opaque, saved under "motionView",
+  // not undoable, not dirtying ──
+  {
+    method: 'project_getMotionViewState',
+    channels: ['xleth:project:getMotionViewState'],
+    api: { 'project.getMotionViewState': 'xleth:project:getMotionViewState' },
+    handler: 'Project_GetMotionViewState',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'project_setMotionViewState',
+    channels: ['xleth:project:setMotionViewState'],
+    api: { 'project.setMotionViewState': 'xleth:project:setMotionViewState' },
+    handler: 'Project_SetMotionViewState',
     returns: 'value',
     binary: null,
   },

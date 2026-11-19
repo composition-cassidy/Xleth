@@ -27,6 +27,8 @@ const ICONS = [
   'speaker-simple-x', 'spinner-gap', 'square', 'square-half-bottom', 'squares-four', 'stack-plus', 'star',
   'stop', 'swap', 'trash', 'tray-arrow-down', 'warning', 'warning-circle', 'wave-sawtooth', 'wave-sine',
   'wave-square', 'wave-triangle', 'waveform', 'x', 'youtube-logo',
+  // Color Grade: the panel / indicator glyph, Auto, the stack view, compare.
+  'palette', 'magic-wand', 'stack', 'circle-half',
 ];
 
 const here = dirname(fileURLToPath(import.meta.url));

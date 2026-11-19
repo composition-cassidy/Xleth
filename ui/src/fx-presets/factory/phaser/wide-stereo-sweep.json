@@ -1,0 +1,21 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "phaser",
+  "name": "Wide Stereo Sweep",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "rate": 0.25,
+      "depth": 80,
+      "stages": 4,
+      "feedback": 25,
+      "resonance": 1,
+      "width": 100,
+      "mix": 100,
+      "freq_low": 150,
+      "freq_high": 4000,
+      "spread": 20
+    }
+  }
+}

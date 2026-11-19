@@ -603,6 +603,11 @@ the body is the rest. Only the width varies with complexity. A folded device is 
 strip `--device-fold-w` 28px wide. The detail dock opens at **304px** (1px border, 28px tab strip,
 4px padding, the 256px device, the chain's 18px horizontal scrollbar, FL-style so it reads as left/right).
 
+**Lanes.** The Devices tab stacks two lanes: **Audio** on top, **Video** (the track's picture) under it. Each lane
+has a text-only folder tab (neutral `--ui-g3` fill, no icon) on its top edge, sticky at the left of the one scroller that
+owns both axes, so the Audio | Video divide stays visible at any horizontal scroll. Both lanes are always shown;
+at the default dock height the Video lane is one vertical scroll down (the Inspector's "Video effects" scrolls to it).
+
 **Title bar, identical on every device, in this order:**
 1. **Activator**: the bypass `Toggle` (power glyph), shown at rest. On = inverted ink chip.
 2. **Fold**: collapses the device to the vertical strip (state per device instance).
@@ -682,24 +687,26 @@ kept), one eight-row grid, top to bottom:
    far over the 24 px hit floor: the row under the pointer, or the arrow-key row, is the device it opens in
    the Devices tab (`deviceRevealStore`: the chain scrolls to it and outlines it until the next press there);
    an empty row opens the chain. Sixteen-pixel rows that were each their own button would break the Floor.
-3. **M / S / V** Toggles at rest, three 24 px cells.
-4. **Pan** (bipolar) and **Width** Knobs as **plain dials: no word and no number anywhere**. Each is a 20 px
-   disc and one pointer (kit `Knob` `minimal`, no track arc, value arc or centre tick; straight up is centre
-   and 100 %, and the pointer takes the value colour while it is dragged) with the readout hidden (`hideValue`),
-   in a 24 px row. Each keeps its accessible name, `aria-valuetext` and hint, and a double-click still types a
-   value, drawn over the dial so the row never grows. The pointer is the whole reading; there is no live number
+3. **Pearl and Visual-only eye**, two 24 px cells. The eye **floats**: no chip, border or fill, just the glyph.
+   Off is the outlined eye in dim ink, on the filled eye in full ink (state is never colour alone).
+4. **Width** Knob as a **plain dial: no word and no number anywhere**. A 20 px disc and one pointer (kit `Knob`
+   `minimal`, no track arc, value arc or centre tick; straight up is 100 %, and the pointer takes the value colour
+   while it is dragged) with the readout hidden (`hideValue`), alone in its 24 px row. Under it, **Pan** is a
+   horizontal kit `Slider` (bipolar: a centre notch, a bracket cap) in its own 24 px row, **a touch heavier to
+   pull**: `weight` 1.5, so the pointer covers one and a half rails to sweep hard left to hard right (Shift = fine
+   still applies on top). Each keeps its accessible name, `aria-valuetext` and hint, and a double-click still types a
+   value, drawn over the control so the row never grows. The position is the whole reading; there is no live number
    to drag against (a number would be a word on the strip), so the typed value is how you set an exact one.
 5. **Volume** NumberBox, signed (section 6), **without the value-fill rule**: the fader below is the slider.
 6. **Fader + Meter + name**: the meter draws **ticks only** and its **clip latch only once latched** (its space is
    kept, so the bars never move); peak hold as before. The name (item 1) stands at the meter's right.
 7. Routing cable row. 8. Output Select.
 
-Compact is 72, not the 68 it used to be: three 24 px toggles need 72. The fixed rows add up to 146 px
-(`STRIP_FIXED_H`: head 21, M/S/V 24, knobs 24, volume 24, cable 20, output 26, seven 1 px gaps), 26 px less than
-when the name had a row of its own and the knobs printed a value. A dock too short for three rows above
-a 64 px fader shows at most three and lets the fader go down to 48 px, so a 320 px dock at 1366x768 now fits three
-rows over a full 64 px fader and still does not scroll vertically. At the 409 px dock of a 1080p window the list
-can reach nine rows.
+Compact is 72, not the 68 it used to be: three 24 px toggles need 72. The fixed rows add up to 171 px
+(`STRIP_FIXED_H`: head 21, M/S/V 24, width knob 24, pan slider 24, volume 24, cable 20, output 26, eight 1 px gaps).
+A dock too short for three rows above a 64 px fader shows at most three and lets the fader go down to 48 px, so a
+320 px dock at 1366x768 (271 px for strips) shows three rows over the 48 px floor. At the 409 px dock of a 1080p
+window the list can reach seven rows.
 
 The kit Meter's canvas has `height: 0` and grows by flex: a canvas's natural height is its backing store (the
 height it was last painted at), which would otherwise stop a fader row from shrinking again once it had been
@@ -711,7 +718,7 @@ engine state; **there is no arm** (the engine has no record-arm) and **no sends*
 reserved and always empty), so neither is drawn.
 
 **Gutter** (`MixerGutter`, 40 px, fixed left of the scroller): the meters' **dB numerals, printed once**
-(kit `MeterScale`), the FX button and the strip-width switch. The pan and width knob row has no legend: the knobs
+(kit `MeterScale`), the FX button and the strip-width switch. The width knob and pan slider rows have no legend: the controls
 carry no words. The gutter, every strip and the Master are equal-height columns on the same row
 grid, and `MeterScale` has a meter's own box, so each numeral sits at the y of the strips' ticks at any dock
 height. Which marks a height shows is one function (`visibleScaleMarks`: a mark at least 12 px under the one
@@ -719,8 +726,8 @@ before it), shared by a meter's numerals, a meter's bare ticks and the scale. Th
 present (`overflow-x: scroll`) and its height is **measured**, not assumed: the fixed columns leave exactly
 that much at the bottom.
 
-**Master** is the same grid: head, its own insert list, then a **peak readout** in the two rows a track
-gives to M/S/V and pan + width (the highest master level since the last reset, from the same meter bus, "—"
+**Master** is the same grid: head, its own insert list, then a **peak readout** in the three rows a track
+gives to M/S/V, width and pan (the highest master level since the last reset, from the same meter bus, "—"
 until a level arrives, "Over" in words above 0 dB, click to reset), volume, fader and a meter **with
 numerals** (the gutter is at the far left of a long mixer), then its name "Master" up the meter's side. Its
 meter is 37 px against a track's 20, so 72 px has no room left for the name: the Master is 16 px wider than a
@@ -1257,17 +1264,22 @@ four-way mode switch above. The pitch pair is bound to `semitones` / `cents` or 
 never moves. Character holds Grain size (Granular), Formant (Smart, Voice) or the Clip stretch method and Formant toggle. `mode`,
 `clip_method` and `clip_formant` are not automatable in the engine, so they are single commits and never knobs.
 
-**Smart balance** (`SmartBalanceDevice.jsx`, about 1,250px). A four-band auto-leveller: an LR4 tree at 150 Hz / 800 Hz / 4 kHz, each
-band's RMS pulled toward its target through a 6 dB soft knee (scaled by Amount and the band's own amount, 10 dB at most, gated below its
-Floor), then Preserve restores the original dynamics and Mix blends. The hero (`SmartBalanceCanvas.jsx`, geometry in
-`smartBalanceGeometry.js`) is the engine's own analysis: four band columns on a log-frequency axis against level, each with its live
-RMS, its draggable target line, its dashed gate floor, the gain being applied and the estimated landing, plus the overall level that
-Relative targets are measured from and transient pulses. The poll is the editor's, unchanged (`getEffectMeter` slots 0 to 7 and
-`smartBalanceGetDebug`, about 30 Hz). The four band tokens are band-palette hues 1 to 4. A target drag previews per frame and commits
-on release (Escape cancels); with no live level to measure from, Relative mode draws and drags nothing rather than invent a place.
-Views: Levels, Details (the old Debug overlay). Sections: Measure (Relative / Absolute, Response), Band (a selector over one block of
-Offset or Target, Band amount, Floor), Correct (Amount as the 56px hero, Preserve), Output (Mix). The old panel sent every pointer
-move; the device sends at most one write per frame and the final value on release.
+**Smart balance** (`SmartBalanceDevice.jsx`, about 1,410px). A gentle four-band leveller, the even-it-out half of an OTT chain
+without its harshness or level jump (engine rewritten 2026-11-19, `SmartBalanceEffect.h`): an LR4 tree at 150 Hz / 800 Hz / 4 kHz;
+each band is pulled toward a balanced tone (Relative: a band layout measured on finished mixes, at the material's own level;
+Absolute: a literal dBFS target) and its quiet passages and bursts are evened around its own level, scaled by Amount and the band's
+own amount. A band that is not really there, and the gaps between notes, are never lifted; Preserve lets hits through untouched;
+Warmth adds a low-mid tilt and gentle harmonics to the lows; Loudness match keeps the output as loud as the input (BS.1770). The hero
+(`SmartBalanceCanvas.jsx`, geometry in `smartBalanceGeometry.js`) is the engine's own analysis: four band columns on a log-frequency
+axis against level, each with its live level, its draggable target line, its dashed gate floor, the gain being applied and the
+estimated landing, and transient pulses while Preserve holds a band. In Relative mode a target line sits at the band's balanced
+reference (`smartBalanceGetDebug().ref`) plus its Offset, with a dotted mark at the reference when the Offset is not 0. The poll is
+`getEffectMeter` slots 0 to 7 and `smartBalanceGetDebug`, about 30 Hz. The four band tokens are band-palette hues 1 to 4. A target
+drag previews per frame and commits on release (Escape cancels); with no live level to measure from, Relative mode draws and drags
+nothing rather than invent a place. Views: Levels, Details (each band's balanced level, whether it may be lifted, and the loudness
+match). Sections: Measure (Relative / Absolute, Response), Band (a selector over one block of Offset or Target, Band amount, Floor),
+Correct (Amount as the 56px hero, Preserve), Tone (Warmth), Output (Mix, Output, Loudness match). The device sends at most one write per
+frame and the final value on release.
 
 **Shared.** The param-driven displays (Chorus, Phaser, Smart Balance) run their loop through `visibleLoop.js`, which pauses it while
 the canvas is scrolled out of view; no data path changes. Knobs pass the engine's own NormalisableRange skew to the automation maths
@@ -1321,10 +1333,17 @@ viewport, Lock aspect, Reset pin, Record and its tolerance, the derived window a
 Presets (the `xform` adapter) are in the title bar. Lanes use the band palette (pan X, pan Y, zoom, rotation); the disabled
 Opacity lane is gone (no such channel).
 
-**Inspector.** Only properties of the selection, as label / value rows. On / off is `RowToggle`: a kit Toggle with no text,
-named by its row, a check when on and an empty box when off, so no row echoes its label. Track: Placement (and, when
-fullscreen, Hold gaps and Opacity), Hold last frame, Cell shape (Corners commits once per gesture, Own gap), Video flip,
-**Video effects (N)** (opens Devices on Video). Video flip: Flip; **Style**, four glyph segments that write exactly the cycles
+**Inspector.** Only properties of the selection. On / off is `RowToggle`: a kit Toggle with no text, named by its row, a
+check when on and an empty box when off, so no row echoes its label. **Track** (`TrackVideoProperties`, revamped
+2026-11-15, `TrackSection.jsx` + `TrackInspector.module.css`): the header carries identity and placement ("Clip track ·
+Grid 1,0") and **Video effects (N)** (opens Devices on Video). Then foldable sections, separated by one hairline and air
+rather than grey strips; the name is the fold button (`aria-expanded`), a one-line summary shows beside a folded name, and a
+section's own switch or display choice sits at its right (fold memory: `xleth.inspector.track.folded` in localStorage, one
+set for every track). Cell (when fullscreen, Hold gaps and Opacity; Corners commits once per gesture; Own gap), Roam (Units
+in the header; Offset X / Y, Scale / Rotate, Bounds / Layer as a two-column field grid, label above the box; Back to grid
+box), Roam keys (Auto-key in the header; Parameter, Key lane, Key at playhead / Clear keys with the key count; the selected
+key in a recessed well), Hold last frame and Video flip (each switched on from its header; the body exists only while on).
+Label / value rows are 28px with a 76px label column; content aligns with the section name. Video flip: Flip; **Style**, four glyph segments that write exactly the cycles
 the engine's `migrateVideoFlipMode` builds for the legacy None / HorizontalEven / Clockwise / CounterClockwise (Custom is
 printed for any other cycle); Cycle, one cell per state (up to 12) whose menu sets the orientation, moves it, makes it the
 start or removes it; Modifier; Start state; and the preview, one row of eight cells in an eight-column grid that always fits

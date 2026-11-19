@@ -1,0 +1,21 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "compressor",
+  "name": "Parallel Smash",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "threshold": -32,
+      "ratio": 20,
+      "attack": 0.5,
+      "release": 100,
+      "knee": 0,
+      "makeup": 12,
+      "mix": 35,
+      "mix_linked": 1,
+      "detect_mode": 0,
+      "lookahead": 0
+    }
+  }
+}

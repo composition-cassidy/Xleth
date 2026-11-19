@@ -26,6 +26,11 @@ class UndoManager {
 public:
     explicit UndoManager(int maxHistory = 100);
 
+    // The command stays alive at least until the next execute() / undo() /
+    // redo() / clear(), recorded or not. Callers routinely keep a raw pointer
+    // to read the command's results (assigned ids, what it removed) right after
+    // this returns; a command that declined to be recorded used to be destroyed
+    // before they could, and those reads landed in freed memory.
     void execute(std::unique_ptr<Command> cmd, Timeline& timeline);
     bool undo(Timeline& timeline);
     bool redo(Timeline& timeline);
@@ -66,6 +71,35 @@ public:
     int countByDomain(const std::string& domain) const;
 
     void clear();
+
+    // ─── Groups ───────────────────────────────────────────────────────────────
+    // A gesture that issues several commands (pitch-shift a selection, delete a
+    // selection of pattern blocks, a move that first removes what it lands on)
+    // is ONE edit to the user. Between beginGroup() and endGroup() every
+    // recorded command is collected and lands on the undo stack as a single
+    // entry: one undo() reverses all of them (newest first), one redo() replays
+    // them in order.
+    //
+    // This is what makes a large gesture undoable at all: the history is capped
+    // (maxHistory), and 150 individually-recorded pitch shifts used to push the
+    // first 50 out of it, leaving them impossible to undo.
+    //
+    // Groups do not nest and cannot be left open by accident:
+    //   - beginGroup() while a group is open commits that group first;
+    //   - undo(), redo() and markSavepoint() commit an open group before doing
+    //     anything else, and clear() discards it with the rest of the history;
+    //   - endGroup() only closes the group whose token it is handed, so a late
+    //     endGroup() from an abandoned gesture cannot close a newer group.
+    // The worst a caller that never calls endGroup() can do is fold the edits
+    // made until the next undo/redo/save/beginGroup into its own entry.
+    //
+    // A group with no recorded commands leaves no entry; a group with exactly
+    // one records that command as it is.
+    //
+    // Returns a token (> 0) identifying the group.
+    int  beginGroup(std::string label);
+    bool endGroup(int token);
+    bool isGroupOpen() const;
 
     // ─── Dirty / savepoint tracking ───────────────────────────────────────────
     // markSavepoint() records the current undo-stack depth as "saved state".
@@ -118,6 +152,22 @@ public:
 
 private:
     void firePostMutationHook() const;
+    // Bookkeeping shared by a plain execute() and a grouped one.
+    void noteNewEdit();
+    void pushUndoEntry(std::unique_ptr<Command> cmd);
+    void commitOpenGroup();
+
+    struct OpenGroup {
+        int token = 0;
+        std::string label;
+        std::vector<std::unique_ptr<Command>> commands;
+    };
+    std::unique_ptr<OpenGroup> openGroup_;
+    int nextGroupToken_ = 1;
+
+    // The most recent command that ran but was not recorded. Held only so the
+    // caller's pointer to it stays valid; see execute().
+    std::unique_ptr<Command> lastUnrecorded_;
 
     std::function<void()> postMutationHook_;
     std::recursive_mutex* mutationMutex_ = nullptr;

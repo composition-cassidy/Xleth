@@ -23,10 +23,20 @@
 // count is the deepest overlap). The lane grows to REEL_MAX_SUB_ROWS rows and then
 // compresses: more sub-rows share the same lane height.
 //
+// Clones (docs/XLETH_CLONE_SPEC.md, "Timeline and Motion view"). A source with
+// Voice clones splits its notes across voices (cloneModel.assignVoices, decided
+// from the pattern alone): the source's own lane keeps only voice 0 plus the
+// OVERFLOW notes it plays (flagged REEL_FLAG_OVERFLOW), and Voice clone k gets
+// the notes of voice k. A Trail clone gets the source's voice-0 clips shifted
+// delayTicks later. All of them come out of the ONE walk below over the source's
+// blocks, so the tape / loop / offset math exists once. Clone tracks have no
+// blocks of their own; their entries are keyed by the clone's track id.
+//
 // PURE: no React, no store, no DOM. The result is typed arrays so a 2,000-note
 // pattern is a handful of allocations per data change and ZERO per frame.
 
 import { DEFAULT_TRACK_HEIGHT } from '../../constants/timeline.js'
+import { isClone, trailClonesOf, voiceClonesOf, voiceMapFor } from '../../clones/cloneModel.js'
 
 /** The lane grows to this many sub-rows, then compresses. */
 export const REEL_MAX_SUB_ROWS = 3
@@ -71,6 +81,17 @@ export function reelLaneHeight({ subRows = 1, collapsed = false, trackHeight = D
 }
 
 /**
+ * Height of a Clone's row. A Clone's row IS its lane (it has no blocks), but it
+ * also carries the Clone's header (name, kind tag, hide control), so it is never
+ * shorter than a track row. Collapsed with its source's Reel lane, it is the same
+ * strip, which is still the 24px hit floor its header needs.
+ */
+export function cloneLaneHeight({ subRows = 1, collapsed = false, trackHeight = DEFAULT_TRACK_HEIGHT } = {}) {
+  if (collapsed) return REEL_COLLAPSED_H
+  return Math.max(trackHeight, reelLaneHeight({ subRows, trackHeight }))
+}
+
+/**
  * Vertical extent of sub-row `row` (0-based) inside a lane row `{ y, height }`.
  * With <= REEL_MAX_SUB_ROWS sub-rows each is full size; beyond that they share the
  * same inner height. Edges are rounded so neighbours share a pixel boundary.
@@ -110,6 +131,15 @@ export function reelClipMode(track, i) {
   return MODE_BY_CODE[track?.modes?.[i] ?? 0] ?? REEL_MODE_FOLLOW
 }
 
+// Per-clip flag bits (the `flags` array).
+/** The note overflows: more notes sound than the source has voices, so the source cell plays it. */
+export const REEL_FLAG_OVERFLOW = 1
+
+/** True when clip `i` is an overflow note (only ever set in a source's own lane). */
+export function reelClipOverflows(track, i) {
+  return ((track?.flags?.[i] ?? 0) & REEL_FLAG_OVERFLOW) !== 0
+}
+
 const EMPTY_TRACK = Object.freeze({
   count: 0,
   starts: new Float64Array(0),
@@ -118,6 +148,7 @@ const EMPTY_TRACK = Object.freeze({
   patternIds: new Int32Array(0),
   regionIds: new Int32Array(0),
   modes: new Uint8Array(0),
+  flags: new Uint8Array(0),
   rows: new Uint8Array(0),
   subRows: 1,
   maxLen: 0,
@@ -147,6 +178,8 @@ function regionHasVideo(region, sources) {
  *   byTrack has an entry ONLY for Pattern tracks that have video (at least one
  *   block resolving to a region with a video source), so "has an entry" is "shows
  *   a Reel lane". A video track with no notes yet still has an entry (count 0).
+ *   Such a track's Clones get an entry too (keyed by the Clone's track id): the
+ *   notes that Clone's cell plays.
  */
 export function buildReelModel({ tracks, patternBlocks, patterns, regions, sources } = {}) {
   const byTrack = new Map()
@@ -161,19 +194,20 @@ export function buildReelModel({ tracks, patternBlocks, patterns, regions, sourc
   }
 
   for (const track of tracks) {
-    if (track?.type !== 'Pattern') continue
+    // A Clone has no blocks: its lane comes out of its source's walk below.
+    if (track?.type !== 'Pattern' || isClone(track)) continue
     const blocks = blocksByTrack.get(track.id)
     if (!blocks || blocks.length === 0) continue
 
-    // First pass: how many clips, so the typed arrays are allocated once.
-    // (Counting is the same walk as filling, so do both in one go with plain
-    // arrays and copy: clip counts are in the thousands, not millions.)
-    const starts = []
-    const ends = []
-    const noteIds = []
-    const patternIds = []
-    const regionIds = []
-    const modes = []
+    const voiceClones = voiceClonesOf(tracks, track.id)
+    const trailClones = trailClonesOf(tracks, track.id)
+    const voiceCount = voiceClones.length
+    // One bucket per voice: 0 is the source cell, k is the k-th Voice clone.
+    // (Counting is the same walk as filling, so fill plain arrays and copy them
+    // into typed arrays once: clip counts are in the thousands, not millions.)
+    const buckets = Array.from({ length: voiceCount + 1 }, newBucket)
+    // noteId -> { voice, overflow } per pattern, only when there are voices to split across.
+    const voiceMaps = voiceCount > 0 ? new Map() : null
     let hasVideo = false
 
     for (const block of blocks) {
@@ -195,6 +229,15 @@ export function buildReelModel({ tracks, patternBlocks, patterns, regions, sourc
       const blockPos = block.positionTicks
       const blockEnd = blockPos + blockDur
 
+      let voiceMap = null
+      if (voiceMaps) {
+        voiceMap = voiceMaps.get(pattern.id)
+        if (!voiceMap) {
+          voiceMap = voiceMapFor(pattern, voiceCount)
+          voiceMaps.set(pattern.id, voiceMap)
+        }
+      }
+
       const firstLoop = Math.max(0, Math.floor(windowStart / patLen))
       let lastLoop = Math.floor((windowEnd - 1) / patLen)
       if (block.loopEnabled === false) lastLoop = Math.min(lastLoop, 0)
@@ -209,21 +252,41 @@ export function buildReelModel({ tracks, patternBlocks, patterns, regions, sourc
           const start = blockPos + (tape - windowStart)
           const end = Math.min(start + note.durationTicks, blockEnd)
           if (!(end > start)) continue
-          starts.push(start)
-          ends.push(end)
-          noteIds.push(note.id)
-          patternIds.push(pattern.id)
-          regionIds.push(pattern.regionId)
-          modes.push(noteLensModeCode(note))
+          const slot = voiceMap?.get(note.id)
+          const voice = slot && slot.voice >= 0 && slot.voice <= voiceCount ? slot.voice : 0
+          const b = buckets[voice]
+          b.starts.push(start)
+          b.ends.push(end)
+          b.noteIds.push(note.id)
+          b.patternIds.push(pattern.id)
+          b.regionIds.push(pattern.regionId)
+          b.modes.push(noteLensModeCode(note))
+          b.flags.push(slot?.overflow ? REEL_FLAG_OVERFLOW : 0)
         }
       }
     }
 
     if (!hasVideo) continue
-    byTrack.set(track.id, packTrack(starts, ends, noteIds, patternIds, regionIds, modes))
+    byTrack.set(track.id, packTrack(buckets[0]))
+    voiceClones.forEach((clone, k) => byTrack.set(clone.id, packTrack(buckets[k + 1])))
+    // A Trail replays the source cell (voice 0, overflow included) delayTicks
+    // later. Overflow is only marked where it can be fixed: the source's lane.
+    for (const clone of trailClones) {
+      byTrack.set(clone.id, packTrack(buckets[0], trailDelayTicks(clone), false))
+    }
   }
 
   return { byTrack, stillByRegion }
+}
+
+function newBucket() {
+  return { starts: [], ends: [], noteIds: [], patternIds: [], regionIds: [], modes: [], flags: [] }
+}
+
+/** A Trail clone's delay in ticks (never negative). */
+export function trailDelayTicks(clone) {
+  const d = Math.round(Number(clone?.clone?.delayTicks) || 0)
+  return d > 0 ? d : 0
 }
 
 function registerStill(map, region, sources) {
@@ -243,7 +306,13 @@ function registerStill(map, region, sources) {
 // Matches SampleThumbnail's STILL_FRAME_OFFSET_S.
 export const STILL_FRAME_OFFSET_S = 0.04
 
-function packTrack(startsIn, endsIn, noteIdsIn, patternIdsIn, regionIdsIn, modesIn) {
+// Packs one bucket into the lane's typed arrays, sorted by start. `shift` moves
+// every clip later (a Trail clone); `keepFlags` false drops the per-clip flags.
+function packTrack(bucket, shift = 0, keepFlags = true) {
+  const {
+    starts: startsIn, ends: endsIn, noteIds: noteIdsIn, patternIds: patternIdsIn,
+    regionIds: regionIdsIn, modes: modesIn, flags: flagsIn,
+  } = bucket
   const n = startsIn.length
   if (n === 0) return EMPTY_TRACK
 
@@ -261,6 +330,7 @@ function packTrack(startsIn, endsIn, noteIdsIn, patternIdsIn, regionIdsIn, modes
   const patternIds = new Int32Array(n)
   const regionIds = new Int32Array(n)
   const modes = new Uint8Array(n)
+  const flags = new Uint8Array(n)
   const rows = new Uint8Array(n)
 
   // Greedy interval colouring in start order: a clip joins the first sub-row
@@ -271,12 +341,13 @@ function packTrack(startsIn, endsIn, noteIdsIn, patternIdsIn, regionIdsIn, modes
   let maxLen = 0
   for (let k = 0; k < n; k++) {
     const i = order[k]
-    starts[k] = startsIn[i]
-    ends[k] = endsIn[i]
+    starts[k] = startsIn[i] + shift
+    ends[k] = endsIn[i] + shift
     noteIds[k] = noteIdsIn[i]
     patternIds[k] = patternIdsIn[i]
     regionIds[k] = regionIdsIn[i]
     modes[k] = modesIn?.[i] ?? 0
+    flags[k] = keepFlags ? (flagsIn?.[i] ?? 0) : 0
     const len = ends[k] - starts[k]
     if (len > maxLen) maxLen = len
 
@@ -292,7 +363,7 @@ function packTrack(startsIn, endsIn, noteIdsIn, patternIdsIn, regionIdsIn, modes
 
   return {
     count: n,
-    starts, ends, noteIds, patternIds, regionIds, modes, rows,
+    starts, ends, noteIds, patternIds, regionIds, modes, flags, rows,
     subRows: Math.max(1, rowEnds.length),
     maxLen,
   }

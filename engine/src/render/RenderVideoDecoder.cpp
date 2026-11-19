@@ -218,15 +218,22 @@ RenderVideoDecoder::openStreamAt(const std::string& key, const std::string& sour
     }
 
     ContextEntry entry;
-    if (!openSource(entry.ctx, sourcePath)) {
+    const auto openT0 = std::chrono::steady_clock::now();
+    const bool opened = openSource(entry.ctx, sourcePath);
+    decodeStats_.openUs += std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - openT0).count();
+    if (!opened) {
         if (backoffEnabled)
             failedOpens_[sourcePath] = std::chrono::steady_clock::now();
         return nullptr;
     }
+    // Counted here, not by watching contexts_.size() in decode(): an open that
+    // first evicts another context leaves the size unchanged.
+    ++decodeStats_.opens;
 
     lruOrder_.push_front(key);
     entry.lruIt = lruOrder_.begin();
-    entry.lastTouched = std::chrono::steady_clock::now();
+    entry.lastTouched = clockNow();
     entry.streamIndex = streamIndex;
     auto [insertIt, _] = contexts_.emplace(key, std::move(entry));
     return &insertIt->second;
@@ -259,7 +266,7 @@ bool RenderVideoDecoder::canContinueForward(const DecoderContext& ctx, int64_t f
 DecoderContext* RenderVideoDecoder::acquireStream(const std::string& sourcePath,
                                                   int64_t frameIndex)
 {
-    const auto now = std::chrono::steady_clock::now();
+    const auto now = clockNow();
     const auto busyWindow = std::chrono::milliseconds(kStreamBusyMs);
 
     ContextEntry* best = nullptr;           // can reach frameIndex going forward
@@ -328,6 +335,21 @@ bool RenderVideoDecoder::evictLruContext()
     return false;
 }
 
+std::chrono::steady_clock::time_point RenderVideoDecoder::clockNow() const
+{
+    return usePresentationClock_ ? presentationNow_ : std::chrono::steady_clock::now();
+}
+
+void RenderVideoDecoder::setPresentationClock(double seconds)
+{
+    using Clock = std::chrono::steady_clock;
+    usePresentationClock_ = true;
+    // An arbitrary fixed epoch plus the output time: only differences between
+    // two readings are ever used.
+    presentationNow_ = Clock::time_point(std::chrono::duration_cast<Clock::duration>(
+        std::chrono::duration<double>(seconds < 0.0 ? 0.0 : seconds)));
+}
+
 void RenderVideoDecoder::setActiveContextBudget(int distinctPathCount)
 {
     // Headroom for the extra per-file streams a frame's cells may be playing
@@ -340,7 +362,7 @@ void RenderVideoDecoder::pruneIdleContexts(double idleSeconds)
 {
     if (contexts_.empty()) return;
 
-    const auto now = std::chrono::steady_clock::now();
+    const auto now = clockNow();
     const auto threshold = std::chrono::duration<double>(idleSeconds);
 
     // Collect first, close after: closeSource() mutates contexts_/lruOrder_,
@@ -927,7 +949,19 @@ FrameCacheEntry RenderVideoDecoder::decode(const std::string& sourcePath,
     const auto ms = [](Clock::time_point a, Clock::time_point b) {
         return std::chrono::duration<double, std::milli>(b - a).count();
     };
-    const double totalMs = ms(t0, Clock::now());
+    const auto tDone = Clock::now();
+    {
+        const auto us = [](Clock::time_point a, Clock::time_point b) {
+            return std::chrono::duration_cast<std::chrono::microseconds>(b - a).count();
+        };
+        ++decodeStats_.calls;
+        if (!continuedForward) ++decodeStats_.seeks;
+        decodeStats_.framesDecoded += static_cast<uint64_t>(
+            std::max(0, ctx->framesDecodedThisCall));
+        decodeStats_.decodeUs  += us(tOpened, tDecoded);
+        decodeStats_.extractUs += us(tDecoded, tDone);
+    }
+    const double totalMs = ms(t0, tDone);
     if (totalMs > 15.0) {
         XLETH_RENDER_LOG(std::fprintf(stderr,
             "[RenderDecoder] SLOW %.1fms '%s' frame=%lld (prev=%lld): open=%.1f%s "

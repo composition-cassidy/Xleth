@@ -3,6 +3,7 @@
 #include "model/TimelineTypes.h"
 #include "audio/TrackRouting.h"
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -60,6 +61,13 @@ private:
 class ResizeClipCommand : public Command {
 public:
     ResizeClipCommand(int clipId, TickTime newDuration, const Timeline& timeline);
+    // Right-edge trim that also moves the start of the clip's source window.
+    // A reversed clip plays its window backwards, so what sits under its right
+    // edge is the START of the window: trimming that edge has to advance
+    // regionOffset, or the trim removes the beginning of what you hear instead
+    // of the end. The position does not move.
+    ResizeClipCommand(int clipId, TickTime newDuration, TickTime newRegionOffset,
+                      const Timeline& timeline);
     void execute(Timeline& timeline) override;
     void undo(Timeline& timeline) override;
     std::string describe() const override;
@@ -67,6 +75,10 @@ private:
     int      clipId_;
     TickTime oldDuration_;
     TickTime newDuration_;
+    bool     setsRegionOffset_ = false;
+    TickTime oldRegionOffset_;
+    TickTime newRegionOffset_;
+    TickTime position_;
 };
 
 // ─── ResizeClipLeftCommand ────────────────────────────────────────────────────
@@ -282,14 +294,43 @@ private:
 // Cascades: snapshots the track and ALL clips + pattern-blocks on it at
 // construction. execute() removes blocks/clips then the track.
 // undo() restores track then clips+blocks with their original IDs.
+//
+// Motion view (design 3.2): every CHILD of the removed track (parentTrackId ==
+// trackId) is detached in the same step (parent -1), with its Roam base set to
+// the keep-on-screen base at `keepOnScreenTick` (model/ParentMath.h), so it
+// stays where it was on screen at that tick. undo() restores each child's old
+// parent and base.
 
+//
+// Clones (docs/XLETH_CLONE_SPEC.md): removing a source removes its Clones in
+// the same step (each through its own RemoveTrackCommand, held here).
+// Removing a Voice clone on its own re-assigns its notes (assignment is
+// derived) and rewrites the pins of every note its source plays: pins to it
+// go Auto, pins to later voices move down one, so every other pinned note
+// stays with its Clone.
 class RemoveTrackCommand : public Command {
 public:
-    RemoveTrackCommand(int trackId, const Timeline& timeline);
+    RemoveTrackCommand(int trackId, const Timeline& timeline, double keepOnScreenTick = 0.0,
+                       bool cascadeFromSource = false);
     void execute(Timeline& timeline) override;
     void undo(Timeline& timeline) override;
     std::string describe() const override;
+    // Children detached by this command (for the bridge log / tests).
+    std::size_t detachedChildCount() const { return children_.size(); }
+    // Clones removed with this track (Clones).
+    std::size_t removedCloneCount() const { return cloneRemovals_.size(); }
 private:
+    std::vector<std::unique_ptr<RemoveTrackCommand>> cloneRemovals_;
+    // Pin rewrite when a Voice clone is removed: per pattern, before / after.
+    std::vector<std::pair<int, std::vector<PatternNote>>> pinsBefore_;
+    std::vector<std::pair<int, std::vector<PatternNote>>> pinsAfter_;
+    struct DetachedChild {
+        int        trackId = -1;
+        int        oldParent = -1;
+        RoamParams oldBase;
+        RoamParams newBase;
+    };
+    std::vector<DetachedChild> children_;
     TrackInfo                 track_;
     TrackLayout               oldTrackLayout_;
     std::vector<Clip>         clips_;         // all clips on the track
@@ -381,6 +422,9 @@ private:
     // Saved stretchRatios for tempoLocked stretched clips so undo restores
     // exact values without floating-point drift from repeated BPM changes.
     std::unordered_map<int, double> savedStretchRatios_;
+    // regionOffset ticks of every trimmed clip, so each keeps starting at the
+    // same instant of its source at the new tempo (commands/TempoTrimAnchor.h).
+    std::unordered_map<int, int64_t> savedRegionOffsets_;
 };
 
 // ─── SetLoopRegionCommand ─────────────────────────────────────────────────────
@@ -592,6 +636,25 @@ private:
     int sourceTrackId_;
     int oldTargetTrackId_;
     int newTargetTrackId_;
+};
+
+// ─── SetTrackRoutesCommand ────────────────────────────────────────────────────
+// FL multi-wiring: replaces a track's primary output AND its sends in one undo
+// step. Only created after validateTrackRoutes succeeds (the bridge validates).
+
+class SetTrackRoutesCommand : public Command {
+public:
+    SetTrackRoutesCommand(int sourceTrackId, int newTargetTrackId,
+                          std::vector<TrackSend> newSends, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int                    sourceTrackId_;
+    int                    oldTargetTrackId_ = -1;
+    int                    newTargetTrackId_;
+    std::vector<TrackSend> oldSends_;
+    std::vector<TrackSend> newSends_;
 };
 
 // ─── Sidechain route commands (Prompt 4B) ─────────────────────────────────────
@@ -1180,6 +1243,22 @@ private:
     int    trackId_;
     double oldThresholdBeats_;
     double newThresholdBeats_;
+};
+
+// ─── SetTrackVideoHoldBehaviorCommand ─────────────────────────────────────────
+// Smart gap detection and freeze / keep-playing fill, set together (one undo).
+
+class SetTrackVideoHoldBehaviorCommand : public Command {
+public:
+    SetTrackVideoHoldBehaviorCommand(int trackId, bool smart, bool keepPlaying,
+                                     const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int  trackId_;
+    bool oldSmart_ = false, oldKeepPlaying_ = false;
+    bool newSmart_, newKeepPlaying_;
 };
 
 // ─── SetTrackCornerRadiusCommand ──────────────────────────────────────────────
@@ -1830,6 +1909,148 @@ private:
     int                  trackId_;
     std::vector<LensKey> oldKeys_;
     std::vector<LensKey> newKeys_;
+};
+
+// Video effect param keys (Motion view): TrackInfo::fxKeys, a whole-vector swap like
+// the Roam and Sweep key commands: ONE command = ONE undo step per gesture, built only
+// when changesAnything().
+class SetTrackFxKeysCommand : public Command {
+public:
+    SetTrackFxKeysCommand(int trackId, std::vector<FxKey> keys, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+    bool changesAnything() const { return oldKeys_ != newKeys_; }
+private:
+    int                trackId_;
+    std::vector<FxKey> oldKeys_;
+    std::vector<FxKey> newKeys_;
+};
+
+// ─── Motion view: Parent and Masks (docs/XLETH_MOTION_VIEW_DESIGN.md 3.2) ────
+
+// TrackInfo::parentTrackId (-1 = none) and, for keep-on-screen, roam.base in
+// the SAME step (old values captured in the ctor). The bridge validates the
+// relation first (model/ParentMath.h validateParent: self / loop / depth > 4
+// / unknown track); execute re-checks and declines (setApplied(false)) an
+// attach that is no longer valid, so a refused edit is never recorded. Built
+// only when changesAnything().
+class SetTrackParentCommand : public Command {
+public:
+    SetTrackParentCommand(int trackId, int newParentTrackId, const Timeline& timeline,
+                          std::optional<RoamParams> newBase = std::nullopt);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+    bool changesAnything() const {
+        return oldParent_ != newParent_ || (newBase_ && *newBase_ != oldBase_);
+    }
+private:
+    int                       trackId_;
+    int                       oldParent_ = -1;
+    int                       newParent_ = -1;
+    RoamParams                oldBase_;
+    std::optional<RoamParams> newBase_;
+};
+
+// TrackInfo::roam.masks, whole-vector swap (one gesture = one undo step).
+// Built only when changesAnything().
+class SetTrackMasksCommand : public Command {
+public:
+    SetTrackMasksCommand(int trackId, std::vector<RoamMask> masks, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+    bool changesAnything() const { return oldMasks_ != newMasks_; }
+private:
+    int                   trackId_;
+    std::vector<RoamMask> oldMasks_;
+    std::vector<RoamMask> newMasks_;
+};
+
+// ─── Clones (docs/XLETH_CLONE_SPEC.md, model/Clone.h) ────────────────────────
+
+// Adds one Clone track. `clone` carries cloneOf / cloneKind and its settings
+// (the bridge fills in the name and the copied video settings). It lands
+// directly under its source's last Clone, in the source's container (root or
+// folder), and a Voice clone with autoPlace takes the first free cell of the
+// active grid arrangement. One undo step.
+class AddCloneCommand : public Command {
+public:
+    AddCloneCommand(TrackInfo clone, bool autoPlace, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+    int trackId() const { return clone_.id; }
+    bool placed() const { return placed_; }
+private:
+    TrackInfo   clone_;
+    bool        autoPlace_    = false;
+    bool        firstExecute_ = true;
+    TrackLayout oldLayout_;
+    TrackLayout newLayout_;
+    bool        placed_ = false;
+    GridSlot    slot_;
+};
+
+// A Clone's own settings, whole-state swap: a Voice clone's Lens mode plus its
+// trackLens (a switch to Own seeds it with a copy of the source's), or a Trail
+// clone's TrailSettings. Built only when changesAnything().
+class SetCloneSettingsCommand : public Command {
+public:
+    SetCloneSettingsCommand(int trackId, CloneLensMode lensMode,
+                            std::map<int, LensTrack> trackLens, TrailSettings trail,
+                            const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+    bool changesAnything() const;
+private:
+    int                      trackId_;
+    bool                     valid_ = false;
+    CloneLensMode            oldMode_ = CloneLensMode::Linked, newMode_ = CloneLensMode::Linked;
+    std::map<int, LensTrack> oldLens_, newLens_;
+    TrailSettings            oldTrail_, newTrail_;
+};
+
+// Reorders a source's Clones. `cloneIdsInOrder` lists EVERY Clone of the
+// source exactly once. Voice clones renumber (Auto assignment follows the new
+// order) and every pin in the patterns the source plays is rewritten so a
+// pinned note stays with the Clone it was pinned to. One undo step. Build it,
+// then check isValid() && changesAnything().
+class ReorderClonesCommand : public Command {
+public:
+    ReorderClonesCommand(int sourceTrackId, std::vector<int> cloneIdsInOrder,
+                         const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+    bool isValid() const { return valid_; }
+    bool changesAnything() const { return changed_; }
+private:
+    int         sourceTrackId_;
+    bool        valid_   = false;
+    bool        changed_ = false;
+    TrackLayout oldLayout_, newLayout_;
+    std::vector<std::pair<int, std::vector<PatternNote>>> notesBefore_, notesAfter_;
+};
+
+// Pins notes to a voice (-1 = Auto, 0 = source, k = Voice clone k). Notes are
+// addressed {patternId, noteId}; unknown refs are skipped. One undo step;
+// built only when changesAnything().
+class SetNotesVoicePinCommand : public Command {
+public:
+    struct Ref { int patternId = -1; int noteId = -1; };
+    SetNotesVoicePinCommand(const std::vector<Ref>& notes, int pin, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+    bool changesAnything() const;
+    std::size_t noteCount() const { return entries_.size(); }
+private:
+    struct Entry { Ref ref; int oldPin = kVoicePinAuto; };
+    std::vector<Entry> entries_;
+    int                pin_ = kVoicePinAuto;
 };
 
 // ─── Lens + Roam P8: per-note overrides and the hit curve ────────────────────

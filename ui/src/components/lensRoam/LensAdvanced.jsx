@@ -10,7 +10,7 @@ import {
   clearNoteSelection, useClipKeys, useHitPresets, useSelectedNotes, useSourceCurve, useSweepKeys,
 } from '../../lensRoam/useLensKeys.js'
 import { applySweepLayer, sweepLayerAt } from '../../lensRoam/roamKeyModel.js'
-import useSweepKeysStore from '../../stores/useSweepKeysStore.js'
+import { requestMotionReveal } from '../timeline/motionReveal.js'
 import styles from '../inspector/Inspector.module.css'
 import lens from './lensRoam.module.css'
 import LensHitControls from './LensHitControls.jsx'
@@ -52,33 +52,32 @@ function usePlayhead() {
 
 /**
  * The Sweep row of the layer stack (P11): the track's timeline-absolute Lens layer.
- * `status` is what an empty row says; `stackRow` is the row itself; `lane` is the
- * switch for the arrangement's Sweep lane, where the keys are edited.
+ * `status` is what an empty row says; `stackRow` is the row itself; `reveal` shows the
+ * track's Sweep rows in Motion view, where the keys are edited (the Edit view has no
+ * Sweep lane any more, docs/XLETH_MOTION_VIEW_DESIGN.md R17).
  */
 function useSweepLayer(trackId) {
   const { keys } = useSweepKeys(trackId)
-  const laneOpen = useSweepKeysStore((s) => (trackId != null ? s.laneOpen.has(trackId) : false))
-  const toggleLane = useSweepKeysStore((s) => s.toggleLane)
   const count = keys?.length ?? 0
   return {
     keys: keys ?? [],
     stackRow: { id: 'sweep', label: 'Sweep', layer: true, status: count === 0 ? 'none' : null },
-    laneOpen,
-    toggleLane: () => { if (trackId != null) toggleLane(trackId) },
+    canReveal: trackId != null,
+    reveal: () => { if (trackId != null) requestMotionReveal(trackId, ['sweep']) },
     count,
   }
 }
 
-/** The Sweep lane's switch, under the layer stack that reports its row. */
+/** Opens the Sweep rows in Motion view, under the layer stack that reports its row. */
 function SweepLaneButton({ sweep }) {
   return (
     <div className={lens.actions}>
       <Button
-        size="sm" onClick={sweep.toggleLane} aria-pressed={sweep.laneOpen}
-        data-testid="lens-sweep-lane-toggle"
-        hint="Show the Sweep lane under this track's Reel lane. A Sweep is a move that runs across several notes: zoom multiplies each note's framing, centre and rotation add to it."
+        size="sm" onClick={sweep.reveal} disabled={!sweep.canReveal}
+        data-testid="lens-sweep-show-in-motion"
+        hint="Show this track's Sweep rows in Motion view (`). A Sweep is a move that runs across several notes: zoom multiplies each note's framing, centre and rotation add to it."
       >
-        {sweep.laneOpen ? 'Hide Sweep lane' : 'Edit Sweep in the lane'}
+        Edit Sweep in Motion view
       </Button>
     </div>
   )

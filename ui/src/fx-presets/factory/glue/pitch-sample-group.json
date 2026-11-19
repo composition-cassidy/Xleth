@@ -1,0 +1,20 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "glue",
+  "name": "Pitch Sample Group",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "threshold": -18,
+      "makeup": 1.5,
+      "ratio": 0,
+      "attack": 3,
+      "release": 4,
+      "topology": 0,
+      "sc_hpf_on": 0,
+      "sc_hpf_freq": 100,
+      "color": 1
+    }
+  }
+}

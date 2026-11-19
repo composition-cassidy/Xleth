@@ -8,6 +8,10 @@
 //
 // Pure functions, no React, no store.
 
+import {
+  clampSlope, isCascadeSlope, isCutBandType, slopeSections, firstOrderSection, cascadeMagSq,
+} from './eqSlope.js'
+
 export const SPECTRAL_ENGINE_LEGACY = 0
 export const SPECTRAL_ENGINE_CORE = 1
 export const SPECTRAL_QUALITY_DEFAULT = 1 // Normal
@@ -136,23 +140,42 @@ export function responseFreqs(n) {
   return out
 }
 
+// A band's filter as the engine builds it (computeBandCascade): the sections of
+// a steep Low / High Pass slope, or the one biquad every other band is
+// (including the 6 / 12 dB/oct slopes). Gain is the biquad's gain (depth, for
+// a Spectral band).
+function engineSections(band, sr) {
+  const type = Math.round(Number(band.type) || 0)
+  const freq = Math.max(Number(band.freq) || 1000, 20)
+  const q = Math.max(Number(band.q) || 0.707, 0.1)
+  if (isCutBandType(type)) {
+    const slope = clampSlope(band.slope ?? 1)
+    if (isCascadeSlope(slope)) return slopeSections(type === 4, freq, q, slope, sr)
+    if (slope === 0) return [firstOrderSection(type === 4, freq, sr)]
+  }
+  return [engineBiquad(type, freq, Number(band.gain) || 0, q, sr)]
+}
+
 // What the engine's Stereo trace holds for one enabled Spectral band: its own
-// biquad (band type, gain as depth), in dB.
+// filter (band type and slope, gain as depth), in dB.
 function engineSpectralDb(band, freq, sr) {
-  const c = engineBiquad(
-    Math.round(Number(band.type) || 0), Math.max(Number(band.freq) || 1000, 20),
-    Number(band.gain) || 0, Math.max(Number(band.q) || 0.707, 0.1), sr,
-  )
-  return 10 * Math.log10(Math.max(magSq(c, freq, sr), 1e-30))
+  return 10 * Math.log10(Math.max(cascadeMagSq(engineSections(band, sr), freq, sr), 1e-30))
 }
 
 // A Core region's cut at `freq` in dB (<= 0): the band's bell at |gain| (at
-// least 1 dB) normalised to 1 at its centre (band type ignored), times the
-// band's own capped depth. 0 for a band that is not a cut.
+// least 1 dB) normalised to 1 at its centre, times the band's own capped
+// depth. A Low / High Pass band is the exception: its region is its own slope
+// (attenuation over depth, see below). 0 for a band that is not a cut.
 export function coreRegionCutDb(band, freq, sr) {
   const g = Number(band.gain) || 0
   if (g >= 0) return 0
   const shapeDb = Math.max(-g, 1)
+  // A Low / High Pass band's region is its slope: the filter's attenuation in
+  // dB over the depth, capped at 1 (updateSpectralWeights / refreshCoreRegions).
+  if (isCutBandType(band.type)) {
+    const attDb = -10 * Math.log10(Math.max(cascadeMagSq(engineSections(band, sr), freq, sr), 1e-30))
+    return -Math.min(Math.max(attDb / shapeDb, 0), 1) * Math.min(-g, CORE_MAX_DEPTH_DB)
+  }
   const c = engineBiquad(0, Math.max(Number(band.freq) || 1000, 20), shapeDb, Math.max(Number(band.q) || 0.707, 0.1), sr)
   const shape = Math.min(Math.max((10 * Math.log10(Math.max(magSq(c, freq, sr), 1e-30))) / shapeDb, 0), 1)
   return -shape * Math.min(-g, CORE_MAX_DEPTH_DB)

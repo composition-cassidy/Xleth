@@ -1,6 +1,10 @@
 // @vitest-environment jsdom
+// The Sweep lane is the Roam lane's modules over the Lens channels. The Edit view no
+// longer has a Sweep lane (docs/XLETH_MOTION_VIEW_DESIGN.md R17; see
+// timelineRowLayout.test.js); the modules stay for Motion view. Rows from a fixture with
+// the lanes' geometry.
 import { describe, expect, it, vi } from 'vitest'
-import { buildTrackLayout } from './timelineRowLayout.js'
+import { laneLayout } from './__tests__/fixtures/roamLaneLayout.js'
 import { drawRoamLanes } from './roamLaneDrawing.js'
 import { beginRoamLaneGesture } from './roamLaneGesture.js'
 import { hitTestRoamLane, keyPixel, laneRangeFor, roamLaneHeight } from './roamLaneModel.js'
@@ -14,11 +18,9 @@ const tracks = [
 const SCROLL = 0
 const PPB = 40
 
-describe('Sweep lane row (P11)', () => {
-  it('sits directly under the Reel lane, ahead of the Roam lane, and pushes later tracks down', () => {
-    const layout = buildTrackLayout({
-      tracks, reelLanes: { 1: { subRows: 1 } }, roamLanes: { 1: true }, sweepLanes: { 1: true },
-    })
+describe('Sweep lane row geometry (P11)', () => {
+  it('a Sweep row (fixture) sits under the Reel row, ahead of the Roam row, roamLaneHeight tall', () => {
+    const layout = laneLayout({ tracks, reel: { 1: { subRows: 1 } }, roam: [1], sweep: [1] })
     expect(layout.rows.map((r) => r.rowType)).toEqual(['track', 'reel', 'sweep', 'roam', 'track'])
     const sweep = layout.getSweepRows()[0]
     const reel = layout.getReelRows()[0]
@@ -28,30 +30,18 @@ describe('Sweep lane row (P11)', () => {
     expect(layout.getRoamRows()[0].y).toBe(sweep.y + sweep.height)
   })
 
-  it('a track without the lane is unchanged', () => {
-    const plain = buildTrackLayout({ tracks })
-    const same = buildTrackLayout({ tracks, sweepLanes: {} })
-    expect(same.rows.map((r) => r.y)).toEqual(plain.rows.map((r) => r.y))
-    expect(plain.getSweepRows()).toEqual([])
-  })
-
-  it('the lane resolves to no track, so no tool can act on the parent through it', () => {
-    const layout = buildTrackLayout({ tracks, sweepLanes: { 1: true } })
+  it('each kind owns its own band: a Sweep point is not a Roam row', () => {
+    const layout = laneLayout({ tracks, sweep: [1] })
     const sweep = layout.getSweepRows()[0]
-    expect(layout.trackIndexAtY(sweep.y + 2)).toBe(-1)
     expect(layout.sweepRowAtY(sweep.y + 2)).toBe(sweep)
     expect(layout.roamRowAtY(sweep.y + 2)).toBeNull()
     expect(layout.sweepRowAtY(sweep.y - 1)).toBeNull()
-    expect(layout.trackIndexAtY(sweep.y + sweep.height + 1)).toBe(1)
-  })
-
-  it('a collapsed track hides its lane with it', () => {
-    expect(buildTrackLayout({ tracks, collapsed: new Set([1]), sweepLanes: { 1: true } }).getSweepRows()).toEqual([])
+    expect(layout.sweepRowAtY(sweep.y + sweep.height)).toBeNull()
   })
 })
 
 describe('hit test over the Sweep rows', () => {
-  const layout = buildTrackLayout({ tracks, roamLanes: { 1: true }, sweepLanes: { 1: true } })
+  const layout = laneLayout({ tracks, roam: [1], sweep: [1] })
   const row = layout.getSweepRows()[0]
   const roamRow = layout.getRoamRows()[0]
   const KEYS = [K('zoom', 0, 1), K('zoom', 1920, 1.5), K('centerX', 960, 0.1)]
@@ -80,7 +70,7 @@ describe('hit test over the Sweep rows', () => {
 
 describe('the shared gesture drives a Sweep lane: local preview, ONE commit', () => {
   it('a click on an empty lane adds one zoom key and commits the whole list once', () => {
-    const layout = buildTrackLayout({ tracks, sweepLanes: { 1: true } })
+    const layout = laneLayout({ tracks, sweep: [1] })
     const row = layout.getSweepRows()[0]
     const hit = hitTestRoamLane(
       { trackLayout: layout, dataOf: () => ({ base: {}, keys: [] }), channelOf: () => 'zoom', kind: 'sweep' },
@@ -130,7 +120,7 @@ describe('painter', () => {
   }
 
   it('paints the Sweep rows only when asked for them, and says what an empty Sweep does', () => {
-    const layout = buildTrackLayout({ tracks, sweepLanes: { 1: true } })
+    const layout = laneLayout({ tracks, sweep: [1] })
     const roamOnly = makeView(layout)
     drawRoamLanes(roamOnly.view, { dataOf: () => ({ base: {}, keys: [] }), channelOf: () => 'offsetX', selected: null })
     expect(roamOnly.calls.fillText).toEqual([])           // no Roam rows: nothing painted
@@ -141,7 +131,7 @@ describe('painter', () => {
   })
 
   it('draws a keyed Sweep lane: the axis labels in the lane\'s own units and the curve stroked', () => {
-    const layout = buildTrackLayout({ tracks, sweepLanes: { 1: true } })
+    const layout = laneLayout({ tracks, sweep: [1] })
     const v = makeView(layout)
     drawRoamLanes(v.view, {
       kind: 'sweep',

@@ -14,6 +14,21 @@ const IcFolderPlus = iconComponent('folder-plus')
 const IcPlus = iconComponent('plus')
 const IcSlidersHorizontal = iconComponent('sliders-horizontal')
 const IcXQuantize = iconComponent('xleth-quantize')
+const IcGraph = iconComponent('wave-sine')
+
+// The view switch (docs/XLETH_MOTION_VIEW_DESIGN.md R20): Edit (clips and patterns)
+// or Motion (every animatable property as rows of keys). Same zoom, scroll,
+// playhead and selection; only the rows change.
+export const VIEW_OPTIONS = [
+  { value: 'edit', label: 'Edit', hint: 'Edit view: clips, patterns and automation (` switches)' },
+  { value: 'motion', label: 'Motion', hint: 'Motion view: Lens, Roam, Masks and Sweep as rows of keys (` switches)' },
+]
+export const VIEW_HINT = 'Timeline view: Edit or Motion'
+export const MOTION_TOOL_MODS = 'Clip tools work in the Edit view (` switches)'
+export const VIEW_HINT_MODS = '`: switch views'
+export const graphHint = (view) => (view === 'motion'
+  ? 'Graph editor: the selected rows as value curves (G)'
+  : 'Graph editor: Motion view only (` switches to it)')
 
 // The arrangement toolbar (DESIGN.md 22): one 32px row of kit controls, sentence
 // case, every tool with its one-letter key in the hint bar. The sample
@@ -72,7 +87,12 @@ export default function TimelineToolbar({
   onOpenQuantize,
   quantizeSelectionCount = 0,
   onOpenQuickNotation,
+  view = 'edit',
+  onViewChange,
+  graph = false,
+  onGraphChange,
 }) {
+  const motion = view === 'motion'
   const [showDisplayPopover, setShowDisplayPopover] = useState(false)
   const displayBtnRef = useRef(null)
   const timelineDisplaySettings = useTimelineDisplayStore((s) => s.timelineDisplaySettings)
@@ -111,9 +131,10 @@ export default function TimelineToolbar({
             label={`${label} tool`}
             pressed={activeTool === id}
             keyHint={shortcut}
+            disabled={motion}
             onClick={() => setActiveTool(id)}
             hint={`${label} tool (${shortcut})`}
-            hintMods={mods}
+            hintMods={motion ? MOTION_TOOL_MODS : mods}
           >
             <Icon size={16} />
           </IconButton>
@@ -166,6 +187,31 @@ export default function TimelineToolbar({
           : 'Quick notation: select a quote with syllables first'}
       >
         <QuickNotationIcon size={16} />
+      </IconButton>
+
+      <ToolbarSeparator />
+      <SegmentedControl
+        size="sm"
+        label="Timeline view"
+        value={motion ? 'motion' : 'edit'}
+        onChange={(v) => onViewChange?.(v)}
+        hint={VIEW_HINT}
+        hintMods={VIEW_HINT_MODS}
+        options={VIEW_OPTIONS}
+        data-testid="timeline-view-switch"
+      />
+      <IconButton
+        size="sm"
+        label="Graph editor"
+        pressed={motion && graph}
+        disabled={!motion}
+        keyHint="G"
+        onClick={() => onGraphChange?.(!graph)}
+        hint={graphHint(view)}
+        hintMods={motion ? 'G: show or hide the graph' : undefined}
+        data-testid="timeline-graph-toggle"
+      >
+        <IcGraph size={16} />
       </IconButton>
 
       <ToolbarSeparator />

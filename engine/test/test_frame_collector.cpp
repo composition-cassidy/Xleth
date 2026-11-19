@@ -9,6 +9,7 @@
 #include "SyncManager.h"
 #include "audio/ClipFade.h"
 #include "model/NoteFade.h"
+#include "model/SmartHold.h"
 
 #include <algorithm>
 // Force assert even in Release builds (NDEBUG is defined). build.bat only ever
@@ -632,6 +633,102 @@ int main()
         chorus->videoHoldLastFrameThresholdBeats =
             TrackInfo::kHoldLastFrameThresholdUnlimited;
         std::fprintf(stderr, "[TEST:FrameCollector] Test 1h: PASSED\n");
+    }
+
+    // ── Test 1m: Smart hold + Keep playing ────────────────────────────────────
+    // Smart hold holds the short rests inside a phrase and leaves the long rest
+    // between phrases (and the space after the last clip) blank. Keep playing
+    // fills a held gap with the source running on, not a frozen frame, and
+    // needs no primed state (a seek straight into the gap works).
+    {
+        std::fprintf(stderr, "\n[TEST:FrameCollector] --- Test 1m: smart hold / keep playing ---\n");
+        namespace sh = xleth::smarthold;
+
+        // Classifier.
+        requireFadeTest(std::isinf(sh::thresholdBeats({})), "no gaps -> hold all");
+        requireFadeTest(std::isinf(sh::thresholdBeats({0.25, 0.5, 0.25})),
+                        "all gaps under a beat -> hold all");
+        const double t1 = sh::thresholdBeats({0.5, 0.5, 6.5});
+        requireFadeTest(t1 > 0.5 && t1 < 6.5, "phrase rests vs phrase break split between them");
+        const double t2 = sh::thresholdBeats({0.125, 0.25, 0.75, 0.5, 5.0, 6.0, 0.25});
+        requireFadeTest(t2 > 0.75 && t2 < 5.0, "screenshot-like clusters split at the big jump");
+        requireFadeTest(sh::thresholdBeats({8.0, 8.0}) == sh::kFallbackThresholdBeats,
+                        "uniform long gaps fall back to one bar (blank)");
+        const auto g = sh::gapsBetween({{0, 1}, {0.5, 2}, {3, 4}, {4, 5}});
+        requireFadeTest(g.size() == 1 && std::abs(g[0] - 1.0) < 1e-12,
+                        "overlaps and butted clips merge; one 1-beat gap");
+
+        TrackInfo* chorus = timeline.getTrackMutable(chorusTrackId);
+        chorus->videoHoldLastFrame = true;
+        chorus->videoHoldLastFrameThresholdBeats = TrackInfo::kHoldLastFrameThresholdUnlimited;
+
+        // 140 bpm @ 30 fps: beat(frame) = frame * 7/90.
+        // Phrase 1: [0,.5) [1,1.5)   rest 6.5   Phrase 2: [8,8.5) [9,9.5)
+        std::vector<VideoEvent> ev{
+            makeEvent(chorusTrackId, srcAId, 0.0, 0.5, 2.0, 1.0f, 0),
+            makeEvent(chorusTrackId, srcAId, 1.0, 0.5, 2.0, 1.0f, 1),
+            makeEvent(chorusTrackId, srcAId, 8.0, 0.5, 2.0, 1.0f, 2),
+            makeEvent(chorusTrackId, srcAId, 9.0, 0.5, 2.0, 1.0f, 3)};
+        const AVRational fps = {30, 1};
+        auto served = [&](FrameCollector& c, int64_t frame) -> const CellFrameRequest* {
+            auto& reqs = c.collectRequests(frame, timeline, 48000, fps, ev);
+            for (const auto& r : reqs) if (r.trackId == chorusTrackId) return &r;
+            return nullptr;
+        };
+
+        // (a) Smart + freeze.
+        {
+            chorus->videoHoldSmart = true;
+            chorus->videoHoldKeepPlaying = false;
+            FrameCollector c;
+            requireFadeTest(served(c, 3)   != nullptr, "smart: clip active");
+            requireFadeTest(served(c, 10)  != nullptr, "smart: holds the 0.5-beat phrase rest");
+            requireFadeTest(served(c, 15)  != nullptr, "smart: next clip active");
+            requireFadeTest(served(c, 39)  == nullptr, "smart: phrase break is blank");
+            requireFadeTest(served(c, 105) != nullptr, "smart: phrase 2 active");
+            requireFadeTest(served(c, 113) != nullptr, "smart: holds phrase 2 rest");
+            requireFadeTest(served(c, 118) != nullptr, "smart: last clip active");
+            requireFadeTest(served(c, 155) == nullptr, "smart: blank after the last clip");
+        }
+        // (b) Keep playing (no smart): the source runs on through the gap.
+        {
+            chorus->videoHoldSmart = false;
+            chorus->videoHoldKeepPlaying = true;
+            FrameCollector c;
+            const CellFrameRequest* r = served(c, 10);   // seek straight into the gap
+            requireFadeTest(r != nullptr, "keep playing: fills a gap with no primed state");
+            const int64_t f10 = r->sourceFrameIndex;
+            // beat 0.7778 of an event starting at source 2.0 s: 2.333 s -> frame ~70
+            requireFadeTest(f10 >= 69 && f10 <= 71, "keep playing: source time continues from the clip");
+            r = served(c, 12);
+            requireFadeTest(r != nullptr && r->sourceFrameIndex > f10, "keep playing: advances frame to frame");
+            requireFadeTest(served(c, 39) != nullptr, "keep playing w/o smart: long rest still filled");
+
+            // Freeze for comparison: the same gap frame shows the clip's last frame.
+            chorus->videoHoldKeepPlaying = false;
+            FrameCollector cf;
+            requireFadeTest(served(cf, 10) == nullptr, "freeze: needs a primed hold (unchanged)");
+            const CellFrameRequest* live = served(cf, 6);
+            requireFadeTest(live != nullptr, "freeze: primed");
+            const int64_t lastLive = live->sourceFrameIndex;
+            r = served(cf, 10);
+            requireFadeTest(r != nullptr && r->sourceFrameIndex == lastLive, "freeze: frozen frame");
+            requireFadeTest(lastLive < f10, "keep playing is ahead of the frozen frame");
+        }
+        // (c) Smart + keep playing: blank break, playing rests.
+        {
+            chorus->videoHoldSmart = true;
+            chorus->videoHoldKeepPlaying = true;
+            FrameCollector c;
+            requireFadeTest(served(c, 10) != nullptr, "smart+play: rest filled");
+            requireFadeTest(served(c, 39) == nullptr, "smart+play: break blank");
+            requireFadeTest(served(c, 155) == nullptr, "smart+play: tail blank");
+        }
+
+        chorus->videoHoldSmart = false;
+        chorus->videoHoldKeepPlaying = false;
+        chorus->videoHoldLastFrame = false;
+        std::fprintf(stderr, "[TEST:FrameCollector] Test 1m: PASSED\n");
     }
 
     // ── Test 1i: opacity cull must not masquerade as a timeline gap (Issue 8) ──

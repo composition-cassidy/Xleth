@@ -10,6 +10,7 @@ import {
 } from './samplePreview.js'
 import styles from './browser/Browser.module.css'
 import { iconComponent } from '../ui-kit/icons'
+import { GradeIndicator } from './colorGrade/GradeStack.jsx'
 
 const IcArrowsLeftRightFill = iconComponent('arrows-left-right', 'fill')
 const IcPlay = iconComponent('play')
@@ -177,6 +178,9 @@ export default function SampleRow({
           <IcArrowsLeftRightFill size={14} aria-hidden="true" />
         </span>
       )}
+
+      {/* Color Grade indicator: this sample has its own grade */}
+      {!isEditing && <GradeIndicator target={{ level: 'region', id: region.id }} />}
 
       {/* Root note for Pitch */}
       {region.label === 'Pitch' && (

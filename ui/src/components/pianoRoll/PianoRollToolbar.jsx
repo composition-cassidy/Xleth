@@ -85,6 +85,10 @@ export default function PianoRollToolbar({
   showGhosts = true, onShowGhostsChange,
   auditioning = false, auditionLoop = true, auditionAvailable = false,
   onToggleAudition, onAuditionLoopChange,
+  // Voice pin of the selected notes (Clones): options (voicePin.js
+  // voicePinSelectOptions) only when the pattern's track has Voice clones; the
+  // value is the selection's shared pin, 'mixed', or null with nothing selected.
+  voicePinOptions = null, voicePinValue = null, onVoicePinChange,
 }) {
   const [renaming, setRenaming] = useState(false)
   const [draft, setDraft] = useState('')
@@ -282,6 +286,29 @@ export default function PianoRollToolbar({
             options={SCALE_MODES.map((m) => ({ value: m.id, label: m.label }))}
             onChange={(v) => onScaleChange?.({ ...scale, mode: v })}
           />
+        </>
+      ) : null}
+
+      {Array.isArray(voicePinOptions) && voicePinOptions.length > 0 ? (
+        <>
+          <ToolbarSeparator />
+          <label className={styles.field}>
+            <span className={styles.fieldLabel}>Voice</span>
+            <Select
+              size="sm"
+              className={styles.selectVoice}
+              ariaLabel="Voice of the selected notes"
+              value={Number.isInteger(voicePinValue) ? voicePinValue : null}
+              placeholder={voicePinValue === 'mixed' ? 'Mixed' : 'No notes'}
+              options={voicePinOptions}
+              disabled={voicePinValue == null}
+              onChange={(v) => onVoicePinChange?.(Number(v))}
+              hint={voicePinValue == null
+                ? 'Voice: select notes to choose which cell plays them'
+                : 'Voice: which cell plays the selected notes. Auto takes the lowest free voice'}
+              hintMods="Pinned notes show V0 (the source) or V1, V2… (a voice clone) · One undo step"
+            />
+          </label>
         </>
       ) : null}
 

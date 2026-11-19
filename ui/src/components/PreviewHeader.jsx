@@ -3,6 +3,7 @@ import { Button, Menu, MenuCustom, MenuItem, Toggle } from '../ui-kit'
 import { playheadClock } from '../services/PlayheadClock.js'
 import styles from './PreviewHeader.module.css'
 import { iconComponent } from '../ui-kit/icons'
+import PreviewGradeControls from './colorGrade/PreviewGradeControls.jsx'
 
 const IcCaretDown = iconComponent('caret-down')
 const IcGridNine = iconComponent('grid-nine')
@@ -127,6 +128,8 @@ export default function PreviewHeader({
         >
           <span className={styles.viewLabel}>View</span>
         </Button>
+
+        <PreviewGradeControls labelClass={styles.label} />
 
         <Toggle
           size="sm"

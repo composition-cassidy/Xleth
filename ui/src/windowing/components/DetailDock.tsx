@@ -210,7 +210,6 @@ export function DetailDock({ renderPanel, sizeOverride }: DetailDockProps) {
                   onDoubleClick={tab.state === 'open' ? toggleDockFocus : undefined}
                   onKeyDown={onTabKeyDown(index)}
                 >
-                  <entry.icon size={14} aria-hidden="true" />
                   <span>{entry.title}</span>
                 </button>
                 <button

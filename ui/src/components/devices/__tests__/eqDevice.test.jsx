@@ -151,6 +151,24 @@ describe('Parametric EQ device in the chain', () => {
     expect(document.querySelector('[role="menu"]')).toBeNull()
   })
 
+  it('Low Pass / High Pass bands get a slope selector; other types do not', async () => {
+    audio.eqGetBands = vi.fn(async () => JSON.stringify([
+      { index: 0, freq: 100, gain: 0, q: 0.707, type: 0, enabled: true, mode: 0, channel: 0, slope: 1 },
+      { index: 1, freq: 80, gain: 0, q: 0.707, type: 4, enabled: true, mode: 0, channel: 0, slope: 3 },
+      { index: 2, freq: 12000, gain: 0, q: 0.707, type: 3, enabled: true, mode: 0, channel: 0 },
+    ]))
+    act(() => root.render(<DeviceChain />))
+    await flush()
+    await flush()
+    select(0)
+    expect(q('[aria-label="Band slope"]')).toBeNull()
+    select(1)
+    expect(q('[aria-label="Band slope"]')?.textContent).toContain('24 dB/oct')
+    // A band from an engine without the parameter shows the 12 dB/oct default.
+    select(2)
+    expect(q('[aria-label="Band slope"]')?.textContent).toContain('12 dB/oct')
+  })
+
   it('two EQ devices keep separate bands (private stores)', async () => {
     audio.getEffectChain = vi.fn(async () => JSON.stringify([
       { nodeId: 7, pluginId: 'xletheq', position: 0, bypassed: false },

@@ -177,6 +177,9 @@ public:
     bool tierTransitionActive() const noexcept { return trans_.active; }               // processing thread
     long long tierSwitchCount() const noexcept { return switches_.load(std::memory_order_relaxed); }   // adopted requests since prepare() (any thread)
     static int fftSizeFor(double sampleRate, FrameTier tier = FrameTier::Normal) noexcept;
+    // prepare() shares its tier tables between instances through a process-wide cache (see EngineTables). Off = every prepare() builds its own from scratch, the
+    // reference the cache is tested against. Any thread; affects prepare() calls that start afterwards. Default on.
+    static void setTableCacheEnabled(bool enabled) noexcept;
     // Latency in samples for a given rate and tier (constant; independent of every Params field). Pure: any thread, before or after prepare().
     static int latencyFor(double sampleRate, FrameTier tier = FrameTier::Normal) noexcept { return fftSizeFor(sampleRate, tier); }
     // The latency the output is aligned to right now: latencyFor(sampleRate(), frameTier()). Any thread (relaxed atomic). During a tier crossfade the output is a
@@ -357,13 +360,14 @@ private:
         std::vector<float> lfOut;     // per bin, after the stereo link (dB), before the weight curve
     };
 
-    // Everything that depends on the frame size N: one per tier, all built in prepare().
-    struct Engine
+    // The prepare()-time tables of one tier: everything buildEngineTables() computes and nothing ever writes again. They are a pure function of the sample rate, the
+    // tier and the two detector time constants, so identical instances (every Param EQ and Resonance Suppressor in a project) share one computation through a
+    // process-wide cache: the first prepare() at a given key builds them (~20 ms per tier, dominated by the notch-table solve), every later one copies the stored
+    // result. Each Core still owns its own copy, so nothing on the audio thread changes; the copy is bit-identical to a fresh build by construction.
+    struct EngineTables
     {
         int N = 0, H = 0;
         int slowPeriod = 4, fastPeriod = 2;   // baseline refresh periods in frames
-        int hopOffset = 0;                    // frames end at stream positions e with (e + hopOffset) % H == 0
-        std::unique_ptr<juce::dsp::FFT> fft;
         std::vector<float> window;            // sqrt-Hann (periodic), analysis
         std::vector<float> synthesis;         // sqrt-Hann × 1/Σw² of its hop phase
         // band <- bins (CSR, weights include f_k), flank band lists per side, main-lobe zones, bin -> band interpolation
@@ -380,7 +384,6 @@ private:
         std::vector<float> sideX[2];          // per band and side: mean log2(f) of the flank bands
         std::vector<float> sideVf[2];         // per band and side: mean bin variance factor of the flank bands
         std::vector<float> sideNeff[2];       // per band and side: effective independent flank values
-        std::vector<float> sigmaE, sigmaEF;   // per band std-dev of excess (dB) at the current frame count (slow / fast)
         // sub-bin (auditory-resolution) excess at low f
         int kLowMax = 0;                      // last bin whose ERB is narrower than the analysis kernel's ENBW
         float kernelVar = 0.0f;               // second moment (bins^2) a narrowband source shows over +/-2 bins
@@ -393,6 +396,15 @@ private:
         std::vector<float> lfLineC;           // [3 x (kLfLineSteps + 1)] line source at k0 + d: excess centroid - k0 (window truncated at bin 1 for k0 = 1, 2)
         std::vector<float> lfLineShare;       // [3 x (kLfLineSteps + 1) x (kLfWidthSteps + 1)] share of the window's excess in bin k0 for a source of width w bins
         std::vector<float> lfWidths;          // [kLfWidthSteps + 1] source widths of the share table, bins
+    };
+
+    // Everything that depends on the frame size N: one per tier, all built in prepare(). The tables (base) are immutable after prepare(); the rest is this
+    // instance's own FFT object and running state.
+    struct Engine : EngineTables
+    {
+        int hopOffset = 0;                    // frames end at stream positions e with (e + hopOffset) % H == 0
+        std::unique_ptr<juce::dsp::FFT> fft;
+        std::vector<float> sigmaE, sigmaEF;   // per band std-dev of excess (dB) at the current frame count (slow / fast)
         // running state
         double emaAn = 1.0, emaAnF = 1.0;     // a^n (bias correction 1 / (1 - a^n)), slow / fast
         long long frames = 0;                 // detector frame count of this engine (sigma tables, baseline stagger)
@@ -410,6 +422,8 @@ private:
 
     void buildSharedGrid();
     void buildEngine(Engine& e, FrameTier tier);
+    // The table half of buildEngine(): fills the EngineTables part of `e` from scratch. Reads sampleRate_, the detector time constants and the shared grid only.
+    void buildEngineTables(Engine& e, FrameTier tier);
     void resetEngine(Engine& e) noexcept;
     int hopOffsetFor(int hop) const noexcept;
     void updateSigma(Engine& e) noexcept;

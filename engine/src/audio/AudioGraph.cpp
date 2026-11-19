@@ -29,6 +29,7 @@
 #include "audio/XlethVariMuCompressorEffect.h"
 #include "audio/SmartBalanceEffect.h"
 #include "audio/XlethFeddaEffect.h"
+#include "audio/XlethSzkrezhEffect.h"
 #include "audio/WireGainProcessor.h"
 #include "audio/DelayCompensationProcessor.h"
 #include "audio/SidechainSourceProcessor.h"
@@ -2516,7 +2517,8 @@ bool AudioGraph::applySidechainTargetInstances(
         auto* node = graph_->getNodeForId(gn.apgNodeId);
         if (!node) continue;
         auto* proc = node->getProcessor();
-        const bool want = enabledInstanceIds.count(gn.effectInstanceId) > 0;
+        const bool want = enabledInstanceIds.count(gn.effectInstanceId) > 0
+                       || enabledInstanceIds.count(kAllSidechainTargets) > 0;
 
         // Stock external-sidechain-capable effects (today only the compressor).
         if (auto* eff = dynamic_cast<XlethEffectBase*>(proc))
@@ -3159,6 +3161,7 @@ std::unique_ptr<juce::AudioProcessor> AudioGraph::createEffect(const std::string
     if (pluginId == "fet")           return std::make_unique<XlethFetCompressorEffect>();
     if (pluginId == "varimu")        return std::make_unique<XlethVariMuCompressorEffect>();
     if (pluginId == "fedda")         return std::make_unique<XlethFeddaEffect>();   // mono-safe widener (StereoizeCore)
+    if (pluginId == "szkrezh")       return std::make_unique<XlethSzkrezhEffect>(); // transport-locked granular reverse pitch echo
 
     // VST3 fallback — look up in the plugin registry and instantiate.
     // The createPluginInstance call itself is guarded (some plugins fault on load).

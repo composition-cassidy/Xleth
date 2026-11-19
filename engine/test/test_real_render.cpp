@@ -104,6 +104,14 @@ int main(int argc, char* argv[])
     int         startBarArg     = 0;        // --start-bar     (0-based; >0 = region render)
     std::string audioCodecArg   = "aac";    // --audio-codec   aac|opus|flac|pcm
     std::string videoModeArg    = "auto";   // --video-mode    auto|software|hardware
+    // --mix-rate  session (default) = mix at the rate the engine was prepared at,
+    //             as the app does; output = legacy: re-prepare the engine at the
+    //             export rate; or an explicit rate in Hz.
+    std::string mixRateArg      = "session";
+    // --tail  cut (default) | clamp | wrap, with --tail-seconds as the cap. Lets
+    // the harness drive the tailClamp freeze-frame path and the wrap fold path.
+    std::string tailArg         = "cut";
+    double      tailSecondsArg  = 2.0;
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -125,6 +133,9 @@ int main(int argc, char* argv[])
         else if ((a == "--start-bar")     && i + 1 < argc) { startBarArg   = std::stoi(argv[++i]); }
         else if ((a == "--audio-codec")   && i + 1 < argc) { audioCodecArg = argv[++i]; }
         else if ((a == "--video-mode")    && i + 1 < argc) { videoModeArg  = argv[++i]; }
+        else if ((a == "--mix-rate")      && i + 1 < argc) { mixRateArg    = argv[++i]; }
+        else if ((a == "--tail")          && i + 1 < argc) { tailArg       = argv[++i]; }
+        else if ((a == "--tail-seconds")  && i + 1 < argc) { tailSecondsArg = std::stod(argv[++i]); }
     }
 
     std::fprintf(stderr, "\n================================================================\n");
@@ -326,7 +337,13 @@ int main(int argc, char* argv[])
     const int    barsToRender  = barsArg;
     const int    beatsPerBar   = 4;
     const int64_t beatsToRender = static_cast<int64_t>(barsToRender) * beatsPerBar;  // 64
-    const int    sampleRate    = exportRateArg;
+    const int    exportRate    = exportRateArg;
+    // The rate the mix runs at (and every sample position below is counted in).
+    const int    sampleRate    = mixRateArg == "output"  ? exportRate
+                               : mixRateArg == "session" ? static_cast<int>(std::lround(engineSR))
+                                                         : std::stoi(mixRateArg);
+    std::fprintf(stderr, "[TEST:RealRender] Mix rate: %d Hz, encode rate: %d Hz\n",
+                 sampleRate, exportRate);
     const double bpm           = timeline.getBPM();  // 140.0
 
     // endSample = beatsToRender * (60 / bpm) * sampleRate
@@ -373,7 +390,8 @@ int main(int argc, char* argv[])
                            : audioCodecArg == "flac" ? ExportSettings::AudioCodec::FLAC
                            : audioCodecArg == "pcm"  ? ExportSettings::AudioCodec::PCM_S16LE
                                                      : ExportSettings::AudioCodec::AAC;
-    settings.sampleRate    = sampleRate;
+    settings.sampleRate    = exportRate;       // encoded audio rate
+    settings.mixSampleRate = sampleRate;       // rate the engine mixes at
     settings.audioBitrate  = audioKbpsArg;     // kbps
     settings.videoMode     = videoModeArg == "software" ? ExportSettings::VideoMode::Software
                            : videoModeArg == "hardware" ? ExportSettings::VideoMode::Hardware
@@ -390,7 +408,7 @@ int main(int argc, char* argv[])
     // ── Step 5b: export-rate prepare + clip cache warm (mirrors video_exportStart)
     {
         mixer.setNonRealtime(true);
-        mixer.prepare(static_cast<double>(settings.sampleRate), 512);
+        mixer.prepare(static_cast<double>(settings.audioInputRate()), 512);
         mixer.prepareSourceTransformsForExport();
         std::vector<int> pending;
         for (const Clip* c : timeline.getAllClips()) {
@@ -412,6 +430,18 @@ int main(int argc, char* argv[])
 
     // ── Step 6: Run the render ───────────────────────────────────────────
     OfflineRenderer renderer(timeline, mixer, gpu);
+    if (tailArg == "clamp" || tailArg == "wrap") {
+        xleth::TailRenderPlan plan;
+        plan.mode            = tailArg == "wrap" ? xleth::TailRenderMode::Wrap
+                                                 : xleth::TailRenderMode::TailClamp;
+        plan.maxTailSamples  = static_cast<int64_t>(tailSecondsArg * sampleRate);   // mix-rate samples
+        plan.holdSamples     = xleth::tailHoldSamples(static_cast<double>(sampleRate));
+        plan.thresholdLinear = xleth::tailDbToLinear(-60.0);
+        plan.freezeVideo     = (tailArg == "clamp");
+        renderer.setTailRenderPlan(plan);
+        std::fprintf(stderr, "[TEST:RealRender] Tail: %s, cap %.2fs\n",
+                     tailArg.c_str(), tailSecondsArg);
+    }
     // Region renders warm up from tick 0, exactly like a scoped app export.
     bool started = renderer.startRender(startSample, endSample,
                                         startBarArg > 0 ? 0 : startSample, settings);
@@ -481,7 +511,7 @@ int main(int argc, char* argv[])
     assert(probe.videoWidth == width && "Video width should match requested width");
     assert(probe.videoHeight == height && "Video height should match requested height");
     // Opus is 48 kHz by definition; every other codec must carry the requested rate.
-    const int expectedAudioRate = (audioCodecArg == "opus") ? 48000 : sampleRate;
+    const int expectedAudioRate = (audioCodecArg == "opus") ? 48000 : exportRate;
     std::fprintf(stderr, "[TEST:RealRender] Audio rate: expected %d, got %d\n",
                  expectedAudioRate, probe.audioRate);
     if (exportRateArg == 48000 && audioCodecArg == "aac")
@@ -491,7 +521,8 @@ int main(int argc, char* argv[])
     std::fprintf(stderr, "[TEST:RealRender] Expected duration: %.2fs, got: %.2fs\n",
                  durationSec, probe.duration);
     assert(probe.duration > durationSec - 0.5 && "Duration too short");
-    assert(probe.duration < durationSec + 0.5 && "Duration too long");
+    assert(probe.duration < durationSec + 0.5 + (tailArg == "clamp" ? tailSecondsArg : 0.0)
+           && "Duration too long");
 
     // Frame count from renderer
     std::fprintf(stderr, "[TEST:RealRender] Expected %lld frames, rendered %lld\n",

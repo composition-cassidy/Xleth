@@ -4,7 +4,7 @@
  */
 
 import {
-  TRACK_HEIGHT, BEATS_PER_BAR, SUBDIVISIONS, SUB_GRID_THRESHOLD,
+  TRACK_HEIGHT, BEATS_PER_BAR, SUB_GRID_THRESHOLD,
   PPQ, CLIP_MIN_WIDTH_PX,
   GRANULARITY_BEATS,
   beatToPixel, ticksToBeats, pixelToTickExact,
@@ -26,8 +26,9 @@ import { pickLabelInk } from '../../ui-kit/colorMath'
 import { uiCanvasFont } from '../../styles/typography.js'
 import { normalizeTrackPalette, TRACK_PALETTE_FALLBACK, pickPatternAccentText } from './trackColorResolver.js'
 import { getRegionPlaybackDurationSec } from './regionDuration.js'
+import { isClone } from '../../clones/cloneModel.js'
 import { getSelectableSyllables, getSyllableDisplayNumber } from '../SyllableSplitter/syllableModel.js'
-import { getHoldThresholdTicks } from './holdLastFrame.js'
+import { getHoldThresholdTicks, gapsBetween, smartHoldThresholdBeats } from './holdLastFrame.js'
 import {
   CLIP_CONTROL_DEFAULTS,
   CLIP_GAIN_MAX_VELOCITY,
@@ -44,6 +45,7 @@ import {
   buildAutomationHoldLine,
 } from './automationLaneGeometry.js'
 import { drawIcon } from '../../ui-kit/icons/canvas.ts'
+import { clipHasFxIntent } from './clipGeometry.js'
 
 // Default engine sample rate (used for spp computation when no per-region rate is known)
 const DEFAULT_SR = 48000
@@ -160,6 +162,9 @@ export function resolveTimelinePalette() {
     reelBodySelected:  tokenValue('--ui-g4'),
     reelBadgeFill:     tokenValue('--ui-g1'),
     reelBadgeInk:      tokenValue('--ui-ink'),
+    // Overflow note in a source's Reel lane (more notes sound than it has voices):
+    // hatched and outlined in the warning colour.
+    reelOverflow:      tokenValue('--theme-warning'),
     // Roam key lane: neutral axis and labels; the curve and keys take the track's colour.
     roamAxis:          tokenValue('--ui-g4'),
     roamLine:          tokenValue('--ui-ink-3'),
@@ -311,12 +316,14 @@ export function drawGrid(ctx, w, h, scrollOffset, ppb, trackCount, tracks = null
     }
   }
 
-  // Pattern-track row tint (neutral — pattern tracks no longer bind to a region)
+  // Pattern-track row tint (neutral — pattern tracks no longer bind to a region).
+  // A Clone's row is a read-only lane, not a place for blocks: it takes the lane
+  // band below instead.
   if (tracks) {
     ctx.fillStyle = p.patternLaneTint
     for (let i = 0; i < tracks.length; i++) {
       const t = tracks[i]
-      if (t?.type !== 'Pattern') continue
+      if (t?.type !== 'Pattern' || isClone(t)) continue
       const y = _trackTop(i, trackLayout)
       if (y >= h) break
       ctx.fillRect(0, y, w, TRACK_HEIGHT)
@@ -328,7 +335,7 @@ export function drawGrid(ctx, w, h, scrollOffset, ppb, trackCount, tracks = null
   if (trackLayout && Array.isArray(trackLayout.rows)) {
     ctx.fillStyle = withAlpha(p.laneSeparator, 0.10)
     for (const r of trackLayout.rows) {
-      if (r.rowType !== 'macroAutomation' && r.rowType !== 'reel' && r.rowType !== 'roam' && r.rowType !== 'sweep') continue
+      if (r.rowType !== 'macroAutomation' && r.rowType !== 'reel' && r.laneKind !== 'clone') continue
       if (r.y >= h) break
       ctx.fillRect(0, r.y, w, r.height)
     }
@@ -594,40 +601,6 @@ export function drawRuler(ctx, w, h, scrollOffset, ppb, palette = null) {
   ctx.stroke()
 }
 
-// ── Overlay (playhead + selection) ───────────────────────────────────────────
-
-export function drawOverlay(ctx, w, h, scrollOffset, ppb, playheadBeat, palette = null) {
-  ctx.clearRect(0, 0, w, h)
-
-  if (playheadBeat == null) return
-  const p = palette ?? resolveTimelinePalette()
-
-  const x = Math.round(beatToPixel(playheadBeat, scrollOffset, ppb)) + 0.5
-
-  // Don't draw if off-screen
-  if (x < -1 || x > w + 1) return
-
-  // Playhead line
-  ctx.strokeStyle = p.playheadLine
-  ctx.lineWidth = 1
-  ctx.beginPath()
-  ctx.moveTo(x, 0)
-  ctx.lineTo(x, h)
-  ctx.stroke()
-
-  // Small triangle at top
-  ctx.fillStyle = p.playheadAccent
-  ctx.beginPath()
-  ctx.moveTo(x, 0)
-  ctx.lineTo(x - 4, -0) // flat top edge
-  ctx.lineTo(x - 4, 0)
-  ctx.moveTo(x, 6)
-  ctx.lineTo(x - 5, 0)
-  ctx.lineTo(x + 5, 0)
-  ctx.closePath()
-  ctx.fill()
-}
-
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 export function hexToRgba(hex, alpha) {
@@ -816,6 +789,14 @@ export function drawHoldZones(
 
     const track = holdTracks.get(trackId)
     const thresholdTicks = getHoldThresholdTicks(track)   // null when unlimited
+    // Smart hold (engine: model/SmartHold.h) replaces the threshold: a gap is
+    // held only when it is on the phrase side of the track's natural break,
+    // and the space after the last clip is never held.
+    const smart = !!track.videoHoldSmart
+    const smartTicks = smart
+      ? smartHoldThresholdBeats(gapsBetween(list.map((c) =>
+          [c.positionTicks / PPQ, (c.positionTicks + c.durationTicks) / PPQ]))) * PPQ
+      : null
     const y = _trackTop(trackIdx, trackLayout) + CLIP_PAD + HOLD_ZONE_INSET
 
     for (let i = 0; i < list.length; i++) {
@@ -831,7 +812,8 @@ export function drawHoldZones(
 
       // Unlimited holds run to the next clip; with no next clip they run
       // forever, so they're clipped to the viewport's right edge below.
-      const expiryTicks = thresholdTicks == null
+      if (smart && (!next || next.positionTicks - clipEndTicks > smartTicks + 1e-6)) continue
+      const expiryTicks = (smart || thresholdTicks == null)
         ? Number.POSITIVE_INFINITY
         : clipEndTicks + thresholdTicks
       const zoneEndTicks = Math.min(expiryTicks, nextStartTicks)
@@ -884,6 +866,11 @@ const NAME_ALWAYS_MIN_W    = 18
 const META_AUTO_MIN_W      = 72
 const META_ALWAYS_MIN_W    = 40
 const PATTERN_LOOP_GLYPH_RESERVE = 14
+// Color Grade indicator: a clip that carries its own grade shows a small
+// palette glyph at the right of its title strip (clip.colorGrade is present
+// only on a graded clip). Kept left of the Quick FX badge when the clip has one.
+const CLIP_GRADE_GLYPH_RESERVE = 14
+const CLIP_FX_BADGE_RESERVE = 28
 const HEX6 = /^#[0-9a-f]{6}$/i
 
 // Small bounded memo for per-block style objects. Their inputs are a handful
@@ -1771,11 +1758,25 @@ function paintClip(frame, pass, clip, r) {
     if (layout.useStrip && showName !== 'never') {
       const strip = clipTitleStripStyle(hex, ds, selected, muted)
       paintTitleStrip(ctx, layout, strip.fill, strip.separator)
+      const titleInk = clipLabelInk(p, HEX6.test(hex) ? hex : '#808080', strip.alpha)
+      // The grade glyph, when this clip has its own Color Grade. Filled while
+      // the grade renders, outlined while it is switched off: shape, not hue.
+      const hasFxBadge = clipHasFxIntent(clip) && r.w >= 56
+      const gradeReserve = clip.colorGrade && r.w > 40
+        ? CLIP_GRADE_GLYPH_RESERVE + (hasFxBadge ? CLIP_FX_BADGE_RESERVE : 0)
+        : 0
+      if (gradeReserve) {
+        drawIcon(
+          ctx, 'palette',
+          r.x + r.w - gradeReserve - handleReserve, r.y + 1, 10, titleInk,
+          clip.colorGrade.bypassed ? 'regular' : 'fill',
+        )
+      }
       paintBlockTitle(
         frame, layout,
         clipLabelText(clip, region),
-        clipLabelInk(p, HEX6.test(hex) ? hex : '#808080', strip.alpha),
-        showName, muted, handleReserve, handleReserve,
+        titleInk,
+        showName, muted, handleReserve, handleReserve + gradeReserve,
       )
     }
 
@@ -2432,33 +2433,4 @@ export function drawDeleteSweep(ctx, x1, y1, x2, y2, palette = null) {
   ctx.setLineDash([4, 3])
   ctx.strokeRect(x, y, w, h)
   ctx.setLineDash([])
-}
-
-// ── Ruler overlay (playhead indicator on ruler) ──────────────────────────────
-
-export function drawRulerOverlay(ctx, w, h, scrollOffset, ppb, playheadBeat, palette = null) {
-  ctx.clearRect(0, 0, w, h)
-
-  if (playheadBeat == null) return
-  const p = palette ?? resolveTimelinePalette()
-
-  const x = Math.round(beatToPixel(playheadBeat, scrollOffset, ppb)) + 0.5
-  if (x < -1 || x > w + 1) return
-
-  // Playhead line on ruler
-  ctx.strokeStyle = p.playheadLine
-  ctx.lineWidth = 1
-  ctx.beginPath()
-  ctx.moveTo(x, 0)
-  ctx.lineTo(x, h)
-  ctx.stroke()
-
-  // Downward triangle
-  ctx.fillStyle = p.playheadAccent
-  ctx.beginPath()
-  ctx.moveTo(x, h)
-  ctx.lineTo(x - 4, h - 6)
-  ctx.lineTo(x + 4, h - 6)
-  ctx.closePath()
-  ctx.fill()
 }

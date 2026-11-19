@@ -31,6 +31,7 @@ const PLUGIN_NAMES = {
   fet: 'FET Comp',
   varimu: 'Vari-Mu Comp',
   fedda: 'Fedda',
+  szkrezh: 'Szkrezh',
 }
 
 const EFFECT_CATEGORIES = [
@@ -57,6 +58,9 @@ const EFFECT_CATEGORIES = [
   ]},
   { label: 'Time', submenu: [
     { label: 'Delay', id: 'delay' }, { label: 'Reverb', id: 'reverb' },
+  ]},
+  { label: 'Pitch', submenu: [
+    { label: 'Pitch Shifter', id: 'pitchshifter' }, { label: 'Szkrezh', id: 'szkrezh' },
   ]},
   { label: 'Utility', submenu: [
     { label: 'Smart Balance', id: 'smartbalance' },

@@ -10,6 +10,7 @@
 //   [7] compile/sort helpers: dropping, clamping, stability
 //   [8] zone sanitizing
 //   [9] the evaluators do not allocate
+//   [10] Bezier segments: handle conventions, overshoot, sanitizing
 //
 // Output prefix: [KeyCurve].
 
@@ -440,6 +441,92 @@ static void test_no_alloc() {
               << " (checksum " << sink << ")\n";
 }
 
+// ─── [10] ─────────────────────────────────────────────────────────────────────
+static Key bezKey(double value, Position pos, double x1, double y1, double x2, double y2) {
+    Key k = key(value, Interp::Bezier, pos);
+    k.bez = { x1, y1, x2, y2 };
+    return k;
+}
+
+static void test_bezier() {
+    std::cout << "[10] Bezier segments (CSS cubic-bezier handles)\n";
+    const BezierHandles lin{ 1.0 / 3.0, 1.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0 };
+    const BezierHandles eo{ 1.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0, 1.0 };   // == EaseOut's polynomial
+    const BezierHandles smooth{};                                       // default: CSS ease-in-out
+    bool linOk = true, eoOk = true, symOk = true, monoOk = true, endsOk = true;
+    double prev = -1.0;
+    for (int i = 0; i <= 200; ++i) {
+        const double u = i / 200.0;
+        if (!approx(bezierEase(lin, u), u, 1e-6)) linOk = false;
+        if (!approx(bezierEase(eo, u), easeOut(u), 1e-6)) eoOk = false;
+        if (!approx(bezierEase(smooth, u) + bezierEase(smooth, 1.0 - u), 1.0, 1e-6)) symOk = false;
+        const double e = bezierEase(smooth, u);
+        if (e < prev - 1e-12) monoOk = false;
+        prev = e;
+    }
+    for (const BezierHandles& b : { lin, eo, smooth, BezierHandles{ 1, 0, 1, 0 }, BezierHandles{ 0, 1, 0, 1 } })
+        if (bezierEase(b, 0.0) != 0.0 || bezierEase(b, 1.0) != 1.0) endsOk = false;
+    CHECK(linOk, "handles (1/3,1/3,2/3,2/3) are a straight line");
+    CHECK(eoOk, "handles (1/3,2/3,2/3,1) are exactly EaseOut");
+    CHECK(symOk, "ease-in-out is point-symmetric about (0.5, 0.5)");
+    CHECK(monoOk, "ease-in-out is monotone");
+    CHECK(endsOk, "every curve starts at 0 and ends at 1, degenerate handles included");
+    CHECK(approx(bezierEase(smooth, 0.5), 0.5, 1e-6) && bezierEase(smooth, 0.25) < 0.25,
+          "ease-in-out: slow off the key, 0.5 at the middle");
+
+    // Degenerate x handles (both at 0 or 1) still solve to finite values.
+    bool finite = true;
+    for (int i = 0; i <= 50; ++i) {
+        const double u = i / 50.0;
+        for (const BezierHandles& b : { BezierHandles{ 1, 0, 1, 0 }, BezierHandles{ 0, 1, 0, 1 },
+                                        BezierHandles{ 0, 0, 0, 0 }, BezierHandles{ 1, 1, 1, 1 } })
+            if (!std::isfinite(bezierEase(b, u))) finite = false;
+    }
+    CHECK(finite, "degenerate handles never produce NaN");
+
+    // Overshoot: unclamped y handles leave [0, 1].
+    const BezierHandles back{ 1.0 / 3.0, (1.70158 + 3.0) / 3.0, 2.0 / 3.0, 1.0 };
+    double peak = 0.0;
+    for (int i = 0; i <= 100; ++i) peak = std::max(peak, bezierEase(back, i / 100.0));
+    CHECK(peak > 1.05, "a y handle above 1 overshoots the next key's value");
+
+    // On a curve: the segment leaving a Bezier key is a + (b - a) * ease(u).
+    std::vector<Key> c = { bezKey(2.0, Position::eventTicks(0), 0.42, 0.0, 0.58, 1.0),
+                           key(10.0, Interp::Linear, Position::eventTicks(100)),
+                           key(4.0, Interp::Linear, Position::eventTicks(200)) };
+    CHECK(valueAt(c.data(), c.size(), 0.0, -1) == 2.0, "Bezier: exact at its own key");
+    CHECK(approx(valueAt(c.data(), c.size(), 25.0, -1), 2.0 + 8.0 * bezierEase(smooth, 0.25)),
+          "Bezier: a + (b - a) * ease(u) inside the segment");
+    CHECK(valueAt(c.data(), c.size(), 100.0, -1) == 10.0, "Bezier: reaches the next key exactly");
+    CHECK(approx(valueAt(c.data(), c.size(), 150.0, -1), 7.0), "the next segment keeps its own interp");
+
+    // A non-Bezier key ignores its handles.
+    Key linWithHandles = key(0.0, Interp::Linear, Position::eventTicks(0));
+    linWithHandles.bez = { 1, 0, 1, 0 };
+    std::vector<Key> l = { linWithHandles, key(1.0, Interp::Linear, Position::eventTicks(100)) };
+    CHECK(approx(valueAt(l.data(), l.size(), 30.0, -1), 0.3), "Linear ignores bez");
+
+    // sanitize / compile.
+    const BezierHandles s = sanitizeBezier({ -0.5, std::nan(""), 2.0, 3.0 });
+    CHECK(s.x1 == 0.0 && s.y1 == BezierHandles{}.y1 && s.x2 == 1.0 && s.y2 == 3.0,
+          "sanitize: x clamped into [0, 1], NaN -> default, y left free");
+    std::vector<Key> raw = { bezKey(0.0, Position::timelineTicks(0), 5.0, 0.0, -1.0, 1.0),
+                             key(1.0, Interp::Linear, Position::timelineTicks(10)) };
+    compileTimeKeys(raw);
+    CHECK(raw[0].bez.x1 == 1.0 && raw[0].bez.x2 == 0.0, "compileTimeKeys sanitizes Bezier handles");
+    std::vector<Key> rawNote = { bezKey(0.0, Position::head(0), 1.5, 0.0, 0.5, 1.0),
+                                 key(1.0, Interp::Linear, Position::tail(0)) };
+    compileNoteKeys(rawNote, NoteZones{});
+    CHECK(rawNote[0].bez.x1 == 1.0, "compileNoteKeys sanitizes Bezier handles");
+
+    // No allocation.
+    double sink = 0.0;
+    const long long before = g_allocs.load();
+    for (int i = 0; i < 5000; ++i) sink += valueAt(c.data(), c.size(), i * 0.04, 0.0);
+    CHECK(g_allocs.load() == before, "Bezier evaluation does not allocate");
+    std::cout << "    checksum " << sink << "\n";
+}
+
 int main() {
     std::cout << "[KeyCurve] shared keyframe curve engine (model/KeyCurve.h)\n";
     test_empty_is_base();
@@ -451,6 +538,7 @@ int main() {
     test_compile();
     test_zones();
     test_no_alloc();
+    test_bezier();
     std::cout << "[KeyCurve] " << g_pass << " passed, " << g_fail << " failed\n";
     return g_fail == 0 ? 0 : 1;
 }

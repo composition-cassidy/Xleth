@@ -1,0 +1,18 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "chorus",
+  "name": "Pitch Sample Doubler",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "rate": 0.3,
+      "depth": 12,
+      "delay": 25,
+      "feedback": 0,
+      "voices": 2,
+      "width": 100,
+      "mix": 40
+    }
+  }
+}

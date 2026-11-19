@@ -58,6 +58,8 @@ import PitchShifterDevice from './PitchShifterDevice.jsx'
 import usePitchShifterStore from '../../stores/pitchShifterStore.js'
 import FeddaDevice from './FeddaDevice.jsx'
 import useFeddaStore from '../../stores/feddaStore.js'
+import SzkrezhDevice from './SzkrezhDevice.jsx'
+import useSzkrezhStore from '../../stores/szkrezhStore.js'
 
 export const DEVICE_BODIES = {
   // Width omitted: the frame fits the body's fixed-width sections (the
@@ -83,6 +85,7 @@ export const DEVICE_BODIES = {
   chorus: { Body: ChorusDevice, useEditorStore: useChorusStore },
   pitchshifter: { Body: PitchShifterDevice, useEditorStore: usePitchShifterStore },
   fedda: { Body: FeddaDevice, useEditorStore: useFeddaStore },
+  szkrezh: { Body: SzkrezhDevice, useEditorStore: useSzkrezhStore },
   // The character compressors on CompressorCore share CompressorFamilyDevice.
   glue: { Body: GlueDevice, useEditorStore: useGlueCompStore },
   opto: { Body: OptoDevice, useEditorStore: useOptoCompStore },

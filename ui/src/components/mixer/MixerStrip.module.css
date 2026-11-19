@@ -1,7 +1,7 @@
 /* Mixer strips (ui/DESIGN.md sections 3.1, 3.2, 5, 10). One anatomy for every track, the
- * master and the dB gutter: eight rows on one grid, so equal-height columns line up row for
+ * master and the dB gutter: nine rows on one grid, so equal-height columns line up row for
  * row. Top to bottom: head (identity stripe, the number), insert names, M / S / V,
- * pan + width, the volume number, fader + meter + the name written up their side, the
+ * width knob, pan slider, the volume number, fader + meter + the name written up their side, the
  * routing cable row, the output.
  * A strip body is a well (g0); its head is a header (g2); controls are g3. Shared
  * information is printed once, in the gutter (MixerPanel): the dB numerals. The pan and
@@ -19,7 +19,8 @@
     --mx-ins-h: max(var(--mx-toggle-h), calc(var(--mx-ins-rows, 5) * var(--mx-ins-row-h)));
     --mx-toggle-h: var(--ctl-h-sm);
     --mx-knob-h: 24px;                               /* the 20px dial, centred in its 24px hit area */
-    --mx-field-h: var(--ctl-h-sm);
+    --mx-pan-h: 24px;                                /* the pan slider's hit area */
+    --mx-field-h: 14px;                              /* the dB readout: subtext, not a control chip */
     --mx-fader-min: var(--mx-fader-floor, 64px);     /* 48px on a short dock (MixerPanel) */
     --mx-gap: 1px;
     box-sizing: border-box;
@@ -30,6 +31,7 @@
       var(--mx-ins-h)
       var(--mx-toggle-h)
       var(--mx-knob-h)
+      var(--mx-pan-h)
       var(--mx-field-h)
       minmax(var(--mx-fader-min), 1fr)
       var(--cable-h, 20px)
@@ -38,8 +40,8 @@
     height: 100%;
     /* The fixed rows plus the smallest fader. Below it the panel scrolls vertically
      * (MixerPanel.module.css) instead of squeezing the fader to nothing. */
-    min-height: calc(var(--mx-head-h) + var(--mx-ins-h) + var(--mx-toggle-h) + var(--mx-knob-h) + var(--mx-field-h)
-      + var(--mx-fader-min) + var(--cable-h, 20px) + var(--out-h, 26px) + 7 * var(--mx-gap));
+    min-height: calc(var(--mx-head-h) + var(--mx-ins-h) + var(--mx-toggle-h) + var(--mx-knob-h) + var(--mx-pan-h) + var(--mx-field-h)
+      + var(--mx-fader-min) + var(--cable-h, 20px) + var(--out-h, 26px) + 8 * var(--mx-gap));
     font-family: var(--ui-font);
     font-variant-numeric: tabular-nums;
   }
@@ -90,7 +92,7 @@
   }
 
   /* Identity colour: the 3px edge, the same colour as the lane, the device and the layer.
-   * The number alone: the name is written up the side of the meter (.vname). */
+   * The number alone: the name is written down the side of the meter (.vname). */
   .head {
     box-sizing: border-box;
     display: flex;
@@ -117,10 +119,10 @@
     line-height: 18px;
   }
 
-  /* The name, written bottom to top up the side of the meter, as on a hardware strip. A
-   * 14px column that adds no height of its own: the text is an absolutely placed child, so a
-   * long name never lends the fader row any, and clips with an ellipsis at the top. Rotating
-   * a vertical-rl line half a turn reads it upward and starts it at the bottom. */
+  /* The name, written top to bottom down the side of the meter, in bold. A 14px column that
+   * adds no height of its own: the text is an absolutely placed child, so a long name never
+   * lends the fader row any, and clips with an ellipsis at the bottom. A plain vertical-rl
+   * line reads downward and starts at the top. */
   .vname {
     position: relative;
     flex: none;
@@ -135,12 +137,11 @@
     overflow: hidden;
     color: var(--ui-ink);
     font-size: var(--type-11);
-    font-weight: var(--weight-medium);
+    font-weight: var(--weight-semibold);
     line-height: 14px;
     text-overflow: ellipsis;
     white-space: nowrap;
     writing-mode: vertical-rl;
-    transform: rotate(180deg);
   }
 
   .muteGlyph {
@@ -242,16 +243,40 @@
     height: var(--ctl-h-sm);
   }
 
-  .toggles > .toggle {
-    min-width: 0;
-    padding: 0;
+  /* The Visual-only eye floats: no chip, border or fill, just the glyph in its cell. Off is the
+   * outlined eye in dim ink, on the filled eye in full ink. */
+  .toggles > .eye {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
     justify-content: center;
-    font-size: var(--type-11);
-    font-weight: var(--weight-semibold);
+    min-width: 0;
+    height: var(--ctl-h-sm);
+    padding: 0;
+    border: 0;
+    border-radius: var(--ui-radius-1);
+    background: transparent;
+    color: var(--ui-ink-3);
+    cursor: pointer;
+    -webkit-app-region: no-drag;
   }
 
-  .toggles > .toggle + .toggle {
-    margin-left: -1px;
+  .toggles > .eye svg {
+    width: var(--icon-sm);
+    height: var(--icon-sm);
+  }
+
+  .toggles > .eye:is(:hover, [data-state="hover"]) {
+    color: var(--ui-ink);
+  }
+
+  .toggles > .eye[aria-pressed="true"] {
+    color: var(--ui-ink);
+  }
+
+  .toggles > .eye:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
   }
 
   .toggles > .pearl {
@@ -269,10 +294,61 @@
     padding: 0;
   }
 
+  /* The pan slider, one row under the width knob, inset a little from the strip edges. */
+  .pan {
+    display: flex;
+    min-width: 0;
+    padding: 0 3px;
+  }
+
+  .pan > * {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
   .field {
     display: flex;
+    align-items: center;
     justify-content: center;
     min-width: 0;
+  }
+
+  /* The dB readout is subtext: no border, no fill, no hover or focus chip, small dim ink. It is
+   * still the kit NumberBox underneath (drag sideways or double-click to type), so it keeps its
+   * slider role and accessible name; it just no longer looks like a button. Row height is
+   * --mx-field-h, so the fader takes back everything the old 24px chip used. */
+  .strip .field > .readout {
+    height: var(--mx-field-h);
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--ui-ink-2);
+    font-size: var(--type-10);
+    line-height: var(--mx-field-h);
+    cursor: default;
+  }
+
+  .strip .field > .readout:is(:hover, [data-state="hover"]) {
+    background: transparent;
+    color: var(--ui-ink);
+  }
+
+  .strip .field > .readout:is([data-dragging="true"], [data-state="active"]) {
+    border-color: transparent;
+    color: var(--ui-ink);
+  }
+
+  .strip .field > .readout:is(:focus-visible, [data-state="focus"]) {
+    outline-offset: -1px;
+  }
+
+  /* Typing a value: the edit box must fit the 14px row. */
+  .strip .field > .readout input {
+    height: var(--mx-field-h);
+    padding: 0 1px;
+    font-size: var(--type-10);
+    text-align: center;
   }
 
   .faderRow {
@@ -301,19 +377,99 @@
     font-size: var(--type-11);
   }
 
+  /* The route row (FL's routing arrow): the arrow routes the SELECTED strip into this one.
+   * White = audio routed here, yellow = sidechained here (the cables above use the same two
+   * inks). A send's level dial sits beside a lit arrow. */
+  .route {
+    --mx-route-audio: var(--ui-ink);
+    --mx-route-sc: var(--ui-solo);                  /* the kit's one yellow */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .routeArrow {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: var(--ctl-h-sm);
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--ui-ink-3);
+    cursor: pointer;
+  }
+
+  .routeArrow svg path {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.25;
+    stroke-linejoin: round;
+  }
+
+  .routeArrow:hover {
+    color: var(--ui-ink-2);
+  }
+
+  .routeArrow[aria-disabled="true"] {
+    cursor: default;
+    opacity: 0.5;
+  }
+
+  .routeArrow[data-audio] {
+    color: var(--mx-route-audio);
+  }
+
+  .routeArrow[data-audio] svg path {
+    fill: var(--mx-route-audio);
+  }
+
+  .routeArrow[data-sidechain] {
+    color: var(--mx-route-sc);
+  }
+
+  /* Sidechain only: a yellow arrow. Routed AND sidechained: the white arrow keeps a yellow rim. */
+  .routeArrow[data-sidechain]:not([data-audio]) svg path {
+    fill: var(--mx-route-sc);
+  }
+
+  .routeArrow[data-sidechain][data-audio] svg path {
+    stroke: var(--mx-route-sc);
+    stroke-width: 1.75;
+  }
+
+  .routeArrow:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  /* The selected strip itself: the source has no arrow of its own, just a mark. */
+  .routeSelf {
+    width: 10px;
+    height: 2px;
+    background: var(--ui-ink-3);
+  }
+
+  .routeLevel {
+    flex: 0 0 auto;
+  }
+
   .outSpace {
     min-height: 0;
   }
 
-  /* The master is dock chrome (g1), not a well. Its peak readout spans the two rows a
-   * track gives to M / S / V and pan + width, so its fader row is every strip's fader row. */
+  /* The master is dock chrome (g1), not a well. Its peak readout spans the three rows a
+   * track gives to M / S / V, width and pan, so its fader row is every strip's fader row. */
   .master {
     background: var(--ui-g1);
   }
 
   .peak {
     box-sizing: border-box;
-    grid-row: 3 / span 2;
+    grid-row: 3 / span 3;
     display: flex;
     flex-direction: column;
     align-items: center;

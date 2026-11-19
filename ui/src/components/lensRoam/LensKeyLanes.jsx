@@ -2,10 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { tokenValue } from '../../theming/tokenValue.ts'
 import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
 import {
-  LENS_CHANNELS, anchorOffset, anchorReached, clampChannelValue, clampKeyPos, describeKeyPlace,
-  keyEquals, keyPlaceAt, laneRange, noteSpan, positionAtNoteTime, sortEventKeys,
-  sortNoteKeys, unitToValue, valueAtEvent, valueAtNote, valueToUnit, zoneSpan, layerIdentity,
+  LENS_CHANNELS, anchorOffset, anchorReached, applyKeyOp, bezierHandlePoints, clampChannelValue, clampKeyPos,
+  describeKeyPlace, dragBezierHandle, interpOp, keyEquals, keyPlaceAt, laneRange, makeKey, noteSpan,
+  positionAtNoteTime, sanitizeBez, sortEventKeys, sortNoteKeys, unitToValue, valueAtEvent, valueAtNote,
+  valueToUnit, zoneSpan, layerIdentity,
 } from '../../lensRoam/lensKeyModel.js'
+import ContextMenu from '../ContextMenu.jsx'
+import { lensKeyMenuItems } from './lensKeyMenu.js'
 import styles from './lensRoam.module.css'
 
 // The keyframe lanes of the Advanced Lens editor: Zoom, Center X, Center Y and
@@ -17,8 +20,12 @@ import styles from './lensRoam.module.css'
 //   drag a filled key      move it: time along x, value along y
 //   Alt-drag across a zone edge   changes the key's anchor to the zone under the pointer
 //   Shift while dragging   fine: a quarter of the value travel
-//   right-click a key      delete it
-//   Delete / arrows        delete / nudge the selected key (the drag alternative)
+//   Ctrl/Shift-click a key add it to / take it out of the multi-selection
+//   Ctrl/Shift-drag        marquee: select every own key inside the rectangle
+//   drag a Bezier handle   reshape the segment of a selected Bezier key
+//   right-click            key menu: Hold / Linear / Ease out / Bezier / Delete, for the
+//                          whole selection (ONE batch op: one commit, one undo step)
+//   Delete / arrows        delete the selection / nudge the selected key (the drag alternative)
 //   Esc                    cancels a drag, nothing is sent
 //
 // Hollow keys are INHERITED (the hit curve a Follow / Nudge note plays) and are
@@ -33,6 +40,8 @@ const LANE_PAD = 6
 const INSET = 7          // plot inset so a key on the first / last tick is not clipped
 const KEY_R = 4
 const HIT_PX = 12        // hit radius: a 24 px target
+const HANDLE_R = 3.5
+const HANDLE_HIT_PX = 9  // a handle wins only when nearer than any key
 const FINE = 0.25
 const CURVE_STEP = 2
 
@@ -49,6 +58,32 @@ function fmtValue(channel, v, absolute) {
 
 const roundTo = (v, step) => Math.round(v / step) * step
 const roundValue = (channel, v) => (channel === 'rotationDeg' ? roundTo(v, 0.1) : roundTo(v, 0.001))
+
+// A key's place, ignoring value and interp: how the multi-selection remembers a key
+// across edits that change its value, interp or handles.
+const spotOf = (k) => ({ channel: k.channel, anchor: k.anchor, pos: k.pos })
+const sameSpot = (k, m) => !!k && !!m && k.channel === m.channel && k.anchor === m.anchor && Math.abs(k.pos - m.pos) < 1e-9
+
+// The key's interp as its shape (the Roam lane's code): Hold square, Linear circle,
+// EaseOut diamond, Bezier hexagon.
+function keyPath(ctx, interp, x, y, r) {
+  ctx.beginPath()
+  if (interp === 'Hold') {
+    ctx.rect(x - r + 0.5, y - r + 0.5, 2 * r - 1, 2 * r - 1)
+  } else if (interp === 'EaseOut') {
+    const d = r * 1.25
+    ctx.moveTo(x, y - d); ctx.lineTo(x + d, y); ctx.lineTo(x, y + d); ctx.lineTo(x - d, y); ctx.closePath()
+  } else if (interp === 'Bezier') {
+    const d = r * 1.15
+    for (let i = 0; i < 6; i++) {
+      const t = (Math.PI / 3) * i
+      if (i === 0) ctx.moveTo(x + d, y); else ctx.lineTo(x + d * Math.cos(t), y + d * Math.sin(t))
+    }
+    ctx.closePath()
+  } else {
+    ctx.arc(x, y, r, 0, Math.PI * 2)
+  }
+}
 
 export const LANES_HEIGHT = RULER_H + LENS_CHANNELS.length * LANE_H
 
@@ -89,6 +124,13 @@ export default function LensKeyLanes({
   const overlayRef = useRef(null)
   const dragRef = useRef(null)
   const hoverRef = useRef(null)
+  // The multi-selection: own keys' places ([{channel, anchor, pos}]). Local view state.
+  const multiRef = useRef([])
+  // A Bezier handle being dragged: { key, next, which, laneIndex, range, bez, moved }.
+  const handleDragRef = useRef(null)
+  // A marquee being dragged: { x0, y0, x1, y1, additive, base }.
+  const marqueeRef = useRef(null)
+  const [menu, setMenu] = useState(null)
   const [width, setWidth] = useState(300)
   const absolute = kind === 'event'
 
@@ -144,9 +186,21 @@ export default function LensKeyLanes({
   }
   const yToUnit = (i, y) => 1 - (y - laneTop(i) - LANE_PAD) / (LANE_H - 2 * LANE_PAD)
 
-  /** The own keys as drawn: the dragged key swapped for its draft. */
+  const inMulti = (k) => multiRef.current.some((m) => sameSpot(k, m))
+  /** Is this own key selected: the primary selection or one of the multi-selection? */
+  const isSelectedKey = (k) => {
+    const L = live.current
+    return (!!L.selected && keyEquals(k, L.selected))
+      || inMulti(k) || (!!handleDragRef.current && sameSpot(k, handleDragRef.current.key))
+  }
+  /** The multi-selection's own keys as they are now. */
+  const multiKeys = () => live.current.ownKeys.filter(inMulti)
+
+  /** The own keys as drawn: the dragged key swapped for its draft (or its dragged handles). */
   const drawnOwn = () => {
     const L = live.current
+    const hd = handleDragRef.current
+    if (hd) return L.ownKeys.map((k) => (keyEquals(k, hd.key) ? { ...k, bez: hd.bez } : k))
     const d = dragRef.current
     if (!d) return L.ownKeys
     if (d.idx < 0) return [...L.ownKeys, d.draft]
@@ -277,15 +331,39 @@ export default function LensKeyLanes({
       if (chInh.length) curve(chInh, ink3, 1, [3, 3])
       if (chOwn.length || L.absolute) curve(chOwn, ink2, 1.5, [])
 
-      // Keys. Inherited: hollow. Own: filled. Selected: ringed.
+      // A selected own Bezier key's two handles, under the keys.
+      const sortedOwn = note ? sortNoteKeys(chOwn, L.zones) : sortEventKeys(chOwn)
+      for (let j = 0; j + 1 < sortedOwn.length; j++) {
+        const a = sortedOwn[j]
+        if (a.interp !== 'Bezier' || !isSelectedKey(a)) continue
+        const pts = bezierHandlePoints(a, sortedOwn[j + 1], (k) => timeToX(keyTime(k)), (v) => valueToY(range, i, v))
+        ctx.strokeStyle = select
+        ctx.lineWidth = 1
+        ctx.globalAlpha = 0.85
+        ctx.beginPath()
+        ctx.moveTo(pts.from.x, pts.from.y); ctx.lineTo(pts.h1.x, pts.h1.y)
+        ctx.moveTo(pts.to.x, pts.to.y); ctx.lineTo(pts.h2.x, pts.h2.y)
+        ctx.stroke()
+        ctx.globalAlpha = 1
+        for (const hp of [pts.h1, pts.h2]) {
+          ctx.beginPath()
+          ctx.arc(hp.x, hp.y, HANDLE_R, 0, Math.PI * 2)
+          ctx.fillStyle = g0
+          ctx.fill()
+          ctx.lineWidth = 1.5
+          ctx.strokeStyle = select
+          ctx.stroke()
+        }
+      }
+
+      // Keys. Inherited: hollow. Own: filled. Selected: ringed. Shaped by interp.
       const drawKey = (k, filled, dim) => {
         const t = keyTime(k)
         const x = timeToX(t)
         const y = valueToY(range, i, k.value)
         const reached = !note || anchorReached(span, k.anchor, k.pos)
         ctx.globalAlpha = dim || !reached ? 0.45 : 1
-        ctx.beginPath()
-        ctx.arc(x, y, KEY_R, 0, Math.PI * 2)
+        keyPath(ctx, k.interp, x, y, KEY_R)
         if (filled) {
           ctx.fillStyle = inkC
           ctx.fill()
@@ -306,6 +384,14 @@ export default function LensKeyLanes({
         const pos = drawKey(k, true, false)
         if (isSel) selPos = pos
         if (d && d.draft === k) selPos = pos
+        if (!d && inMulti(k) && !isSel) {
+          // A multi-selected key: ringed like the selection, thinner.
+          ctx.beginPath()
+          ctx.arc(pos.x, pos.y, KEY_R + 3, 0, Math.PI * 2)
+          ctx.strokeStyle = select
+          ctx.lineWidth = 1
+          ctx.stroke()
+        }
       })
       if (selPos) {
         ctx.beginPath()
@@ -336,6 +422,24 @@ export default function LensKeyLanes({
       ctx.fillStyle = inkC
       ctx.textAlign = 'left'
       ctx.fillText(text, bx + 4, by + 7.5)
+    }
+
+    // A marquee in progress.
+    const mq = marqueeRef.current
+    if (mq) {
+      const x = Math.min(mq.x0, mq.x1)
+      const y = Math.min(mq.y0, mq.y1)
+      const mw = Math.abs(mq.x1 - mq.x0)
+      const mh = Math.abs(mq.y1 - mq.y0)
+      ctx.globalAlpha = 0.12
+      ctx.fillStyle = select
+      ctx.fillRect(x, y, mw, mh)
+      ctx.globalAlpha = 1
+      ctx.setLineDash([4, 3])
+      ctx.strokeStyle = select
+      ctx.lineWidth = 1
+      ctx.strokeRect(Math.round(x) + 0.5, Math.round(y) + 0.5, Math.round(mw), Math.round(mh))
+      ctx.setLineDash([])
     }
   }, [])
 
@@ -403,6 +507,46 @@ export default function LensKeyLanes({
     return best
   }
 
+  /** The nearest shown Bezier handle (of a selected own Bezier key) under the pointer, or null. */
+  const hitHandle = (px, py) => {
+    const L = live.current
+    if (L.readOnly) return null
+    let best = null
+    LENS_CHANNELS.forEach((ch, i) => {
+      const chOwn = L.ownKeys.filter((k) => k.channel === ch)
+      const chInh = L.kind === 'note' ? L.inheritedKeys.filter((k) => k.channel === ch) : []
+      const range = rangeFor(ch, [...chOwn, ...chInh])
+      const sorted = L.kind === 'note' ? sortNoteKeys(chOwn, L.zones) : sortEventKeys(chOwn)
+      for (let j = 0; j + 1 < sorted.length; j++) {
+        const a = sorted[j]
+        if (a.interp !== 'Bezier' || !isSelectedKey(a)) continue
+        const pts = bezierHandlePoints(a, sorted[j + 1], (k) => timeToX(keyTime(k)), (v) => valueToY(range, i, v))
+        for (const which of [1, 2]) {
+          const h = which === 1 ? pts.h1 : pts.h2
+          const dist = Math.hypot(px - h.x, py - h.y)
+          if (dist <= HANDLE_HIT_PX && (!best || dist < best.dist)) {
+            best = { key: a, next: sorted[j + 1], which, laneIndex: i, range, dist }
+          }
+        }
+      }
+    })
+    return best
+  }
+
+  /** The own keys whose drawn centre lies inside the rect {x0, y0, x1, y1}. */
+  const ownKeysIn = (r) => {
+    const L = live.current
+    const x0 = Math.min(r.x0, r.x1); const x1 = Math.max(r.x0, r.x1)
+    const y0 = Math.min(r.y0, r.y1); const y1 = Math.max(r.y0, r.y1)
+    return L.ownKeys.filter((k) => {
+      const i = LENS_CHANNELS.indexOf(k.channel)
+      const chKeys = [...L.ownKeys, ...(L.kind === 'note' ? L.inheritedKeys : [])].filter((x) => x.channel === k.channel)
+      const x = timeToX(keyTime(k))
+      const y = valueToY(rangeFor(k.channel, chKeys), i, k.value)
+      return x >= x0 && x <= x1 && y >= y0 && y <= y1
+    })
+  }
+
   /** The key for pointer position (px, py) in lane `i`, given the drag's anchor rule. */
   const keyAt = (d, px, py, alt, shift) => {
     const L = live.current
@@ -446,10 +590,46 @@ export default function LensKeyLanes({
     }
   }
 
+  const capture = (e) => { try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* jsdom */ } }
+
   const onPointerDown = (e) => {
     if (e.button !== 0) return
     const { px, py } = local(e)
     canvasRef.current.focus({ preventScroll: true })
+    const L0 = live.current
+    // A selected Bezier key's handle, when it is nearer than any key.
+    const handle = hitHandle(px, py)
+    if (handle) {
+      const k = hitKey(px, py)
+      if (!k || handle.dist < k.dist) {
+        handleDragRef.current = { ...handle, bez: sanitizeBez(handle.key.bez), moved: false }
+        capture(e)
+        e.preventDefault()
+        draw()
+        return
+      }
+    }
+    // Ctrl / Shift: build a multi-selection (toggle a key, or drag a marquee).
+    if (e.ctrlKey || e.metaKey || e.shiftKey) {
+      const current = multiRef.current.length ? multiRef.current : (L0.selected ? [spotOf(L0.selected)] : [])
+      const hit0 = hitKey(px, py)
+      if (hit0?.own) {
+        const had = current.some((m) => sameSpot(hit0.key, m))
+        multiRef.current = had ? current.filter((m) => !sameSpot(hit0.key, m)) : [...current, spotOf(hit0.key)]
+        onSelect?.(had ? (multiKeys()[0] ?? null) : hit0.key)
+        e.preventDefault()
+        draw()
+        return
+      }
+      marqueeRef.current = {
+        x0: px, y0: py, x1: px, y1: py, base: current, additive: (e.ctrlKey || e.metaKey) && e.shiftKey,
+      }
+      capture(e)
+      e.preventDefault()
+      draw()
+      return
+    }
+    multiRef.current = []
     const hit = hitKey(px, py)
     if (hit && !hit.own) { onSelect?.(null); return }
     if (hit && hit.own) {
@@ -479,13 +659,31 @@ export default function LensKeyLanes({
 
   const onPointerMove = (e) => {
     const { px, py } = local(e)
+    const hd = handleDragRef.current
+    if (hd) {
+      const fromY = (y) => unitToValue(hd.range, yToUnit(hd.laneIndex, y))
+      hd.bez = dragBezierHandle(hd.key, hd.next, hd.which, px, py, (k) => timeToX(keyTime(k)), fromY)
+      hd.moved = true
+      draw()
+      return
+    }
+    const mq = marqueeRef.current
+    if (mq) {
+      mq.x1 = px
+      mq.y1 = py
+      draw()
+      return
+    }
     const d = dragRef.current
     if (!d) {
       const hit = hitKey(px, py)
-      const next = hit ? (hit.own ? 'own' : 'inherited') : laneOf(py) >= 0 && !live.current.readOnly ? 'add' : null
+      const h = hitHandle(px, py)
+      const next = h && (!hit || h.dist < hit.dist) ? 'handle'
+        : hit ? (hit.own ? 'own' : 'inherited') : laneOf(py) >= 0 && !live.current.readOnly ? 'add' : null
       if (hoverRef.current !== next) {
         hoverRef.current = next
-        e.currentTarget.style.cursor = next === 'own' ? 'grab' : next === 'inherited' ? 'not-allowed' : next === 'add' ? 'crosshair' : 'default'
+        e.currentTarget.style.cursor = next === 'handle' ? 'move' : next === 'own' ? 'grab'
+          : next === 'inherited' ? 'not-allowed' : next === 'add' ? 'crosshair' : 'default'
       }
       return
     }
@@ -498,6 +696,32 @@ export default function LensKeyLanes({
   }
 
   const end = (e, commit) => {
+    const hd = handleDragRef.current
+    if (hd) {
+      handleDragRef.current = null
+      try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { /* jsdom */ }
+      const start = sanitizeBez(hd.key.bez)
+      if (commit && hd.moved && hd.bez.some((v, i) => v !== start[i])) {
+        onOp?.({ type: 'update', match: hd.key, patch: { bez: hd.bez } })
+        onSelect?.(makeKey({ ...hd.key, bez: hd.bez }))
+      }
+      draw()
+      return
+    }
+    const mq = marqueeRef.current
+    if (mq) {
+      marqueeRef.current = null
+      try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { /* jsdom */ }
+      if (commit) {
+        const inside = ownKeysIn(mq).map(spotOf)
+        const merged = mq.additive ? [...mq.base] : []
+        for (const s of inside) if (!merged.some((m) => sameSpot(s, m))) merged.push(s)
+        multiRef.current = merged
+        onSelect?.(multiKeys()[0] ?? null)
+      }
+      draw()
+      return
+    }
     const d = dragRef.current
     dragRef.current = null
     try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { /* jsdom */ }
@@ -511,25 +735,69 @@ export default function LensKeyLanes({
     draw()   // a cancelled / no-op drag snaps back to the committed keys
   }
 
+  // Right-click: the key menu, for the whole multi-selection when the key is in it,
+  // else for that key alone (which becomes the selection). On empty lane it acts on
+  // the multi-selection, if there is one.
   const onContextMenu = (e) => {
     e.preventDefault()
-    if (live.current.readOnly) return
+    const L = live.current
+    if (L.readOnly) return
     const { px, py } = local(e)
     const hit = hitKey(px, py)
-    if (hit?.own) {
-      onOp?.({ type: 'remove', match: hit.key })
-      onSelect?.(null)
+    const handle = hit ? null : hitHandle(px, py)
+    const k = hit?.own ? hit.key : handle?.key ?? null
+    let targets
+    if (k) {
+      if (multiRef.current.length && inMulti(k)) {
+        targets = multiKeys()
+      } else {
+        multiRef.current = []
+        targets = [k]
+        onSelect?.(k)
+      }
+    } else if (multiRef.current.length) {
+      targets = multiKeys()
+    } else {
+      return
     }
+    if (!targets.length) return
+    const { items, count } = lensKeyMenuItems({
+      targets,
+      onOp: (op) => onOp?.(op),
+      afterInterp: (interp, bez) => {
+        // Keep the primary selection pointing at its key after the edit changed it.
+        const sel = live.current.selected
+        if (sel && targets.some((t) => keyEquals(t, sel))) {
+          const next = applyKeyOp([sel], interpOp([sel], interp, bez))
+          if (next) onSelect?.(next[0])
+        }
+      },
+      afterDelete: () => { multiRef.current = []; onSelect?.(null) },
+    })
+    setMenu({ x: e.clientX, y: e.clientY, items, label: count === 1 ? 'Key' : `${count} keys` })
+    draw()
   }
 
   // The keyboard alternative to every drag.
   const onKeyDown = (e) => {
     const L = live.current
-    if (e.key === 'Escape' && dragRef.current) {
+    if (e.key === 'Escape' && (dragRef.current || handleDragRef.current || marqueeRef.current)) {
       dragRef.current = null
+      handleDragRef.current = null
+      marqueeRef.current = null
       draw()
       e.stopPropagation()
       return
+    }
+    if ((e.key === 'Delete' || e.key === 'Backspace') && multiRef.current.length && !L.readOnly) {
+      const targets = multiKeys()
+      if (targets.length) {
+        onOp?.({ type: 'batch', ops: targets.map((match) => ({ type: 'remove', match })) })
+        multiRef.current = []
+        onSelect?.(null)
+        e.preventDefault()
+        return
+      }
     }
     const ordered = [...L.ownKeys].sort((a, b) => LENS_CHANNELS.indexOf(a.channel) - LENS_CHANNELS.indexOf(b.channel) || keyTime(a) - keyTime(b))
     if (e.key === '[' || e.key === ']') {
@@ -573,7 +841,8 @@ export default function LensKeyLanes({
 
   const keyCount = ownKeys.length
   const aria = `${label}. ${keyCount} ${keyCount === 1 ? 'key' : 'keys'}${inheritedKeys.length ? `, ${inheritedKeys.length} inherited from the hit curve` : ''}. `
-    + 'Click a lane to add a key, drag a key to move it, right-click to delete. Bracket keys select a key, arrows nudge it, Delete removes it.'
+    + 'Click a lane to add a key, drag a key to move it. Ctrl or Shift click or drag to select several keys; '
+    + 'right-click for interpolation, Bezier and delete. Bracket keys select a key, arrows nudge it, Delete removes the selection.'
 
   return (
     <div ref={wrapRef} className={styles.lanes} style={{ height: LANES_HEIGHT }} data-theme-epoch={epoch}>
@@ -589,8 +858,8 @@ export default function LensKeyLanes({
           ? 'Lens keys over one note. Filled keys are this curve\'s own; hollow keys are inherited from the hit curve. Click a lane to add a key.'
           : 'Lens keys over one event, in ticks from its start. A keyed channel follows its keys; an unkeyed one holds the static value.'}
         data-hint-mods={kind === 'note'
-          ? 'Drag: move · Alt-drag across a band edge: change anchor · Shift: fine · Right-click: delete · Esc: cancel'
-          : 'Drag: move · Shift: fine · Right-click: delete · Esc: cancel'}
+          ? 'Drag: move · Alt-drag across a band edge: change anchor · Shift: fine · Ctrl/Shift-click or drag: select several · Right-click: interp, Bezier, delete · Esc: cancel'
+          : 'Drag: move · Shift: fine · Ctrl/Shift-click or drag: select several · Right-click: interp, Bezier, delete · Esc: cancel'}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={(e) => end(e, true)}
@@ -605,6 +874,12 @@ export default function LensKeyLanes({
         style={{ width, height: LANES_HEIGHT }}
         aria-hidden="true"
       />
+      {menu && (
+        <ContextMenu
+          x={menu.x} y={menu.y} items={menu.items} label={menu.label}
+          onClose={() => { setMenu(null); draw() }}
+        />
+      )}
     </div>
   )
 }

@@ -25,6 +25,104 @@ vi.mock('./components/CleanupProjectDialog.jsx', () => ({
   showCleanupProjectDialog: vi.fn(async () => cleanupDialogChoice.value),
 }))
 
+// Motion view persistence hooks: record the order against the project calls.
+const motionCalls = vi.hoisted(() => ({ log: [] }))
+vi.mock('./components/motionView/motionViewSession.js', async (importOriginal) => ({
+  ...(await importOriginal()),
+  beforeMotionViewProjectSwitch: vi.fn(async () => { motionCalls.log.push('beforeSwitch'); return false }),
+  cancelMotionViewProjectSwitch: vi.fn(() => { motionCalls.log.push('cancelSwitch') }),
+  flushMotionViewState: vi.fn(async () => { motionCalls.log.push('flush'); return false }),
+}))
+
+describe('XlethRoot Motion view persistence around project switch / save', () => {
+  function xlLogged(overrides = {}) {
+    const log = motionCalls.log
+    const rec = (name, value) => vi.fn(async (...args) => { log.push(`${name}(${args.join(',')})`); return value })
+    return {
+      project: {
+        hasProjectDir: vi.fn().mockResolvedValue(true),
+        save: rec('save', true),
+        saveAs: rec('saveAs', true),
+        openSaveAsDialog: vi.fn().mockResolvedValue(null),
+        openProjectDialog: vi.fn().mockResolvedValue(null),
+        getInfo: vi.fn().mockResolvedValue({ projectName: 'Next' }),
+        isDirty: vi.fn().mockResolvedValue(false),
+        isExportRunning: vi.fn().mockResolvedValue(false),
+        switchToNew: rec('switchToNew', { ok: true }),
+        switchToLoad: rec('switchToLoad', true),
+        takeLastPurge: vi.fn().mockResolvedValue(null),
+        validateMedia: vi.fn().mockResolvedValue([]),
+        ...overrides,
+      },
+      audio: { getMissingPlugins: vi.fn().mockResolvedValue(null) },
+    }
+  }
+
+  beforeEach(() => { motionCalls.log.length = 0 })
+
+  it('New Project: holds Motion view pushes right before switchToNew', async () => {
+    await handleXlethRootMenuAction('New Project', { xl: xlLogged(), showToast: vi.fn(), setProjectName: vi.fn() })
+    expect(motionCalls.log).toEqual(['beforeSwitch', 'switchToNew()'])
+  })
+
+  it('New Project failure (not ok, or a throw) cancels the hold', async () => {
+    const showToast = vi.fn()
+    await handleXlethRootMenuAction('New Project', {
+      xl: xlLogged({ switchToNew: vi.fn(async () => ({ ok: false, error: 'busy' })) }), showToast, setProjectName: vi.fn(),
+    })
+    expect(motionCalls.log).toEqual(['beforeSwitch', 'cancelSwitch'])
+    expect(showToast).toHaveBeenCalledWith('New Project failed: busy', 'error')
+    motionCalls.log.length = 0
+    await expect(handleXlethRootMenuAction('New Project', {
+      xl: xlLogged({ switchToNew: vi.fn(async () => { throw new Error('ipc down') }) }), showToast, setProjectName: vi.fn(),
+    })).rejects.toThrow('ipc down')
+    expect(motionCalls.log).toEqual(['beforeSwitch', 'cancelSwitch'])
+  })
+
+  it('Open Project: holds before switchToLoad(dir); a failed load or a throw cancels', async () => {
+    const openFilePicker = vi.fn().mockResolvedValue({ path: 'C:\\P\\Next' })
+    await handleXlethRootMenuAction('Open Project', { xl: xlLogged(), showToast: vi.fn(), setProjectName: vi.fn(), openFilePicker })
+    expect(motionCalls.log).toEqual(['beforeSwitch', 'switchToLoad(C:\\P\\Next)'])
+    motionCalls.log.length = 0
+    await handleXlethRootMenuAction('Open Project', {
+      xl: xlLogged({ switchToLoad: vi.fn(async () => false) }), showToast: vi.fn(), setProjectName: vi.fn(), openFilePicker,
+    })
+    expect(motionCalls.log).toEqual(['beforeSwitch', 'cancelSwitch'])
+    motionCalls.log.length = 0
+    await expect(handleXlethRootMenuAction('Open Project', {
+      xl: xlLogged({ switchToLoad: vi.fn(async () => { throw new Error('gone') }) }), showToast: vi.fn(), setProjectName: vi.fn(), openFilePicker,
+    })).rejects.toThrow('gone')
+    expect(motionCalls.log).toEqual(['beforeSwitch', 'cancelSwitch'])
+  })
+
+  it('Save and Save As flush the Motion view state first', async () => {
+    // Save goes through saveCurrentProject, which reads window.xleth.
+    const saveXl = xlLogged()
+    vi.stubGlobal('window', { xleth: saveXl })
+    try {
+      await handleXlethRootMenuAction('Save', { xl: saveXl, showToast: vi.fn(), setProjectName: vi.fn() })
+      expect(motionCalls.log).toEqual(['flush', 'save()'])
+      motionCalls.log.length = 0
+      // Save with no project folder yet goes through Save As: flush first too.
+      const firstXl = xlLogged({ hasProjectDir: vi.fn().mockResolvedValue(false) })
+      vi.stubGlobal('window', { xleth: firstXl })
+      await handleXlethRootMenuAction('Save', {
+        xl: firstXl, showToast: vi.fn(), setProjectName: vi.fn(),
+        openFilePicker: vi.fn().mockResolvedValue({ path: 'C:\\P\\First' }),
+      })
+      expect(motionCalls.log).toEqual(['flush', 'saveAs(C:\\P\\First,First)'])
+    } finally {
+      vi.unstubAllGlobals()
+    }
+    motionCalls.log.length = 0
+    await handleXlethRootMenuAction('Save As...', {
+      xl: xlLogged(), showToast: vi.fn(), setProjectName: vi.fn(),
+      openFilePicker: vi.fn().mockResolvedValue({ path: 'C:\\P\\Copy' }),
+    })
+    expect(motionCalls.log).toEqual(['flush', 'saveAs(C:\\P\\Copy,Copy)'])
+  })
+})
+
 describe('XlethRoot New Project reset', () => {
   let newBlankMock
   let showToast

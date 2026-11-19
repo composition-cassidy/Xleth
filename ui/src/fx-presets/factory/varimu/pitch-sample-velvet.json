@@ -1,0 +1,15 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "varimu",
+  "name": "Pitch Sample Velvet",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "input": 9,
+      "output": -5,
+      "time_constant": 3,
+      "mode": 0
+    }
+  }
+}

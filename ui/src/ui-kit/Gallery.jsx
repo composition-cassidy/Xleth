@@ -417,7 +417,7 @@ export default function Gallery() {
       </Section>
 
       <Section title="Mixer: 16 strips, mixed states (MOCK data, gallery only)">
-        <Spec caption="compact width (72 px, the default): selected 5, muted 3, soloed 6, visual-only 8, clipped meter 4, bus 2,3 to 5 and 8 to 10, sidechain 1 to 6, inserts by name (1 with one bypassed, 7 with +3 more, 9 on an FX graph). The dB numerals are printed once, in the gutter; each name is written up the side of its meter; pan and width are plain dials with no words and no numbers. No arm state: the engine has no record-arm." wide><MixerGalleryFixture /></Spec>
+        <Spec caption="compact width (72 px, the default): selected 1, muted 3, soloed 6, visual-only 8, clipped meter 4, bus 2,3 to 5 and 8 to 10; 1 is multi-wired to Master + 5 + 9 (white arrows, a level dial on each send) and sidechained to 6 and 7 (yellow arrows); click an arrow to route the selected strip there, Ctrl+click for there only, right-click to sidechain; inserts by name (1 with one bypassed, 7 with +3 more, 9 on an FX graph). The dB numerals are printed once, in the gutter; each name is written up the side of its meter; pan and width are plain dials with no words and no numbers. No arm state: the engine has no record-arm." wide><MixerGalleryFixture /></Spec>
         <Spec caption="normal width: the same tracks in 84 px strips" wide><MixerGalleryFixture stripMode="normal" /></Spec>
         <Spec caption="inserts closed (the default in the app): one summary cell per strip, and the gutter FX button opens every list" wide><MixerGalleryFixture insertsOpen={false} /></Spec>
       </Section>

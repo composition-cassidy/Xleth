@@ -1,0 +1,19 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "distortion",
+  "name": "Drum Crunch",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "mode": 2,
+      "drive": 5,
+      "tone": 9000,
+      "filter_pos": 1,
+      "mix": 50,
+      "symmetry": 100,
+      "bits": 16,
+      "downsample": 1
+    }
+  }
+}

@@ -1,0 +1,33 @@
+@layer kit {
+  /* A row of knobs and stacked selects, centred in its section. */
+  .row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+  }
+
+  /* Selects (and a toggle) stacked beside a knob. */
+  .selects {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: center;
+    gap: var(--space-1);
+    padding: 0 var(--space-1);
+  }
+
+  /* A switch at its own width, centred (a segmented control otherwise stretches). */
+  .centred {
+    display: flex;
+    justify-content: center;
+  }
+
+  /* Timing and direction switches side by side over the splice knobs. */
+  .switches {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-1);
+  }
+}

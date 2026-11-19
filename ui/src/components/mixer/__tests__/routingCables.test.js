@@ -48,6 +48,25 @@ describe('computeCables', () => {
   })
 })
 
+describe('computeCables: multi-wiring', () => {
+  it('draws one audio cable per send next to the primary output', () => {
+    const cables = computeCables({ orderedIds: [1, 2, 3], outputRoutes: { 1: -1, 2: -1, 3: -1 }, sends: { 1: [{ targetTrackId: 2 }, { targetTrackId: 3 }] } })
+    const fromKick = cables.filter((c) => c.from === 0 && c.kind === 'output')
+    expect(fromKick.map((c) => c.to)).toEqual([MASTER, 1, 2])
+    expect(fromKick.filter((c) => c.send)).toHaveLength(2)
+  })
+
+  it('draws one sidechain cable per source/target pair, track-level or effect-level', () => {
+    const route = (o) => ({ sourceTrackId: 1, targetTrackId: 2, enabled: true, status: 'ok', ...o })
+    const cables = computeCables({
+      orderedIds: [1, 2],
+      outputRoutes: {},
+      sidechainRoutes: [route({ routeId: 'trk', targetEffectInstanceId: '' }), route({ routeId: 'fx', targetEffectInstanceId: 'e1' })],
+    })
+    expect(cables.filter((c) => c.kind === 'sidechain')).toHaveLength(1)
+  })
+})
+
 describe('drawRouting', () => {
   const fakeCtx = () => {
     const calls = []
@@ -61,22 +80,25 @@ describe('drawRouting', () => {
     return ctx
   }
 
-  it('dashes and dims sidechain cables, draws output cables solid, and colours the dot by identity', () => {
+  it('draws audio routes in the audio ink and sidechain keys in the sidechain ink, dims routes away from the selection, and colours the dot by identity', () => {
     const cables = computeCables({
       orderedIds: [1, 2, 3],
       outputRoutes: { 1: -1, 2: -1, 3: -1 },
+      sends: { 2: [{ targetTrackId: 3, gain: 1 }] },
       sidechainRoutes: [{ routeId: 'r', sourceTrackId: 1, targetTrackId: 3, enabled: true, status: 'ok' }],
     })
     const ctx = fakeCtx()
     drawRouting(ctx, {
-      cables, stripW: 84, width: 252, orderedIds: [1, 2, 3],
-      colors: { audio: 'AUDIO', idle: 'IDLE' }, idColors: { 1: 'ID1', 2: 'ID2' },
+      cables, stripW: 84, width: 252, orderedIds: [1, 2, 3], selectedIndex: 0,
+      colors: { audio: 'AUDIO', sidechain: 'KEY', idle: 'IDLE' }, idColors: { 1: 'ID1', 2: 'ID2' },
     })
     const sets = ctx.calls.filter((c) => c[0].startsWith('set:'))
-    const dashes = ctx.calls.filter((c) => c[0] === 'setLineDash').map((c) => c[1].length)
-    expect(dashes).toContain(2) // the sidechain [3, 2]
-    expect(dashes).toContain(0) // solid output
-    expect(sets.filter((c) => c[0] === 'set:globalAlpha').map((c) => c[1])).toContain(0.5)
+    const strokes = sets.filter((c) => c[0] === 'set:strokeStyle').map((c) => c[1])
+    expect(strokes).toContain('AUDIO') // white audio routes (primary + send)
+    expect(strokes).toContain('KEY')   // yellow sidechain
+    const alphas = sets.filter((c) => c[0] === 'set:globalAlpha').map((c) => c[1])
+    expect(alphas).toContain(0.95) // the selected strip's routes
+    expect(alphas).toContain(0.4)  // the send 2 -> 3 does not touch the selection
     const fills = sets.filter((c) => c[0] === 'set:fillStyle').map((c) => c[1])
     expect(fills).toEqual(expect.arrayContaining(['ID1', 'ID2', 'IDLE'])) // track 3 has no colour: the idle token
   })

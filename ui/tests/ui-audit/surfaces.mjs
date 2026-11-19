@@ -80,7 +80,7 @@ export const FXGRAPH_NODE_TYPES = [
 export const SURFACES = [
   // Shell
   { id: 'shell', name: 'App shell (regions, resizers, panel frames)', kind: 'panel', open: 'Always mounted (windowing/AppShell)', files: ['windowing/AppShell.tsx', 'windowing/components/DockRegion.tsx', 'windowing/components/DockRegionResizer.tsx', 'windowing/components/PanelFrame.tsx', 'windowing/components/PanelTabStrip.tsx', 'windowing/components/ResizeHandles.tsx', 'windowing/components/SnapGhost.tsx', 'windowing/components/windowing.css'] },
-  { id: 'topbar', name: 'Top bar (menus, transport, panel toggles, window controls)', kind: 'panel', open: 'Always mounted', files: ['components/TitleBar.jsx', 'components/TransportBar.jsx', 'windowing/components/Titlebar.tsx', 'components/PreviewTimecode.jsx'] },
+  { id: 'topbar', name: 'Top bar (menus, transport, panel toggles, window controls)', kind: 'panel', open: 'Always mounted', files: ['components/TitleBar.jsx', 'components/TransportBar.jsx', 'windowing/components/Titlebar.tsx'] },
   { id: 'hintbar', name: 'Hint bar', kind: 'panel', open: 'Always mounted; hover a control', files: ['components/HintBar.jsx'] },
   { id: 'detaildock', name: 'Detail dock (tab strip, collapse)', kind: 'panel', open: 'Bottom region; click a tab / collapse chevron', files: ['windowing/components/DetailDock.tsx'] },
   // Panels from PANEL_CATALOG

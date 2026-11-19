@@ -1,4 +1,5 @@
 #include "commands/ImportMidiCommand.h"
+#include "commands/TempoTrimAnchor.h"
 
 #include "SampleBank.h"
 #include "audio/MixEngine.h"
@@ -45,6 +46,7 @@ void ImportMidiCommand::execute(Timeline& timeline)
     // 1. Apply tempo override BEFORE creating tracks.
     if (options_.tempoOverride) {
         timeline.setBPM(options_.sourceBPM);
+        xleth::tempotrim::applyTrimOffsets(timeline, preTrimOffsets_, preBpm_, options_.sourceBPM);
     }
 
     // 2. For each selected output track, either create a new pattern track
@@ -293,6 +295,7 @@ void ImportMidiCommand::undo(Timeline& timeline)
     // Restore BPM (always - execute may have written, and even if it didn't,
     // restoring to the captured value is a no-op).
     timeline.setBPM(preBpm_);
+    xleth::tempotrim::restoreTrimOffsets(timeline, preTrimOffsets_);
 
     // Restore any pre-existing region->sample mappings the snapshot captured.
     // execute() never mutates these (it only adds new region ids), but the
@@ -324,6 +327,7 @@ std::string ImportMidiCommand::describe() const
 void ImportMidiCommand::capturePreImportState(Timeline& timeline)
 {
     preBpm_ = timeline.getBPM();
+    preTrimOffsets_ = xleth::tempotrim::captureTrimOffsets(timeline);
 
     if (mixEngine_ != nullptr) {
         preRegionToSampleMap_ = mixEngine_->getRegionToSampleMapSnapshot();

@@ -57,7 +57,7 @@ export const DISCORD_TIER_LABELS = {
 
 // Container + VBR overshoot headroom. 12% buys safety without crushing quality.
 export const DISCORD_OVERHEAD_FACTOR   = 0.88
-export const DISCORD_AUDIO_BITRATE     = 256_000   // Opus 256 kbps
+export const DISCORD_AUDIO_BITRATE     = 256_000   // AAC 256 kbps
 export const DISCORD_WARN_VIDEO_BITRATE = 500_000  // yellow banner
 export const DISCORD_MIN_VIDEO_BITRATE  = 300_000  // red banner, block export
 
@@ -171,6 +171,16 @@ export function customResolutionPx(settings) {
   return { w: w || 1920, h: h || 1080 }
 }
 
+// Audio codecs the export can actually produce. Opus is deliberately absent:
+// this FFmpeg build has no libopus (see the Discord preset below). A Custom
+// preset saved while Opus was still offered resolves to AAC, so the summary
+// line and the request both say what will be in the file.
+export const EXPORT_AUDIO_CODECS = ['aac', 'flac', 'pcm_s16le']
+
+export function resolveAudioCodec(codec) {
+  return EXPORT_AUDIO_CODECS.includes(codec) ? codec : 'aac'
+}
+
 /**
  * Pure resolution of UI tab state → the config object the native bridge
  * (video_exportStart) consumes. Kept side-effect-free so the CRF-vs-bitrate
@@ -231,8 +241,14 @@ export function buildExportConfig({
       fitMode:      resolveFitMode({ outW: DISCORD_WIDTH, outH: DISCORD_HEIGHT, projectCanvas }),
       rateControl:  'bitrate',
       videoBitrate: bps,
-      audioCodec:   'opus',
-      sampleRate:   44100,
+      // AAC at 48 kHz, not Opus at 44.1 kHz. The bundled FFmpeg has no
+      // libopus, so "opus" used to land on FFmpeg's experimental built-in
+      // encoder, which drops most of the audio (the "Discord export crackles"
+      // bug) — and Opus cannot run at 44.1 kHz at all, so the request never
+      // matched what was encoded. H.264 + AAC in MP4 is also the combination
+      // every Discord client plays inline.
+      audioCodec:   'aac',
+      sampleRate:   48000,
       audioBitrate: 256,
       useSourceMedia: true,
     }
@@ -256,7 +272,7 @@ export function buildExportConfig({
       isCustom: true, customFitMode: customSettings.fitMode,
     }),
     rateControl:  customSettings.useCrf ? 'crf' : 'bitrate',
-    audioCodec:   customSettings.audioCodec,
+    audioCodec:   resolveAudioCodec(customSettings.audioCodec),
     sampleRate:   Number(customSettings.sampleRate),
     audioBitrate: Number(customSettings.audioBitrate),
     useSourceMedia: true,

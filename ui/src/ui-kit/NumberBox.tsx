@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
-import { hintAttrs, VALUE_HINT_MODS } from './hint';
+import { hintAttrs, valueHintMods } from './hint';
 import { MOD_HINT_MODS, modAttrs, modRangeNorm, useModRing, type ControlMod } from './modRing';
 import styles from './NumberBox.module.css';
 import { useValueDrag } from './useValueDrag';
@@ -37,6 +37,7 @@ export default function NumberBox(props: NumberBoxProps) {
     label, value, defaultValue, disabled = false, bipolar = false, centre, width = 72, hideLabel = false, caption, size = 'sm',
     pxPerRange = DEFAULT_NUMBERBOX_PX, hint, hintMods, className, onChange, onCommit, onCancel,
     min, max, scale, unit, formatOptions, format, parse, codec, step, stepNorm, quantize, mod = null, fill = true,
+    wheel = true,
     ...rest
   } = props;
   const resolved = useMemo(
@@ -55,6 +56,7 @@ export default function NumberBox(props: NumberBoxProps) {
     disabled,
     format: resolved.format,
     parse: resolved.parse,
+    wheel,
     onChange,
     onCommit,
     onCancel,
@@ -114,7 +116,7 @@ export default function NumberBox(props: NumberBoxProps) {
       {...modAttrs(mod)}
       {...hintAttrs({
         hint: routed && mod?.tooltip ? mod.tooltip : hint,
-        hintMods: routed ? MOD_HINT_MODS : (hintMods ?? VALUE_HINT_MODS),
+        hintMods: routed ? MOD_HINT_MODS : (hintMods ?? valueHintMods(wheel)),
       })}
       {...handlers}
     >

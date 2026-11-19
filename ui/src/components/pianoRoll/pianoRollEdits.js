@@ -351,13 +351,15 @@ export function toEngineNote(n) {
   // REPLACES the pattern's note list, so a note sent without it loses it. Opaque
   // here: the engine owns the format. Absent = Follow.
   if (n.lensOverride) out.lensOverride = n.lensOverride
+  // Voice pin (Clones, docs/XLETH_CLONE_SPEC.md): same reason. Absent / -1 = Auto.
+  if (Number.isInteger(n.voicePin) && n.voicePin >= 0) out.voicePin = n.voicePin
   return out
 }
 
 /**
  * A note as a NEW note for another pattern (Make Unique Copy): everything the
- * engine keeps, Lens override included, minus the id (the target pattern
- * assigns one).
+ * engine keeps, Lens override and voice pin included, minus the id (the target
+ * pattern assigns one).
  */
 export function toNewNoteCopy(n) {
   const { id, ...rest } = toEngineNote(n)
@@ -399,7 +401,8 @@ export function sameNotes(a, b) {
       || x.pitch !== y.pitch || (x.velocity ?? 1) !== (y.velocity ?? 1) || !!y._select
       // By reference: edits spread a note and keep its override object, so
       // only a real override change makes a new one.
-      || (x.lensOverride ?? null) !== (y.lensOverride ?? null)) return false
+      || (x.lensOverride ?? null) !== (y.lensOverride ?? null)
+      || (x.voicePin ?? -1) !== (y.voicePin ?? -1)) return false
   }
   return true
 }

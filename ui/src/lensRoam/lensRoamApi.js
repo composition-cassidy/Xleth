@@ -25,7 +25,8 @@ const TAG = '[LensBridge]'
 // P11 adds setTrackSweepKeys.)
 
 export const LENS_FIELDS = ['fit', 'centerX', 'centerY', 'zoom', 'rotationDeg', 'flip']
-export const ROAM_FIELDS = ['offsetX', 'offsetY', 'scale', 'rotationDeg', 'bounds', 'layer']
+export const ROAM_FIELDS = ['offsetX', 'offsetY', 'scale', 'rotationDeg', 'bounds', 'layer',
+  'scaleY', 'scaleLinked', 'cropLeft', 'cropRight', 'cropTop', 'cropBottom']
 
 function timelineFn(name) {
   const fn = window.xleth?.timeline?.[name]
@@ -113,6 +114,47 @@ export function setTrackRoamKeys(trackId, keys) {
  */
 export function setTrackSweepKeys(trackId, keys) {
   return call('setTrackSweepKeys', `track=${trackId} ${keys?.length ?? 0} keys`, [trackId, keys], { write: true })
+}
+
+/**
+ * Replace a track's video effect parameter keys (the whole list) as ONE undo step.
+ * keys: [{ uid, param, pos, value, interp?, bez? }] (uid = a chain effect's uid, param =
+ * its params[] index, pos = timeline ticks). Resolves to { trackId, changed, fxKeys }.
+ */
+export function setTrackFxKeys(trackId, keys) {
+  return call('setTrackFxKeys', `track=${trackId} ${keys?.length ?? 0} keys`, [trackId, keys], { write: true })
+}
+
+// ── Parent and Masks (docs/XLETH_MOTION_VIEW_DESIGN.md 2.1, 2.2, 3.1) ───────────
+
+/**
+ * Make `parentTrackId` the parent of a track (-1 = none) as ONE undo step. The
+ * child's cell then follows the parent's Roam (offset, scale, rotation).
+ * opts (strict, optional): { keepOnScreen?: bool, tick?: number }. keepOnScreen
+ * adjusts the child's UNKEYED Roam base so it stays where it is on screen at
+ * `tick` (keys are never rewritten). Resolves to
+ *   { trackId, changed, parentTrackId, roam, keys, compensated: [], uncompensated: [],
+ *     rejected?: 'unknown_track'|'self'|'cycle'|'too_deep' }
+ * and, when something changed, fires 'lens-roam-changed' with it plus
+ * 'timeline-tracks-changed' (the track list carries parentTrackId).
+ */
+export async function setTrackParent(trackId, parentTrackId, opts) {
+  const o = {}
+  if (typeof opts?.keepOnScreen === 'boolean') o.keepOnScreen = opts.keepOnScreen
+  if (Number.isFinite(opts?.tick)) o.tick = opts.tick
+  const args = Object.keys(o).length ? [trackId, parentTrackId, o] : [trackId, parentTrackId]
+  const res = await call('setTrackParent', `track=${trackId} parent=${parentTrackId} ${show(o)}`, args, { write: true })
+  if (res?.changed) timelineEvents.dispatchEvent(new Event('timeline-tracks-changed'))
+  return res
+}
+
+/**
+ * Replace a track's whole Mask list (wire format: motion/maskModel.js) as ONE
+ * undo step. The engine parses strictly (unknown field, wrong type, non-finite,
+ * over a cap = rejected). Resolves to { trackId, changed, masks }.
+ */
+export function setTrackMasks(trackId, masks) {
+  return call('setTrackMasks', `track=${trackId} ${masks?.length ?? 0} masks`, [trackId, masks], { write: true })
 }
 
 // ── Per-note overrides (P8) ──────────────────────────────────────────────────

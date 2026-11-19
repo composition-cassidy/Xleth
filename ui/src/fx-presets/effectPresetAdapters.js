@@ -122,6 +122,8 @@ function normalisePoints(points) {
   return pts.length >= 2 ? pts : null
 }
 
+const WS_CUSTOM_SETTLE_MS = 60
+
 const waveshaperAdapter = {
   async captureState(target) {
     const base = await defaultAdapter.captureState(target)
@@ -132,12 +134,25 @@ const waveshaperAdapter = {
     return { ...base, points: normalisePoints(pts) }
   },
 
+  // The shape never goes through the generic parameter write. A named shape is set with
+  // wsSetPreset, which also moves the control points to match it (setEffectParameter would
+  // change the audio and leave the drawn curve stale). A custom curve is set with
+  // wsSetCurvePoints, which flips the shape to Custom itself; if the instance was on a
+  // named shape the audio thread answers that flip by swapping in a straight-line table,
+  // and only wsSetPreset(0) rebuilds the spline, so that call follows a few blocks later.
   async applyState(target, state) {
-    await defaultAdapter.applyState(target, state)
     const a = audio()
     if (!a || !target || !state) return
+    const { preset, ...scalars } = (state.params && typeof state.params === 'object') ? state.params : {}
+    await defaultAdapter.applyState(target, { params: scalars })
     const pts = normalisePoints(state.points)
-    if (pts) a.wsSetCurvePoints?.(target.trackId, target.nodeId, JSON.stringify(pts))
+    if (pts) {
+      await a.wsSetCurvePoints?.(target.trackId, target.nodeId, JSON.stringify(pts))
+      await new Promise(resolve => setTimeout(resolve, WS_CUSTOM_SETTLE_MS))
+      await a.wsSetPreset?.(target.trackId, target.nodeId, 0)
+    } else if (Number.isFinite(preset)) {
+      await a.wsSetPreset?.(target.trackId, target.nodeId, Math.round(preset))
+    }
   },
 }
 
@@ -152,6 +167,13 @@ function pickNumericOrBool(obj) {
     else if (typeof v === 'boolean') out[k] = v
   }
   return out
+}
+
+// The band / slot setters take numbers only: a JS boolean is rejected by the engine and
+// the field is never written. Captured state carries `enabled` / `slides` as booleans
+// (that is how the getters report them), so every write goes through this.
+function asEngineNumber(value) {
+  return typeof value === 'boolean' ? (value ? 1 : 0) : value
 }
 
 function normaliseEqBand(band) {
@@ -189,12 +211,12 @@ const eqAdapter = {
 
     for (let i = 0; i < bands.length; i++) {
       for (const [name, value] of Object.entries(bands[i])) {
-        a.eqSetBandParam?.(target.trackId, target.nodeId, i, name, value)
+        a.eqSetBandParam?.(target.trackId, target.nodeId, i, name, asEngineNumber(value))
       }
     }
     if (state.global && typeof state.global === 'object') {
       for (const [name, value] of Object.entries(state.global)) {
-        a.eqSetGlobalParam?.(target.trackId, target.nodeId, name, typeof value === 'boolean' ? (value ? 1 : 0) : value)
+        a.eqSetGlobalParam?.(target.trackId, target.nodeId, name, asEngineNumber(value))
       }
     }
   },
@@ -202,10 +224,36 @@ const eqAdapter = {
 
 // ── Filter adapter — dynamic slot list, each with a fixed-size mod-lane array ─
 // Slots have no fixed count either (addSlot/removeSlot up to MAX_SLOTS). Each
-// slot's read-only telemetry fields (head/eff_cutoff/eff_q/dyn_env/dyn_accent)
-// are dropped on capture — they are computed by the engine, not settable params.
+// slot's read-only telemetry fields (the eff_* effective values and dyn_env /
+// dyn_accent) are dropped on capture — they are computed by the engine, not
+// settable params. `head` (formant head size) is a real parameter and is kept.
 
-const FILTER_SLOT_READONLY = new Set(['index', 'mods', 'head', 'eff_cutoff', 'eff_q', 'dyn_env', 'dyn_accent'])
+const FILTER_SLOT_READONLY = new Set([
+  'index', 'mods', 'eff_cutoff', 'eff_q', 'eff_gain', 'eff_morph', 'eff_drive', 'eff_mix', 'eff_valid',
+  'dyn_env', 'dyn_accent',
+])
+
+// Lane telemetry the getter reports alongside the settable fields.
+const FILTER_LANE_READONLY = new Set(['index', 'env', 'accent', 'src'])
+
+function normaliseFilterLane(lane) {
+  const out = {}
+  for (const [k, v] of Object.entries(lane || {})) {
+    if (FILTER_LANE_READONLY.has(k)) continue
+    if (typeof v === 'number' && Number.isFinite(v)) out[k] = v
+    else if (typeof v === 'boolean') out[k] = v
+  }
+  return out
+}
+
+// `kind` goes first: taking a lane out of Off makes the engine reset that lane's other
+// fields to the new kind's defaults, so anything written before it would be wiped.
+// (Captured state has its keys sorted by the engine's JSON writer, which puts `kind`
+// in the middle.)
+function laneWritesInOrder(lane) {
+  const entries = Object.entries(lane || {})
+  return [...entries.filter(([name]) => name === 'kind'), ...entries.filter(([name]) => name !== 'kind')]
+}
 
 function normaliseFilterSlot(slot) {
   const params = {}
@@ -214,9 +262,7 @@ function normaliseFilterSlot(slot) {
     if (typeof v === 'number' && Number.isFinite(v)) params[k] = v
     else if (typeof v === 'boolean') params[k] = v
   }
-  const mods = Array.isArray(slot?.mods)
-    ? slot.mods.map(m => { const { index, ...rest } = m || {}; return pickNumericOrBool(rest) })
-    : []
+  const mods = Array.isArray(slot?.mods) ? slot.mods.map(normaliseFilterLane) : []
   return { params, mods }
 }
 
@@ -247,11 +293,11 @@ const filterAdapter = {
     for (let i = 0; i < slots.length; i++) {
       const { params, mods } = slots[i] || {}
       for (const [name, value] of Object.entries(params || {})) {
-        a.filterSetSlotParam?.(target.trackId, target.nodeId, i, name, value)
+        a.filterSetSlotParam?.(target.trackId, target.nodeId, i, name, asEngineNumber(value))
       }
       for (let lane = 0; lane < (mods || []).length; lane++) {
-        for (const [name, value] of Object.entries(mods[lane] || {})) {
-          a.filterSetSlotParam?.(target.trackId, target.nodeId, i, `m${lane}_${name}`, value)
+        for (const [name, value] of laneWritesInOrder(mods[lane])) {
+          a.filterSetSlotParam?.(target.trackId, target.nodeId, i, `m${lane}_${name}`, asEngineNumber(value))
         }
       }
     }
@@ -365,10 +411,39 @@ const feddaAdapter = {
   },
 }
 
+// ── Szkrezh adapter — scalar params minus the Keys source track ─────────────
+//
+// `midi_track` is a track id in THIS project: carried into another project by a preset it would
+// point at an unrelated track (or none). A preset never carries it and never sets it, so loading
+// one keeps the Keys source the user picked.
+
+const SZKREZH_INSTANCE_PARAMS = new Set(['midi_track'])
+
+function withoutSzkrezhInstanceParams(params) {
+  const out = {}
+  for (const [id, value] of Object.entries(params || {})) {
+    if (!SZKREZH_INSTANCE_PARAMS.has(id)) out[id] = value
+  }
+  return out
+}
+
+const szkrezhAdapter = {
+  async captureState(target) {
+    const state = await defaultAdapter.captureState(target)
+    return { params: withoutSzkrezhInstanceParams(state.params) }
+  },
+
+  async applyState(target, state) {
+    if (!state || typeof state.params !== 'object') return
+    await defaultAdapter.applyState(target, { ...state, params: withoutSzkrezhInstanceParams(state.params) })
+  },
+}
+
 // ── Registry ──────────────────────────────────────────────────────────────────
 
 const ADAPTERS = {
   fedda: feddaAdapter,
+  szkrezh: szkrezhAdapter,
   apex: apexAdapter,
   waveshaper: waveshaperAdapter,
   xletheq: eqAdapter,
@@ -380,4 +455,7 @@ export function getPresetAdapter(effectType) {
   return ADAPTERS[effectType] || defaultAdapter
 }
 
-export { defaultAdapter, apexAdapter, xformAdapter, feddaAdapter }
+export {
+  defaultAdapter, apexAdapter, xformAdapter, feddaAdapter, szkrezhAdapter,
+  waveshaperAdapter, eqAdapter, filterAdapter,
+}

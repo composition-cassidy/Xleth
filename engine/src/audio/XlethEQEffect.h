@@ -1,6 +1,7 @@
 #pragma once
 
 #include "audio/XlethEffectBase.h"
+#include "dsp/EqSlopeDesign.h"
 #include "dsp/ResonanceCore.h"
 #include <juce_dsp/juce_dsp.h>
 
@@ -18,6 +19,8 @@
 #include <utility>
 #include <vector>
 
+namespace eqslope = xleth::dsp::eqslope;
+
 // ─── XlethParametricEQ ─────────────────────────────────────────────────────
 // Fully parametric equaliser with up to 16 bands.  Each band is a biquad
 // filter (DFII Transposed) with Bristow-Johnson coefficients.
@@ -31,6 +34,9 @@
 //                                HighPass=4, Notch=5, Tilt=6)
 //   b{i}_enabled 0/1 boolean
 //   b{i}_channel 0–4 discrete  (Stereo=0, Left=1, Right=2, Mid=3, Side=4)
+//   b{i}_slope   0–8 discrete  LowPass / HighPass steepness (6, 12 (default),
+//                              18, 24, 36, 48, 72, 96 dB/oct, Brickwall); see
+//                              dsp/EqSlopeDesign.h. Ignored by every other type.
 //
 // Coefficients are recomputed once per audio block from smoothed values.
 // 0 bands active by default; add/remove dynamically via addBand()/removeBand().
@@ -161,6 +167,11 @@ public:
             // the restored tree), so insert the defaults explicitly.
             insertMissingParam(*xml, "spectral_engine", static_cast<float>(kSpectralEngineLegacy));
             insertMissingParam(*xml, "spectral_quality", static_cast<float>(kDefaultSpectralQuality));
+            // Same for the per-band slope: a state saved before slopes existed
+            // is every band at the 12 dB/oct filter it always had.
+            for (int i = 0; i < kMaxBands; ++i)
+                insertMissingParam(*xml, ("b" + std::to_string(i) + "_slope").c_str(),
+                                   static_cast<float>(eqslope::kDefaultSlope));
 
             {
                 // One edit: the audio thread sees the whole restored state or
@@ -215,6 +226,7 @@ public:
             setParamDirect(count, "type",    0.0f);
             setParamDirect(count, "enabled", 1.0f);
             setParamDirect(count, "channel", 0.0f);   // 0 = Stereo
+            setParamDirect(count, "slope",   static_cast<float>(eqslope::kDefaultSlope));
             setParamDirect(count, "mode",        0.0f);
             setParamDirect(count, "dyn_thresh", -20.0f);
             setParamDirect(count, "dyn_ratio",   4.0f);
@@ -304,6 +316,7 @@ public:
     {
         float freq = 1000.0f, gain = 0.0f, q = 0.707f, type = 0.0f;
         float enabled = 1.0f, channel = 0.0f, mode = 0.0f;
+        float slope = static_cast<float>(eqslope::kDefaultSlope);
         float dynThresh = -20.0f, dynRatio = 4.0f, dynAttack = 10.0f, dynRelease = 100.0f, dynRange = 12.0f;
         float specSens = 0.5f, specSel = 5.0f, specAttack = 10.0f, specRelease = 100.0f;
     };
@@ -421,7 +434,7 @@ private:
 
         // Snapshot current APVTS parameters and compute coefficients locally
         // so we don't depend on processEffect having run recently.
-        struct LocalCoeffs { double b0, b1, b2, a1, a2; bool enabled; int channel; };
+        struct LocalCoeffs { eqslope::Cascade cascade; bool enabled; int channel; };
         LocalCoeffs lc[kMaxBands]{};
 
         for (int b = 0; b < count; ++b)
@@ -473,11 +486,12 @@ private:
             // as the band's maximum-depth profile — the shape suppression
             // follows, reached by bins fully over threshold.
 
-            // Compute biquad coefficients (same formulas as computeCoefficients)
-            BandState tmp;
-            computeCoefficients(tmp, static_cast<BandType>(type), freq, gainDb, q, sr);
-            lc[b].b0 = tmp.b0;  lc[b].b1 = tmp.b1;  lc[b].b2 = tmp.b2;
-            lc[b].a1 = tmp.a1;  lc[b].a2 = tmp.a2;
+            // Compute the band's filter (same formulas as the audio path): one
+            // biquad, or the slope's cascade for a steep Low / High Pass.
+            const int slope = bs.slopePtr
+                ? eqslope::clampSlope(bs.slopePtr->load(std::memory_order_relaxed))
+                : eqslope::kDefaultSlope;
+            computeBandCascade(lc[b].cascade, static_cast<BandType>(type), freq, gainDb, q, slope, sr);
         }
 
         for (int i = 0; i < n; ++i)
@@ -498,15 +512,20 @@ private:
             {
                 if (!lc[b].enabled) continue;
 
-                // H(e^jw) = (b0 + b1*e^-jw + b2*e^-j2w) / (1 + a1*e^-jw + a2*e^-j2w)
-                const Cplx num(lc[b].b0 + lc[b].b1 * cosw + lc[b].b2 * cos2w,
-                                        - lc[b].b1 * sinw - lc[b].b2 * sin2w);
-                const Cplx den(1.0 + lc[b].a1 * cosw + lc[b].a2 * cos2w,
-                                    - lc[b].a1 * sinw - lc[b].a2 * sin2w);
+                // H(e^jw) = (b0 + b1*e^-jw + b2*e^-j2w) / (1 + a1*e^-jw + a2*e^-j2w),
+                // one factor per section of the band's cascade.
+                for (int sct = 0; sct < lc[b].cascade.n; ++sct)
+                {
+                    const auto& c = lc[b].cascade.s[sct];
+                    const Cplx num(c.b0 + c.b1 * cosw + c.b2 * cos2w,
+                                        - c.b1 * sinw - c.b2 * sin2w);
+                    const Cplx den(1.0 + c.a1 * cosw + c.a2 * cos2w,
+                                        - c.a1 * sinw - c.a2 * sin2w);
 
-                const double denMagSq = den.real() * den.real() + den.imag() * den.imag();
-                if (denMagSq > 1e-30)
-                    group[lc[b].channel] *= num / den;
+                    const double denMagSq = den.real() * den.real() + den.imag() * den.imag();
+                    if (denMagSq > 1e-30)
+                        group[lc[b].channel] *= num / den;
+                }
             }
 
             // -300 dB floor for exact nulls (HP/LP stopband, notch centre).
@@ -564,6 +583,7 @@ public:
             b["type"]    = static_cast<int>(readParam(i, "type"));
             b["enabled"] = readParam(i, "enabled") > 0.5f;
             b["channel"] = static_cast<int>(readParam(i, "channel"));
+            b["slope"]   = eqslope::clampSlope(readParam(i, "slope"));
             b["mode"]        = static_cast<int>(readParam(i, "mode"));
             b["dyn_thresh"]  = readParam(i, "dyn_thresh");
             b["dyn_ratio"]   = readParam(i, "dyn_ratio");
@@ -677,6 +697,13 @@ public:
     {
         sampleRate_.store(sampleRate, std::memory_order_relaxed);
 
+        // The Brickwall slope builds its Chebyshev prototype once (a function-local
+        // static): do it here so the audio thread never pays for, or waits on, that.
+        {
+            eqslope::Cascade warm;
+            eqslope::design(false, 1000.0, 0.707, eqslope::kBrickwallSlope, sampleRate, warm);
+        }
+
         // Resolve APVTS raw param pointers
         for (int i = 0; i < kMaxBands; ++i)
         {
@@ -687,6 +714,7 @@ public:
             bs.typePtr    = apvts_.getRawParameterValue(paramId(i, "type"));
             bs.enabledPtr = apvts_.getRawParameterValue(paramId(i, "enabled"));
             bs.channelPtr = apvts_.getRawParameterValue(paramId(i, "channel"));
+            bs.slopePtr   = apvts_.getRawParameterValue(paramId(i, "slope"));
 
             // Advanced mode pointers
             bs.modePtr       = apvts_.getRawParameterValue(paramId(i, "mode"));
@@ -1122,8 +1150,23 @@ public:
                 smoothGain = smoothGain + bs.dynActivation.load(std::memory_order_relaxed) * smoothRange;
 
             if (bs.enabled)
-                computeCoefficients(bs, static_cast<BandType>(type),
-                                    smoothFreq, smoothGain, smoothQ, effectiveSR);
+            {
+                const int slope = eqslope::clampSlope(bp.slope);
+                const bool cascade = isSlopeCascade(static_cast<BandType>(type), slope);
+
+                // A change of cascade (entering / leaving one, or a different
+                // slope) starts it from zero state; the single-biquad path keeps
+                // its own state exactly as it always did.
+                if (cascade && (bs.cascadeSlope != slope))
+                    bs.clearCascadeState();
+                else if (!cascade && bs.cascadeSlope >= 0)
+                    for (int i = 0; i < kNumRoutingSlots; ++i)
+                        bs.z1[i] = bs.z2[i] = 0.0f;
+                bs.cascadeSlope = cascade ? slope : -1;
+
+                computeBandFilter(bs, static_cast<BandType>(type),
+                                  smoothFreq, smoothGain, smoothQ, slope, effectiveSR);
+            }
         }
 
         // ── Pre-EQ spectrum tap (before any filtering) ───────────────────────
@@ -1534,7 +1577,8 @@ private:
             o.enabled     = rd(bs.enabledPtr, 1.0f);
             o.channel     = rd(bs.channelPtr, 0.0f);
             o.mode        = rd(bs.modePtr, 0.0f);
-            o.dynThresh   = rd(bs.dynThreshPtr, -20.0f);
+            o.slope       = rd(bs.slopePtr, static_cast<float>(eqslope::kDefaultSlope));
+            o.dynThresh  = rd(bs.dynThreshPtr, -20.0f);
             o.dynRatio    = rd(bs.dynRatioPtr, 4.0f);
             o.dynAttack   = rd(bs.dynAttackPtr, 10.0f);
             o.dynRelease  = rd(bs.dynReleasePtr, 100.0f);
@@ -1841,14 +1885,17 @@ private:
             const float f = std::max(bs.freqSmooth.getCurrentValue(), 20.0f);
             const float q = std::max(bs.qSmooth.getCurrentValue(), 0.1f);
             const float g = bs.gainSmooth.getCurrentValue();
+            const int shape = regionShapeKey(static_cast<BandType>(static_cast<int>(P.band[b].type)),
+                                             eqslope::clampSlope(P.band[b].slope));
             auto& key = coreRegionKey_[b];
             const bool wasRegion = (coreRegionMask_ & (1u << b)) != 0u;
             if (!wasRegion
+                || key.shape != shape
                 || std::abs(f - key.freq) > key.freq * 0.001f
                 || std::abs(q - key.q) > 0.001f
                 || std::abs(g - key.gain) > 0.01f)
             {
-                key.freq = f; key.q = q; key.gain = g;
+                key.freq = f; key.q = q; key.gain = g; key.shape = shape;
                 changed = true;
             }
         }
@@ -1888,19 +1935,36 @@ private:
 
         // Per region: its bell's coefficients (computeCoefficients is pure
         // arithmetic + std::cos / sin / pow on scalars; no allocation).
-        struct Bell { float b0, b1, b2, a1, a2, shapeDb, scale; bool on; };
+        // A Low / High Pass region (cut) is its slope's cascade instead: see
+        // updateSpectralWeights for the shape.
+        struct Bell { float b0, b1, b2, a1, a2, shapeDb, scale; bool on; bool cut; eqslope::Cascade casc; };
         Bell bells[kMaxBands];
         for (int b = 0; b < kMaxBands; ++b)
         {
             bells[b].on = false;
+            bells[b].cut = false;
             if (b >= count || (mask & (1u << b)) == 0u || depthDb <= 0.0f) continue;
             const auto& key = coreRegionKey_[b];
             if (key.gain >= 0.0f) continue;   // upward / inert: not expressible by the core (cuts only)
             const float shapeDb = std::max(std::abs(key.gain), 1.0f);
+            const double sr = sampleRate_.load(std::memory_order_relaxed);
+            const auto type = static_cast<BandType>(static_cast<int>(P.band[b].type));
+            if (isCutType(type))
+            {
+                bells[b].cut = true;
+                bells[b].shapeDb = shapeDb;
+                bells[b].scale = std::min(-key.gain, kCoreMaxDepthDb) / depthDb;
+                bells[b].on = true;
+                computeBandCascade(bells[b].casc, type, key.freq, 0.0f, key.q,
+                                   eqslope::clampSlope(P.band[b].slope), sr);
+                continue;
+            }
             BandState tmp;
-            computeCoefficients(tmp, BandType::Bell, key.freq, shapeDb, key.q, sampleRate_.load(std::memory_order_relaxed));
-            bells[b] = { tmp.b0, tmp.b1, tmp.b2, tmp.a1, tmp.a2, shapeDb,
-                         std::min(-key.gain, kCoreMaxDepthDb) / depthDb, true };
+            computeCoefficients(tmp, BandType::Bell, key.freq, shapeDb, key.q, sr);
+            bells[b].b0 = tmp.b0; bells[b].b1 = tmp.b1; bells[b].b2 = tmp.b2;
+            bells[b].a1 = tmp.a1; bells[b].a2 = tmp.a2; bells[b].shapeDb = shapeDb;
+            bells[b].scale = std::min(-key.gain, kCoreMaxDepthDb) / depthDb;
+            bells[b].on = true;
         }
 
         const int bands = std::min(core_.numBands(), xleth::dsp::resonance::kGridBands);
@@ -1914,6 +1978,12 @@ private:
             {
                 if (!bells[b].on) continue;
                 const Bell& h = bells[b];
+                if (h.cut)
+                {
+                    const float wc = cutRegionShape(h.casc, cw, sw, c2, s2, h.shapeDb) * h.scale;
+                    if (wc > w) { w = wc; owner = b; }
+                    continue;
+                }
                 const float nRe = h.b0 + h.b1 * cw + h.b2 * c2;
                 const float nIm =      - h.b1 * sw - h.b2 * s2;
                 const float dRe = 1.0f + h.a1 * cw + h.a2 * c2;
@@ -2103,6 +2173,7 @@ private:
         std::atomic<float>* typePtr    = nullptr;
         std::atomic<float>* enabledPtr = nullptr;
         std::atomic<float>* channelPtr = nullptr;
+        std::atomic<float>* slopePtr   = nullptr;
 
         // Smoothers (audio thread only)
         juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> freqSmooth;
@@ -2119,6 +2190,24 @@ private:
         // A band only ever runs in one routing at a time, but keeping all four
         // slots means switching routing mid-stream never drags foreign state in.
         float z1[kNumRoutingSlots]{}, z2[kNumRoutingSlots]{};
+
+        // Steep Low / High Pass slopes (18 dB/oct and up, Brickwall): a cascade of
+        // up to kMaxSections biquads in DOUBLE precision (high-Q poles at low
+        // cutoffs do not survive float state). nSec == 0 means the band is the
+        // single float biquad above (every other band, and the 6 / 12 dB slopes),
+        // untouched by this. Same slot layout as z1/z2.
+        int nSec = 0;
+        eqslope::Biquad sec[eqslope::kMaxSections];
+        double zs1[kNumRoutingSlots][eqslope::kMaxSections]{};
+        double zs2[kNumRoutingSlots][eqslope::kMaxSections]{};
+        int cascadeSlope = -1;           // slope the cascade state belongs to, -1 = not a cascade
+
+        void clearCascadeState()
+        {
+            for (int i = 0; i < kNumRoutingSlots; ++i)
+                for (int k = 0; k < eqslope::kMaxSections; ++k)
+                    zs1[i][k] = zs2[i][k] = 0.0;
+        }
 
         bool enabled = true;
 
@@ -2173,6 +2262,7 @@ private:
         float specWeightFreq  = -1.0f;   // < 0 = never built
         float specWeightQ     = 0.0f;
         float specWeightDepth = 0.0f;
+        int   specWeightShape = -1;      // shape the weight was built for (see regionShapeKey)
 
         void clearState()
         {
@@ -2181,6 +2271,7 @@ private:
                 z1[i] = z2[i] = 0.0f;
                 sc_z1[i] = sc_z2[i] = 0.0f;
             }
+            clearCascadeState();
             dynActivation.store(0.0f, std::memory_order_relaxed);
             std::fill(specBinEnv.begin(), specBinEnv.end(), 1.0f);
             specWeightFreq = -1.0f;   // force a weight rebuild
@@ -2291,7 +2382,7 @@ private:
     // [EQCore] regions (audio thread): the cached shape per band, the region
     // set, the core's depth and the shared detector settings of the dominant
     // region (Legacy defaults until a region exists).
-    struct RegionKey { float freq = 1000.0f, q = 0.707f, gain = 0.0f; };
+    struct RegionKey { float freq = 1000.0f, q = 0.707f, gain = 0.0f; int shape = 0; };
     RegionKey coreRegionKey_[kMaxBands];
     std::uint32_t coreRegionMask_ = 0;
     float coreDepthDb_ = 0.0f;
@@ -2374,9 +2465,30 @@ private:
         return channel;
     }
 
+    // One sample through a steep slope's cascade (double DFII-Transposed
+    // sections in series), slot `slot` of the band's cascade state.
+    static inline float cascadeTick(BandState& bs, int slot, float x)
+    {
+        double v = static_cast<double>(x);
+        double* z1 = bs.zs1[slot];
+        double* z2 = bs.zs2[slot];
+        for (int k = 0; k < bs.nSec; ++k)
+        {
+            const auto& c = bs.sec[k];
+            const double y = c.b0 * v + z1[k];
+            z1[k] = c.b1 * v - c.a1 * y + z2[k];
+            z2[k] = c.b2 * v - c.a2 * y;
+            v = y;
+        }
+        return static_cast<float>(v);
+    }
+
     // One DFII-Transposed biquad step on slot `slot` of the band's state.
     static inline float biquadTick(BandState& bs, int slot, float x)
     {
+        if (bs.nSec != 0)
+            return cascadeTick(bs, slot, x);
+
         const float y  = bs.b0 * x + bs.z1[slot];
         bs.z1[slot] = bs.b1 * x - bs.a1 * y + bs.z2[slot];
         bs.z2[slot] = bs.b2 * x - bs.a2 * y;
@@ -2467,6 +2579,85 @@ private:
         bs.sc_b2 = static_cast<float>(-alpha * inv);
         bs.sc_a1 = static_cast<float>(-2.0 * cosw * inv);
         bs.sc_a2 = static_cast<float>((1.0 - alpha) * inv);
+    }
+
+    // ── Low / High Pass slopes (see dsp/EqSlopeDesign.h) ────────────────────
+
+    static bool isCutType(BandType type) noexcept
+    {
+        return type == BandType::LowPass || type == BandType::HighPass;
+    }
+
+    // The slope needs the multi-section cascade (18 dB/oct and up, Brickwall).
+    static bool isSlopeCascade(BandType type, int slope) noexcept
+    {
+        return isCutType(type) && eqslope::isCascadeSlope(slope);
+    }
+
+    // A band's filter for the audio path: the single float biquad (every type,
+    // and the 6 / 12 dB slopes) or the slope's double-precision cascade.
+    static void computeBandFilter(BandState& bs, BandType type,
+                                  float freq, float gainDb, float Q, int slope, double sr)
+    {
+        if (isSlopeCascade(type, slope))
+        {
+            eqslope::Cascade c;
+            eqslope::design(type == BandType::HighPass, static_cast<double>(freq),
+                            static_cast<double>(Q), slope, sr, c);
+            bs.nSec = c.n;
+            for (int i = 0; i < c.n; ++i) bs.sec[i] = c.s[i];
+            return;
+        }
+
+        bs.nSec = 0;
+        if (isCutType(type) && slope == 0)
+        {
+            // 6 dB/oct: first-order section in the biquad's slots (b2 = a2 = 0).
+            const double w0 = 2.0 * juce::MathConstants<double>::pi * static_cast<double>(freq) / sr;
+            const auto c = eqslope::firstOrder(type == BandType::HighPass, std::tan(0.5 * w0));
+            bs.b0 = static_cast<float>(c.b0);  bs.b1 = static_cast<float>(c.b1);  bs.b2 = 0.0f;
+            bs.a1 = static_cast<float>(c.a1);  bs.a2 = 0.0f;
+            return;
+        }
+        computeCoefficients(bs, type, freq, gainDb, Q, sr);
+    }
+
+    // The same filter as a cascade of double sections, for everything that
+    // evaluates a band's response (curves, FIR, Spectral regions). A single
+    // biquad band yields the exact float-rounded coefficients the audio path uses.
+    static void computeBandCascade(eqslope::Cascade& out, BandType type,
+                                   float freq, float gainDb, float Q, int slope, double sr)
+    {
+        if (isSlopeCascade(type, slope))
+        {
+            eqslope::design(type == BandType::HighPass, static_cast<double>(freq),
+                            static_cast<double>(Q), slope, sr, out);
+            return;
+        }
+        BandState tmp;
+        computeBandFilter(tmp, type, freq, gainDb, Q, slope, sr);
+        out.n = 1;
+        out.s[0] = { tmp.b0, tmp.b1, tmp.b2, tmp.a1, tmp.a2 };
+    }
+
+    // Spectral region shape: which family a band's influence weight belongs to
+    // (0 = Bell, otherwise 1 + slope for a Low / High Pass), so a cached weight
+    // is rebuilt when the type / slope changes.
+    static int regionShapeKey(BandType type, int slope) noexcept
+    {
+        return isCutType(type) ? 1 + slope + (type == BandType::HighPass ? 16 : 0) : 0;
+    }
+
+    // A Low / High Pass region's weight at one frequency (cos/sin of w and 2w):
+    // the cascade's attenuation in dB over `shapeDb`, clamped to [0, 1].
+    static float cutRegionShape(const eqslope::Cascade& c, float cw, float sw,
+                                float c2, float s2, float shapeDb) noexcept
+    {
+        double m = 1.0;
+        for (int i = 0; i < c.n; ++i)
+            m *= eqslope::magSq(c.s[i], cw, sw, c2, s2);
+        const double attDb = -10.0 * std::log10(std::max(m, 1.0e-30));
+        return static_cast<float>(std::clamp(attDb / static_cast<double>(shapeDb), 0.0, 1.0));
     }
 
     // ── Bristow-Johnson coefficient computation ─────────────────────────────
@@ -2670,18 +2861,24 @@ private:
     // the old rectangular freq ± freq/Q gate, so the Q knob now shapes the
     // suppression profile exactly the way getResponseCurve draws it.
     //
-    // The shape is always a Bell regardless of the band's type: Spectral mode
-    // exists to tame resonances, and a LowPass/HighPass has no gain peak to
-    // normalise against.
+    // The shape is a Bell for every type except LowPass / HighPass: a Bell has a
+    // gain peak to normalise against, and Spectral mode exists to tame
+    // resonances. A Low / High Pass band instead follows its own slope: the
+    // weight is the filter's stop-band attenuation in dB over the depth, capped
+    // at 1 (so full strength once the filter is |depth| dB down, 0 in the pass
+    // band). The slope selects the cascade, so a steeper slope is a sharper
+    // edge on the same corner, aligned with the curve the band draws.
     //
-    // Cached on smoothed freq/Q/|depth|, so a parked band costs nothing per
-    // frame and a knob sweep costs one pass of pure arithmetic (bin trig is
-    // precomputed in prepareEffect).
-    void updateSpectralWeights(BandState& bs, float freq, float q,
+    // Cached on smoothed freq/Q/|depth| and the shape (type/slope), so a parked
+    // band costs nothing per frame and a knob sweep costs one pass of pure
+    // arithmetic (bin trig is precomputed in prepareEffect).
+    void updateSpectralWeights(BandState& bs, BandType type, int slope, float freq, float q,
                                float depthDb, double sr)
     {
         const int   binsN    = kSTFTSize / 2;
         const float absDepth = std::abs(depthDb);
+        const bool  cut      = isCutType(type);
+        const int   shapeKey = regionShapeKey(type, slope);
 
         // Clamp before comparing, or a sub-20 Hz smoother ramp would never
         // match the clamped cache and would rebuild on every frame.
@@ -2690,6 +2887,7 @@ private:
 
         const bool fresh = (bs.specWeightFreq < 0.0f);
         if (!fresh
+            && bs.specWeightShape == shapeKey
             && std::abs(useFreq - bs.specWeightFreq) <= bs.specWeightFreq * 0.001f
             && std::abs(useQ - bs.specWeightQ) <= 0.001f
             && std::abs(absDepth - bs.specWeightDepth) <= 0.01f)
@@ -2698,6 +2896,18 @@ private:
         bs.specWeightFreq  = useFreq;
         bs.specWeightQ     = useQ;
         bs.specWeightDepth = absDepth;
+        bs.specWeightShape = shapeKey;
+
+        if (cut)
+        {
+            const float shapeDbCut = std::max(absDepth, 1.0f);
+            eqslope::Cascade casc;
+            computeBandCascade(casc, type, useFreq, 0.0f, useQ, slope, sr);
+            for (int i = 0; i < binsN; ++i)
+                bs.specBinWeight[i] = cutRegionShape(casc, stftBinCosW_[i], stftBinSinW_[i],
+                                                     stftBinCos2W_[i], stftBinSin2W_[i], shapeDbCut);
+            return;
+        }
 
         // An RBJ bell's dB profile depends only weakly on its gain, but
         // normalising by a near-zero peak is unstable — so the shape is always
@@ -2820,7 +3030,9 @@ private:
                     // Influence zone: the band's own bell, per bin, normalised
                     // to 1 at the centre.  Cached, so this only does real work
                     // when the smoothed freq/Q/depth have moved materially.
-                    updateSpectralWeights(bs, bandFreq, bandQ, depthDb, sr);
+                    updateSpectralWeights(bs, static_cast<BandType>(static_cast<int>(snap_.band[b].type)),
+                                          eqslope::clampSlope(snap_.band[b].slope),
+                                          bandFreq, bandQ, depthDb, sr);
 
                     // Local envelope: arithmetic mean of logMag in ±half octave
                     // around each bin [i/sqrt(2), i*sqrt(2)]. Rolling sum = O(N).
@@ -2981,6 +3193,15 @@ private:
                 // zero-phase kernel is applied to both channels. Per-channel
                 // linear phase would need a 2x2 MIMO FIR matrix — out of scope,
                 // see foldChannelForContext().
+                // A steep slope is a cascade of sections; every other band is
+                // the one float biquad.
+                if (bands_[b].nSec != 0)
+                {
+                    for (int sct = 0; sct < bands_[b].nSec; ++sct)
+                        magSq *= eqslope::magSq(bands_[b].sec[sct], cosw, sinw, cos2w, sin2w);
+                    continue;
+                }
+
                 const double cb0 = bands_[b].b0, cb1 = bands_[b].b1, cb2 = bands_[b].b2;
                 const double ca1 = bands_[b].a1, ca2 = bands_[b].a2;
 
@@ -3268,7 +3489,7 @@ private:
     void copyBandParams(int srcBand, int dstBand)
     {
         static const char* names[] = { "freq", "gain", "q", "type", "enabled",
-            "channel",
+            "channel", "slope",
             "mode", "dyn_thresh", "dyn_ratio", "dyn_attack", "dyn_release", "dyn_range",
             "spec_sens", "spec_sel",
             "spec_attack", "spec_release" };
@@ -3281,7 +3502,7 @@ private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     {
         std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
-        params.reserve(kMaxBands * 16 + 4);
+        params.reserve(kMaxBands * 17 + 4);
 
         // Skew factors: makes midpoint of slider map to a musically useful value.
         // JUCE formula: value = start + (end-start) * exp(log(proportion)/skew)
@@ -3443,6 +3664,20 @@ private:
             "Spectral Quality",
             juce::NormalisableRange<float>(0.0f, 2.0f, 1.0f), // 0=Fast, 1=Normal, 2=High
             static_cast<float>(kDefaultSpectralQuality)));
+
+        // ── Low / High Pass slopes: appended after everything else, so no ──
+        // existing parameter index moves. See dsp/EqSlopeDesign.h:
+        // 0 = 6 dB/oct, 1 = 12 (DEFAULT: the one filter every pre-slope state
+        // has), 2 = 18, 3 = 24, 4 = 36, 5 = 48, 6 = 72, 7 = 96, 8 = Brickwall.
+        // Only Low Pass / High Pass bands read it.
+        for (int i = 0; i < kMaxBands; ++i)
+        {
+            params.push_back(std::make_unique<juce::AudioParameterFloat>(
+                juce::ParameterID{ "b" + juce::String(i) + "_slope", 1 },
+                "B" + juce::String(i) + " Slope",
+                juce::NormalisableRange<float>(0.0f, static_cast<float>(eqslope::kNumSlopes - 1), 1.0f),
+                static_cast<float>(eqslope::kDefaultSlope)));
+        }
 
         return { std::make_move_iterator(params.begin()),
                  std::make_move_iterator(params.end()) };

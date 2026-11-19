@@ -53,7 +53,7 @@ describe('Smart Balance geometry', () => {
       expect(targetParamFromVisual(1, -100, -18)).toBe(-18)
     })
 
-    it('Relative: the line is the overall level plus the offset, and a drag stores the offset', () => {
+    it('Relative: the line is the band\'s balanced reference plus the offset, and a drag stores the offset', () => {
       expect(targetVisualDb(0, -20, 3)).toBe(-17)
       expect(targetParamFromVisual(0, -20, -17)).toBe(3)
     })

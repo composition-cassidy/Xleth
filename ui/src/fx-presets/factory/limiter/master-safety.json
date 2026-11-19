@@ -1,0 +1,15 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "limiter",
+  "name": "Master Safety",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "gain": 0,
+      "ceiling": -0.3,
+      "release": 100,
+      "style": 0
+    }
+  }
+}

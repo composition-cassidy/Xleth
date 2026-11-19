@@ -1,6 +1,10 @@
 // @vitest-environment jsdom
+// The Roam key-lane modules (geometry, hit test, gesture, painter). The Edit view no
+// longer has a Roam lane (docs/XLETH_MOTION_VIEW_DESIGN.md R17; see
+// timelineRowLayout.test.js); the modules stay for Motion view, which hands them its own
+// rows. The rows here come from a fixture with the lanes' geometry.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { buildTrackLayout } from './timelineRowLayout.js'
+import { laneLayout } from './__tests__/fixtures/roamLaneLayout.js'
 import { drawRoamLanes } from './roamLaneDrawing.js'
 import { beginRoamLaneGesture, removeKeyAt } from './roamLaneGesture.js'
 import {
@@ -17,45 +21,36 @@ const tracks = [
 const SCROLL = 0
 const PPB = 40           // px per beat: a bar is 160px, a tick is 40/960 px
 
-describe('Roam lane row', () => {
-  it('sits directly under its track (and under its Reel lane) and pushes later tracks down', () => {
-    const layout = buildTrackLayout({ tracks, roamLanes: { 1: true } })
+describe('Roam lane row geometry', () => {
+  it('a lane row (fixture) sits under its track, is roamLaneHeight tall, and owns its band', () => {
+    const layout = laneLayout({ tracks, roam: [1] })
     expect(layout.rows.map((r) => r.rowType)).toEqual(['track', 'roam', 'track'])
     const [t1, roam, t2] = layout.rows
     expect(roam.y).toBe(t1.y + TRACK_HEIGHT)
     expect(roam.height).toBe(roamLaneHeight(TRACK_HEIGHT))
     expect(roam.parentTrackId).toBe(1)
     expect(t2.y).toBe(roam.y + roam.height)
-
-    const both = buildTrackLayout({ tracks, reelLanes: { 1: { subRows: 1 } }, roamLanes: { 1: true } })
-    expect(both.rows.map((r) => r.rowType)).toEqual(['track', 'reel', 'roam', 'track'])
-  })
-
-  it('a track without a lane is unchanged', () => {
-    const plain = buildTrackLayout({ tracks })
-    const same = buildTrackLayout({ tracks, roamLanes: {} })
-    expect(same.rows.map((r) => r.y)).toEqual(plain.rows.map((r) => r.y))
-    expect(plain.getRoamRows()).toEqual([])
-  })
-
-  it('the lane resolves to no track, so no tool can act on the parent through it', () => {
-    const layout = buildTrackLayout({ tracks, roamLanes: { 1: true } })
-    const roam = layout.getRoamRows()[0]
-    expect(layout.trackIndexAtY(roam.y + 2)).toBe(-1)
     expect(layout.roamRowAtY(roam.y + 2)).toBe(roam)
     expect(layout.roamRowAtY(roam.y - 1)).toBeNull()
-    expect(layout.trackIndexAtY(roam.y + roam.height + 1)).toBe(1)
   })
 
-  it('a collapsed track hides its lane with it; height scales with the track height', () => {
-    expect(buildTrackLayout({ tracks, collapsed: new Set([1]), roamLanes: { 1: true } }).getRoamRows()).toEqual([])
+  it('the height scales with the track height and never drops under 48 px', () => {
     expect(roamLaneHeight(72)).toBe(2 * roamLaneHeight(36))
     expect(roamLaneHeight(24)).toBeGreaterThanOrEqual(48)
+    const tall = laneLayout({ tracks, trackHeight: 72, roam: [1] })
+    expect(tall.getRoamRows()[0].height).toBe(roamLaneHeight(72))
+  })
+
+  it('a layout with no Roam rows (or none at all): the hit test finds nothing', () => {
+    const none = laneLayout({ tracks })
+    const dataOf = () => ({ base: {}, keys: [] })
+    expect(hitTestRoamLane({ trackLayout: none, dataOf, channelOf: () => 'offsetX' }, 50, TRACK_HEIGHT + 4, SCROLL, PPB)).toBeNull()
+    expect(hitTestRoamLane({ trackLayout: null, dataOf, channelOf: () => 'offsetX' }, 50, 4, SCROLL, PPB)).toBeNull()
   })
 })
 
 describe('hit test', () => {
-  const layout = buildTrackLayout({ tracks, roamLanes: { 1: true } })
+  const layout = laneLayout({ tracks, roam: [1] })
   const row = layout.getRoamRows()[0]
   const KEYS = [K('offsetX', 0, 0), K('offsetX', 2 * TICKS_PER_BAR, 1), K('scale', 960, 2)]
   const dataOf = () => ({ base: { offsetX: 0, scale: 1 }, keys: KEYS })
@@ -90,7 +85,7 @@ describe('hit test', () => {
 })
 
 describe('gesture: local preview, ONE commit', () => {
-  const layout = buildTrackLayout({ tracks, roamLanes: { 1: true } })
+  const layout = laneLayout({ tracks, roam: [1] })
   const row = layout.getRoamRows()[0]
   let calls
   let rafs
@@ -225,7 +220,7 @@ describe('gesture: local preview, ONE commit', () => {
 })
 
 describe('painter', () => {
-  const layout = buildTrackLayout({ tracks, roamLanes: { 1: true } })
+  const layout = laneLayout({ tracks, roam: [1] })
   const ctxStub = () => {
     const calls = []
     const target = {}

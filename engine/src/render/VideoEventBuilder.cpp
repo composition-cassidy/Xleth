@@ -1,6 +1,7 @@
 #include "render/VideoEventBuilder.h"
 
 #include "model/ClipSourceAnchor.h"
+#include "model/Clone.h"
 #include "model/Timeline.h"
 #include "render/ArpVideoExpander.h"
 #include "render/VideoFlipApplier.h"
@@ -8,6 +9,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <map>
+#include <utility>
 
 namespace xleth::videoevents {
 namespace {
@@ -157,9 +160,38 @@ void buildClipEvents(const Timeline& timeline, double bpm, double sampleRate,
     }
 }
 
+// ── Voice clones (model/Clone.h) ─────────────────────────────────────────────
+// Where a source track's notes go: voice 0 is the source itself, voice k its
+// k-th Voice clone. Resolved once per track per build; empty (the source plays
+// everything, today's path) for every track without Voice clones.
+struct VoiceRouting {
+    bool               resolved = false;
+    std::vector<const TrackInfo*> clones;   // voice k = clones[k - 1]
+    std::vector<int>   lensTrackIds;        // per clone: source (Linked) or the clone (Own)
+};
+
 // ── Pattern tracks: one VideoEvent per audible note-on ──────────────────────
 void buildPatternEvents(const Timeline& timeline, double bpm, BuildResult& out)
 {
+    // Per source track: its Voice clones. Per (track, pattern): the voice of
+    // every note, decided from the pattern alone (so a seek, the preview and
+    // the export all agree), computed once per build on this message-thread
+    // pass, never on the render or audio thread.
+    std::map<int, VoiceRouting> routingByTrack;
+    std::map<std::pair<int, int>, std::vector<clones::VoiceSlot>> voicesByTrackPattern;
+    auto routingFor = [&](const TrackInfo& track) -> const VoiceRouting& {
+        VoiceRouting& r = routingByTrack[track.id];
+        if (!r.resolved) {
+            r.resolved = true;
+            if (!track.isClone()) {
+                r.clones = clones::voiceClonesOf(timeline, track.id);
+                for (const TrackInfo* c : r.clones)
+                    r.lensTrackIds.push_back(c->cloneLensMode == CloneLensMode::Own ? c->id : track.id);
+            }
+        }
+        return r;
+    };
+
     auto blocks = timeline.getAllPatternBlocks();
     blocks.erase(std::remove(blocks.begin(), blocks.end(), nullptr), blocks.end());
     std::sort(blocks.begin(), blocks.end(),
@@ -177,6 +209,8 @@ void buildPatternEvents(const Timeline& timeline, double bpm, BuildResult& out)
     for (const PatternBlock* block : blocks) {
         const TrackInfo* track = timeline.getTrack(block->trackId);
         if (!track) { ++out.stats.blocksSkipped; continue; }
+        // A Clone has no blocks of its own (it is driven by its source's).
+        if (track->isClone()) { ++out.stats.blocksSkipped; continue; }
 
         const Pattern* pattern = timeline.getPattern(block->patternId);
         if (!pattern) { ++out.stats.blocksSkipped; continue; }
@@ -266,6 +300,19 @@ void buildPatternEvents(const Timeline& timeline, double bpm, BuildResult& out)
             continue;
         }
 
+        // Voice clones: the voice of every note of this pattern on this track
+        // (arp steps above are one stream and always play on the source).
+        const VoiceRouting& routing = routingFor(*track);
+        const std::vector<clones::VoiceSlot>* voices = nullptr;
+        if (!routing.clones.empty()) {
+            const auto key = std::make_pair(track->id, pattern->id);
+            auto it = voicesByTrackPattern.find(key);
+            if (it == voicesByTrackPattern.end())
+                it = voicesByTrackPattern.emplace(key,
+                         clones::assignVoices(*pattern, static_cast<int>(routing.clones.size()))).first;
+            voices = &it->second;
+        }
+
         for (int64_t L = firstLoopIdx; L <= lastLoopIdx; ++L) {
             for (const auto& noteRef : noteRefs) {
                 const PatternNote& note = *noteRef.note;
@@ -334,6 +381,27 @@ void buildPatternEvents(const Timeline& timeline, double bpm, BuildResult& out)
                 if (note.id > 0) {
                     ev.lensPatternId = pattern->id;
                     ev.lensNoteId    = note.id;
+                }
+
+                // A note assigned to Voice k >= 1 shows in that Voice clone's
+                // cell: its placement, Roam, effects and flip sequence, with
+                // the clone's own layout fields and opacity. Its Lens is the
+                // source's (Linked) or the clone's (Own); the note's override
+                // travels with it either way. Overflow and voice 0 stay here.
+                if (voices) {
+                    const std::size_t idx = static_cast<std::size_t>(noteRef.sourceOrder);
+                    const int v = idx < voices->size() ? (*voices)[idx].voice : 0;
+                    if (v >= 1 && v <= static_cast<int>(routing.clones.size())) {
+                        const TrackInfo& clone = *routing.clones[static_cast<std::size_t>(v - 1)];
+                        ev.trackId     = clone.id;
+                        ev.lensTrackId = routing.lensTrackIds[static_cast<std::size_t>(v - 1)];
+                        ev.x       = clone.videoX;
+                        ev.y       = clone.videoY;
+                        ev.width   = clone.videoW;
+                        ev.height  = clone.videoH;
+                        ev.opacity = clone.videoOpacity * note.velocity;
+                        ++out.stats.voiceCloneEvents;
+                    }
                 }
 
                 out.events.push_back(std::move(ev));

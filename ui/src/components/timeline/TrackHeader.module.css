@@ -42,6 +42,20 @@
     row-gap: var(--space-1);
   }
 
+  /* A track with motion: the marker gets its own cell after the name, so the hover menu
+   * (over the end of the name cell) never covers it and the name ellipsizes first. */
+  .row[data-motion="true"] {
+    grid-template-columns: var(--hit-min) minmax(0, 1fr) auto auto;
+    grid-template-areas: "chip name motion state";
+  }
+
+  .row[data-stack="true"][data-motion="true"] {
+    grid-template-columns: var(--hit-min) minmax(0, 1fr) auto;
+    grid-template-areas:
+      "chip name motion"
+      "state state state";
+  }
+
   .stripe {
     position: absolute;
     top: 0;
@@ -154,6 +168,45 @@
     text-align: center;
   }
 
+  /* Motion marker (docs/XLETH_MOTION_VIEW_DESIGN.md R18): a small outline diamond in the value
+   * accent in its own cell after the name and badges. The button is the 24x24 hit area; it
+   * opens the track in Motion view. Never dimmed with a muted track (only the stripe and chip are). */
+  .motion {
+    grid-area: motion;
+    flex: none;
+    box-sizing: border-box;
+    width: var(--hit-min);
+    height: var(--hit-min);
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 2px;
+    background: transparent;
+    color: var(--ui-value);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+
+  .motion:hover {
+    background: var(--ui-g2);
+  }
+
+  .motion:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  .motionGlyph {
+    width: var(--icon-md);
+    height: var(--icon-md);
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linejoin: miter;
+  }
+
   /* The track menu shares the name's cell and sits over its end, drawn only while the row
    * is hovered or holds focus: at rest the name has the whole cell. Right-click and the menu
    * key open the same menu from anywhere on the row. */
@@ -190,6 +243,30 @@
     padding: 0;
     justify-content: center;
     font-size: var(--type-11);
+  }
+
+  /* A Clone (docs/XLETH_CLONE_SPEC.md) sits one level under its source: indented 14px,
+   * so the source's stripe column stays clear and the group reads as one. Its chip is
+   * a colour sample, not a picker. */
+  .row[data-clone] {
+    margin-left: 14px;
+  }
+
+  .row[data-clone] .chip {
+    cursor: default;
+  }
+
+  .row[data-clone] .chip:hover .chipFace {
+    box-shadow: none;
+  }
+
+  /* The kind tag after the name: "Voice clone" / "Trail clone". Secondary ink, no fill. */
+  .cloneTag {
+    flex: none;
+    color: var(--ui-ink-3);
+    font-size: var(--type-11);
+    line-height: 1.2;
+    white-space: nowrap;
   }
 
   /* Muted: the identity dims to the mute opacity. The name, menu and toggles do not. */

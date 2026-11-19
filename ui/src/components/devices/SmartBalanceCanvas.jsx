@@ -12,12 +12,15 @@ import {
 // The Smart Balance display: four band columns on a log-frequency axis against
 // level in dB, drawn from the engine's own numbers.
 //
-//   live RMS      getEffectMeter slots 0..3, the stereo-linked RMS of each band
+//   level         getEffectMeter slots 0..3, each band's short-term level
 //   gain          getEffectMeter slots 4..7, the correction being applied now
-//   overall RMS   smartBalanceGetDebug().overallRms, the broadband level that
-//                 Relative targets are measured from
-//   transient     smartBalanceGetDebug().transient, a band's fast envelope more
-//                 than twice its slow one
+//   ref           smartBalanceGetDebug().ref, where each band would sit in a
+//                 balanced mix at this material's level: Relative targets (the
+//                 Offsets) are measured from it
+//   presence      smartBalanceGetDebug().presence, 0 for a band that is not
+//                 really there (it is never lifted)
+//   transient     smartBalanceGetDebug().transient, Preserve holding a hit
+//   makeup        smartBalanceGetDebug().makeup, the loudness match
 //   target, floor the band's own parameters, from `params`
 //
 // The target line is the control: drag it, sideways picks the band, up and down is
@@ -57,10 +60,10 @@ export default function SmartBalanceCanvas({
   const vizRef = useRef({
     rmsDb: [-100, -100, -100, -100],
     gainDb: [0, 0, 0, 0],
-    dryRms: [-100, -100, -100, -100],
-    dynDelta: [0, 0, 0, 0],
+    ref: [-100, -100, -100, -100],
+    presence: [1, 1, 1, 1],
     pulse: [0, 0, 0, 0],
-    overallRms: -100,
+    makeup: 0,
   })
   const dragRef = useRef(null) // { band, id, startValue, lastValue }
   const geometryRef = useRef({ w: 0, h: 0, plotTop: 0, plotH: 0 })
@@ -87,17 +90,17 @@ export default function SmartBalanceCanvas({
             vd.gainDb[b] = meters[b + 4] ?? 0
           }
         }
-        // The debug atomics are cheap; they feed the overall-RMS anchor and the
+        // The debug atomics are cheap; they feed the Relative reference and the
         // transient pulses in the normal view too.
         try {
           const dbg = await audio.smartBalanceGetDebug(t.trackId, t.nodeId)
           if (dbg) {
             for (let b = 0; b < 4; b += 1) {
-              vd.dryRms[b] = dbg.dryRms?.[b] ?? -100
-              vd.dynDelta[b] = dbg.dynDelta?.[b] ?? 0
+              vd.ref[b] = dbg.ref?.[b] ?? -100
+              vd.presence[b] = dbg.presence?.[b] ?? 1
               if (dbg.transient?.[b]) vd.pulse[b] = 1
             }
-            vd.overallRms = dbg.overallRms ?? -100
+            vd.makeup = dbg.makeup ?? 0
           }
         } catch { /* the debug call is optional */ }
       } catch { /* the meter call can fail while the engine is busy */ }
@@ -169,20 +172,22 @@ export default function SmartBalanceCanvas({
         ctx.fillText(dbText(db, 0, db > 0), plotLeft - 4, y)
       }
 
-      // Relative mode measures every target from the overall level.
-      if (isRelative && hasLevel(vd.overallRms)) {
-        const y = Math.round(yOf(vd.overallRms)) + 0.5
-        ctx.strokeStyle = withAlpha(th.text, 0.5)
+      // Relative mode measures each target from the band's balanced reference;
+      // where an Offset moves the target off it, the reference stays as a faint
+      // dotted mark so the neutral place is visible.
+      if (isRelative) {
+        ctx.strokeStyle = withAlpha(th.text, 0.45)
+        ctx.lineWidth = 1
         ctx.setLineDash([1, 3])
-        ctx.beginPath()
-        ctx.moveTo(plotLeft, y)
-        ctx.lineTo(w, y)
-        ctx.stroke()
+        for (let i = 0; i < 4; i += 1) {
+          if (!hasLevel(vd.ref[i]) || Math.abs(p[bandIds(i).target]) < 0.05) continue
+          const y = Math.round(yOf(Math.min(vd.ref[i], DB_MAX))) + 0.5
+          ctx.beginPath()
+          ctx.moveTo(cols[i].x1 + 2, y)
+          ctx.lineTo(cols[i].x2 - 2, y)
+          ctx.stroke()
+        }
         ctx.setLineDash([])
-        ctx.fillStyle = th.textMuted
-        ctx.textAlign = 'right'
-        ctx.textBaseline = 'bottom'
-        ctx.fillText(`Overall ${formatValue(vd.overallRms, 'dB')}`, w - 4, y - 2)
       }
 
       // Gate floors.
@@ -238,7 +243,7 @@ export default function SmartBalanceCanvas({
 
       // Target lines: the draggable control.
       for (let i = 0; i < 4; i += 1) {
-        const visual = targetVisualDb(mode, vd.overallRms, p[bandIds(i).target])
+        const visual = targetVisualDb(mode, vd.ref[i], p[bandIds(i).target])
         if (visual === null) continue
         const y = Math.max(plotTop, Math.min(plotTop + plotH, yOf(visual)))
         const isDrag = dragging?.band === i
@@ -287,15 +292,25 @@ export default function SmartBalanceCanvas({
         ctx.fillText(dbText(gain, 1, true), cx, yPill)
       }
 
-      // Details: the dry level and the dynamics restore per band.
+      // Details: each band's balanced reference (Relative) and whether it can
+      // be lifted, plus the loudness match.
       if (details) {
         ctx.font = uiCanvasFont(FONT)
         ctx.fillStyle = th.textMuted
         ctx.textBaseline = 'bottom'
         for (let i = 0; i < 4; i += 1) {
           const cx = (cols[i].x1 + cols[i].x2) / 2
-          ctx.fillText(`Dry ${formatValue(vd.dryRms[i], 'dB')}`, cx, plotTop + plotH - 44)
-          ctx.fillText(`Restore ${formatValue(vd.dynDelta[i], 'dB', { signed: true })}`, cx, plotTop + plotH - 32)
+          if (isRelative && hasLevel(vd.ref[i])) {
+            ctx.fillText(`Balanced ${formatValue(vd.ref[i], 'dB')}`, cx, plotTop + plotH - 44)
+          }
+          const pres = vd.presence[i]
+          ctx.fillText(pres < 0.05 ? 'Not lifted' : `Lift ${Math.round(pres * 100)} %`, cx, plotTop + plotH - 32)
+        }
+        if (Math.abs(vd.makeup) >= 0.05) {
+          ctx.textAlign = 'left'
+          ctx.textBaseline = 'top'
+          ctx.fillText(`Loudness match ${dbText(vd.makeup)}`, plotLeft + 4, plotTop + 4)
+          ctx.textAlign = 'center'
         }
       }
 
@@ -320,7 +335,7 @@ export default function SmartBalanceCanvas({
     const band = bandAtX(mx - g.plotLeft, g.plotW)
     if (band < 0) return -1
     const p = paramsRef.current
-    const visual = targetVisualDb(p.mode, vizRef.current.overallRms, p[bandIds(band).target])
+    const visual = targetVisualDb(p.mode, vizRef.current.ref[band], p[bandIds(band).target])
     if (visual === null) return -1
     const y = Math.max(g.plotTop, Math.min(g.plotTop + g.plotH, dbToY(visual, g.plotTop, g.plotH)))
     return Math.abs(my - y) <= HIT_PX ? band : -1
@@ -356,7 +371,7 @@ export default function SmartBalanceCanvas({
       canvasRef.current.style.cursor = hitTarget(e.clientX - rect.left, my) >= 0 ? 'ns-resize' : ''
       return
     }
-    const next = targetParamFromVisual(paramsRef.current.mode, vizRef.current.overallRms, yToDb(my, g.plotTop, g.plotH))
+    const next = targetParamFromVisual(paramsRef.current.mode, vizRef.current.ref[drag.band], yToDb(my, g.plotTop, g.plotH))
     if (next === null) return
     drag.lastValue = next
     onPreview?.(drag.id, next)

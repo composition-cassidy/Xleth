@@ -1,0 +1,17 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "flanger",
+  "name": "Slow Jet",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "rate": 0.12,
+      "depth": 95,
+      "delay": 2.5,
+      "feedback": 75,
+      "width": 30,
+      "mix": 50
+    }
+  }
+}

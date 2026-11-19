@@ -1,5 +1,5 @@
 import {
-  TRACK_HEIGHT, PPQ, pixelToBeat, beatToPixel, snapBeatToGrid, snapTickToGrid, beatsToTicks,
+  TRACK_HEIGHT, PPQ, pixelToBeat, beatToPixel, snapBeatToGrid, snapTickToGrid, beatsToTicks, ticksToBeats,
   MIN_DURATION_TICKS_FREE,
 } from '../../../constants/timeline.js'
 import { labelHexColor } from '../../../constants/labels.js'
@@ -10,13 +10,9 @@ import {
 } from '../blockGeometry.js'
 import { resolveGroupTranslation, splitPlacementsByKind } from '../groupTransform.js'
 import { getRegionPlaybackDurationSec } from '../regionDuration.js'
-import {
-  sourceTicksForTimelineTicks,
-  timelineTicksForSourceTicks,
-} from '../clipSourceDomain.js'
+import { resolveLeftTrim, resolveRightTrim } from '../clipTrim.js'
 import {
   AUTOMATION_MIN_DURATION_TICKS,
-  AUTOMATION_RESIZE_HIT_WIDTH_PX,
   automationClipBodyRect,
   automationClipIdsInPixelRect,
   canvasPosToEnvelopePoint,
@@ -148,7 +144,9 @@ export function createSelectTool(deps) {
   let dragClipOrigTrackIdx = 0
   let dragClipOrigDuration = 0
   let dragClipOrigOffset = 0
-  let dragClipOrigMaxDuration = Number.MAX_SAFE_INTEGER
+  // Length of the dragged clip's region audio in SOURCE ticks: the budget its
+  // source window can grow into when an edge is dragged outward (clipTrim.js).
+  let dragClipRegionSourceTicks = Number.MAX_SAFE_INTEGER
   let dragClipOrigStretchRatio = 1.0
   let dragClipOrigColors = null  // { fillColor, strokeColor } — resolved once at mousedown
   // Block drag state
@@ -376,6 +374,28 @@ export function createSelectTool(deps) {
     const durSec = getRegionPlaybackDurationSec(region)
     if (durSec <= 0) return Number.MAX_SAFE_INTEGER
     return Math.round(durSec * (bpm / 60) * PPQ)
+  }
+
+  // The trim the pointer is currently asking for on the dragged clip's edge.
+  // Used by the drag preview AND by the commit, so the edge that is drawn is
+  // the edge that is applied. Which end of the source window a trim takes from,
+  // and how far an edge can be dragged outward, depends on whether the clip is
+  // reversed: see clipTrim.js.
+  function clipTrimFromPointer(modifiers, scrollOffset, ppb) {
+    const beat = pixelToBeat(dragCurrentX, scrollOffset, ppb)
+    const pointerTicks = beatsToTicks(
+      snapBeatToGrid(Math.max(0, beat), modifiers, snapGranularityRef?.current))
+    const limits = {
+      regionSourceTicks: dragClipRegionSourceTicks,
+      minDurationTicks: modifiers.alt ? MIN_DURATION_TICKS_FREE : MIN_DURATION_TICKS,
+    }
+    if (dragMode === 'resize') {
+      return {
+        positionTicks: dragClip.positionTicks,
+        ...resolveRightTrim(dragClip, pointerTicks - dragClip.positionTicks, limits),
+      }
+    }
+    return resolveLeftTrim(dragClip, pointerTicks, limits)
   }
 
   // The block under the pointer: the one PAINTED there (same rectangle, same
@@ -645,17 +665,7 @@ export function createSelectTool(deps) {
         dragClipOrigOffset = hitClip.regionOffsetTicks ?? 0
         dragClipOrigStretchRatio = hitClip.stretchRatio ?? 1.0
         dragClipOrigColors = clipGhostColors(hitClip)
-        {
-          // regionDurTicks and regionOffset are SOURCE ticks; the resize clamp is
-          // a TIMELINE duration, so convert the remaining source budget through
-          // the clip's stretchRatio (see clipSourceDomain.js). A 4× clip with
-          // 1 bar of source left may legitimately stretch to 4 bars of timeline.
-          const regionDurTicks = computeRegionDurTicks(hitClip)
-          const sourceLeft = Math.max(0, regionDurTicks - dragClipOrigOffset)
-          dragClipOrigMaxDuration = (regionDurTicks === Number.MAX_SAFE_INTEGER)
-            ? Number.MAX_SAFE_INTEGER
-            : timelineTicksForSourceTicks(sourceLeft, dragClipOrigStretchRatio)
-        }
+        dragClipRegionSourceTicks = computeRegionDurTicks(hitClip)
         // Capture multi-selection if this clip is already selected
         if (selectedRef.current.has(hitClip.id) && selectedRef.current.size > 1) {
           const tidx = trackIdToIndexRef.current
@@ -1100,44 +1110,24 @@ export function createSelectTool(deps) {
       // ── Clip resize commit (trim) — single commit here, no IPC during drag
       // (matches the block/automation-clip resize pattern above). ─────────
       if (dragMode === 'resize' && dragClip && !modifiers.shift) {
-        const currentBeat = pixelToBeat(dragCurrentX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-        const snappedEnd = snapBeatToGrid(Math.max(0, currentBeat), modifiers, snapGranularityRef?.current)
-        const clipStartBeat = dragClip.positionTicks / PPQ
-        let newDurationTicks = beatsToTicks(Math.max(snappedEnd - clipStartBeat, 0))
-        const minDur = modifiers.alt ? MIN_DURATION_TICKS_FREE : MIN_DURATION_TICKS
-        if (newDurationTicks < minDur) newDurationTicks = minDur
-        if (newDurationTicks > dragClipOrigMaxDuration) {
-          newDurationTicks = Math.max(minDur, dragClipOrigMaxDuration)
-        }
-        if (newDurationTicks !== dragClipOrigDuration) {
-          onResizeClip(dragClip.id, newDurationTicks)
-          setStickyNoteLength(newDurationTicks)
+        const trim = clipTrimFromPointer(modifiers, scrollOffsetRef.current, pixelsPerBeatRef.current)
+        if (trim.durationTicks !== dragClipOrigDuration) {
+          // Only a reversed clip's right-edge trim moves its source window; a
+          // forward clip keeps the two-argument call it always made.
+          if (trim.regionOffsetTicks !== dragClipOrigOffset) {
+            onResizeClip(dragClip.id, trim.durationTicks, trim.regionOffsetTicks)
+          } else {
+            onResizeClip(dragClip.id, trim.durationTicks)
+          }
+          setStickyNoteLength(trim.durationTicks)
         }
       }
 
       if (dragMode === 'resize-left' && dragClip && !modifiers.shift) {
-        const currentBeat = pixelToBeat(dragCurrentX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-        const snappedStart = snapBeatToGrid(Math.max(0, currentBeat), modifiers, snapGranularityRef?.current)
-        const clipEndBeat = (dragClip.positionTicks + dragClip.durationTicks) / PPQ
-        const minDur = modifiers.alt ? MIN_DURATION_TICKS_FREE : MIN_DURATION_TICKS
-        // The existing offset is SOURCE ticks; how far left the edge may travel
-        // is a TIMELINE distance, so scale it up by the ratio.
-        const minStartTicks = dragClip.positionTicks
-          - timelineTicksForSourceTicks(dragClipOrigOffset, dragClipOrigStretchRatio)
-        const minStartBeat = Math.max(0, minStartTicks / PPQ)
-        let newStartBeat = Math.min(snappedStart, clipEndBeat - minDur / PPQ)
-        newStartBeat = Math.max(minStartBeat, newStartBeat)
-        const newPositionTicks = beatsToTicks(newStartBeat)
-        const newDurationTicks = (dragClip.positionTicks + dragClip.durationTicks) - newPositionTicks
-        const positionDelta = newPositionTicks - dragClip.positionTicks
-        // …and the timeline distance the edge moved becomes a SOURCE-domain
-        // offset delta, so scale it back down. Trimming 1 bar off a 4× clip's
-        // head skips only a quarter bar of source.
-        const newRegionOffset = Math.max(0, dragClipOrigOffset
-          + sourceTicksForTimelineTicks(positionDelta, dragClipOrigStretchRatio))
-        if (newPositionTicks !== dragClip.positionTicks) {
-          onResizeClipLeft(dragClip.id, newPositionTicks, newDurationTicks, newRegionOffset)
-          setStickyNoteLength(newDurationTicks)
+        const trim = clipTrimFromPointer(modifiers, scrollOffsetRef.current, pixelsPerBeatRef.current)
+        if (trim.positionTicks !== dragClip.positionTicks) {
+          onResizeClipLeft(dragClip.id, trim.positionTicks, trim.durationTicks, trim.regionOffsetTicks)
+          setStickyNoteLength(trim.durationTicks)
         }
       }
 
@@ -1444,11 +1434,11 @@ export function createSelectTool(deps) {
         const clipStartBeat = dragClip.positionTicks / PPQ
         const minDurBeats = MIN_DURATION_TICKS / PPQ
         const trackIdx = trackIdToIndexRef.current[dragClip.trackId] ?? 0
-        let newDurationBeats = Math.max(snappedEnd - clipStartBeat, minDurBeats)
-        if (!lastModifiers.shift) {
-          const maxDurBeats = dragClipOrigMaxDuration / PPQ
-          if (newDurationBeats > maxDurBeats) newDurationBeats = Math.max(minDurBeats, maxDurBeats)
-        }
+        // A trim previews exactly what the commit will apply; a stretch
+        // (Shift) is bounded only by the minimum length.
+        const newDurationBeats = lastModifiers.shift
+          ? Math.max(snappedEnd - clipStartBeat, minDurBeats)
+          : ticksToBeats(clipTrimFromPointer(lastModifiers, scrollOffset, ppb).durationTicks)
         ctx.setLineDash([3, 3])
         drawMovePreview(ctx, w, h, scrollOffset, ppb, {
           beat: clipStartBeat,
@@ -1481,11 +1471,9 @@ export function createSelectTool(deps) {
         if (lastModifiers.shift) {
           newStartBeat = Math.max(0, Math.min(snappedStart, clipEndBeat - minDur))
         } else {
-          // Same source→timeline scaling as the commit path in onMouseMove, so
-          // the preview edge and the applied edge agree on a stretched clip.
-          const minStartBeat = Math.max(0, (dragClip.positionTicks
-            - timelineTicksForSourceTicks(dragClipOrigOffset, dragClipOrigStretchRatio)) / PPQ)
-          newStartBeat = Math.max(minStartBeat, Math.min(snappedStart, clipEndBeat - minDur))
+          // The same resolver the commit uses, so the preview edge and the
+          // applied edge agree on stretched and reversed clips alike.
+          newStartBeat = ticksToBeats(clipTrimFromPointer(lastModifiers, scrollOffset, ppb).positionTicks)
         }
         const newDurationBeats = clipEndBeat - newStartBeat
         ctx.setLineDash([3, 3])
@@ -1525,7 +1513,7 @@ export function createSelectTool(deps) {
       dragSelectedBlocks = []
       dragSelectedAutomationClips = []
       dragClipOrigOffset = 0
-      dragClipOrigMaxDuration = Number.MAX_SAFE_INTEGER
+      dragClipRegionSourceTicks = Number.MAX_SAFE_INTEGER
       dragClipOrigStretchRatio = 1.0
       dragBlockOrigOffset = 0
       selectionAnchor = null

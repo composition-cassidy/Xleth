@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { NumberBox, SectionHeader, THIN_SPACE, MINUS } from '../../ui-kit'
 import RowToggle from '../inspector/RowToggle.jsx'
 import ClipFxPreview from '../inspector/ClipFxPreview.jsx'

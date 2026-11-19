@@ -1,7 +1,7 @@
 // Pure geometry for the routing band: which cables exist and where they run.
 // No DOM, no canvas, no store: RoutingBand feeds this the store's own routing
 // data and draws the result. Nothing here is invented; every cable is one entry
-// of outputRoutes or sidechainRoutes.
+// of outputRoutes, sends (FL multi-wiring) or sidechainRoutes.
 
 import { MASTER_OUTPUT_TARGET_ID, normalizeOutputTargetId } from '../../stores/mixerStore.js'
 
@@ -14,11 +14,13 @@ export const MASTER = 'master'
 
 /**
  * Cables for the strips in `orderedIds` (left to right).
- * - output: one per routed track; `to` is a strip index or MASTER.
- * - sidechain: one per enabled, healthy route whose two tracks both have a strip.
+ * - output: one per routed destination — the primary output (`to` is a strip
+ *   index or MASTER) plus one per send (`send: true`, always a strip index).
+ * - sidechain: one per source→target pair with an enabled, healthy route (a
+ *   track-level and an effect-level route between the same two strips draw once).
  * Routes pointing at a missing track are skipped, never drawn to nowhere.
  */
-export function computeCables({ orderedIds, outputRoutes = {}, sidechainRoutes = [] }) {
+export function computeCables({ orderedIds, outputRoutes = {}, sends = {}, sidechainRoutes = [] }) {
   const indexOf = new Map(orderedIds.map((id, i) => [Number(id), i]))
   const cables = []
 
@@ -29,13 +31,21 @@ export function computeCables({ orderedIds, outputRoutes = {}, sidechainRoutes =
     } else if (indexOf.has(target) && indexOf.get(target) !== from) {
       cables.push({ kind: 'output', from, to: indexOf.get(target) })
     }
+    for (const send of sends[id] ?? []) {
+      const to = indexOf.get(Number(send?.targetTrackId))
+      if (to == null || to === from || cables.some(c => c.from === from && c.to === to && c.kind === 'output')) continue
+      cables.push({ kind: 'output', from, to, send: true })
+    }
   })
 
+  const keyed = new Set()
   for (const route of sidechainRoutes) {
     if (!route || route.enabled === false || (route.status && route.status !== 'ok')) continue
     const from = indexOf.get(Number(route.sourceTrackId))
     const to = indexOf.get(Number(route.targetTrackId))
     if (from == null || to == null || from === to) continue
+    if (keyed.has(`${from}>${to}`)) continue
+    keyed.add(`${from}>${to}`)
     cables.push({ kind: 'sidechain', from, to, routeId: route.routeId })
   }
 

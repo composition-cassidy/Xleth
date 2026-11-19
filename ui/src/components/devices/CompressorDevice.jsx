@@ -245,13 +245,14 @@ export default function CompressorDevice({ target, registerApplied, deviceKey, e
 function SidechainSection({ effect, storeKey }) {
   const sc = useEffectSidechain({ effect, storeKey })
   const options = useMemo(() => {
-    const list = [{ value: '', label: 'None' }]
+    // '' = no route of its own; the mixer's right-click sidechain routes into this track still key it.
+    const list = [{ value: '', label: sc.mixerSourceNames ? `Mixer: ${sc.mixerSourceNames}` : 'None' }]
     if (sc.route && sc.sourceTrack && !sc.eligibleSources.some((s) => s.sourceTrackId === sc.route.sourceTrackId)) {
       list.push({ value: String(sc.route.sourceTrackId), label: sc.sourceTrack.name || `Track ${sc.route.sourceTrackId}` })
     }
     for (const s of sc.eligibleSources) list.push({ value: String(s.sourceTrackId), label: s.name })
     return list
-  }, [sc.route, sc.sourceTrack, sc.eligibleSources])
+  }, [sc.route, sc.sourceTrack, sc.eligibleSources, sc.mixerSourceNames])
 
   const warn = sc.routeError || (sc.route && sc.route.status !== 'ok')
   return (
@@ -272,7 +273,7 @@ function SidechainSection({ effect, storeKey }) {
         ariaLabel="Sidechain source"
         value={sc.selectedSourceValue}
         options={options}
-        disabled={(sc.requiresExternalParam && !sc.externalEnabled) || !sc.hasSelectableSource}
+        disabled={(sc.requiresExternalParam && !sc.externalEnabled) || (!sc.hasSelectableSource && !sc.mixerSourceNames)}
         onChange={(v) => sc.applySidechain({ enabled: true, sourceTrackId: v })}
       />
       {warn ? <p className={styles.warning} role="status">{sc.statusText}</p> : null}

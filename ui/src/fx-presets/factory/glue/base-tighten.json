@@ -1,0 +1,20 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "glue",
+  "name": "Base Tighten",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "threshold": -14,
+      "makeup": 1.5,
+      "ratio": 1,
+      "attack": 5,
+      "release": 2,
+      "topology": 0,
+      "sc_hpf_on": 1,
+      "sc_hpf_freq": 120,
+      "color": 1
+    }
+  }
+}

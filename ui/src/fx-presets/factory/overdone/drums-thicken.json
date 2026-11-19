@@ -1,0 +1,20 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "overdone",
+  "name": "Drums Thicken",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "depth": 25,
+      "time": 70,
+      "xover_low": 90,
+      "xover_high": 3000,
+      "gain_low": 1,
+      "gain_mid": 0,
+      "gain_high": 0,
+      "inputGain": 0,
+      "outputGain": 1
+    }
+  }
+}

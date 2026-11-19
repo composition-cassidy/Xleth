@@ -5,6 +5,9 @@ import {
   computeDiscordVideoBitrate,
   DISCORD_WIDTH,
   DISCORD_HEIGHT,
+  DISCORD_AUDIO_BITRATE,
+  EXPORT_AUDIO_CODECS,
+  resolveAudioCodec,
   aspectsMatch,
   resolveFitMode,
   customAspectMismatch,
@@ -108,6 +111,35 @@ describe('buildExportConfig — YouTube / Discord presets', () => {
     expect(cfg.videoBitrate).toBe(
       computeDiscordVideoBitrate('free', 30),
     )
+  })
+
+  // The Discord preset used to request Opus at 44.1 kHz. Opus only runs at
+  // 48 kHz and the bundled FFmpeg has no libopus, so the export landed on an
+  // experimental encoder that dropped most of the audio. It must ask for a
+  // codec/rate pair the engine can encode exactly as requested.
+  it('Discord asks for AAC at 48 kHz, never Opus', () => {
+    const cfg = buildExportConfig({
+      activeTab: 'discord',
+      outputPath: 'out.mp4',
+      discordSettings: { tier: 'free', fps: 30, hwEncoder: null },
+      discordDurationSec: 30,
+    })
+    expect(cfg.audioCodec).toBe('aac')
+    expect(cfg.sampleRate).toBe(48000)
+    expect(cfg.audioBitrate * 1000).toBe(DISCORD_AUDIO_BITRATE)
+  })
+
+  it('a Custom preset saved with Opus resolves to AAC', () => {
+    expect(resolveAudioCodec('opus')).toBe('aac')
+    expect(resolveAudioCodec('flac')).toBe('flac')
+    expect(EXPORT_AUDIO_CODECS).not.toContain('opus')
+    const cfg = buildExportConfig({
+      activeTab: 'custom',
+      outputPath: 'out.mp4',
+      customSettings: { ...makeCustomDefaults(), audioCodec: 'opus', sampleRate: 44100 },
+    })
+    expect(cfg.audioCodec).toBe('aac')
+    expect(cfg.sampleRate).toBe(44100)
   })
 })
 

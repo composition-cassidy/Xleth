@@ -166,37 +166,69 @@ int64_t RenderClock::nextFrameBoundary(int64_t currentSample, int sampleRate,
     return videoFrameToSample(currentFrame + 1, sampleRate, fps);
 }
 
+namespace {
+
+//  First frame f with videoFrameToSample(f) >= sample.
+//
+//  videoFrameToSample() is the ONE definition of where a frame starts, and it
+//  is monotonic in f, so the answer is found by estimating with a floor and
+//  correcting. The estimate must NOT come from sampleToVideoFrame(): that
+//  rounds to the NEAREST frame, and treating a rounded-up index as "the frame
+//  this sample is in" is what used to drop frames (see frameBoundsForBuffer).
+int64_t firstFrameStartingAtOrAfter(int64_t sample, int sampleRate, AVRational fps)
+{
+    if (sample <= 0) return 0;
+    const AVRational sampleTB = { 1, sampleRate };
+    const AVRational frameTB  = { fps.den, fps.num };
+    int64_t f = av_rescale_q_rnd(sample, sampleTB, frameTB, AV_ROUND_DOWN);
+    if (f < 0) f = 0;
+    while (f > 0 && RenderClock::videoFrameToSample(f - 1, sampleRate, fps) >= sample) --f;
+    while (RenderClock::videoFrameToSample(f, sampleRate, fps) < sample) ++f;
+    return f;
+}
+
+} // namespace
+
 std::pair<int64_t, int64_t> RenderClock::frameBoundsForBuffer(
     int64_t bufferStart, int bufferSize, int sampleRate, AVRational fps)
 {
-    //  The first frame whose start sample >= bufferStart:
-    //  If bufferStart is exactly on a frame boundary, that frame counts.
-    //  Otherwise, the next frame after bufferStart.
+    //  Frames whose first sample lies in [bufferStart, bufferStart+bufferSize).
+    //
+    //  first = first frame starting at/after bufferStart
+    //  last  = (first frame starting at/after bufferEnd) - 1
+    //
+    //  Both ends come from the same monotonic search, so consecutive buffers
+    //  tile the frame sequence exactly: every frame is reported by exactly one
+    //  buffer, none twice, none never.
+    //
+    //  The previous version derived both ends from sampleToVideoFrame(), which
+    //  rounds to nearest. Whenever the buffer's last sample sat past the
+    //  midpoint of a frame, "the frame at the end" came out as the NEXT frame,
+    //  whose start is outside the buffer, and the code concluded the buffer
+    //  held no boundary at all — silently dropping the frame that did start in
+    //  it. That needs the buffer to be longer than half a frame, i.e. it bit
+    //  every frame rate above ~47 fps at 48 kHz/512 and never 30 fps: a 60 fps
+    //  export lost one frame in four (811 expected, 609 written).
+    if (bufferSize <= 0 || sampleRate <= 0 || fps.num <= 0 || fps.den <= 0) {
+        const int64_t f = firstFrameStartingAtOrAfter(bufferStart, sampleRate > 0 ? sampleRate : 1,
+                                                      (fps.num > 0 && fps.den > 0) ? fps : AVRational{30, 1});
+        return { f, f - 1 };
+    }
 
-    int64_t frameAtStart      = sampleToVideoFrame(bufferStart, sampleRate, fps);
-    int64_t sampleOfThatFrame = videoFrameToSample(frameAtStart, sampleRate, fps);
-
-    int64_t firstFrame;
-    if (sampleOfThatFrame >= bufferStart)
-        firstFrame = frameAtStart;        // boundary is inside (or at start of) buffer
-    else
-        firstFrame = frameAtStart + 1;    // boundary is before buffer, take next
-
-    //  The last frame whose start sample < bufferStart + bufferSize:
-    int64_t bufferEnd        = bufferStart + bufferSize;  // exclusive
-    int64_t frameAtEnd       = sampleToVideoFrame(bufferEnd - 1, sampleRate, fps);
-    int64_t sampleOfEndFrame = videoFrameToSample(frameAtEnd, sampleRate, fps);
-
-    int64_t lastFrame;
-    if (sampleOfEndFrame >= bufferStart && sampleOfEndFrame < bufferEnd)
-        lastFrame = frameAtEnd;
-    else
-        lastFrame = firstFrame - 1;   // empty — no frame boundary in buffer
+    const int64_t bufferEnd  = bufferStart + bufferSize;  // exclusive
+    const int64_t firstFrame = firstFrameStartingAtOrAfter(bufferStart, sampleRate, fps);
+    const int64_t lastFrame  = firstFrameStartingAtOrAfter(bufferEnd,   sampleRate, fps) - 1;
 
     RCLOCK_LOG("frameBoundsForBuffer: bufStart=%lld bufSize=%d -> frames [%lld, %lld]",
                (long long)bufferStart, bufferSize, (long long)firstFrame, (long long)lastFrame);
 
     return { firstFrame, lastFrame };
+}
+
+int64_t RenderClock::frameCountForSamples(int64_t numSamples, int sampleRate, AVRational fps)
+{
+    if (numSamples <= 0 || sampleRate <= 0 || fps.num <= 0 || fps.den <= 0) return 0;
+    return firstFrameStartingAtOrAfter(numSamples, sampleRate, fps);
 }
 
 // ===========================================================================

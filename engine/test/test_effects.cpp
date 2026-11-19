@@ -2052,6 +2052,162 @@ static void testTransientMidiAttackMode()
           "negative sustain should duck the post-attack tail level in MIDI mode");
 }
 
+// Real drums oscillate. The older transient tests feed a one-sided exponential
+// "body" with no zero crossings, which is why they passed while envelope mode
+// was a flat gain on actual audio: the gate read the raw sample, closed at
+// every zero crossing and re-armed the attack window forever.
+static constexpr int kKickLoopHits = 8;
+static constexpr int kKickLoopSpacing = 11025;   // quarter second at 44.1 kHz
+
+static void fillKickLoop(juce::AudioBuffer<float>& buf, double sr, float bassAmp)
+{
+    buf.clear();
+    for (int h = 0; h < kKickLoopHits; ++h)
+    {
+        const int onset = h * kKickLoopSpacing;
+        double phase = 0.0;
+        for (int i = 0; onset + i < buf.getNumSamples() && i < kKickLoopSpacing; ++i)
+        {
+            const double t = i / sr;
+            const double hz = 50.0 + 100.0 * std::exp(-t / 0.03);   // 150 -> 50 Hz pitch drop
+            phase += 2.0 * juce::MathConstants<double>::pi * hz / sr;
+            const float v = static_cast<float>(0.5 * std::exp(-t / 0.12) * std::sin(phase));
+            for (int ch = 0; ch < buf.getNumChannels(); ++ch)
+                buf.addSample(ch, onset + i, v);
+        }
+    }
+    if (bassAmp > 0.0f)
+    {
+        for (int s = 0; s < buf.getNumSamples(); ++s)
+        {
+            const float v = bassAmp * static_cast<float>(
+                std::sin(2.0 * juce::MathConstants<double>::pi * 55.0 * s / sr));
+            for (int ch = 0; ch < buf.getNumChannels(); ++ch)
+                buf.addSample(ch, s, v);
+        }
+    }
+}
+
+static TransientRenderResult renderEnvelopeTransient(const juce::AudioBuffer<float>& input,
+                                                     float attack, float sustain,
+                                                     float thresholdDb, float attackSpeedMs = 5.0f)
+{
+    const std::vector<int> schedule = {128, 256, 512};
+    XlethTransientProcEffect fx;
+    fx.setParameterValue("attack", attack);
+    fx.setParameterValue("sustain", sustain);
+    fx.setParameterValue("attack_speed", attackSpeedMs);
+    fx.setParameterValue("threshold", thresholdDb);
+    fx.setParameterValue("mix", 100.0f);
+    fx.setParameterValue("midi_detect", 0.0f);
+    fx.prepareToPlay(44100.0, maxBlockSizeOf(schedule));
+    return renderTransientEffectInBlocks(fx, input, schedule);
+}
+
+static double windowGainDb(const juce::AudioBuffer<float>& wet, const juce::AudioBuffer<float>& dry,
+                           int start, int end)
+{
+    return 20.0 * std::log10(windowRms(wet, 0, start, end)
+                             / std::max(windowRms(dry, 0, start, end), 1.0e-12));
+}
+
+static void testTransientEnvelopeModeOnOscillatingHits()
+{
+    std::cout << "  [transient envelope mode on oscillating hits]\n";
+    constexpr double kSR = 44100.0;
+    juce::AudioBuffer<float> dry(2, kKickLoopHits * kKickLoopSpacing);
+    fillKickLoop(dry, kSR, 0.0f);
+
+    // attack_speed 5 ms -> 221-sample attack window. Onset = first 3 ms of
+    // each hit; body = 40..200 ms in, well past the window.
+    constexpr int kOnsetEnd = 132;
+    constexpr int kBodyStart = 1764;
+    constexpr int kBodyEnd = 8820;
+
+    const auto attackUp = renderEnvelopeTransient(dry, 100.0f, 0.0f, -24.0f);
+    const auto sustainDown = renderEnvelopeTransient(dry, 0.0f, -100.0f, -24.0f);
+
+    for (int h = 0; h < kKickLoopHits; ++h)
+    {
+        const int on = h * kKickLoopSpacing;
+        const double onsetBoost = windowGainDb(attackUp.output, dry, on, on + kOnsetEnd);
+        const double bodyBoost = windowGainDb(attackUp.output, dry, on + kBodyStart, on + kBodyEnd);
+        const double bodyCut = windowGainDb(sustainDown.output, dry, on + kBodyStart, on + kBodyEnd);
+        const double onsetCut = windowGainDb(sustainDown.output, dry, on, on + kOnsetEnd);
+
+        CHECK(onsetBoost > 6.0,
+              "attack +100 should lift every hit's onset by more than 6 dB");
+        CHECK(std::abs(bodyBoost) < 0.5,
+              "attack must leave the body of the hit alone (was a flat gain on oscillating audio)");
+        CHECK(bodyCut < -8.0,
+              "sustain -100 should cut the body of every hit (sustain never engaged before)");
+        CHECK(onsetCut > -1.5,
+              "sustain must not touch the onset while the attack window owns it");
+    }
+}
+
+static void testTransientEnvelopeModeBusyBus()
+{
+    std::cout << "  [transient envelope mode on a busy bus]\n";
+    constexpr double kSR = 44100.0;
+
+    // Kicks over a running bass line with a low threshold: the gate never
+    // closes between hits, so each hit must be found by the envelope rising,
+    // not by the gate re-opening.
+    juce::AudioBuffer<float> dry(2, kKickLoopHits * kKickLoopSpacing);
+    fillKickLoop(dry, kSR, 0.1f);
+    const auto attackUp = renderEnvelopeTransient(dry, 100.0f, 0.0f, -50.0f);
+    for (int h = 0; h < kKickLoopHits; ++h)
+    {
+        const int on = h * kKickLoopSpacing;
+        CHECK(windowGainDb(attackUp.output, dry, on, on + 132) > 4.0,
+              "every hit on a bus whose gate stays open should still get its attack boost");
+        CHECK(std::abs(windowGainDb(attackUp.output, dry, on + 1764, on + 8820)) < 0.5,
+              "the bass between hits must not pick up attack gain");
+    }
+
+    // A hit that lands right as a tone stops, at a slow attack_speed: the slow
+    // follower is still high from the tone, and a detector whose rise scaled
+    // with attack_speed found these hits up to 9 ms late, so the front of the
+    // hit was left in the sustain stage.
+    {
+        juce::AudioBuffer<float> toneThenHit(2, kKickLoopHits * kKickLoopSpacing);
+        fillKickLoop(toneThenHit, kSR, 0.0f);
+        for (int h = 0; h < kKickLoopHits; ++h)
+        {
+            const int on = h * kKickLoopSpacing;
+            for (int s = std::max(0, on - 4410); s < on; ++s)   // 100 ms of 220 Hz before each hit
+            {
+                const float v = 0.15f * static_cast<float>(
+                    std::sin(2.0 * juce::MathConstants<double>::pi * 220.0 * s / kSR));
+                toneThenHit.addSample(0, s, v);
+                toneThenHit.addSample(1, s, v);
+            }
+        }
+        const auto shaped = renderEnvelopeTransient(toneThenHit, 100.0f, -100.0f, -50.0f, 20.0f);
+        for (int h = 1; h < kKickLoopHits; ++h)
+        {
+            const int on = h * kKickLoopSpacing;
+            CHECK(windowGainDb(shaped.output, toneThenHit, on, on + 132) > 4.0,
+                  "a hit right after a tone stops should be found at once, even at attack_speed 20 ms");
+        }
+    }
+
+    // A steady low tone has no onsets after the first: attack must not keep
+    // re-firing on the ripple of a 55 Hz sine.
+    for (const float hz : {30.0f, 55.0f, 110.0f})
+    {
+        juce::AudioBuffer<float> tone(2, 44100);
+        fillSineBuffer(tone, kSR, 0.3f, hz);
+        for (const float speed : {0.5f, 5.0f, 20.0f})
+        {
+            const auto shaped = renderEnvelopeTransient(tone, 100.0f, 0.0f, -50.0f, speed);
+            CHECK(std::abs(windowGainDb(shaped.output, tone, 4410, 44100)) < 0.25,
+                  "a steady tone must not re-trigger the attack window");
+        }
+    }
+}
+
 static void testResonanceSuppressorWolaIdentity()
 {
     std::cout << "  [resonance suppressor WOLA identity]\n";
@@ -5025,13 +5181,14 @@ static void testEQLayout()
 
     CHECK(eq.getBandCount() == 0, "EQ should start with 0 bands");
 
-    // 16 per band × 16 bands + 4 global.  Per band: freq, gain, q, type,
-    // enabled, channel, mode, dyn_{thresh,ratio,attack,release,range},
+    // 16 per band × 16 bands + 4 global + 16 slopes.  Per band: freq, gain, q,
+    // type, enabled, channel, mode, dyn_{thresh,ratio,attack,release,range},
     // spec_{sens,sel,attack,release}.  Spectral depth is the band's own gain
     // knob, so there is no spec_depth parameter.  Global: linphase, oversample,
-    // then ([EQCore], appended last) spectral_engine, spectral_quality.
+    // then ([EQCore]) spectral_engine, spectral_quality, then (appended last)
+    // the per-band Low / High Pass slope b{i}_slope.
     const auto& params = eq.getParameters();
-    CHECK(static_cast<int>(params.size()) == 260, "EQ should have 260 APVTS params");
+    CHECK(static_cast<int>(params.size()) == 276, "EQ should have 276 APVTS params");
 }
 
 static void testEQAddRemove()
@@ -6180,8 +6337,11 @@ static void testEQCoreParamsAndState()
             auto* p = dynamic_cast<juce::AudioProcessorParameterWithID*>(params[static_cast<std::size_t>(i)]);
             return p ? p->paramID : juce::String();
         };
-        CHECK(n >= 4 && idOf(n - 4) == "linphase" && idOf(n - 3) == "oversample"
-                  && idOf(n - 2) == "spectral_engine" && idOf(n - 1) == "spectral_quality",
+        // The 16 per-band slope parameters were appended after these four.
+        constexpr int kSlopes = XlethParametricEQ::kMaxBands;
+        CHECK(n >= 4 + kSlopes && idOf(n - kSlopes - 4) == "linphase" && idOf(n - kSlopes - 3) == "oversample"
+                  && idOf(n - kSlopes - 2) == "spectral_engine" && idOf(n - kSlopes - 1) == "spectral_quality"
+                  && idOf(n - kSlopes) == "b0_slope" && idOf(n - 1) == "b15_slope",
               "[EQCore] the new parameters are appended last; every existing parameter keeps its index");
         CHECK(idOf(0) == "b0_freq" && idOf(255) == "b15_spec_release", "[EQCore] band parameter indices unchanged");
     }
@@ -6798,6 +6958,221 @@ static void testEQCoreHopPhase()
     CHECK(rsAfter.getCoreInstanceIndex() == rsBefore + 1, "[EQCore] EQ instances do not consume the RS's instance numbering");
 }
 
+// ─── EQ Low / High Pass slopes ───────────────────────────────────────────────
+namespace eqslopetest
+{
+using namespace eqcoretest;
+
+// dB of a 512-point response trace at `hz` (linear interpolation along the grid).
+static double curveAtHz(const float* c, double hz)
+{
+    const int n = XlethParametricEQ::kResponseSize;
+    const double x = std::clamp(std::log(hz / 20.0) / std::log(1000.0), 0.0, 1.0) * (n - 1);
+    const int i = std::clamp(static_cast<int>(x), 0, n - 2);
+    const double f = x - i;
+    return c[i] * (1.0 - f) + c[i + 1] * f;
+}
+
+static void hpBand(XlethParametricEQ& eq, int b, float freq, int type, int slope, int mode = 0, float gain = 0.0f)
+{
+    eqlegacy::band(eq, b, freq, gain, 0.70710678f, type, mode, 0);
+    eq.setBandParam(b, "slope", static_cast<float>(slope));
+}
+
+} // namespace eqslopetest
+
+static void testEQSlopes()
+{
+    std::cout << "  [EQ slopes] Low / High Pass 6 dB/oct .. Brickwall\n";
+    using namespace eqslopetest;
+    constexpr double sr = 48000.0;
+    // Nominal attenuation one octave away from the corner per slope index.
+    const double nominal[9] = { 6.0, 12.0, 18.0, 24.0, 36.0, 48.0, 72.0, 96.0, 90.0 };
+
+    // The slope parameter exists, defaults to 12 dB/oct and is in the band JSON.
+    {
+        XlethParametricEQ eq;
+        eq.prepareToPlay(sr, 256);
+        eq.addBand();
+        auto j = nlohmann::json::parse(eq.getBandsAsJSON());
+        CHECK(j[0]["slope"].get<int>() == 1, "[EQ slopes] a new band's slope is 12 dB/oct (index 1)");
+    }
+
+    // Response of each slope: -3 dB at the corner, the nominal steepness, flat pass band.
+    for (int type : { 3, 4 })   // LowPass, HighPass
+    {
+        double prevOctave = 1.0;
+        for (int slope = 0; slope < 9; ++slope)
+        {
+            XlethParametricEQ eq;
+            eq.prepareToPlay(sr, 256);
+            eq.addBand();
+            hpBand(eq, 0, 1000.0f, type, slope);
+            float curve[XlethParametricEQ::kResponseSize];
+            eq.getResponseCurve(curve, XlethParametricEQ::kResponseSize);
+            const double atCorner = curveAtHz(curve, 1000.0);
+            const double stop = curveAtHz(curve, type == 4 ? 500.0 : 2000.0);
+            const double pass = curveAtHz(curve, type == 4 ? 6000.0 : 150.0);
+            std::printf("    [EQ slopes] %s slope %d: corner %.2f dB, 1 oct %.2f dB, pass %.3f dB\n",
+                        type == 4 ? "HP" : "LP", slope, atCorner, stop, pass);
+            CHECK(std::abs(atCorner + 3.01) < 0.35, "[EQ slopes] -3 dB at the corner for every slope");
+            CHECK(std::abs(pass) < 0.15, "[EQ slopes] pass band is flat");
+            if (slope < 8) CHECK(std::abs(-stop - nominal[slope]) < 1.5, "[EQ slopes] one octave out is the nominal slope");
+            else CHECK(stop < -75.0, "[EQ slopes] Brickwall is >75 dB down one octave out");
+            CHECK(stop < prevOctave, "[EQ slopes] every step is steeper than the one before");
+            prevOctave = stop;
+        }
+    }
+
+    // Audio: a stop band tone is attenuated by what the curve says, a pass band tone is not.
+    for (int slope : { 0, 2, 3, 5 })
+    {
+        XlethParametricEQ eq;
+        eq.prepareToPlay(sr, 256);
+        eq.addBand();
+        hpBand(eq, 0, 1000.0f, 4, slope);
+        float curve[XlethParametricEQ::kResponseSize];
+        eq.getResponseCurve(curve, XlethParametricEQ::kResponseSize);
+        juce::AudioBuffer<float> in(2, static_cast<int>(sr * 2));
+        in.clear();
+        for (int ch = 0; ch < 2; ++ch) { addSine(in, ch, sr, 500.0, 0.5f); addSine(in, ch, sr, 4000.0, 0.25f); }
+        const auto out = render(eq, in, 256);
+        const int lat = eq.getReportedProcessorLatencySamples();
+        const double cut500  = computeAlignedToneReductionDb(in, out, lat, static_cast<int>(sr), static_cast<int>(sr * 1.9), 0, sr, 500.0);
+        const double cut4k   = computeAlignedToneReductionDb(in, out, lat, static_cast<int>(sr), static_cast<int>(sr * 1.9), 0, sr, 4000.0);
+        std::printf("    [EQ slopes] slope %d audio: 500 Hz cut %.2f dB (curve %.2f), 4 kHz cut %.3f dB\n",
+                    slope, cut500, -curveAtHz(curve, 500.0), cut4k);
+        CHECK(std::abs(cut500 + curveAtHz(curve, 500.0)) < 1.0, "[EQ slopes] audio follows the drawn curve");
+        CHECK(std::abs(cut4k) < 0.3, "[EQ slopes] pass band tone untouched");
+    }
+
+    // Stability: extreme corners and Q, every slope, noise in; slope changes mid-stream.
+    {
+        bool finite = true;
+        float peak = 0.0f;
+        for (int type : { 3, 4 })
+            for (float freq : { 20.0f, 60.0f, 19000.0f })
+                for (int slope = 0; slope < 9; ++slope)
+                    for (float q : { 0.1f, 0.707f, 12.0f })
+                    {
+                        XlethParametricEQ eq;
+                        eq.prepareToPlay(sr, 256);
+                        eq.addBand();
+                        hpBand(eq, 0, freq, type, slope);
+                        eq.setBandParam(0, "q", q);
+                        juce::AudioBuffer<float> in(2, static_cast<int>(sr));
+                        fillPink(in, 0.1f, 0x5eedu);
+                        const auto out = render(eq, in, 256);
+                        for (int ch = 0; ch < 2; ++ch)
+                            for (int s = 0; s < out.getNumSamples(); ++s)
+                            {
+                                const float v = out.getSample(ch, s);
+                                finite = finite && std::isfinite(v);
+                                peak = std::max(peak, std::abs(v));
+                            }
+                    }
+        std::printf("    [EQ slopes] extreme corner / Q sweep: peak %.3f, finite %d\n", peak, finite ? 1 : 0);
+        CHECK(finite && peak < 6.0f, "[EQ slopes] every slope is stable at extreme corners and Q");
+
+        XlethParametricEQ eq;
+        eq.prepareToPlay(sr, 256);
+        eq.addBand();
+        hpBand(eq, 0, 80.0f, 4, 1);
+        juce::AudioBuffer<float> in(2, static_cast<int>(sr * 3));
+        fillPink(in, 0.1f, 0xfeedu);
+        std::vector<std::pair<int, Event>> ev;
+        for (int i = 1; i <= 8; ++i)
+            ev.push_back({ i * 60, [i](XlethParametricEQ& e) { e.setBandParam(0, "slope", static_cast<float>(i % 9)); } });
+        const auto out = render(eq, in, 256, ev);
+        bool ok = true;
+        for (int ch = 0; ch < 2; ++ch)
+            for (int s = 0; s < out.getNumSamples(); ++s) ok = ok && std::isfinite(out.getSample(ch, s)) && std::abs(out.getSample(ch, s)) < 6.0f;
+        CHECK(ok, "[EQ slopes] switching slope mid-stream stays finite and bounded");
+    }
+
+    // An old state (saved before slopes) restores every band to 12 dB/oct, even over a
+    // live instance holding another slope.
+    {
+        XlethParametricEQ saved;
+        saved.prepareToPlay(sr, 256);
+        saved.addBand();
+        hpBand(saved, 0, 1000.0f, 4, 1);
+        juce::MemoryBlock old;
+        eqcore::stateWithout(saved, { "b0_slope", "b1_slope", "b2_slope", "b3_slope", "b4_slope", "b5_slope", "b6_slope", "b7_slope",
+                                      "b8_slope", "b9_slope", "b10_slope", "b11_slope", "b12_slope", "b13_slope", "b14_slope", "b15_slope" }, old);
+        CHECK(!eqcore::stateHasParam(old, "b0_slope"), "[EQ slopes] (test) the old state lacks the slope parameter");
+        XlethParametricEQ live;
+        live.prepareToPlay(sr, 256);
+        live.addBand();
+        hpBand(live, 0, 1000.0f, 4, 7);
+        live.setStateInformation(old.getData(), static_cast<int>(old.getSize()));
+        auto j = nlohmann::json::parse(live.getBandsAsJSON());
+        CHECK(j[0]["slope"].get<int>() == 1, "[EQ slopes] an old state restores to 12 dB/oct");
+
+        juce::MemoryBlock now;
+        saved.setParameterValue("b0_slope", 5.0f);
+        saved.getStateInformation(now);
+        XlethParametricEQ other;
+        other.prepareToPlay(sr, 256);
+        other.setStateInformation(now.getData(), static_cast<int>(now.getSize()));
+        auto j2 = nlohmann::json::parse(other.getBandsAsJSON());
+        CHECK(!j2.empty() && j2[0]["slope"].get<int>() == 5, "[EQ slopes] a saved slope round-trips");
+    }
+
+    // Reso (Spectral) on a High Pass band follows the slope: Core weight curve == the drawn
+    // curve's stop band attenuation over the depth, for every slope; a steeper slope is a
+    // sharper edge on the same corner.
+    {
+        constexpr float depth = -24.0f;
+        double w700[9] = {};
+        for (int slope : { 0, 1, 3, 5, 7, 8 })
+        {
+            auto eq = make(sr, 256, true, 1, [&](XlethParametricEQ& e) { e.addBand(); hpBand(e, 0, 1000.0f, 4, slope, 2, depth); });
+            juce::AudioBuffer<float> in(2, static_cast<int>(sr));
+            fillPink(in, 0.05f, 0xabcdu);
+            render(*eq, in, 256);
+            float curve[XlethParametricEQ::kResponseSize];
+            eq->getResponseCurve(curve, XlethParametricEQ::kResponseSize);
+            const float* w = eq->getCoreWeightCurveForTest();
+            const auto& core = eq->getCoreForTest();
+            double worst = 0.0;
+            for (int k = 0; k < core.numBands(); ++k)
+            {
+                const double hz = core.bandCentreHz(k);
+                const double expect = std::clamp(-curveAtHz(curve, hz) / 24.0, 0.0, 1.0);
+                worst = std::max(worst, std::abs(expect - static_cast<double>(w[k])));
+            }
+            int nearest = 0;
+            for (int k = 1; k < core.numBands(); ++k)
+                if (std::abs(std::log2(core.bandCentreHz(k) / 700.0)) < std::abs(std::log2(core.bandCentreHz(nearest) / 700.0))) nearest = k;
+            w700[slope] = w[nearest];
+            std::printf("    [EQ slopes] Core Reso on HP slope %d: worst |weight - curve| %.3f, weight near 700 Hz %.3f\n", slope, worst, w700[slope]);
+            CHECK(worst < 0.08, "[EQ slopes] Reso region aligns with the slope's drawn curve");
+        }
+        CHECK(w700[7] >= w700[3] - 1e-4 && w700[3] >= w700[1] - 1e-4 && w700[8] >= w700[7] - 1e-4,
+              "[EQ slopes] steeper slope, sharper Reso edge (weight just below the corner)");
+    }
+
+    // Reso audio on both engines: a tone in the High Pass stop band is cut, one in the pass band is not.
+    for (bool core : { false, true })
+        for (int slope : { 1, 3, 8 })
+        {
+            juce::AudioBuffer<float> in(2, static_cast<int>(sr * 4));
+            fillPink(in, 0.05f, 0x4242u);
+            for (int ch = 0; ch < 2; ++ch) { addSine(in, ch, sr, 200.0, 0.05f); addSine(in, ch, sr, 4000.0, 0.05f); }
+            auto eq = make(sr, 256, core, 1, [&](XlethParametricEQ& e) { e.addBand(); hpBand(e, 0, 1000.0f, 4, slope, 2, -24.0f); });
+            const int lat = eq->getReportedProcessorLatencySamples();
+            const auto out = render(*eq, in, 256);
+            const int from = static_cast<int>(sr * 2), to = static_cast<int>(sr * 3.8);
+            const double cutStop = computeAlignedToneReductionDb(in, out, lat, from, to, 0, sr, 200.0);
+            const double cutPass = computeAlignedToneReductionDb(in, out, lat, from, to, 0, sr, 4000.0);
+            std::printf("    [EQ slopes] %s Reso HP slope %d: 200 Hz cut %.2f dB, 4 kHz cut %.2f dB\n",
+                        core ? "Core  " : "Legacy", slope, cutStop, cutPass);
+            CHECK(cutStop >= 6.0, "[EQ slopes] Reso cuts a resonance in the High Pass stop band");
+            CHECK(cutPass < 1.0, "[EQ slopes] Reso leaves the pass band alone");
+        }
+}
+
 int main()
 {
     // JUCE requires a ScopedJuceInitialiser_GUI to initialise internals
@@ -6830,6 +7205,8 @@ int main()
     testTransientSafety();
     testTransientStereoLinking();
     testTransientMidiAttackMode();
+    testTransientEnvelopeModeOnOscillatingHits();
+    testTransientEnvelopeModeBusyBus();
     testResonanceSuppressorWolaIdentity();
     testResonanceSuppressorLowLatencyMode();
     testResonanceSuppressorLatencySafeBypass();
@@ -6887,6 +7264,9 @@ int main()
     testEQCoreTransitions();
     testEQCoreStateRender();
     testEQCoreHopPhase();
+
+    std::cout << "\n=== test_eq_slopes ===\n";
+    testEQSlopes();
 
     std::cout << "\nResults: " << g_passed << " passed, " << g_failed << " failed\n";
     if (g_failed > 0)

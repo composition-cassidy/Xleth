@@ -162,7 +162,7 @@ export default function VideoDeviceChain() {
     return (
       <div className={chainStyles.scroller} data-testid="xleth-video-chain">
         <div className={chainStyles.row}>
-          <ChainHead name={name} identityColor={identityColor} videoDisabled={master} />
+          <ChainHead name={name} identityColor={identityColor} />
           <div className={styles.empty}>
             <EmptyState
               message={master

@@ -44,7 +44,11 @@ describe('ClipInspector', () => {
     const a = actions()
     act(() => root.render(<ClipInspector context={{ clip: clip(), region: { name: 'Hey' }, source: { hasVideo: true } }} actions={a} />))
     const toggles = Array.from(container.querySelectorAll('button[aria-pressed]'))
-    expect(toggles.map((t) => t.getAttribute('aria-label'))).toEqual(['Reverse', 'Preserve formants', 'Vibrato', 'Scratch', 'Swirl', 'Wave'])
+    // The Color section's stack view adds one on/off per grade level this clip
+    // has an owner for (this fixture's source has no id, so: clip and Master).
+    expect(toggles.map((t) => t.getAttribute('aria-label'))).toEqual([
+      'Reverse', 'Preserve formants', 'Clip grade on', 'Master grade on', 'Vibrato', 'Scratch', 'Swirl', 'Wave',
+    ])
     toggles.forEach((t) => expect(t.textContent).toBe(''))
     expect(container.textContent).not.toMatch(/\bOff\b/)
   })

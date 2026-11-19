@@ -67,25 +67,26 @@ export const hasLevel = (db) => Number.isFinite(db) && db > DB_MIN
 
 /**
  * Where a band's target line sits, in dB on the display. Relative mode (mode 0)
- * measures it from the overall mix level, so it needs a live reading; with none it
- * returns null rather than a made-up place. Absolute mode (mode 1) is the literal
- * level.
+ * measures it from the band's balanced reference (smartBalanceGetDebug().ref[b]:
+ * where that band would sit in a balanced mix at the material's own level), so it
+ * needs a live reading; with none it returns null rather than a made-up place.
+ * Absolute mode (mode 1) is the literal level.
  */
-export function targetVisualDb(mode, overallRmsDb, targetParam) {
+export function targetVisualDb(mode, refDb, targetParam) {
   if (Math.round(mode) !== 0) return targetParam
-  return hasLevel(overallRmsDb) ? overallRmsDb + targetParam : null
+  return hasLevel(refDb) ? refDb + targetParam : null
 }
 
 /**
- * The parameter a dragged line stands for: an offset from the overall level in
- * Relative mode, the level itself in Absolute. Clamped to the engine's range.
- * Returns null when Relative has no live reading to measure from.
+ * The parameter a dragged line stands for: an offset from the band's balanced
+ * reference in Relative mode, the level itself in Absolute. Clamped to the
+ * engine's range. Returns null when Relative has no live reading to measure from.
  */
-export function targetParamFromVisual(mode, overallRmsDb, visualDb) {
+export function targetParamFromVisual(mode, refDb, visualDb) {
   let param = visualDb
   if (Math.round(mode) === 0) {
-    if (!hasLevel(overallRmsDb)) return null
-    param = visualDb - overallRmsDb
+    if (!hasLevel(refDb)) return null
+    param = visualDb - refDb
   }
   return Math.max(TARGET_MIN, Math.min(TARGET_MAX, param))
 }

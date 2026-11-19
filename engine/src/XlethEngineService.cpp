@@ -40,12 +40,14 @@
 #include "model/TimelineTypes.h"
 #include "model/Track.h"
 #include "model/ClipSourceAnchor.h"
+#include "model/ClipSplit.h"
 #include "audio/TrackRouting.h"
 #include "util/StartLatencyTrace.h"  // TEMP/DIAGNOSTIC — start-latency probe
 #include "commands/ImportMidiCommand.h"
 #include "commands/UndoManager.h"
 #include "commands/TimelineCommands.h"
 #include "model/LensHitPresets.h"
+#include "model/ParentMath.h"
 #include "commands/QuantizeClipsBatchCommand.h"
 #include "commands/AddNotesBatchCommand.h"
 #include "commands/AddClipsBatchCommand.h"
@@ -53,6 +55,9 @@
 #include "commands/PatternBlockBatchCommands.h"
 #include "commands/AutomationBatchCommands.h"
 #include "commands/EffectChainCommands.h"
+#include "commands/ColorGradeCommands.h"
+#include "model/ColorGrade.h"
+#include "video/GradeFrameSampler.h"
 #include "sandbox/SandboxCore.h"
 #include "sandbox/SandboxCommands.h"
 #include "sandbox/SandboxRenderer.h"
@@ -88,6 +93,7 @@
 #include <optional>
 #include "render/FrameCollector.h"
 #include "render/FrameCache.h"          // RenderFrameCache
+#include "HardwareTier.h"              // preview cache / pool sizing by machine tier
 #include "render/SnapshotTransitionRenderer.h"  // snapshot transition preview seam (Slice 3b)
 #include "render/LandingRenderer.h"             // landing carry, shared with the export seam
 #include "render/RenderVideoDecoder.h"
@@ -932,6 +938,11 @@ std::atomic<bool>                g_audioSuspendedForExport{false};
 
 } // anonymous namespace
 
+// Abandon every in-flight Color Grade drag, restoring each owner's grade: the
+// grade counterpart of restoreAndClearClipControlEdit, called at the same
+// moments. Defined with the grade snapshot further down.
+static void restoreAndClearColorGradeEdits();
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1211,18 +1222,73 @@ static void syncMixerTrackSlots(bool snapVolumeSmoothers = false)
     audioEngine->getMixEngine().syncTrackSlotsFromTimeline(snapVolumeSmoothers);
 }
 
+// ── Region audio provenance ──────────────────────────────────────────────────
+// What the SampleBank entry mapped as a region's own (slot 0) audio was decoded
+// from. project_load decodes every region; the timeline UI then asks for every
+// region again through audio_loadRegionAudio as it mounts. That second pass
+// used to re-decode all of it (and, at a different rate than the load had
+// used, re-render every processed clip) — ~25 ms per region of message-thread
+// time right after a project opens, with the first copy left in the bank.
+// Recording what each mapping came from lets audio_loadRegionAudio recognise
+// "this region already holds exactly what you are asking for" and return it.
+// Anything that maps a region by another route (swap, sandbox publish) simply
+// stops matching, and the next request decodes as before.
+struct RegionAudioOrigin
+{
+    std::string path;
+    double      startTimeSec   = 0.0;
+    double      endTimeSec     = 0.0;   // ignored when toContainerEnd
+    bool        toContainerEnd = false;
+    double      sampleRate     = 0.0;
+    int         sampleId       = -1;
+
+    bool sameSource(const RegionAudioOrigin& o) const
+    {
+        return path == o.path && startTimeSec == o.startTimeSec && toContainerEnd == o.toContainerEnd
+            && (toContainerEnd || endTimeSec == o.endTimeSec) && sampleRate == o.sampleRate;
+    }
+};
+static std::unordered_map<int, RegionAudioOrigin> g_regionAudioOrigin;
+
+// The decode request for a region's own audio — the ONE definition, shared by
+// project_load and audio_loadRegionAudio so the two can never disagree about
+// what a region's audio is. Swapped audio is the whole file; otherwise the
+// region's range of its source. Returns false when there is nothing to decode.
+static bool regionAudioOriginFor(const SampleRegion& region, double sampleRate, RegionAudioOrigin& out)
+{
+    out = RegionAudioOrigin{};
+    out.sampleRate = sampleRate;
+    if (region.hasSwappedAudio && !region.swappedAudioPath.empty()) {
+        out.path = region.swappedAudioPath;
+        out.toContainerEnd = true;
+        return true;
+    }
+    const SourceMedia* source = g_timeline ? g_timeline->getSource(region.sourceId) : nullptr;
+    if (!source || source->filePath.empty()) return false;
+    out.path         = source->filePath;
+    out.startTimeSec = region.startTime;
+    out.endTimeSec   = region.endTime;
+    return out.startTimeSec < out.endTimeSec;
+}
+
 // Invalidate and re-submit render cache for every clip that needs processing.
 // Call after project_load, undo, redo, or any clip-params change.
 static void refreshAllClipCaches()
 {
     if (!audioEngine || !g_timeline) return;
     auto& mix = audioEngine->getMixEngine();
+    // One batch call, one log line. The per-clip form wrote three flushed
+    // stderr lines per clip into the pipe the Electron main process drains —
+    // thousands of lines on a real project, on every load / undo / redo.
+    std::vector<int> ids;
     for (const Clip* c : g_timeline->getAllClips()) {
         if (!c) continue;
         // Own processing OR a Clip-mode Pitch Shifter on the clip's track.
         if (mix.clipNeedsCacheRender(*c))
-            mix.invalidateClipCache(c->id, "refreshAllClipCaches");
+            ids.push_back(c->id);
     }
+    if (!ids.empty())
+        mix.invalidateClipCaches(ids, "refreshAllClipCaches");
 }
 
 // Block until every processing-needing clip's render cache is published, or
@@ -1556,6 +1622,12 @@ static std::shared_ptr<const LensRoamSnapshot> g_lensRoamSnapshot;   // guarded 
 static LensRoamSnapshot::Counts                g_lensRoamLoggedCounts;
 static bool                                    g_lensRoamEverLogged = false;
 
+// Motion view UI state (design R19): opaque renderer JSON saved in project.json
+// under "motionView". null or a non-empty object. Message (RPC) thread only.
+// See project_setMotionViewState; cleared by shutdown, project_newBlank and
+// replaced by every successful project_load.
+static nlohmann::json                          g_motionViewState;
+
 static void publishLensRoamSnapshot(const char* reason) {
     if (!g_timeline) return;
     std::shared_ptr<const LensRoamSnapshot> retired;
@@ -1580,8 +1652,143 @@ static void publishLensRoamSnapshot(const char* reason) {
         reason, c.clips, c.clipLensNonIdentity, c.sources, c.sourceLensNonIdentity,
         c.noteNudge, c.noteOwn);
     std::fprintf(stderr,
-        "[Roam] snapshot (%s): %d track(s), %d non-identity\n",
-        reason, c.tracks, c.roamNonIdentity);
+        "[Roam] snapshot (%s): %d track(s), %d non-identity; %d mask(s) on %d track(s); "
+        "%d parented track(s)\n",
+        reason, c.tracks, c.roamNonIdentity, c.masks, c.maskTracks, c.parentedTracks);
+}
+
+// ─── Color Grade snapshot (model/ColorGrade.h) ───────────────────────────────
+// The render thread never reads a ColorGrade from the Timeline. It reads this
+// immutable snapshot of BAKED grades; FrameCollector hands each cell shared
+// pointers to the ones it needs. Same life cycle as the Lens/Roam snapshot
+// above: built and swapped on the message thread under syncEventsMutex,
+// published after every UndoManager mutation and wherever the whole timeline
+// is replaced, the previous one released here and never by the video thread.
+//
+// Only what changed is re-baked: buildColorGradeSnapshot reuses the previous
+// snapshot's entry for every owner whose grade is the same.
+static std::shared_ptr<const xleth::grade::ColorGradeSnapshot> g_colorGradeSnapshot;   // guarded by syncEventsMutex
+static xleth::grade::Lut3DLibrary g_gradeLuts;          // RPC thread, under syncEventsMutex
+// Hold-to-compare (preview only): the picture with every grade off. Read by
+// the video tick, written by the RPC thread. Never reaches an export.
+static std::atomic<bool> g_gradeCompare{false};
+
+static void publishColorGradeSnapshot() {
+    if (!g_timeline) return;
+    std::shared_ptr<const xleth::grade::ColorGradeSnapshot> retired;
+    {
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
+        std::shared_ptr<const xleth::grade::ColorGradeSnapshot> snap =
+            xleth::grade::buildColorGradeSnapshot(*g_timeline, g_colorGradeSnapshot.get(),
+                                                  &g_gradeLuts);
+        retired = std::move(g_colorGradeSnapshot);
+        g_colorGradeSnapshot = snap;
+        if (g_previewCollector) g_previewCollector->setColorGradeSnapshot(std::move(snap));
+    }
+    retired.reset();
+}
+
+// ── Live edit sessions ───────────────────────────────────────────────────────
+// Dragging a grade control has to move the picture, in playback and while
+// paused, and still be ONE undo step. So a drag does not go through the undo
+// stack: colorGrade_preview writes the grade straight into the timeline (under
+// the model lock) and remembers what was there before the first write. The
+// release (colorGrade_commit) rolls back to that remembered value and then
+// runs one real command from it to the final value. Escape
+// (colorGrade_cancel) just rolls back.
+//
+// One session per target; several can be open at once (a Source and a Layer
+// panel side by side). RPC thread only.
+struct ColorGradeEditSession {
+    xleth::grade::Level level = xleth::grade::Level::Source;
+    int                 id    = 0;
+    ColorGrade          baseline;
+};
+static std::vector<ColorGradeEditSession> g_colorGradeEdits;
+
+static int findColorGradeEdit(xleth::grade::Level level, int id) {
+    for (size_t i = 0; i < g_colorGradeEdits.size(); ++i) {
+        const auto& e = g_colorGradeEdits[i];
+        if (e.level == level && (level == xleth::grade::Level::Master || e.id == id))
+            return static_cast<int>(i);
+    }
+    return -1;
+}
+
+// Roll one session back and forget it. Returns the baseline it restored.
+static bool restoreColorGradeEdit(xleth::grade::Level level, int id, ColorGrade* baselineOut = nullptr) {
+    const int idx = findColorGradeEdit(level, id);
+    if (idx < 0) return false;
+    const ColorGradeEditSession edit = g_colorGradeEdits[static_cast<size_t>(idx)];
+    g_colorGradeEdits.erase(g_colorGradeEdits.begin() + idx);
+    if (g_timeline) {
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
+        g_timeline->setColorGrade(edit.level, edit.id, edit.baseline);
+    }
+    if (baselineOut) *baselineOut = edit.baseline;
+    return true;
+}
+
+// While one of these is alive, the timeline holds every dragged owner's
+// PRE-DRAG grade; its destructor puts the previewed values back. Used around a
+// project save: a half-finished drag must never be what gets written, and a
+// save (an autosave, most of all) must neither be refused because a drag is
+// open nor end that drag under the user's hand. The published snapshot is not
+// touched, so the picture does not flicker.
+struct ColorGradeEditsSuspended {
+    std::vector<ColorGrade> previewed;
+    ColorGradeEditsSuspended() {
+        if (!g_timeline || g_colorGradeEdits.empty()) return;
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
+        previewed.reserve(g_colorGradeEdits.size());
+        for (const auto& e : g_colorGradeEdits) {
+            const ColorGrade* current = g_timeline->getColorGrade(e.level, e.id);
+            previewed.push_back(current ? *current : e.baseline);
+            g_timeline->setColorGrade(e.level, e.id, e.baseline);
+        }
+    }
+    ~ColorGradeEditsSuspended() {
+        if (!g_timeline || previewed.size() != g_colorGradeEdits.size()) return;
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
+        for (size_t i = 0; i < previewed.size(); ++i)
+            g_timeline->setColorGrade(g_colorGradeEdits[i].level, g_colorGradeEdits[i].id, previewed[i]);
+    }
+    ColorGradeEditsSuspended(const ColorGradeEditsSuspended&) = delete;
+    ColorGradeEditsSuspended& operator=(const ColorGradeEditsSuspended&) = delete;
+};
+
+// Abandon EVERY in-flight grade drag, restoring each owner. Called by the
+// paths that replace or rewind the timeline underneath one (undo, redo, load,
+// new project): a drag must not survive into a timeline it was not started on.
+// (A save does not abandon a drag; see ColorGradeEditsSuspended.)
+static void restoreAndClearColorGradeEdits() {
+    if (g_colorGradeEdits.empty()) return;
+    if (g_timeline) {
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
+        for (const auto& e : g_colorGradeEdits)
+            g_timeline->setColorGrade(e.level, e.id, e.baseline);
+    }
+    g_colorGradeEdits.clear();
+    publishColorGradeSnapshot();
+    g_previewDirty = true;
+}
+
+// Source analyses for the Auto helper and the Source-level histogram, keyed by
+// source id and remembered with the file they were made from, so a relinked
+// source is analysed again. RPC thread only.
+struct CachedGradeAnalysis {
+    std::string                 filePath;
+    xleth::grade::GradeAnalysis analysis;
+};
+static std::unordered_map<int, CachedGradeAnalysis> g_gradeAnalysisBySource;
+
+// The whole timeline was replaced (new project, project load).
+static void resetColorGradeState() {
+    g_colorGradeEdits.clear();
+    g_gradeAnalysisBySource.clear();
+    g_gradeCompare.store(false, std::memory_order_release);
+    std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
+    g_gradeLuts.clear();
 }
 
 // ─── Region proxy triggers ───────────────────────────────────────────────────
@@ -2600,11 +2807,11 @@ static JsonApi::Object clipModulationToJs(JsonApi::Env env, const ClipModulation
             JsonApi::Object bp = JsonApi::Object::New(env);
             bp.Set("time",  JsonApi::Number::New(env, m.vibrato.customShape[i].time));
             bp.Set("value", JsonApi::Number::New(env, m.vibrato.customShape[i].value));
-            arr.Set(i, bp);
+            arr.Set(i, std::move(bp));
         }
-        vib.Set("customShape", arr);
+        vib.Set("customShape", std::move(arr));
     }
-    o.Set("vibrato", vib);
+    o.Set("vibrato", std::move(vib));
 
     JsonApi::Object scr = JsonApi::Object::New(env);
     scr.Set("enabled",            JsonApi::Boolean::New(env, m.scratch.enabled));
@@ -2619,11 +2826,11 @@ static JsonApi::Object clipModulationToJs(JsonApi::Env env, const ClipModulation
             pt.Set("time",           JsonApi::Number::New(env, m.scratch.curve[i].time));
             pt.Set("rateMultiplier", JsonApi::Number::New(env, m.scratch.curve[i].rateMultiplier));
             pt.Set("curve",          JsonApi::Number::New(env, m.scratch.curve[i].curve));
-            arr.Set(i, pt);
+            arr.Set(i, std::move(pt));
         }
-        scr.Set("curve", arr);
+        scr.Set("curve", std::move(arr));
     }
-    o.Set("scratch", scr);
+    o.Set("scratch", std::move(scr));
 
     JsonApi::Object vid = JsonApi::Object::New(env);
     vid.Set("vibratoSwirlEnabled",    JsonApi::Boolean::New(env, m.video.vibratoSwirlEnabled));
@@ -2636,7 +2843,7 @@ static JsonApi::Object clipModulationToJs(JsonApi::Env env, const ClipModulation
     vid.Set("waveFrequency",          JsonApi::Number::New (env, m.video.waveFrequency));
     vid.Set("smearAmount",            JsonApi::Number::New (env, m.video.smearAmount));
     vid.Set("reverseWaveWithScratch", JsonApi::Boolean::New(env, m.video.reverseWaveWithScratch));
-    o.Set("video", vid);
+    o.Set("video", std::move(vid));
 
     return o;
 }
@@ -2805,6 +3012,12 @@ static JsonApi::Object clipToJs(JsonApi::Env env, const Clip& c) {
     // duplicate: all go through jsToClip) keeps it. Without it a rebuilt clip
     // is Clip{}, i.e. fit = Cover, and an old Stretch clip would change.
     o.Set("lens",              opaqueJsonToValue(env, lensroam::lensTrackToJson(c.lens)));
+    // Clip Color Grade, for the same reason as the lens: every JS rebuild of a
+    // clip (paste, duplicate, Shift+drag) goes through jsToClip and must carry
+    // it. Only when it is not the default, so an ungraded clip costs nothing
+    // on the wire and `clip.colorGrade` doubles as the "has a grade" flag.
+    if (!c.colorGrade.isDefault())
+        o.Set("colorGrade",    opaqueJsonToValue(env, xleth::grade::colorGradeToJson(c.colorGrade)));
     return o;
 }
 
@@ -2892,6 +3105,43 @@ static nlohmann::json valueToJson(const JsonApi::Value& value) {
     return nullptr;
 }
 
+// [{ targetTrackId, gain }] for a track's sends (FL multi-wiring).
+static JsonApi::Array trackSendsToJs(JsonApi::Env env, const TrackInfo& t) {
+    JsonApi::Array arr = JsonApi::Array::New(env, t.sends.size());
+    for (size_t k = 0; k < t.sends.size(); ++k) {
+        JsonApi::Object e = JsonApi::Object::New(env);
+        e.Set("targetTrackId", JsonApi::Number::New(env, t.sends[k].targetTrackId));
+        e.Set("gain",          JsonApi::Number::New(env, t.sends[k].gain));
+        arr.Set(static_cast<uint32_t>(k), e);
+    }
+    return arr;
+}
+
+// Motion view Parent as reported (design 2.1): the stored id, or -1 when there
+// is none, it names the track itself, or it is dangling (no such track).
+static int reportedParentTrackId(const TrackInfo& t) {
+    const int p = t.parentTrackId;
+    if (p < 0 || p == t.id) return -1;
+    if (!g_timeline || !g_timeline->getTrack(p)) return -1;
+    return p;
+}
+
+// Clones (model/Clone.h): a Clone track's settings as the UI reads them.
+//   { cloneOf, kind: 'Voice'|'Trail', voice (1-based; 0 for a Trail or a
+//     dangling clone), lensMode, delayTicks, tint, opacity, opacityKeys }
+static JsonApi::Object cloneToJs(JsonApi::Env env, const TrackInfo& t) {
+    JsonApi::Object c = JsonApi::Object::New(env);
+    c.Set("cloneOf",  JsonApi::Number::New(env, t.cloneOf));
+    c.Set("kind",     JsonApi::String::New(env, clones::cloneKindToString(t.cloneKind)));
+    c.Set("voice",    JsonApi::Number::New(env, g_timeline ? clones::voiceNumberOf(*g_timeline, t) : 0));
+    c.Set("lensMode", JsonApi::String::New(env, clones::cloneLensModeToString(t.cloneLensMode)));
+    c.Set("delayTicks", JsonApi::Number::New(env, t.trail.delayTicks));
+    c.Set("tint",     JsonApi::String::New(env, clones::tintToString(t.trail.tintRgb)));
+    c.Set("opacity",  JsonApi::Number::New(env, t.trail.opacity));
+    c.Set("opacityKeys", opaqueJsonToValue(env, clones::opacityKeysToJson(t.trail.opacityKeys)));
+    return c;
+}
+
 static JsonApi::Object trackToJs(JsonApi::Env env, const TrackInfo& t) {
     JsonApi::Object o = JsonApi::Object::New(env);
     o.Set("id",                JsonApi::Number::New(env, t.id));
@@ -2905,6 +3155,12 @@ static JsonApi::Object trackToJs(JsonApi::Env env, const TrackInfo& t) {
     o.Set("order",             JsonApi::Number::New(env, t.order));
     o.Set("type",              JsonApi::String::New(env, trackTypeToString(t.type)));
     o.Set("fxMode",            JsonApi::String::New(env, trackFxModeToString(t.fxMode)));
+    // Motion view Parent: the stored id, -1 = none (dangling / self report -1).
+    o.Set("parentTrackId",     JsonApi::Number::New(env, reportedParentTrackId(t)));
+    // Clones: the source (-1 = an ordinary track) and, on a Clone, its settings.
+    o.Set("cloneOf",           JsonApi::Number::New(env, t.cloneOf));
+    if (t.isClone())
+        o.Set("clone", cloneToJs(env, t));
     if (t.hasGraphState)
         o.Set("graphState", opaqueJsonToValue(env, t.graphState));
     // videoFlipMode: derived from videoFlipConfig for UI backward compatibility
@@ -2949,6 +3205,8 @@ static JsonApi::Object trackToJs(JsonApi::Env env, const TrackInfo& t) {
     // `< 0` without a second "isUnlimited" flag to keep in sync.
     o.Set("videoHoldLastFrameThresholdBeats",
           JsonApi::Number::New(env, t.videoHoldLastFrameThresholdBeats));
+    o.Set("videoHoldSmart",       JsonApi::Boolean::New(env, t.videoHoldSmart));
+    o.Set("videoHoldKeepPlaying", JsonApi::Boolean::New(env, t.videoHoldKeepPlaying));
     o.Set("cornerRadius",      JsonApi::Number::New(env, t.cornerRadius));
     o.Set("gapScaleOverride",  JsonApi::Number::New(env, t.gapScaleOverride));
     o.Set("subdivisionFactor", JsonApi::Number::New(env, t.subdivisionFactor));
@@ -3003,6 +3261,7 @@ static JsonApi::Object trackToJs(JsonApi::Env env, const TrackInfo& t) {
         z.Set("presetName",           JsonApi::String::New(env, zpr.presetName));
         z.Set("tracksAuthored",       JsonApi::Boolean::New(env, zpr.tracks.authored));
         z.Set("tracks",               opaqueJsonToValue(env, zprTracksToJson(zpr.tracks)));
+        z.Set("motionBlur",           opaqueJsonToValue(env, motionBlurToJson(zpr.motionBlur)));
         o.Set("zoomPanRot", z);
     }
     {
@@ -3099,6 +3358,7 @@ static JsonApi::Object trackToJs(JsonApi::Env env, const TrackInfo& t) {
             const VisualEffect& fx = t.visualEffectChain[i];
             JsonApi::Object fxObj = JsonApi::Object::New(env);
             fxObj.Set("type",     JsonApi::Number::New(env, static_cast<int>(fx.type)));
+            fxObj.Set("uid",      JsonApi::Number::New(env, fx.uid));
             fxObj.Set("bypassed", JsonApi::Boolean::New(env, fx.bypassed));
             JsonApi::Array paramsArr = JsonApi::Array::New(env, 16);
             for (int pi = 0; pi < 16; ++pi)
@@ -3114,6 +3374,7 @@ static JsonApi::Object trackToJs(JsonApi::Env env, const TrackInfo& t) {
         JsonApi::Object route = JsonApi::Object::New(env);
         route.Set("targetTrackId", JsonApi::Number::New(env, t.outputRoute.targetTrackId));
         o.Set("outputRoute", route);
+        o.Set("sends", trackSendsToJs(env, t));
     }
     return o;
 }
@@ -3132,6 +3393,9 @@ static JsonApi::Object patternNoteToJs(JsonApi::Env env, const PatternNote& n) {
     // that returns this object untouched keeps the override.
     if (n.lensOverride)
         o.Set("lensOverride", opaqueJsonToValue(env, lensroam::lensNoteOverrideToJson(*n.lensOverride)));
+    // Clones: absent = Auto. jsToPatternNote reads it back (same reason).
+    if (n.voicePin >= 0)
+        o.Set("voicePin", JsonApi::Number::New(env, n.voicePin));
     return o;
 }
 
@@ -3159,6 +3423,13 @@ static PatternNote jsToPatternNote(const JsonApi::Object& o) {
         if (!n.lensOverride && !raw.is_null())
             std::cout << "[Lens] note lensOverride ignored (needs mode Nudge|Own): "
                       << raw.dump() << "\n";
+    }
+    // Clones: the note's voice pin (absent / null / -1 / out of range = Auto).
+    // Every note-list RPC comes through here, so a piano-roll edit keeps it.
+    if (o.Has("voicePin") && o.Get("voicePin").IsNumber()) {
+        const double p = o.Get("voicePin").As<JsonApi::Number>().DoubleValue();
+        if (std::isfinite(p) && p >= 0.0 && p <= kMaxVoicePin && p == std::floor(p))
+            n.voicePin = static_cast<int>(p);
     }
     return n;
 }
@@ -3805,6 +4076,10 @@ static TrackInfo jsToTrack(const JsonApi::Object& o) {
             (std::isfinite(th) && th >= 0.0)
                 ? th : TrackInfo::kHoldLastFrameThresholdUnlimited;
     }
+    if (o.Has("videoHoldSmart") && o.Get("videoHoldSmart").IsBoolean())
+        t.videoHoldSmart = o.Get("videoHoldSmart").As<JsonApi::Boolean>().Value();
+    if (o.Has("videoHoldKeepPlaying") && o.Get("videoHoldKeepPlaying").IsBoolean())
+        t.videoHoldKeepPlaying = o.Get("videoHoldKeepPlaying").As<JsonApi::Boolean>().Value();
     if (o.Has("graphState")) {
         t.hasGraphState = true;
         t.graphState = valueToJson(o.Get("graphState"));
@@ -3989,8 +4264,16 @@ static GridLayout jsToGridLayout(const JsonApi::Object& o) {
     return g;
 }
 
-static SampleRegion jsToRegion(const JsonApi::Object& o) {
+// `base` (optional) is the region being MODIFIED. When given, parsing starts from
+// a copy of it and only the keys present on `o` overwrite — so every field this
+// parser does not read (swapped audio/video, proxy state, modulation, voicing,
+// customLabelName, ...) survives. Without it (addRegion) it builds a fresh region.
+// modifyRegion used to parse onto a DEFAULT region and then replace the whole
+// stored region with that, so a plain rename/relabel silently reset every
+// unparsed field — including a swapped-audio binding.
+static SampleRegion jsToRegion(const JsonApi::Object& o, const SampleRegion* base = nullptr) {
     SampleRegion r;
+    if (base) r = *base;
     if (o.Has("sourceId")      && o.Get("sourceId").IsNumber())
         r.sourceId = o.Get("sourceId").As<JsonApi::Number>().Int32Value();
     if (o.Has("name")          && o.Get("name").IsString())
@@ -4014,7 +4297,11 @@ static SampleRegion jsToRegion(const JsonApi::Object& o) {
         r.slots.clear();
         for (uint32_t i = 0; i < arr.Length() && r.slots.size() < MAX_SAMPLE_SLOTS; ++i) {
             if (!arr.Get(i).IsObject()) continue;
+            // Patch onto the existing slot at the same index so slot fields the
+            // payload omits (bake state, etc.) are kept rather than reset.
             SampleSlot s;
+            if (base && r.slots.size() < base->slots.size())
+                s = base->slots[r.slots.size()];
             jsPatchSlot(arr.Get(i).As<JsonApi::Object>(), s);
             r.slots.push_back(std::move(s));
         }
@@ -4474,6 +4761,10 @@ static void videoThreadBody()
                     const bool carryLandings =
                         previewLandings.count > 0 && g_previewLanding != nullptr;
                     xleth::LandingRenderer::beginFrame(previewLandings, *g_previewCollector);
+                    // Hold-to-compare (preview only): this frame's requests are
+                    // built with no Color Grade at any level.
+                    g_previewCollector->setColorGradeCompareBypass(
+                        g_gradeCompare.load(std::memory_order_acquire));
                     std::vector<CellFrameRequest>* collectedRequests = nullptr;
                     if (carryLandings && !previewTransition.active) {
                         xleth::SnapshotTransitionFrameCtx landingCtx;
@@ -4498,6 +4789,10 @@ static void videoThreadBody()
                             /*applyPreviewEffectMute=*/true);
                     }
                     auto& requests = *collectedRequests;
+                    // Master Color Grade for this frame. Taken here, while both
+                    // the model lock and the compositor lock are held, and
+                    // applied by readback() to the finished frame.
+                    g_previewCompositor->setMasterGrade(g_previewCollector->masterGrade());
                     s_collectTimer.record(
                         tickUsBetween(tTickStart, TickClock::now()),
                         g_previewDiag.lastCollectUs, g_previewDiag.avgCollectUs,
@@ -5581,7 +5876,9 @@ JsonApi::Value Initialize(const JsonApi::CallbackInfo& info)
     // 4. Frame cache — VRAM-aware cap. Query dedicated GPU memory once at init
     //    (init thread, never the audio thread) and scale the LRU byte cap by tier.
     //    DXGI failure → silent fallback to the fixed 512 MB cap (no crash/assert).
-    constexpr size_t kFixedCapBytes = 512ULL * 1024 * 1024;   // baseline for >= 4 GB VRAM
+    // The frames themselves live in system RAM (YUV planes), so the >= 4 GB
+    // baseline also scales with the RAM tier (HardwareTier: 1x below 24 GB).
+    const size_t kFixedCapBytes = xleth::hw::scaledCacheBytes(512ULL * 1024 * 1024);
     size_t capBytes = kFixedCapBytes;
     const uint64_t vramBytes = GpuDeviceManager::queryMaxDedicatedVramBytes();
     if (vramBytes > 0) {
@@ -5624,7 +5921,9 @@ JsonApi::Value Initialize(const JsonApi::CallbackInfo& info)
     g_proxyManager   = std::make_unique<ProxyManager>();
 
     g_sandboxCore        = std::make_unique<xleth::sandbox::SandboxCore>();
-    g_sandboxRenderer    = std::make_unique<xleth::sandbox::SandboxRenderer>();
+    // RAM-tiered render budget (512 MB below 24 GB; see HardwareTier).
+    g_sandboxRenderer    = std::make_unique<xleth::sandbox::SandboxRenderer>(
+        xleth::hw::scaledCacheBytes(xleth::sandbox::SandboxRenderer::kDefaultMaxBytes));
     g_sandboxSpectrogram = std::make_unique<xleth::sandbox::SandboxSpectrogramAnalyzer>();
     g_sandboxPitchTrack  = std::make_unique<xleth::sandbox::SandboxPitchTrackAnalyzer>();
 
@@ -5682,6 +5981,10 @@ JsonApi::Value Initialize(const JsonApi::CallbackInfo& info)
             // undo/redo) can change the resolved values. Runs on the RPC
             // thread, after the command released the mutation lock.
             publishLensRoamSnapshot("edit");
+            // Color Grades live on sources, clips, regions, tracks and the
+            // project, so any edit (and its undo/redo) can change which
+            // grades are active. Only a changed grade is re-baked.
+            publishColorGradeSnapshot();
             // The export is unaffected (it reads its frozen copy), but MixEngine
             // state derived during it came from the copy; resync on restore.
             if (g_mixOnExportTimeline) g_timelineEditedDuringExport = true;
@@ -5691,6 +5994,7 @@ JsonApi::Value Initialize(const JsonApi::CallbackInfo& info)
         g_undoManager->setMutationMutex(&syncEventsMutex);
     }
     publishLensRoamSnapshot("init");
+    publishColorGradeSnapshot();
 
     // Sync transport BPM from timeline default
     audioEngine->getTransport().setBPM(g_timeline->getBPM());
@@ -5724,6 +6028,27 @@ JsonApi::Value Initialize(const JsonApi::CallbackInfo& info)
 
         g_previewCompositor    = std::make_unique<GridCompositor>();
         g_previewRenderCache   = std::make_unique<RenderFrameCache>();
+        {
+            // Decoded-frame textures live in VRAM. Historical cap: a fixed 512 MB
+            // on every card (64 full-HD frames even on 16 GB). Discrete cards now
+            // get an eighth of dedicated VRAM, bounded to [512 MB, 2 GB] — see
+            // HardwareTier::previewFrameCacheBytes. Integrated keeps 512 MB.
+            uint64_t vram = 0;
+            bool     discrete = false;
+            const int active = g_gpuDevice->getActiveAdapterIndex();
+            for (const auto& a : g_gpuDevice->getAdapters()) {
+                if (a.adapterIndex != active) continue;
+                vram     = static_cast<uint64_t>(a.dedicatedVideoMemoryMB) << 20;
+                discrete = a.isDiscrete;
+                break;
+            }
+            const size_t capBytes = xleth::hw::previewFrameCacheBytes(vram, discrete);
+            g_previewRenderCache->setMemoryLimit(capBytes);
+            std::fprintf(stderr,
+                "[PreviewUnify] preview frame cache: %zu MB (adapter VRAM %llu MB, %s)\n",
+                capBytes >> 20, static_cast<unsigned long long>(vram >> 20),
+                discrete ? "discrete" : "integrated/unknown");
+        }
         g_previewRenderDecoder = std::make_unique<RenderVideoDecoder>();
         // The preview re-requests every visible file each tick; a source that
         // will not open must not be re-opened sixty times a second.
@@ -5737,6 +6062,7 @@ JsonApi::Value Initialize(const JsonApi::CallbackInfo& info)
         {
             std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
             g_previewCollector->setLensRoamSnapshot(g_lensRoamSnapshot);
+            g_previewCollector->setColorGradeSnapshot(g_colorGradeSnapshot);
         }
 
         // Visual Echo: point the collector at the LIVE MixEngine so a bound
@@ -5888,6 +6214,9 @@ void Shutdown(const JsonApi::CallbackInfo& info)
 {
     BridgeCallLog log("shutdown");
     if (!isInitialised()) { log.done("noop"); return; }
+
+    // The open project's Motion view UI state goes with it.
+    g_motionViewState = nullptr;
 
     // Stop the audio-health sampler first so it never reads a half-torn engine.
     stopAudioHealthSampler();
@@ -7127,10 +7456,81 @@ JsonApi::Value Project_Create(const JsonApi::CallbackInfo& info)
     BridgeCallLog log("project.create");
 
     restoreAndClearClipControlEdit();
+    restoreAndClearColorGradeEdits();
     bool ok = g_projectManager->createProject(dir, name, width, height, fps, aspectRatio);
     if (ok) syncSlotBakeCacheDir();
     log.done(ok ? "true" : "false");
     return JsonApi::Boolean::New(env, ok);
+}
+
+// ─── Motion view UI state (design R19, 2.3) ──────────────────────────────────
+// Opaque renderer-owned JSON saved in project.json under "motionView" (schema
+// v9): expanded rows, per-view heights / scroll, header width, graph on/off,
+// last view. NOT undoable and NOT dirtying (like masterVolume): the renderer
+// pushes it with project_setMotionViewState and it rides every save. Null =
+// none (nothing written). Replaced on every successful project_load (null when
+// the project has none) and cleared by project_newBlank, so a project never
+// inherits the previous one's state. Message (RPC) thread only.
+// (g_motionViewState itself is declared with the Lens/Roam snapshot globals,
+// so Shutdown can clear it.)
+static constexpr std::size_t kMaxMotionViewStateBytes = 256 * 1024;
+
+static bool motionViewStateFinite(const nlohmann::json& v) {
+    if (v.is_number_float()) return std::isfinite(v.get<double>());
+    if (v.is_array() || v.is_object()) {
+        for (const auto& e : v) if (!motionViewStateFinite(e)) return false;
+    }
+    return true;
+}
+
+// project_getMotionViewState() -> object | null
+JsonApi::Value Project_GetMotionViewState(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (!g_motionViewState.is_object()) return env.Null();
+    return opaqueJsonToValue(env, g_motionViewState);
+}
+
+// project_setMotionViewState(state: object | null) -> true
+// STRICT: anything but a plain object or null throws, and so does an object
+// whose JSON is over 256 KB or that holds a non-finite number. An empty object
+// is stored as null (nothing to save). Not undoable, does not dirty the project.
+JsonApi::Value Project_SetMotionViewState(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const char* sig = "project_setMotionViewState(state: object | null)";
+    if (info.Length() < 1 || (!info[0].IsNull() && (!info[0].IsObject() || info[0].IsArray()))) {
+        JsonApi::TypeError::New(env, sig).ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info[0].IsNull()) {
+        g_motionViewState = nullptr;
+        return JsonApi::Boolean::New(env, true);
+    }
+    nlohmann::json state = valueToJson(info[0]);
+    // nlohmann writes a non-finite double as null on dump: refuse it rather
+    // than save something that does not read back as it was sent.
+    if (!motionViewStateFinite(state)) {
+        JsonApi::TypeError::New(env, std::string(sig) + ": every number must be finite").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const std::size_t bytes = state.dump().size();
+    if (bytes > kMaxMotionViewStateBytes) {
+        JsonApi::TypeError::New(env, std::string(sig) + ": state is " + std::to_string(bytes)
+            + " bytes (at most " + std::to_string(kMaxMotionViewStateBytes) + ")").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (state.empty()) g_motionViewState = nullptr;
+    else               g_motionViewState = std::move(state);
+    return JsonApi::Boolean::New(env, true);
 }
 
 JsonApi::Value Project_Save(const JsonApi::CallbackInfo& info)
@@ -7147,6 +7547,8 @@ JsonApi::Value Project_Save(const JsonApi::CallbackInfo& info)
         log.done("deferred: clip control edit active");
         return JsonApi::Boolean::New(env, false);
     }
+    // A Color Grade drag still in flight is saved as its pre-drag value.
+    const ColorGradeEditsSuspended gradeDragsSuspended;
     nlohmann::json effectChains, masterChain;
     float masterVolume = 1.0f;
     if (audioEngine) {
@@ -7162,7 +7564,7 @@ JsonApi::Value Project_Save(const JsonApi::CallbackInfo& info)
     if (g_sandboxCore) sandboxWorkspace = g_sandboxCore->toJson();
     sandboxWorkspace["pitchTracks"] = buildSandboxPitchTracksJson();
     bool ok = g_projectManager->saveProject(*g_timeline, effectChains, masterChain, masterVolume,
-                                            sandboxWorkspace);
+                                            sandboxWorkspace, g_motionViewState);
     if (ok && g_undoManager) g_undoManager->markSavepoint();
     log.done(ok ? "true" : "false");
     return JsonApi::Boolean::New(env, ok);
@@ -7187,6 +7589,8 @@ JsonApi::Value Project_SaveAs(const JsonApi::CallbackInfo& info)
         log.done("deferred: clip control edit active");
         return JsonApi::Boolean::New(env, false);
     }
+    // A Color Grade drag still in flight is saved as its pre-drag value.
+    const ColorGradeEditsSuspended gradeDragsSuspended;
     nlohmann::json effectChains, masterChain;
     float masterVolume = 1.0f;
     if (audioEngine) {
@@ -7199,7 +7603,7 @@ JsonApi::Value Project_SaveAs(const JsonApi::CallbackInfo& info)
     if (g_sandboxCore) sandboxWorkspace = g_sandboxCore->toJson();
     sandboxWorkspace["pitchTracks"] = buildSandboxPitchTracksJson();
     bool ok = g_projectManager->saveProjectAs(dir, name, *g_timeline, effectChains, masterChain,
-                                              masterVolume, sandboxWorkspace);
+                                              masterVolume, sandboxWorkspace, g_motionViewState);
     if (ok) syncSlotBakeCacheDir();
     if (ok && g_undoManager) g_undoManager->markSavepoint();
     log.done(ok ? "true" : "false");
@@ -7253,6 +7657,7 @@ JsonApi::Value Project_NewBlank(const JsonApi::CallbackInfo& info)
 
     BridgeCallLog log("project.newBlank");
     restoreAndClearClipControlEdit();
+    restoreAndClearColorGradeEdits();
 
     // 1. Stop playback (Transport::stop rewinds position to 0) and silence
     //    any sustained sampler voices so there is no audible carry-over.
@@ -7282,6 +7687,7 @@ JsonApi::Value Project_NewBlank(const JsonApi::CallbackInfo& info)
         mix.closeAllPluginEditors();
         mix.destroyAllEffectChains();
         mix.clearRegionToSampleMap();
+        g_regionAudioOrigin.clear();
         // The loudness meter integrates over programme material; carrying the
         // old project's measurement into a blank one would be meaningless.
         mix.resetMasterLoudness();
@@ -7300,6 +7706,8 @@ JsonApi::Value Project_NewBlank(const JsonApi::CallbackInfo& info)
         g_timeline->setGlobalStretchMethod(newProjectGlobalStretchMethod);
     }
     publishLensRoamSnapshot("new project");
+    resetColorGradeState();
+    publishColorGradeSnapshot();
 
     // 5. Clear undo/redo history. markSavepoint at the end so the empty
     //    project starts out "clean".
@@ -7370,6 +7778,7 @@ JsonApi::Value Project_NewBlank(const JsonApi::CallbackInfo& info)
 
     // 10. Reset ProjectManager (project dir / name / timestamps).
     g_projectManager->resetToBlank();
+    g_motionViewState = nullptr;   // Motion view UI state belongs to the closed project
     syncSlotBakeCacheDir();   // no dir → bake cache goes memory-only
 
     // 11. Savepoint on the blank state — isDirty() must return false now.
@@ -7410,15 +7819,37 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
     std::string dir = info[0].As<JsonApi::String>().Utf8Value();
     BridgeCallLog log("project.load");
 
+    // Where a load's time goes, printed as ONE line at the end. Project load is
+    // the longest thing the message thread ever does in one call; without this
+    // the only way to find a slow stage was to read timestamps off the log.
+    using LoadClock = std::chrono::steady_clock;
+    const auto loadStart = LoadClock::now();
+    auto stageStart = loadStart;
+    std::string stageReport;
+    auto endStage = [&](const char* name) {
+        const auto now = LoadClock::now();
+        const double ms = std::chrono::duration<double, std::milli>(now - stageStart).count();
+        stageStart = now;
+        char buf[64];
+        std::snprintf(buf, sizeof buf, "%s%s=%.0fms", stageReport.empty() ? "" : " ", name, ms);
+        stageReport += buf;
+    };
+
     restoreAndClearClipControlEdit();
+    restoreAndClearColorGradeEdits();
     // loadProject() re-points ProjectManager at `dir`; remember the project being
     // closed so purge-on-close (below) still finds its folder.
     const std::string closingDir = g_projectManager->getProjectDir();
     auto loaded = g_projectManager->loadProject(dir);
+    endStage("parse");
     if (!loaded) {
         log.done("false");
         return JsonApi::Boolean::New(env, false);
     }
+    // Motion view UI state: the loaded project's, or none. Never the previous
+    // project's (a failed load above keeps the still-open project's state).
+    g_motionViewState = g_projectManager->getLoadedMotionViewState().is_object()
+        ? g_projectManager->getLoadedMotionViewState() : nlohmann::json();
     // Before the samplers are rebuilt below: a slot whose bake file survived in
     // the project's cache folder is then a disk HIT and costs no DSP, and one
     // whose file was deleted rebakes without anyone having to ask.
@@ -7471,6 +7902,8 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
         *g_timeline = std::move(*loaded);
     }
     publishLensRoamSnapshot("project load");
+    resetColorGradeState();
+    publishColorGradeSnapshot();
     if (g_undoManager) g_undoManager->clear();
 
     // Re-wire MixEngine and sync transport BPM
@@ -7496,8 +7929,32 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
         // from a previously-open project). We clear first to discard stale entries, then
         // decode each region's audio — swap-aware, same logic as audio_loadRegionAudio.
         mix.clearRegionToSampleMap();
+        g_regionAudioOrigin.clear();
+        endStage("teardown");
         if (sampleBank) {
             const double engineRate = g_timeline->getSampleRate();
+
+            // Three passes. The decodes (the slow part: one FFmpeg open + seek +
+            // decode per region, ~25 ms each) are independent of each other, so
+            // pass 2 runs them concurrently. Passes 1 and 3 stay on this thread
+            // and in region order, so the bank ids and the region → sample map
+            // come out exactly as the old one-region-at-a-time loop built them.
+            struct SlotJob   { int slotIndex = 0; int request = -1; std::string path; };
+            struct RegionJob { int regionId = -1; int request = -1; RegionAudioOrigin origin; std::vector<SlotJob> slots; };
+            std::vector<RegionJob> regionJobs;
+            std::vector<SampleBank::SourceRequest> requests;
+
+            // A region's own audio is decoded at the rate audio_loadRegionAudio
+            // uses (the running engine's), not the project's nominal rate: that
+            // is the buffer the app has always ended up playing and exporting
+            // from, because the timeline UI re-requested every region through
+            // that call as soon as it mounted. Decoding to it here is what lets
+            // that request be answered from the bank instead of decoded again.
+            // Layer files (below) keep the project rate, as before.
+            const double regionRate = audioEngine->getSampleRate() > 0.0
+                                    ? audioEngine->getSampleRate() : engineRate;
+
+            // Pass 1: what does each region need decoded?
             for (SampleRegion* region : g_timeline->getAllRegionsMutable()) {
                 if (!region) continue;
 
@@ -7517,61 +7974,99 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
                     }
                 }
 
-                std::string audioPath;
-                double startT = 0.0, endT = 0.0;
+                // Swap-aware: the whole swapped file, else the region's range of
+                // its source (regionAudioOriginFor — shared with audio_loadRegionAudio).
+                RegionAudioOrigin origin;
+                if (!regionAudioOriginFor(*region, regionRate, origin)) continue;
 
-                if (region->hasSwappedAudio && !region->swappedAudioPath.empty()) {
-                    // Swapped audio: full file from 0. Use large endT — loadSampleFromSource
-                    // stops at EOF regardless, same fallback as Audio_SwapRegionAudio.
-                    audioPath = region->swappedAudioPath;
-                    startT = 0.0;
-                    endT   = 3600.0;
-                } else {
-                    const SourceMedia* source = g_timeline->getSource(region->sourceId);
-                    if (!source || source->filePath.empty()) continue;
-                    audioPath = source->filePath;
-                    startT = region->startTime;
-                    endT   = region->endTime;
-                }
-
-                if (startT >= endT) continue;
-
-                const int sid = sampleBank->loadSampleFromSource(
-                    audioPath, startT, endT, engineRate);
-                if (sid >= 0) {
-                    fprintf(stderr, "[PITCHDBG] projectLoad: mapRegionToSample region=%d sampleId=%d\n",
-                            region->id, sid);
-                    fflush(stderr);
-                    mix.mapRegionToSample(region->id, sid);
+                RegionJob job;
+                job.regionId = region->id;
+                job.origin   = origin;
+                job.request  = static_cast<int>(requests.size());
+                {
+                    SampleBank::SourceRequest req;
+                    req.filePath       = origin.path;
+                    req.startTimeSec   = origin.startTimeSec;
+                    req.endTimeSec     = origin.endTimeSec;
+                    req.toContainerEnd = origin.toContainerEnd;
+                    req.sampleRate     = origin.sampleRate;
+                    requests.push_back(std::move(req));
                 }
 
                 // Layers 1..7 carry their own file in the project's slots/ dir.
                 // Slot 0 needs nothing here — it plays the region audio decoded
-                // just above. A slot whose file went missing stays silent
-                // rather than failing the whole load.
-                mix.unmapAllRegionSlots(region->id);
+                // for the request above. Queued right after their region so the
+                // bank ids keep the old order (region, its layers, next region).
                 for (int si = 1; si < region->slotCount(); ++si) {
                     const std::string& slotPath = region->slot(si).audioFilePath;
                     if (slotPath.empty()) continue;
                     const auto probed = probeAudioInfo(slotPath);
                     const double slotEnd = probed.duration > 0.0 ? probed.duration : 3600.0;
-                    const int slotSid = sampleBank->loadSampleFromSource(
-                        slotPath, 0.0, slotEnd, engineRate);
+                    SlotJob slot;
+                    slot.slotIndex = si;
+                    slot.request   = static_cast<int>(requests.size());
+                    slot.path      = slotPath;
+                    {
+                        SampleBank::SourceRequest req;
+                        req.filePath     = slotPath;
+                        req.startTimeSec = 0.0;
+                        req.endTimeSec   = slotEnd;
+                        requests.push_back(std::move(req));
+                    }
+                    job.slots.push_back(std::move(slot));
+                }
+                regionJobs.push_back(std::move(job));
+            }
+
+            // Pass 2: decode everything at once; ids are assigned in request order.
+            const std::vector<int> sampleIds = sampleBank->loadSamplesFromSources(
+                requests, engineRate, /*logEachSuccess=*/false);
+
+            // Pass 3: wire the results up, in region order.
+            int regionsMapped = 0, regionsFailed = 0, slotsMapped = 0, slotsFailed = 0;
+            for (const RegionJob& job : regionJobs) {
+                const int sid = sampleIds[static_cast<size_t>(job.request)];
+                if (sid >= 0) {
+                    mix.mapRegionToSample(job.regionId, sid);
+                    RegionAudioOrigin origin = job.origin;
+                    origin.sampleId = sid;
+                    g_regionAudioOrigin[job.regionId] = std::move(origin);
+                    ++regionsMapped;
+                } else {
+                    ++regionsFailed;
+                }
+
+                // A slot whose file went missing stays silent rather than
+                // failing the whole load.
+                mix.unmapAllRegionSlots(job.regionId);
+                for (const SlotJob& slot : job.slots) {
+                    const int slotSid = sampleIds[static_cast<size_t>(slot.request)];
                     if (slotSid < 0) {
                         std::fprintf(stderr,
                             "[project_load] region %d slot %d: failed to decode '%s' "
                             "— layer will be silent\n",
-                            region->id, si, slotPath.c_str());
+                            job.regionId, slot.slotIndex, slot.path.c_str());
+                        ++slotsFailed;
                         continue;
                     }
-                    triggerMipmapGeneration(slotSid, slotPath, /*saveXlpeak=*/true);
-                    mix.mapRegionSlotToSample(region->id, si, slotSid);
+                    triggerMipmapGeneration(slotSid, slot.path, /*saveXlpeak=*/true);
+                    mix.mapRegionSlotToSample(job.regionId, slot.slotIndex, slotSid);
+                    ++slotsMapped;
                 }
             }
+            std::cout << "[Project] Region audio: " << regionsMapped << " region(s) + "
+                      << slotsMapped << " layer file(s) decoded";
+            if (regionsFailed + slotsFailed > 0)
+                std::cout << ", " << regionsFailed << " region(s) and " << slotsFailed
+                          << " layer file(s) FAILED (see warnings above)";
+            std::cout << "\n" << std::flush;
         }
+        endStage("regionAudio");
 
         mix.rebuildAllSamplers();
+        endStage("samplers");
         refreshAllClipCaches();
+        endStage("clipCaches");
 
         // Restore effect chains from project.json (absent in older projects — graceful no-op)
         {
@@ -7591,6 +8086,7 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
             mix.setMasterVolume(g_projectManager->getLoadedMasterVolume());
         }
         audioEngine->refreshLivePresentationLatency();
+        endStage("effectChains");
     }
 
     // ── Sample Sandbox workspace (SB-6) ──────────────────────────────────────
@@ -7869,6 +8365,12 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
             }
         }
     }
+
+    endStage("sandboxAndVideo");
+    std::cout << "[Project] load timing: " << stageReport << " total="
+              << static_cast<long long>(std::chrono::duration<double, std::milli>(
+                     LoadClock::now() - loadStart).count())
+              << "ms\n" << std::flush;
 
     log.done("true");
     return JsonApi::Boolean::New(env, true);
@@ -8161,6 +8663,59 @@ void Timeline_SetGlobalStretchMethod(const JsonApi::CallbackInfo& info)
     }
 }
 
+// timeline_getMotionBlur() -> { enabled: boolean, shutterAngle: number }
+// The project-wide Lens / Roam / Sweep motion blur (MotionBlurSettings).
+JsonApi::Value Timeline_GetMotionBlur(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!g_timeline) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    MotionBlurSettings m;
+    {
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
+        m = g_timeline->getMotionBlur();
+    }
+    return opaqueJsonToValue(env, motionBlurToJson(m));
+}
+
+// timeline_setMotionBlur({ enabled?: boolean, shutterAngle?: number }) -> object
+// A render preference like declickMs, so it bypasses UndoManager. Fields left
+// out keep their current value. Written under syncEventsMutex, the lock the
+// video tick holds around collectRequests, so a frame never sees half of it.
+// Returns the stored (sanitized) settings.
+JsonApi::Value Timeline_SetMotionBlur(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsObject()) {
+        JsonApi::TypeError::New(env,
+            "timeline_setMotionBlur(settings: { enabled?: boolean, shutterAngle?: number })")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    JsonApi::Object o = info[0].As<JsonApi::Object>();
+    MotionBlurSettings stored;
+    {
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
+        MotionBlurSettings m = g_timeline->getMotionBlur();
+        if (o.Has("enabled") && o.Get("enabled").IsBoolean())
+            m.enabled = o.Get("enabled").As<JsonApi::Boolean>().Value();
+        if (o.Has("shutterAngle") && o.Get("shutterAngle").IsNumber())
+            m.shutterAngleDeg = o.Get("shutterAngle").As<JsonApi::Number>().FloatValue();
+        g_timeline->setMotionBlur(m);
+        stored = g_timeline->getMotionBlur();
+    }
+    g_previewDirty = true;   // a paused preview re-renders with the new shutter
+    std::fprintf(stderr, "[MotionBlur] project: %s, shutter %.0f deg\n",
+                 stored.enabled ? "on" : "off", static_cast<double>(stored.shutterAngleDeg));
+    return opaqueJsonToValue(env, motionBlurToJson(stored));
+}
+
 JsonApi::Value Timeline_GetSources(const JsonApi::CallbackInfo& info)
 {
     JsonApi::Env env = info.Env();
@@ -8425,6 +8980,17 @@ void Timeline_SetBPM(const JsonApi::CallbackInfo& info)
     }
     double bpm = info[0].As<JsonApi::Number>().DoubleValue();
     BridgeCallLog log("timeline.setBPM");
+
+    // Every tick/second conversion divides by the tempo, and the tempo-locked
+    // stretch rescale divides the old tempo by the new one: a zero, negative or
+    // non-finite BPM turned stretch ratios into NaN and negative numbers that
+    // were then saved with the project. The transport bar offers 20..999; this
+    // is the engine's own, wider, floor and ceiling.
+    if (!std::isfinite(bpm) || bpm < 1.0 || bpm > 2000.0) {
+        JsonApi::RangeError::New(env, "timeline_setBPM: bpm must be between 1 and 2000")
+            .ThrowAsJavaScriptException();
+        return;
+    }
 
     g_undoManager->execute(std::make_unique<SetBPMCommand>(bpm, *g_timeline), *g_timeline);
     // Sync live transport to match the timeline's committed BPM
@@ -9243,6 +9809,93 @@ void Timeline_SetPreviewFps(const JsonApi::CallbackInfo& info)
     log.done(std::to_string(fps));
 }
 
+// timeline_setTrackRoutes(trackId, { targetTrackId, sends: [{ targetTrackId, gain }] })
+// — FL multi-wiring. Replaces the track's WHOLE audible destination set (primary
+// output, -1 = Master, plus extra sends) in one undo step. Returns
+// { ok: true, targetTrackId, sends } or { ok: false, reason }.
+JsonApi::Value Timeline_SetTrackRoutes(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsObject()) {
+        JsonApi::TypeError::New(env,
+            "timeline_setTrackRoutes(trackId: number, routes: { targetTrackId, sends })")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int sourceTrackId = info[0].As<JsonApi::Number>().Int32Value();
+    JsonApi::Object payload = info[1].As<JsonApi::Object>();
+    BridgeCallLog log("timeline.setTrackRoutes");
+
+    const int targetTrackId = payload.Has("targetTrackId") && payload.Get("targetTrackId").IsNumber()
+        ? payload.Get("targetTrackId").As<JsonApi::Number>().Int32Value() : -1;
+    std::vector<TrackSend> sends;
+    if (payload.Has("sends") && payload.Get("sends").IsArray()) {
+        JsonApi::Array arr = payload.Get("sends").As<JsonApi::Array>();
+        for (uint32_t k = 0; k < arr.Length(); ++k) {
+            if (!arr.Get(k).IsObject()) continue;
+            JsonApi::Object e = arr.Get(k).As<JsonApi::Object>();
+            TrackSend send;
+            send.targetTrackId = e.Has("targetTrackId") && e.Get("targetTrackId").IsNumber()
+                ? e.Get("targetTrackId").As<JsonApi::Number>().Int32Value() : -1;
+            send.gain = e.Has("gain") && e.Get("gain").IsNumber()
+                ? e.Get("gain").As<JsonApi::Number>().FloatValue() : 1.0f;
+            sends.push_back(send);
+        }
+    }
+
+    auto result = xleth::validateTrackRoutes(*g_timeline, sourceTrackId, targetTrackId, sends);
+    JsonApi::Object ret = JsonApi::Object::New(env);
+    if (!result.ok()) {
+        ret.Set("ok",     JsonApi::Boolean::New(env, false));
+        ret.Set("reason", JsonApi::String::New(env, result.reasonString()));
+        log.done(std::string("rejected:") + result.reasonString());
+        return ret;
+    }
+
+    g_undoManager->execute(
+        std::make_unique<SetTrackRoutesCommand>(sourceTrackId, targetTrackId, sends, *g_timeline),
+        *g_timeline);
+    audioEngine->refreshLivePresentationLatency();
+
+    const TrackInfo* t = g_timeline->getTrack(sourceTrackId);
+    ret.Set("ok",            JsonApi::Boolean::New(env, true));
+    ret.Set("targetTrackId", JsonApi::Number::New(env, targetTrackId));
+    if (t) ret.Set("sends", trackSendsToJs(env, *t));
+    log.done(std::to_string(sourceTrackId) + "->" + std::to_string(targetTrackId)
+             + " +" + std::to_string(sends.size()) + " sends");
+    return ret;
+}
+
+// timeline_setTrackSendGain(trackId, targetTrackId, gain) — live level of one
+// existing send (knob drag). Not undo-tracked, like the fader. { ok } | { ok:false, reason }.
+JsonApi::Value Timeline_SetTrackSendGain(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!g_timeline) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsNumber() || !info[2].IsNumber()) {
+        JsonApi::TypeError::New(env,
+            "timeline_setTrackSendGain(trackId: number, targetTrackId: number, gain: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int   sourceTrackId = info[0].As<JsonApi::Number>().Int32Value();
+    const int   targetTrackId = info[1].As<JsonApi::Number>().Int32Value();
+    const float gain          = info[2].As<JsonApi::Number>().FloatValue();
+    auto result = g_timeline->setTrackSendGain(sourceTrackId, targetTrackId, gain);
+    JsonApi::Object ret = JsonApi::Object::New(env);
+    ret.Set("ok", JsonApi::Boolean::New(env, result.ok()));
+    if (!result.ok())
+        ret.Set("reason", JsonApi::String::New(env, result.reasonString()));
+    return ret;
+}
+
 // timeline_setTrackOutputRoute(trackId, targetTrackId) — undo-tracked route change.
 // targetTrackId = -1 means Master (default). Returns { ok: bool, targetTrackId? }
 // or { ok: false, reason: string }.
@@ -9308,6 +9961,7 @@ JsonApi::Value Timeline_GetRouting(const JsonApi::CallbackInfo& info)
         JsonApi::Object route = JsonApi::Object::New(env);
         route.Set("targetTrackId", JsonApi::Number::New(env, t.outputRoute.targetTrackId));
         entry.Set("outputRoute", route);
+        entry.Set("sends", trackSendsToJs(env, t));
 
         JsonApi::Array scArr = JsonApi::Array::New(env, t.sidechainRoutes.size());
         for (size_t k = 0; k < t.sidechainRoutes.size(); ++k) {
@@ -9325,11 +9979,13 @@ JsonApi::Value Timeline_GetRouting(const JsonApi::CallbackInfo& info)
             // (track present, effect missing) > unsupported (resolves but exposes
             // no sidechain input — e.g. a now-incapable VST after re-probe) >
             // invalid (structurally broken) > ok. Never crashes / never deletes.
+            // A track-level route (empty effect id, FL "Sidechain to this
+            // track") only needs its target track to exist.
             const char* status = "ok";
-            if (sc.targetEffectInstanceId.empty()) {
-                status = "invalid";
-            } else if (!g_timeline->getTrack(sc.targetTrackId)) {
+            if (!g_timeline->getTrack(sc.targetTrackId)) {
                 status = "stale_target_track";
+            } else if (sc.targetEffectInstanceId.empty()) {
+                status = "ok";
             } else if (isInitialised()) {
                 auto& mix = audioEngine->getMixEngine();
                 int nodeId = mix.getEffectNodeIdForInstance(sc.targetTrackId,
@@ -9980,7 +10636,11 @@ JsonApi::Value Timeline_AddTrack(const JsonApi::CallbackInfo& info)
     return JsonApi::Number::New(env, newId);
 }
 
-// timeline_removeTrack(id) — cascades to clips on that track
+// timeline_removeTrack(id, opts?) — cascades to clips on that track.
+// opts (optional, STRICT): { keepOnScreenTick?: number >= 0 }. Motion view:
+// the removed track's children detach in the SAME undo step, each keeping its
+// on-screen pose at keepOnScreenTick (default 0). Unknown field, wrong type or
+// a non-finite / negative tick throws.
 void Timeline_RemoveTrack(const JsonApi::CallbackInfo& info)
 {
     JsonApi::Env env = info.Env();
@@ -9988,11 +10648,38 @@ void Timeline_RemoveTrack(const JsonApi::CallbackInfo& info)
         JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
         return;
     }
+    const char* sig = "timeline_removeTrack(id: number, opts?: { keepOnScreenTick?: number })";
     if (info.Length() < 1 || !info[0].IsNumber()) {
-        JsonApi::TypeError::New(env, "timeline_removeTrack(id: number)").ThrowAsJavaScriptException();
+        JsonApi::TypeError::New(env, sig).ThrowAsJavaScriptException();
         return;
     }
     int id = info[0].As<JsonApi::Number>().Int32Value();
+    double keepOnScreenTick = 0.0;
+    if (info.Length() >= 2 && !info[1].IsUndefined() && !info[1].IsNull()) {
+        if (!info[1].IsObject() || info[1].IsArray()) {
+            JsonApi::TypeError::New(env, std::string(sig) + ": opts must be an object").ThrowAsJavaScriptException();
+            return;
+        }
+        const nlohmann::json opts = valueToJson(info[1]);
+        for (auto it = opts.begin(); it != opts.end(); ++it) {
+            if (it.key() != "keepOnScreenTick") {
+                JsonApi::TypeError::New(env, std::string(sig) + ": unknown field '" + it.key()
+                    + "' (keepOnScreenTick)").ThrowAsJavaScriptException();
+                return;
+            }
+        }
+        if (opts.contains("keepOnScreenTick")) {
+            const nlohmann::json& t = opts["keepOnScreenTick"];
+            // Upper bound 2^53: the keep-on-screen solve casts the tick to int64.
+            if (!t.is_number() || !std::isfinite(t.get<double>()) || t.get<double>() < 0.0
+                || t.get<double>() > 9007199254740992.0) {
+                JsonApi::TypeError::New(env, std::string(sig)
+                    + ": keepOnScreenTick must be a finite number in [0, 2^53]").ThrowAsJavaScriptException();
+                return;
+            }
+            keepOnScreenTick = t.get<double>();
+        }
+    }
     BridgeCallLog log("timeline.removeTrack");
     // Abandon any in-flight drag whose clip lives on the track going away (or
     // whose clip has already vanished). Sessions on other tracks are untouched.
@@ -10009,7 +10696,8 @@ void Timeline_RemoveTrack(const JsonApi::CallbackInfo& info)
         // Cascades into grid slots / chorus / crash — hold syncEventsMutex
         // so the video thread sees a consistent GridLayout.
         std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
-        g_undoManager->execute(std::make_unique<RemoveTrackCommand>(id, *g_timeline), *g_timeline);
+        g_undoManager->execute(std::make_unique<RemoveTrackCommand>(id, *g_timeline, keepOnScreenTick),
+                               *g_timeline);
     }
     // Close any open plugin editor windows for this track before tearing it down.
     if (audioEngine) audioEngine->getMixEngine().closePluginEditorsForTrack(id);
@@ -10093,6 +10781,11 @@ static Clip jsToClip(const JsonApi::Object& o)
     // emitted. Tolerant reader, the project-load one.
     if (o.Has("lens") && o.Get("lens").IsObject())
         clip.lens = lensroam::lensTrackFromJson(valueToJson(o.Get("lens")));
+
+    // Clip Color Grade: absent = neutral (a new clip, or an ungraded one);
+    // present = a rebuilt clip keeping the grade clipToJs emitted.
+    if (o.Has("colorGrade") && o.Get("colorGrade").IsObject())
+        clip.colorGrade = xleth::grade::colorGradeFromJson(valueToJson(o.Get("colorGrade")));
 
     return clip;
 }
@@ -11026,7 +11719,7 @@ JsonApi::Value Timeline_ResizeClip(const JsonApi::CallbackInfo& info)
         return env.Undefined();
     }
     if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
-        JsonApi::TypeError::New(env, "timeline_resizeClip(id: number, durTicks: number)")
+        JsonApi::TypeError::New(env, "timeline_resizeClip(id: number, durTicks: number, regionOffsetTicks?: number)")
             .ThrowAsJavaScriptException();
         return env.Undefined();
     }
@@ -11035,7 +11728,16 @@ JsonApi::Value Timeline_ResizeClip(const JsonApi::CallbackInfo& info)
     BridgeCallLog log("timeline.resizeClip");
 
     TickTime newDur; newDur.ticks = durTicks;
-    g_undoManager->execute(std::make_unique<ResizeClipCommand>(id, newDur, *g_timeline), *g_timeline);
+    // The optional third argument re-anchors the clip in its source as part of
+    // the same edit: a right-edge trim of a reversed clip (see ResizeClipCommand).
+    if (info.Length() > 2 && info[2].IsNumber()) {
+        TickTime newOffset;
+        newOffset.ticks = static_cast<int64_t>(info[2].As<JsonApi::Number>().DoubleValue());
+        g_undoManager->execute(
+            std::make_unique<ResizeClipCommand>(id, newDur, newOffset, *g_timeline), *g_timeline);
+    } else {
+        g_undoManager->execute(std::make_unique<ResizeClipCommand>(id, newDur, *g_timeline), *g_timeline);
+    }
     if (audioEngine) audioEngine->getMixEngine().invalidateClipCache(id, "resizeClip");
     log.done();
     const Clip* resized = g_timeline->getClip(id);
@@ -11239,6 +11941,9 @@ JsonApi::Value Timeline_ReverseClip(const JsonApi::CallbackInfo& info)
 }
 
 // timeline_spliceClipsAtPlayhead([{clipId, splitTick}, ...])
+//   → { pairs: [[leftId, rightId], ...], clips: Clip[], removedIds: number[] }
+// The one implementation of "split a clip": the S key and the Split tool both
+// end up here.
 //   → [[leftId, rightId], ...]   (one pair per successfully split clip)
 // Splits N clips atomically in a single undo step. Clips where splitTick is
 // exactly at the start or end are silently skipped (zero-length would be invalid).
@@ -11274,41 +11979,49 @@ JsonApi::Value Timeline_SpliceClipsAtPlayhead(const JsonApi::CallbackInfo& info)
         const Clip* c = g_timeline->getClip(clipId);
         if (!c) continue;
 
-        int64_t clipStart = c->position.ticks;
-        int64_t clipEnd   = c->position.ticks + c->duration.ticks;
+        // A cut on either edge would leave a zero-length piece.
+        if (!xleth::clipedit::canSplitClipAt(*c, splitTick)) continue;
 
-        // Skip edge-exactly cases — zero-length result would be invalid
-        if (splitTick <= clipStart || splitTick >= clipEnd) continue;
-
-        int64_t leftDur  = splitTick - clipStart;
-        int64_t rightDur = clipEnd   - splitTick;
+        // The source window and fade rules live in model/ClipSplit.h.
+        xleth::clipedit::SplitClips pieces = xleth::clipedit::splitClipAt(*c, splitTick);
 
         SpliceClipsCommand::Entry e;
         e.original = *c;
-
-        e.left            = *c;
-        e.left.id         = 0;
-        e.left.duration   = TickTime{leftDur};
-
-        // regionOffset is SOURCE time; leftDur is TIMELINE time. A stretched clip
-        // consumes leftDur / stretchRatio source ticks over its left half, so the
-        // right half must advance by that, not by leftDur (see ClipSourceAnchor.h).
-        // Both halves keep the clip's stretchRatio: a split is a cut, not a re-stretch.
-        const int64_t leftSourceDur =
-            xleth::anchoring::sourceTicksForTimelineTicks(leftDur, c->stretchRatio);
-
-        e.right                    = *c;
-        e.right.id                 = 0;
-        e.right.position           = TickTime{splitTick};
-        e.right.regionOffset       = TickTime{c->regionOffset.ticks + leftSourceDur};
-        e.right.duration           = TickTime{rightDur};
-
+        e.left     = std::move(pieces.left);
+        e.right    = std::move(pieces.right);
         entries.push_back(std::move(e));
     }
 
+    auto reply = [&](const std::vector<std::pair<int,int>>& pairs,
+                     const std::vector<int>& removedIds) {
+        auto pairsJs = JsonApi::Array::New(env, pairs.size());
+        std::vector<int> newIds;
+        newIds.reserve(pairs.size() * 2);
+        for (size_t i = 0; i < pairs.size(); ++i) {
+            auto pair = JsonApi::Array::New(env, 2);
+            pair.Set(0u, JsonApi::Number::New(env, pairs[i].first));
+            pair.Set(1u, JsonApi::Number::New(env, pairs[i].second));
+            pairsJs.Set(static_cast<uint32_t>(i), std::move(pair));
+            newIds.push_back(pairs[i].first);
+            newIds.push_back(pairs[i].second);
+        }
+        // Post-state, like every other clip mutation: the pieces as the engine
+        // now holds them and the ids they replaced, so the renderer splices
+        // them in instead of refetching every clip in the project.
+        JsonApi::Object out = JsonApi::Object::New(env);
+        out.Set("pairs",      std::move(pairsJs));
+        out.Set("clips",      clipsByIdToJs(env, newIds));
+        out.Set("removedIds", intVectorToJs(env, removedIds));
+        return out;
+    };
+
     if (entries.empty()) {
-        return JsonApi::Array::New(env, 0);
+        return reply({}, {});
     }
+
+    std::vector<int> removedIds;
+    removedIds.reserve(entries.size());
+    for (const auto& e : entries) removedIds.push_back(e.original.id);
 
     std::vector<std::pair<int,int>> outIds;
     outIds.reserve(entries.size());
@@ -11325,15 +12038,8 @@ JsonApi::Value Timeline_SpliceClipsAtPlayhead(const JsonApi::CallbackInfo& info)
         }
     }
 
-    auto result = JsonApi::Array::New(env, outIds.size());
-    for (size_t i = 0; i < outIds.size(); ++i) {
-        auto pair = JsonApi::Array::New(env, 2);
-        pair.Set(0u, JsonApi::Number::New(env, outIds[i].first));
-        pair.Set(1u, JsonApi::Number::New(env, outIds[i].second));
-        result.Set(static_cast<uint32_t>(i), pair);
-    }
     log.done(std::to_string(outIds.size()) + " clips split");
-    return result;
+    return reply(outIds, removedIds);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -14745,6 +15451,12 @@ JsonApi::Value Timeline_AddPatternBlock(const JsonApi::CallbackInfo& info)
     b.duration.ticks = static_cast<int64_t>(o.Get("durationTicks").As<JsonApi::Number>().DoubleValue());
     if (o.Has("offsetTicks") && o.Get("offsetTicks").IsNumber())
         b.offset.ticks = static_cast<int64_t>(o.Get("offsetTicks").As<JsonApi::Number>().DoubleValue());
+    if (const TrackInfo* t = g_timeline->getTrack(b.trackId); t && t->isClone()) {
+        JsonApi::Error::New(env, "timeline.addPatternBlock: track " + std::to_string(b.trackId)
+                                 + " is a Clone (it plays its source's blocks)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
 
     g_undoManager->execute(std::make_unique<AddPatternBlockCommand>(b), *g_timeline);
 
@@ -15655,6 +16367,12 @@ void Timeline_ConvertToClipTrack(const JsonApi::CallbackInfo& info)
         return;
     }
     int trackId = info[0].As<JsonApi::Number>().Int32Value();
+    if (const TrackInfo* t = g_timeline->getTrack(trackId); t && t->isClone()) {
+        JsonApi::Error::New(env, "timeline.convertToClipTrack: track " + std::to_string(trackId)
+                                 + " is a Clone (Clones are always video-only Pattern tracks)")
+            .ThrowAsJavaScriptException();
+        return;
+    }
     BridgeCallLog log("timeline.convertToClipTrack");
     g_undoManager->execute(
         std::make_unique<ConvertTrackTypeCommand>(trackId, TrackInfo::Type::Clip, *g_timeline),
@@ -15767,6 +16485,41 @@ void Timeline_SetVideoHoldLastFrame(const JsonApi::CallbackInfo& info)
     BridgeCallLog log("timeline.setVideoHoldLastFrame");
     g_undoManager->execute(
         std::make_unique<SetTrackVideoHoldLastFrameCommand>(trackId, hold, *g_timeline),
+        *g_timeline);
+    log.done();
+}
+
+// timeline_setVideoHoldBehavior(trackId, { smart?: boolean, keepPlaying?: boolean })
+// Omitted keys keep the track's current value. One undo step.
+void Timeline_SetVideoHoldBehavior(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return;
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsObject()) {
+        JsonApi::TypeError::New(env,
+            "timeline_setVideoHoldBehavior(trackId: number, { smart?: boolean, keepPlaying?: boolean })")
+            .ThrowAsJavaScriptException();
+        return;
+    }
+    const int trackId = info[0].As<JsonApi::Number>().Int32Value();
+    const TrackInfo* t = g_timeline->getTrack(trackId);
+    if (!t) {
+        JsonApi::Error::New(env, "timeline_setVideoHoldBehavior: track not found").ThrowAsJavaScriptException();
+        return;
+    }
+    const JsonApi::Object o = info[1].As<JsonApi::Object>();
+    bool smart       = t->videoHoldSmart;
+    bool keepPlaying = t->videoHoldKeepPlaying;
+    if (o.Has("smart") && o.Get("smart").IsBoolean())
+        smart = o.Get("smart").As<JsonApi::Boolean>().Value();
+    if (o.Has("keepPlaying") && o.Get("keepPlaying").IsBoolean())
+        keepPlaying = o.Get("keepPlaying").As<JsonApi::Boolean>().Value();
+    BridgeCallLog log("timeline.setVideoHoldBehavior");
+    g_undoManager->execute(
+        std::make_unique<SetTrackVideoHoldBehaviorCommand>(trackId, smart, keepPlaying, *g_timeline),
         *g_timeline);
     log.done();
 }
@@ -16012,6 +16765,10 @@ static ZoomPanRotSettings jsToZoomPanRotSettings(JsonApi::Object o) {
     getF("retriggerCrossfadeMs", z.retriggerCrossfadeMs);
     if (o.Has("presetName") && o.Get("presetName").IsString())
         z.presetName = o.Get("presetName").As<JsonApi::String>().Utf8Value();
+    // {enabled, shutterAngle}; absent = default (off). The track setter below
+    // keeps the track's own value when the caller omits it.
+    if (o.Has("motionBlur") && o.Get("motionBlur").IsObject())
+        z.motionBlur = motionBlurFromJson(valueToJson(o.Get("motionBlur")));
     return z;
 }
 
@@ -16029,7 +16786,14 @@ void Timeline_SetTrackZoomPanRotSettings(const JsonApi::CallbackInfo& info)
         return;
     }
     int trackId = info[0].As<JsonApi::Number>().Int32Value();
-    ZoomPanRotSettings settings = jsToZoomPanRotSettings(info[1].As<JsonApi::Object>());
+    JsonApi::Object zprObj = info[1].As<JsonApi::Object>();
+    ZoomPanRotSettings settings = jsToZoomPanRotSettings(zprObj);
+    // Motion blur is a newer field than most callers (presets, older scalar
+    // writers): one that does not send it must not switch the track's off.
+    if (!zprObj.Has("motionBlur")) {
+        if (const TrackInfo* t = g_timeline->getTrack(trackId))
+            settings.motionBlur = t->zoomPanRot.motionBlur;
+    }
     BridgeCallLog log("timeline.setTrackZoomPanRotSettings");
     g_undoManager->execute(
         std::make_unique<SetTrackZoomPanRotSettingsCommand>(trackId, settings, *g_timeline),
@@ -16386,10 +17150,27 @@ bool applyRoamPatch(const JsonApi::Object& o, RoamParams& p, std::string& err)
             if (!lensRoamReadFinite(o, "scale", v, err)) return false;
             if (v <= 0.0f) { err = "scale must be > 0"; return false; }
             p.scale = std::clamp(v, 1e-3f, 1e3f);  // the evaluator's own bounds
+        } else if (k == "scaleY") {
+            float v = 0.0f;
+            if (!lensRoamReadFinite(o, "scaleY", v, err)) return false;
+            if (v <= 0.0f) { err = "scaleY must be > 0"; return false; }
+            p.scaleY = std::clamp(v, 1e-3f, 1e3f);
+        } else if (k == "scaleLinked") {
+            JsonApi::Value v = o.Get("scaleLinked");
+            if (!v.IsBoolean()) { err = "scaleLinked must be a boolean"; return false; }
+            p.scaleLinked = v.As<JsonApi::Boolean>().Value();
+        } else if (k == "cropLeft" || k == "cropRight" || k == "cropTop" || k == "cropBottom") {
+            float v = 0.0f;
+            if (!lensRoamReadFinite(o, k.c_str(), v, err)) return false;
+            v = std::clamp(v, 0.0f, 0.99f);
+            if      (k == "cropLeft")  p.cropLeft  = v;
+            else if (k == "cropRight") p.cropRight = v;
+            else if (k == "cropTop")   p.cropTop   = v;
+            else                       p.cropBottom = v;
         } else if (k == "rotationDeg") {
             if (!lensRoamReadFinite(o, "rotationDeg", p.rotationDeg, err)) return false;
         } else {
-            err = "unknown Roam field '" + k + "' (offsetX, offsetY, scale, rotationDeg, bounds, layer)";
+            err = "unknown Roam field '" + k + "' (offsetX, offsetY, scale, scaleY, scaleLinked, rotationDeg, cropLeft, cropRight, cropTop, cropBottom, bounds, layer)";
             return false;
         }
     }
@@ -16408,8 +17189,8 @@ std::string describeLens(const LensParams& p)
 std::string describeRoam(const RoamParams& p)
 {
     char buf[192];
-    std::snprintf(buf, sizeof(buf), "offset=(%.4g,%.4g) scale=%.4g rot=%.4g bounds=%s layer=%s",
-                  p.offsetX, p.offsetY, p.scale, p.rotationDeg,
+    std::snprintf(buf, sizeof(buf), "offset=(%.4g,%.4g) scale=%.4g,%.4g rot=%.4g bounds=%s layer=%s",
+                  p.offsetX, p.offsetY, p.scale, p.scaleYEff(), p.rotationDeg,
                   lensroam::roamBoundsToString(p.bounds), lensroam::roamLayerToString(p.layer));
     return buf;
 }
@@ -16480,6 +17261,16 @@ JsonApi::Value trackSweepResult(JsonApi::Env env, int trackId, bool changed)
     r.Set("changed", JsonApi::Boolean::New(env, changed));
     const TrackInfo* t = g_timeline->getTrack(trackId);
     r.Set("keys", opaqueJsonToValue(env, lensroam::sweepTrackToJson(t ? t->sweep : SweepTrack{}).at("keys")));
+    return r;
+}
+
+JsonApi::Value trackFxKeysResult(JsonApi::Env env, int trackId, bool changed)
+{
+    JsonApi::Object r = JsonApi::Object::New(env);
+    r.Set("trackId", JsonApi::Number::New(env, trackId));
+    r.Set("changed", JsonApi::Boolean::New(env, changed));
+    const TrackInfo* t = g_timeline->getTrack(trackId);
+    r.Set("fxKeys", opaqueJsonToValue(env, lensroam::fxKeysToJson(t ? t->fxKeys : std::vector<FxKey>{})));
     return r;
 }
 
@@ -16687,9 +17478,9 @@ JsonApi::Value Timeline_ResetTrackRoam(const JsonApi::CallbackInfo& info)
 }
 
 // timeline_getLensRoam({ clipIds?, sources?: [{trackId, regionId}], trackIds? })
-//   -> { clips:   [{ clipId, lens }],
-//        sources: [{ trackId, regionId, explicit, lens }],
-//        tracks:  [{ trackId, roam }],
+//   -> { clips:   [{ clipId, lens, keys }],
+//        sources: [{ trackId, regionId, explicit, lens, hitCurve, zones }],
+//        tracks:  [{ trackId, roam, keys, sweep, parentTrackId, masks }],
 //        missing: { clipIds: [], sources: [], trackIds: [] } }
 // `lens`/`roam` are the static bases (what the UI edits). A source with no
 // entry reports the value it renders with (newContentDefault) and
@@ -16773,6 +17564,15 @@ JsonApi::Value Timeline_GetLensRoam(const JsonApi::CallbackInfo& info)
         e.Set("keys", opaqueJsonToValue(env, lensroam::roamTrackToJson(t->roam).at("keys")));
         // P11: the track's Sweep keys (Lens channels, TimelineTicks).
         e.Set("sweep", opaqueJsonToValue(env, lensroam::sweepTrackToJson(t->sweep).at("keys")));
+        // Motion view: video effect param keys (uid + params index, TimelineTicks).
+        e.Set("fxKeys", opaqueJsonToValue(env, lensroam::fxKeysToJson(t->fxKeys)));
+        // Motion view: the parent (-1 = none / dangling / self) and the masks ([] = none).
+        e.Set("parentTrackId", JsonApi::Number::New(env, reportedParentTrackId(*t)));
+        e.Set("masks", opaqueJsonToValue(env, lensroam::masksToJson(t->roam.masks)));
+        // Clones: -1 = an ordinary track; a Clone also carries its settings
+        // (Motion view's Trail rows read the opacity keys from here).
+        e.Set("cloneOf", JsonApi::Number::New(env, t->cloneOf));
+        if (t->isClone()) e.Set("clone", cloneToJs(env, *t));
         tracks.Set(nt++, e);
     }
 
@@ -16852,14 +17652,43 @@ bool parseNoteRefs(const nlohmann::json& arr, std::vector<NoteLensRef>& out, std
     return true;
 }
 
-// One note-anchored key {channel, anchor, pos, value, interp?}. Hit curves and
-// note overrides hold note anchors only (Head ticks | Body fraction | Tail ticks).
+// A Lens / Roam / Sweep key's optional `interp` and, for a Bezier key, its
+// optional `bez` handles [x1, y1, x2, y2] (missing = the default ease-in-out).
+// Strict: an unknown interp, or a `bez` that is not four finite numbers, is an
+// error. `bez` on a non-Bezier key is accepted and ignored (a key switched to
+// Linear may still carry its old handles), so it never makes two keys differ.
+bool parseKeyInterp(const nlohmann::json& e, const std::string& at,
+                    xleth::keycurve::Interp& interp, xleth::keycurve::BezierHandles& bez,
+                    std::string& err) {
+    interp = xleth::keycurve::Interp::Linear;
+    bez    = xleth::keycurve::BezierHandles{};
+    if (e.contains("interp")) {
+        const std::string in = e["interp"].is_string() ? e["interp"].get<std::string>() : "";
+        if      (in == "Hold")    interp = xleth::keycurve::Interp::Hold;
+        else if (in == "Linear")  interp = xleth::keycurve::Interp::Linear;
+        else if (in == "EaseOut") interp = xleth::keycurve::Interp::EaseOut;
+        else if (in == "Bezier")  interp = xleth::keycurve::Interp::Bezier;
+        else { err = at + ": interp must be Hold | Linear | EaseOut | Bezier"; return false; }
+    }
+    if (e.contains("bez") && !e["bez"].is_null()) {
+        xleth::keycurve::BezierHandles b;
+        if (!lensroam::bezierFromJson(e["bez"], b)) {
+            err = at + ": bez must be [x1, y1, x2, y2], four finite numbers";
+            return false;
+        }
+        if (interp == xleth::keycurve::Interp::Bezier) bez = b;
+    }
+    return true;
+}
+
+// One note-anchored key {channel, anchor, pos, value, interp?, bez?}. Hit curves
+// and note overrides hold note anchors only (Head ticks | Body fraction | Tail ticks).
 bool parseNoteKey(const nlohmann::json& e, const std::string& at, LensKey& k, std::string& err) {
     if (!e.is_object()) { err = at + " must be an object"; return false; }
     for (auto it = e.begin(); it != e.end(); ++it) {
         const std::string& f = it.key();
-        if (f != "channel" && f != "anchor" && f != "pos" && f != "value" && f != "interp") {
-            err = at + ": unknown field '" + f + "' (channel, anchor, pos, value, interp)";
+        if (f != "channel" && f != "anchor" && f != "pos" && f != "value" && f != "interp" && f != "bez") {
+            err = at + ": unknown field '" + f + "' (channel, anchor, pos, value, interp, bez)";
             return false;
         }
     }
@@ -16885,15 +17714,7 @@ bool parseNoteKey(const nlohmann::json& e, const std::string& at, LensKey& k, st
     if (k.pos < 0.0) { err = at + ": pos must be >= 0"; return false; }
     if (k.anchor == KeyAnchor::Body && k.pos > 1.0) { err = at + ": a Body pos is a fraction 0..1"; return false; }
     if (k.channel == LensChannel::Zoom && !(k.value > 0.0)) { err = at + ": a zoom value must be > 0"; return false; }
-    k.interp = xleth::keycurve::Interp::Linear;
-    if (e.contains("interp")) {
-        const std::string in = e["interp"].is_string() ? e["interp"].get<std::string>() : "";
-        if      (in == "Hold")    k.interp = xleth::keycurve::Interp::Hold;
-        else if (in == "Linear")  k.interp = xleth::keycurve::Interp::Linear;
-        else if (in == "EaseOut") k.interp = xleth::keycurve::Interp::EaseOut;
-        else { err = at + ": interp must be Hold | Linear | EaseOut"; return false; }
-    }
-    return true;
+    return parseKeyInterp(e, at, k.interp, k.bez, err);
 }
 
 bool parseNoteKeys(const nlohmann::json& arr, const char* what, std::vector<LensKey>& out,
@@ -17039,7 +17860,7 @@ JsonApi::Value Timeline_SetNoteLensMode(const JsonApi::CallbackInfo& info)
     return runNoteLensCommand(env, std::make_unique<SetNoteLensModeCommand>(refs, mode, *g_timeline), log);
 }
 
-// timeline_setNoteLensKeys(note: {patternId, noteId}, keys: [{channel, anchor, pos, value, interp?}])
+// timeline_setNoteLensKeys(note: {patternId, noteId}, keys: [{channel, anchor, pos, value, interp?, bez?}])
 //   -> { changed, notes: [one] }
 // Replaces the note's keys (note anchors only). A Follow note becomes Nudge.
 JsonApi::Value Timeline_SetNoteLensKeys(const JsonApi::CallbackInfo& info)
@@ -17219,7 +18040,7 @@ JsonApi::Value Timeline_ApplyHitPreset(const JsonApi::CallbackInfo& info)
                               label, preset->name, log);
 }
 
-// timeline_setClipLensKeys(clipId, keys: [{channel, anchor: 'Origin', pos, value, interp?}])
+// timeline_setClipLensKeys(clipId, keys: [{channel, anchor: 'Origin', pos, value, interp?, bez?}])
 //   -> { clipId, changed, lens, keys }
 // P9. Replaces a Clip Track event's Lens keys. A clip's keys are ABSOLUTE
 // (a keyed channel follows its keys, an unkeyed one holds the base) and sit on
@@ -17230,7 +18051,7 @@ JsonApi::Value Timeline_SetClipLensKeys(const JsonApi::CallbackInfo& info)
 {
     JsonApi::Env env = info.Env();
     if (!lensRoamReady(env)) return env.Undefined();
-    const char* sig = "timeline_setClipLensKeys(clipId: number, keys: {channel, anchor:'Origin', pos, value, interp?}[])";
+    const char* sig = "timeline_setClipLensKeys(clipId: number, keys: {channel, anchor:'Origin', pos, value, interp?, bez?}[])";
     if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsArray()) { throwType(env, sig); return env.Undefined(); }
     BridgeCallLog log("timeline.setClipLensKeys");
     const int clipId = info[0].As<JsonApi::Number>().Int32Value();
@@ -17270,7 +18091,7 @@ JsonApi::Value Timeline_SetClipLensKeys(const JsonApi::CallbackInfo& info)
     return clipLensResult(env, clipId, changed);
 }
 
-// timeline_setTrackRoamKeys(trackId, keys: [{channel, anchor: 'Origin', pos, value, interp?}])
+// timeline_setTrackRoamKeys(trackId, keys: [{channel, anchor: 'Origin', pos, value, interp?, bez?}])
 //   -> { trackId, changed, roam, keys }
 // P10. Replaces a track's Roam keys. Roam keys are ABSOLUTE (a keyed channel
 // follows its keys, an unkeyed one holds the base) and sit on TimelineTicks:
@@ -17282,7 +18103,7 @@ JsonApi::Value Timeline_SetTrackRoamKeys(const JsonApi::CallbackInfo& info)
 {
     JsonApi::Env env = info.Env();
     if (!lensRoamReady(env)) return env.Undefined();
-    const char* sig = "timeline_setTrackRoamKeys(trackId: number, keys: {channel, anchor:'Origin', pos, value, interp?}[])";
+    const char* sig = "timeline_setTrackRoamKeys(trackId: number, keys: {channel, anchor:'Origin', pos, value, interp?, bez?}[])";
     if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsArray()) { throwType(env, sig); return env.Undefined(); }
     BridgeCallLog log("timeline.setTrackRoamKeys");
     const int trackId = info[0].As<JsonApi::Number>().Int32Value();
@@ -17299,8 +18120,8 @@ JsonApi::Value Timeline_SetTrackRoamKeys(const JsonApi::CallbackInfo& info)
         if (!e.is_object()) { throwType(env, std::string(sig) + ": " + at + " must be an object"); return env.Undefined(); }
         for (auto it = e.begin(); it != e.end(); ++it) {
             const std::string& f = it.key();
-            if (f != "channel" && f != "anchor" && f != "pos" && f != "value" && f != "interp") {
-                throwType(env, std::string(sig) + ": " + at + ": unknown field '" + f + "' (channel, anchor, pos, value, interp)");
+            if (f != "channel" && f != "anchor" && f != "pos" && f != "value" && f != "interp" && f != "bez") {
+                throwType(env, std::string(sig) + ": " + at + ": unknown field '" + f + "' (channel, anchor, pos, value, interp, bez)");
                 return env.Undefined();
             }
         }
@@ -17310,7 +18131,12 @@ JsonApi::Value Timeline_SetTrackRoamKeys(const JsonApi::CallbackInfo& info)
         else if (ch == "offsetY")     k.channel = RoamChannel::OffsetY;
         else if (ch == "scale")       k.channel = RoamChannel::Scale;
         else if (ch == "rotationDeg") k.channel = RoamChannel::RotationDeg;
-        else { throwType(env, std::string(sig) + ": " + at + ": channel must be offsetX | offsetY | scale | rotationDeg"); return env.Undefined(); }
+        else if (ch == "scaleY")      k.channel = RoamChannel::ScaleY;
+        else if (ch == "cropLeft")    k.channel = RoamChannel::CropLeft;
+        else if (ch == "cropRight")   k.channel = RoamChannel::CropRight;
+        else if (ch == "cropTop")     k.channel = RoamChannel::CropTop;
+        else if (ch == "cropBottom")  k.channel = RoamChannel::CropBottom;
+        else { throwType(env, std::string(sig) + ": " + at + ": channel must be offsetX | offsetY | scale | scaleY | rotationDeg | cropLeft | cropRight | cropTop | cropBottom"); return env.Undefined(); }
         if (!e.contains("anchor") || !e["anchor"].is_string() || e["anchor"].get<std::string>() != "Origin") {
             throwType(env, std::string(sig) + ": " + at + ": anchor must be 'Origin' (a Roam key is timeline ticks)");
             return env.Undefined();
@@ -17325,16 +18151,17 @@ JsonApi::Value Timeline_SetTrackRoamKeys(const JsonApi::CallbackInfo& info)
         }
         k.pos   = e["pos"].get<double>();
         k.value = e["value"].get<double>();
-        if (k.channel == RoamChannel::Scale && !(k.value > 0.0)) {
+        if ((k.channel == RoamChannel::Scale || k.channel == RoamChannel::ScaleY) && !(k.value > 0.0)) {
             throwType(env, std::string(sig) + ": " + at + ": a scale value must be > 0"); return env.Undefined();
         }
-        k.interp = xleth::keycurve::Interp::Linear;
-        if (e.contains("interp")) {
-            const std::string in = e["interp"].is_string() ? e["interp"].get<std::string>() : "";
-            if      (in == "Hold")    k.interp = xleth::keycurve::Interp::Hold;
-            else if (in == "Linear")  k.interp = xleth::keycurve::Interp::Linear;
-            else if (in == "EaseOut") k.interp = xleth::keycurve::Interp::EaseOut;
-            else { throwType(env, std::string(sig) + ": " + at + ": interp must be Hold | Linear | EaseOut"); return env.Undefined(); }
+        if (k.channel >= RoamChannel::CropLeft && (k.value < 0.0 || k.value > 0.99)) {
+            throwType(env, std::string(sig) + ": " + at + ": a crop value must be within 0..0.99"); return env.Undefined();
+        }
+        {
+            std::string err;
+            if (!parseKeyInterp(e, at, k.interp, k.bez, err)) {
+                throwType(env, std::string(sig) + ": " + err); return env.Undefined();
+            }
         }
         keys.push_back(k);
     }
@@ -17349,7 +18176,7 @@ JsonApi::Value Timeline_SetTrackRoamKeys(const JsonApi::CallbackInfo& info)
     return trackRoamResult(env, trackId, changed);
 }
 
-// timeline_setTrackSweepKeys(trackId, keys: [{channel, anchor: 'Origin', pos, value, interp?}])
+// timeline_setTrackSweepKeys(trackId, keys: [{channel, anchor: 'Origin', pos, value, interp?, bez?}])
 //   -> { trackId, changed, keys }
 // P11 (spec "Sweep lane"). Replaces a track's Sweep keys: a timeline-absolute
 // Lens OFFSET for moves that span several notes. Channels are the Lens ones
@@ -17365,7 +18192,7 @@ JsonApi::Value Timeline_SetTrackSweepKeys(const JsonApi::CallbackInfo& info)
 {
     JsonApi::Env env = info.Env();
     if (!lensRoamReady(env)) return env.Undefined();
-    const char* sig = "timeline_setTrackSweepKeys(trackId: number, keys: {channel, anchor:'Origin', pos, value, interp?}[])";
+    const char* sig = "timeline_setTrackSweepKeys(trackId: number, keys: {channel, anchor:'Origin', pos, value, interp?, bez?}[])";
     if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsArray()) { throwType(env, sig); return env.Undefined(); }
     BridgeCallLog log("timeline.setTrackSweepKeys");
     const int trackId = info[0].As<JsonApi::Number>().Int32Value();
@@ -17408,6 +18235,659 @@ JsonApi::Value Timeline_SetTrackSweepKeys(const JsonApi::CallbackInfo& info)
     }
     log.done(what + (changed ? "" : " (unchanged)"));
     return trackSweepResult(env, trackId, changed);
+}
+
+// timeline_setTrackFxKeys(trackId, keys: [{uid, param, pos, value, interp?, bez?}])
+//   -> { trackId, changed, fxKeys }
+// Motion view: replaces a track's video effect param keys (the whole list). `uid` is
+// a chain effect's VisualEffect::uid (timeline_getTracks lists it on each chain
+// entry), `param` an animatable params[] index of that effect's type (see
+// fxparam::range), `pos` timeline ticks >= 0, `value` the param's own units (held
+// to its range when rendered). Strict like every setter: unknown field, wrong type,
+// non-finite number, a uid not in the track's chain, a param that cannot be
+// animated -> throw. ONE command only when something changes; the post-state back.
+JsonApi::Value Timeline_SetTrackFxKeys(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!lensRoamReady(env)) return env.Undefined();
+    const char* sig = "timeline_setTrackFxKeys(trackId: number, keys: {uid, param, pos, value, interp?, bez?}[])";
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsArray()) { throwType(env, sig); return env.Undefined(); }
+    BridgeCallLog log("timeline.setTrackFxKeys");
+    const int trackId = info[0].As<JsonApi::Number>().Int32Value();
+    const TrackInfo* track = g_timeline->getTrack(trackId);
+    if (!track) {
+        JsonApi::Error::New(env, "timeline.setTrackFxKeys: no track " + std::to_string(trackId))
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const nlohmann::json arr = valueToJson(info[1]);
+    std::vector<FxKey> keys;
+    for (std::size_t i = 0; i < arr.size(); ++i) {
+        const nlohmann::json& e = arr[i];
+        const std::string at = "keys[" + std::to_string(i) + "]";
+        if (!e.is_object()) { throwType(env, std::string(sig) + ": " + at + " must be an object"); return env.Undefined(); }
+        for (auto it = e.begin(); it != e.end(); ++it) {
+            const std::string& f = it.key();
+            if (f != "uid" && f != "param" && f != "pos" && f != "value" && f != "interp" && f != "bez") {
+                throwType(env, std::string(sig) + ": " + at + ": unknown field '" + f + "' (uid, param, pos, value, interp, bez)");
+                return env.Undefined();
+            }
+        }
+        FxKey k;
+        // JS numbers arrive as doubles: accept any whole number.
+        auto wholeNumber = [&](const char* f, int& out) {
+            if (!e.contains(f) || !e[f].is_number()) return false;
+            const double d = e[f].get<double>();
+            if (!std::isfinite(d) || d != std::floor(d) || std::fabs(d) > 1e9) return false;
+            out = static_cast<int>(d);
+            return true;
+        };
+        if (!wholeNumber("uid", k.uid) || !wholeNumber("param", k.param)) {
+            throwType(env, std::string(sig) + ": " + at + ": uid and param must be integers"); return env.Undefined();
+        }
+        const VisualEffect* fx = nullptr;
+        for (const VisualEffect& c : track->visualEffectChain) if (c.uid == k.uid) { fx = &c; break; }
+        double lo = 0.0, hi = 1.0;
+        if (!fx) { throwType(env, std::string(sig) + ": " + at + ": no effect with that uid in the track's chain"); return env.Undefined(); }
+        if (!fxparam::range(static_cast<int>(fx->type), k.param, lo, hi)) {
+            throwType(env, std::string(sig) + ": " + at + ": that param cannot be animated"); return env.Undefined();
+        }
+        if (!e.contains("pos") || !e["pos"].is_number() || !std::isfinite(e["pos"].get<double>()) || e["pos"].get<double>() < 0.0) {
+            throwType(env, std::string(sig) + ": " + at + ": pos must be a finite number >= 0"); return env.Undefined();
+        }
+        if (!e.contains("value") || !e["value"].is_number() || !std::isfinite(e["value"].get<double>())) {
+            throwType(env, std::string(sig) + ": " + at + ": value must be a finite number"); return env.Undefined();
+        }
+        k.pos   = e["pos"].get<double>();
+        k.value = e["value"].get<double>();
+        std::string err;
+        if (!parseKeyInterp(e, at, k.interp, k.bez, err)) { throwType(env, std::string(sig) + ": " + err); return env.Undefined(); }
+        keys.push_back(k);
+    }
+    auto cmd = std::make_unique<SetTrackFxKeysCommand>(trackId, std::move(keys), *g_timeline);
+    const bool changed = cmd->changesAnything();
+    const std::string what = cmd->describe();
+    if (changed) {
+        g_undoManager->execute(std::move(cmd), *g_timeline);
+        g_previewDirty = true;
+    }
+    log.done(what + (changed ? "" : " (unchanged)"));
+    return trackFxKeysResult(env, trackId, changed);
+}
+
+// ─── Motion view: Parent and Masks (docs/XLETH_MOTION_VIEW_DESIGN.md 3.1) ────
+// Same contract as every Lens/Roam setter: STRICT parse (unknown field, wrong
+// type, non-finite number -> throw), ONE UndoManager command built only when
+// something changes, g_previewDirty, the post-state returned. SEMANTIC refusals
+// (a loop, a chain deeper than 4, the track itself, an unknown track) are not
+// errors: they return changed:false plus `rejected`.
+
+namespace {
+
+const char* const kRoamChannelNames[kLensRoamChannels] = {
+    "offsetX", "offsetY", "scale", "rotationDeg", "scaleY", "cropLeft", "cropRight", "cropTop", "cropBottom" };
+
+JsonApi::Array roamChannelList(JsonApi::Env env, const bool (&flags)[kLensRoamChannels]) {
+    JsonApi::Array a = JsonApi::Array::New(env);
+    uint32_t n = 0;
+    for (int c = 0; c < kLensRoamChannels; ++c)
+        if (flags[c]) a.Set(n++, JsonApi::String::New(env, kRoamChannelNames[c]));
+    return a;
+}
+
+} // namespace
+
+// timeline_setTrackParent(trackId, parentTrackId /* -1 = none */, opts?)
+//   opts (strict): { keepOnScreen?: boolean, tick?: number >= 0 }
+//   -> { trackId, changed, parentTrackId, roam, keys, compensated: string[],
+//        uncompensated: string[], rejected?: 'unknown_track'|'self'|'cycle'|'too_deep',
+//        keepOnScreenSkipped?: 'not_placed' }
+// keepOnScreen (R6): the child's Roam BASE is solved at `tick` (default 0) so
+// its on-screen centre, scale and rotation stay put under the new chain; only
+// UNKEYED channels change (offset as a pair). `compensated` lists the channels
+// kept, `uncompensated` the ones that could not be (keyed). A child with no
+// placement at that tick has nothing to keep: both lists are empty and
+// keepOnScreenSkipped = 'not_placed'. Setting the parent it already has is a
+// no-op (changed:false) even with keepOnScreen.
+JsonApi::Value Timeline_SetTrackParent(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!lensRoamReady(env)) return env.Undefined();
+    const char* sig = "timeline_setTrackParent(trackId: number, parentTrackId: number /* -1 = none */, "
+                      "opts?: { keepOnScreen?: boolean, tick?: number })";
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) { throwType(env, sig); return env.Undefined(); }
+    const double trackD  = info[0].As<JsonApi::Number>().DoubleValue();
+    const double parentD = info[1].As<JsonApi::Number>().DoubleValue();
+    if (!std::isfinite(trackD) || trackD != std::floor(trackD) || std::fabs(trackD) > 2147483647.0) {
+        throwType(env, std::string(sig) + ": trackId must be an integer"); return env.Undefined();
+    }
+    if (!std::isfinite(parentD) || parentD != std::floor(parentD) || parentD < -1.0 || parentD > 2147483647.0) {
+        throwType(env, std::string(sig) + ": parentTrackId must be an integer >= -1"); return env.Undefined();
+    }
+    const int trackId  = static_cast<int>(trackD);
+    const int parentId = static_cast<int>(parentD);
+    bool   keepOnScreen = false;
+    double tick = 0.0;
+    if (info.Length() >= 3 && !info[2].IsUndefined() && !info[2].IsNull()) {
+        if (!info[2].IsObject() || info[2].IsArray()) { throwType(env, std::string(sig) + ": opts must be an object"); return env.Undefined(); }
+        const nlohmann::json opts = valueToJson(info[2]);
+        for (auto it = opts.begin(); it != opts.end(); ++it) {
+            if (it.key() != "keepOnScreen" && it.key() != "tick") {
+                throwType(env, std::string(sig) + ": unknown field '" + it.key() + "' (keepOnScreen, tick)");
+                return env.Undefined();
+            }
+        }
+        if (opts.contains("keepOnScreen")) {
+            if (!opts["keepOnScreen"].is_boolean()) { throwType(env, std::string(sig) + ": keepOnScreen must be a boolean"); return env.Undefined(); }
+            keepOnScreen = opts["keepOnScreen"].get<bool>();
+        }
+        if (opts.contains("tick")) {
+            const nlohmann::json& t = opts["tick"];
+            // Upper bound 2^53 (exact integers in a double): the solve casts the
+            // tick to int64, which is undefined past its range.
+            if (!t.is_number() || !std::isfinite(t.get<double>()) || t.get<double>() < 0.0
+                || t.get<double>() > 9007199254740992.0) {
+                throwType(env, std::string(sig) + ": tick must be a finite number in [0, 2^53]"); return env.Undefined();
+            }
+            tick = t.get<double>();
+        }
+    }
+    BridgeCallLog log("timeline.setTrackParent");
+
+    bool compensated[kLensRoamChannels]   = {};
+    bool uncompensated[kLensRoamChannels] = {};
+    bool changed = false;
+    bool notPlaced = false;
+    const parentmath::ParentReject reject = parentmath::validateParent(*g_timeline, trackId, parentId);
+    std::string what = "rejected";
+    // Clones: a Trail clone always follows its source; it can be neither a
+    // parent nor a child (Motion view spec "Parent").
+    const TrackInfo* trailChild  = g_timeline->getTrack(trackId);
+    const TrackInfo* trailParent = parentId >= 0 ? g_timeline->getTrack(parentId) : nullptr;
+    const bool trailInvolved = (trailChild && trailChild->isTrailClone())
+                            || (trailParent && trailParent->isTrailClone());
+    if (trailInvolved) {
+        JsonApi::Value base0 = trackRoamResult(env, trackId, false);
+        JsonApi::Object r0 = base0.As<JsonApi::Object>();
+        r0.Set("parentTrackId", JsonApi::Number::New(env, trailChild ? reportedParentTrackId(*trailChild) : -1));
+        r0.Set("compensated",   roamChannelList(env, compensated));
+        r0.Set("uncompensated", roamChannelList(env, uncompensated));
+        r0.Set("rejected", JsonApi::String::New(env, "trail_clone"));
+        log.done("rejected (trail_clone)");
+        return r0;
+    }
+    if (reject == parentmath::ParentReject::None) {
+        const TrackInfo* t = g_timeline->getTrack(trackId);
+        if (t && t->parentTrackId != parentId) {
+            std::optional<RoamParams> newBase;
+            if (keepOnScreen) {
+                const parentmath::KeepOnScreen k = parentmath::keepOnScreen(*g_timeline, trackId, parentId, tick);
+                if (k.placed) {
+                    newBase = k.solve.base;
+                    for (int c = 0; c < kLensRoamChannels; ++c) {
+                        compensated[c]   = k.solve.compensated[c];
+                        uncompensated[c] = k.solve.uncompensated[c];
+                    }
+                } else {
+                    notPlaced = true;
+                }
+            }
+            auto cmd = std::make_unique<SetTrackParentCommand>(trackId, parentId, *g_timeline, newBase);
+            what = cmd->describe();
+            if (cmd->changesAnything()) {
+                g_undoManager->execute(std::move(cmd), *g_timeline);
+                changed = true;
+                g_previewDirty = true;
+            }
+        } else {
+            what = "unchanged";
+        }
+    }
+    JsonApi::Value base = trackRoamResult(env, trackId, changed);
+    JsonApi::Object r = base.As<JsonApi::Object>();
+    const TrackInfo* after = g_timeline->getTrack(trackId);
+    r.Set("parentTrackId", JsonApi::Number::New(env, after ? reportedParentTrackId(*after) : -1));
+    r.Set("compensated",   roamChannelList(env, compensated));
+    r.Set("uncompensated", roamChannelList(env, uncompensated));
+    if (reject != parentmath::ParentReject::None)
+        r.Set("rejected", JsonApi::String::New(env, parentmath::parentRejectToString(reject)));
+    if (notPlaced) r.Set("keepOnScreenSkipped", JsonApi::String::New(env, "not_placed"));
+    log.done(what + (reject != parentmath::ParentReject::None
+                     ? std::string(" (") + parentmath::parentRejectToString(reject) + ")" : std::string()));
+    return r;
+}
+
+// timeline_setTrackMasks(trackId, masks[]) -> { trackId, changed, masks }
+// Replaces the track's whole mask list (design 2.2; strict parse:
+// lensroam::masksFromJsonStrict, caps from the motion schema: 8 masks, 3..32
+// vertices each, 64 per track). An unknown track throws, like every Roam
+// setter. Shape keys come back sorted by pos.
+JsonApi::Value Timeline_SetTrackMasks(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!lensRoamReady(env)) return env.Undefined();
+    const char* sig = "timeline_setTrackMasks(trackId: number, masks: {id, name?, kind?, base, keys?, shapeKeys?}[])";
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsArray()) { throwType(env, sig); return env.Undefined(); }
+    BridgeCallLog log("timeline.setTrackMasks");
+    const int trackId = info[0].As<JsonApi::Number>().Int32Value();
+    if (!g_timeline->getTrack(trackId)) {
+        JsonApi::Error::New(env, "timeline.setTrackMasks: no track " + std::to_string(trackId))
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    std::vector<RoamMask> masks;
+    std::string err;
+    if (!lensroam::masksFromJsonStrict(valueToJson(info[1]), masks, err)) {
+        throwType(env, std::string(sig) + ": " + err);
+        return env.Undefined();
+    }
+    auto cmd = std::make_unique<SetTrackMasksCommand>(trackId, std::move(masks), *g_timeline);
+    const bool changed = cmd->changesAnything();
+    const std::string what = cmd->describe();
+    if (changed) {
+        g_undoManager->execute(std::move(cmd), *g_timeline);
+        g_previewDirty = true;
+    }
+    log.done(what + (changed ? "" : " (unchanged)"));
+    JsonApi::Object r = JsonApi::Object::New(env);
+    r.Set("trackId", JsonApi::Number::New(env, trackId));
+    r.Set("changed", JsonApi::Boolean::New(env, changed));
+    const TrackInfo* t = g_timeline->getTrack(trackId);
+    r.Set("masks", opaqueJsonToValue(env, lensroam::masksToJson(t ? t->roam.masks : std::vector<RoamMask>{})));
+    return r;
+}
+
+// ─── Clones (docs/XLETH_CLONE_SPEC.md, model/Clone.h) ────────────────────────
+
+namespace {
+
+bool cloneRpcReady(JsonApi::Env env) {
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return false;
+    }
+    return true;
+}
+
+bool intArg(const JsonApi::Value& v, int& out, double lo = -2147483648.0, double hi = 2147483647.0) {
+    if (!v.IsNumber()) return false;
+    const double d = v.As<JsonApi::Number>().DoubleValue();
+    if (!std::isfinite(d) || d != std::floor(d) || d < lo || d > hi) return false;
+    out = static_cast<int>(d);
+    return true;
+}
+
+// The next free "<source> · <Clone|Trail> N" number for a source.
+int nextCloneNumber(const TrackInfo& src, CloneKind kind) {
+    const std::string prefix = src.name + (kind == CloneKind::Trail ? " \xC2\xB7 Trail " : " \xC2\xB7 Clone ");
+    int n = 0;
+    for (const TrackInfo* c : clones::allClonesOf(*g_timeline, src.id)) {
+        if (c->cloneKind != kind) continue;
+        ++n;
+        if (c->name.rfind(prefix, 0) == 0) {
+            try { n = std::max(n, std::stoi(c->name.substr(prefix.size()))); } catch (...) {}
+        }
+    }
+    return n + 1;
+}
+
+constexpr uint32_t kTrailTints[] = { 0xF07A2Au, 0x9B7BF0u, 0x8FE8C4u, 0xE9B949u, 0x6F8FD0u };
+
+// Strict Trail opacity keys: [{pos >= 0, value in [0, 1], interp?, bez?}].
+bool parseOpacityKeysStrict(const nlohmann::json& arr, std::vector<xleth::keycurve::Key>& out,
+                            std::string& err) {
+    out.clear();
+    if (!arr.is_array()) { err = "opacityKeys must be an array"; return false; }
+    for (const auto& e : arr) {
+        if (!e.is_object()) { err = "an opacity key must be an object"; return false; }
+        for (auto it = e.begin(); it != e.end(); ++it) {
+            const std::string& k = it.key();
+            if (k != "pos" && k != "value" && k != "interp" && k != "bez") {
+                err = "unknown opacity key field '" + k + "' (pos, value, interp, bez)"; return false;
+            }
+        }
+        if (!e.contains("pos") || !e["pos"].is_number() || !e.contains("value") || !e["value"].is_number()) {
+            err = "an opacity key needs numeric pos and value"; return false;
+        }
+        const double pos = e["pos"].get<double>(), value = e["value"].get<double>();
+        if (!std::isfinite(pos) || pos < 0.0) { err = "opacity key pos must be a finite number >= 0"; return false; }
+        if (!std::isfinite(value) || value < 0.0 || value > 1.0) { err = "opacity key value must be in [0, 1]"; return false; }
+        xleth::keycurve::Key key;
+        key.position = xleth::keycurve::Position::timelineTicks(pos);
+        key.value    = value;
+        key.interp   = xleth::keycurve::Interp::Linear;
+        if (e.contains("interp")) {
+            if (!e["interp"].is_string()) { err = "interp must be a string"; return false; }
+            const std::string s = e["interp"].get<std::string>();
+            if (s == "Hold") key.interp = xleth::keycurve::Interp::Hold;
+            else if (s == "Linear") key.interp = xleth::keycurve::Interp::Linear;
+            else if (s == "EaseOut") key.interp = xleth::keycurve::Interp::EaseOut;
+            else if (s == "Bezier") key.interp = xleth::keycurve::Interp::Bezier;
+            else { err = "unknown interp '" + s + "' (Hold, Linear, EaseOut, Bezier)"; return false; }
+        }
+        if (e.contains("bez") && !lensroam::bezierFromJson(e["bez"], key.bez)) {
+            err = "bez must be [x1, y1, x2, y2] (finite numbers)"; return false;
+        }
+        out.push_back(key);
+    }
+    std::stable_sort(out.begin(), out.end(), [](const auto& a, const auto& b) {
+        return a.position.v < b.position.v;
+    });
+    return true;
+}
+
+} // namespace
+
+// timeline_addClone(sourceTrackId, kind: 'Voice'|'Trail', opts?)
+//   opts (strict): { name?, autoPlace? (Voice, default true), delayTicks?, tint?, opacity? (Trail) }
+//   -> { trackId, placed, track }
+// The source must be a Pattern track that is not itself a Clone. The Clone is a
+// video-only (visualOnly) Pattern track named "<source> · Clone N" / "· Trail N",
+// placed directly under the source's Clones. A Voice clone starts from a copy of
+// the source's video settings (effects, flip, ZPR, note fade, grade, corner
+// radius, gap, opacity) and, with autoPlace, the first free grid cell; its Lens
+// is Linked. A Trail starts 1/8 x (number of Trails + 1) behind with the next
+// tint of a fixed stack and falling opacity. One undo step.
+JsonApi::Value Timeline_AddClone(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!cloneRpcReady(env)) return env.Undefined();
+    const char* sig = "timeline_addClone(sourceTrackId: number, kind: 'Voice'|'Trail', "
+                      "opts?: { name?, autoPlace?, delayTicks?, tint?, opacity? })";
+    int sourceId = -1;
+    if (info.Length() < 2 || !intArg(info[0], sourceId) || !info[1].IsString()) { throwType(env, sig); return env.Undefined(); }
+    CloneKind kind = CloneKind::Voice;
+    if (!clones::cloneKindFromString(info[1].As<JsonApi::String>().Utf8Value(), kind)) {
+        throwType(env, std::string(sig) + ": kind must be 'Voice' or 'Trail'"); return env.Undefined();
+    }
+    const TrackInfo* src = g_timeline->getTrack(sourceId);
+    if (!src) { JsonApi::Error::New(env, "timeline.addClone: no track " + std::to_string(sourceId)).ThrowAsJavaScriptException(); return env.Undefined(); }
+    if (src->isClone()) { JsonApi::Error::New(env, "timeline.addClone: a Clone cannot have Clones").ThrowAsJavaScriptException(); return env.Undefined(); }
+    if (src->type != TrackInfo::Type::Pattern) { JsonApi::Error::New(env, "timeline.addClone: Clones exist only for Pattern tracks").ThrowAsJavaScriptException(); return env.Undefined(); }
+
+    TrackInfo c;
+    c.type       = TrackInfo::Type::Pattern;
+    c.visualOnly = true;
+    c.cloneOf    = src->id;
+    c.cloneKind  = kind;
+    c.trackColorMode   = src->trackColorMode;
+    c.trackColorSlot   = src->trackColorSlot;
+    c.trackColorCustom = src->trackColorCustom;
+    bool autoPlace = true;
+    const int existingTrails = static_cast<int>(clones::trailClonesOf(*g_timeline, src->id).size());
+    if (kind == CloneKind::Voice) {
+        c.videoFlipConfig   = src->videoFlipConfig;
+        c.videoOpacity      = src->videoOpacity;
+        c.gapScaleOverride  = src->gapScaleOverride;
+        c.cornerRadius      = src->cornerRadius;
+        c.bounce            = src->bounce;
+        c.pingPong          = src->pingPong;
+        c.zoomPanRot        = src->zoomPanRot;
+        c.slideNoteEffect   = src->slideNoteEffect;
+        c.noteFade          = src->noteFade;
+        c.visualEffectChain = src->visualEffectChain;
+        c.colorGrade        = src->colorGrade;
+        c.subdivisionFactor = src->subdivisionFactor;
+    } else {
+        c.trail.delayTicks = 480.0 * (existingTrails + 1);
+        c.trail.tintRgb    = kTrailTints[existingTrails % (sizeof(kTrailTints) / sizeof(kTrailTints[0]))];
+        c.trail.opacity    = std::max(0.3, 0.9 - 0.15 * existingTrails);
+    }
+    c.name = src->name + (kind == CloneKind::Trail ? " \xC2\xB7 Trail " : " \xC2\xB7 Clone ")
+           + std::to_string(nextCloneNumber(*src, kind));
+
+    if (info.Length() >= 3 && !info[2].IsUndefined() && !info[2].IsNull()) {
+        if (!info[2].IsObject() || info[2].IsArray()) { throwType(env, std::string(sig) + ": opts must be an object"); return env.Undefined(); }
+        const nlohmann::json opts = valueToJson(info[2]);
+        for (auto it = opts.begin(); it != opts.end(); ++it) {
+            const std::string& k = it.key();
+            const bool voiceKey = k == "autoPlace";
+            const bool trailKey = k == "delayTicks" || k == "tint" || k == "opacity";
+            if (k != "name" && !voiceKey && !trailKey) { throwType(env, std::string(sig) + ": unknown field '" + k + "'"); return env.Undefined(); }
+            if ((voiceKey && kind != CloneKind::Voice) || (trailKey && kind != CloneKind::Trail)) {
+                throwType(env, std::string(sig) + ": '" + k + "' does not apply to a " + clones::cloneKindToString(kind) + " clone");
+                return env.Undefined();
+            }
+        }
+        if (opts.contains("name")) {
+            if (!opts["name"].is_string() || opts["name"].get<std::string>().empty()) { throwType(env, std::string(sig) + ": name must be a non-empty string"); return env.Undefined(); }
+            c.name = opts["name"].get<std::string>();
+        }
+        if (opts.contains("autoPlace")) {
+            if (!opts["autoPlace"].is_boolean()) { throwType(env, std::string(sig) + ": autoPlace must be a boolean"); return env.Undefined(); }
+            autoPlace = opts["autoPlace"].get<bool>();
+        }
+        if (opts.contains("delayTicks")) {
+            const auto& d = opts["delayTicks"];
+            if (!d.is_number() || !std::isfinite(d.get<double>()) || d.get<double>() < clones::kMinTrailDelayTicks
+                || d.get<double>() > clones::kMaxTrailDelayTicks) { throwType(env, std::string(sig) + ": delayTicks must be in [1, 245760]"); return env.Undefined(); }
+            c.trail.delayTicks = d.get<double>();
+        }
+        if (opts.contains("tint")) {
+            if (!opts["tint"].is_string() || !clones::tintFromString(opts["tint"].get<std::string>(), c.trail.tintRgb)) {
+                throwType(env, std::string(sig) + ": tint must be '#RRGGBB'"); return env.Undefined();
+            }
+        }
+        if (opts.contains("opacity")) {
+            const auto& o = opts["opacity"];
+            if (!o.is_number() || !std::isfinite(o.get<double>()) || o.get<double>() < 0.0 || o.get<double>() > 1.0) {
+                throwType(env, std::string(sig) + ": opacity must be in [0, 1]"); return env.Undefined();
+            }
+            c.trail.opacity = o.get<double>();
+        }
+    }
+
+    BridgeCallLog log("timeline.addClone");
+    auto cmd = std::make_unique<AddCloneCommand>(c, autoPlace, *g_timeline);
+    AddCloneCommand* raw = cmd.get();
+    g_undoManager->execute(std::move(cmd), *g_timeline);
+    const int newId = raw->trackId();
+    const bool placed = raw->placed();
+    g_previewDirty = true;
+    log.done(std::to_string(newId) + (placed ? " (placed)" : ""));
+    JsonApi::Object r = JsonApi::Object::New(env);
+    r.Set("trackId", JsonApi::Number::New(env, newId));
+    r.Set("placed",  JsonApi::Boolean::New(env, placed));
+    if (const TrackInfo* t = g_timeline->getTrack(newId)) r.Set("track", trackToJs(env, *t));
+    return r;
+}
+
+// timeline_setCloneSettings(trackId, patch) -> { trackId, changed, clone }
+//   Voice patch (strict): { lensMode?: 'Linked'|'Own' }. Linked -> Own seeds the
+//     clone's Track Lens with a copy of the source's (every source entry).
+//   Trail patch (strict): { delayTicks?, tint?: '#RRGGBB', opacity?, opacityKeys? }
+//     opacityKeys = the WHOLE list: [{pos >= 0, value in [0, 1], interp?, bez?}].
+// A field that does not apply to the clone's kind throws. No-op = no undo entry.
+JsonApi::Value Timeline_SetCloneSettings(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!cloneRpcReady(env)) return env.Undefined();
+    const char* sig = "timeline_setCloneSettings(trackId: number, patch: { lensMode? } | "
+                      "{ delayTicks?, tint?, opacity?, opacityKeys? })";
+    int trackId = -1;
+    if (info.Length() < 2 || !intArg(info[0], trackId) || !info[1].IsObject() || info[1].IsArray()) { throwType(env, sig); return env.Undefined(); }
+    const TrackInfo* t = g_timeline->getTrack(trackId);
+    if (!t) { JsonApi::Error::New(env, "timeline.setCloneSettings: no track " + std::to_string(trackId)).ThrowAsJavaScriptException(); return env.Undefined(); }
+    if (!t->isClone()) { JsonApi::Error::New(env, "timeline.setCloneSettings: track " + std::to_string(trackId) + " is not a Clone").ThrowAsJavaScriptException(); return env.Undefined(); }
+    const nlohmann::json patch = valueToJson(info[1]);
+    CloneLensMode mode = t->cloneLensMode;
+    std::map<int, LensTrack> lens = t->trackLens;
+    TrailSettings trail = t->trail;
+    for (auto it = patch.begin(); it != patch.end(); ++it) {
+        const std::string& k = it.key();
+        const bool voiceKey = k == "lensMode";
+        const bool trailKey = k == "delayTicks" || k == "tint" || k == "opacity" || k == "opacityKeys";
+        if (!voiceKey && !trailKey) { throwType(env, std::string(sig) + ": unknown field '" + k + "'"); return env.Undefined(); }
+        if ((voiceKey && !t->isVoiceClone()) || (trailKey && !t->isTrailClone())) {
+            throwType(env, std::string(sig) + ": '" + k + "' does not apply to a " + clones::cloneKindToString(t->cloneKind) + " clone");
+            return env.Undefined();
+        }
+    }
+    if (patch.contains("lensMode")) {
+        if (!patch["lensMode"].is_string() || !clones::cloneLensModeFromString(patch["lensMode"].get<std::string>(), mode)) {
+            throwType(env, std::string(sig) + ": lensMode must be 'Linked' or 'Own'"); return env.Undefined();
+        }
+        if (mode == CloneLensMode::Own && t->cloneLensMode != CloneLensMode::Own) {
+            if (const TrackInfo* src = clones::sourceOf(*g_timeline, *t)) lens = src->trackLens;
+        }
+    }
+    if (patch.contains("delayTicks")) {
+        const auto& d = patch["delayTicks"];
+        if (!d.is_number() || !std::isfinite(d.get<double>()) || d.get<double>() < clones::kMinTrailDelayTicks
+            || d.get<double>() > clones::kMaxTrailDelayTicks) { throwType(env, std::string(sig) + ": delayTicks must be in [1, 245760]"); return env.Undefined(); }
+        trail.delayTicks = d.get<double>();
+    }
+    if (patch.contains("tint")) {
+        if (!patch["tint"].is_string() || !clones::tintFromString(patch["tint"].get<std::string>(), trail.tintRgb)) {
+            throwType(env, std::string(sig) + ": tint must be '#RRGGBB'"); return env.Undefined();
+        }
+    }
+    if (patch.contains("opacity")) {
+        const auto& o = patch["opacity"];
+        if (!o.is_number() || !std::isfinite(o.get<double>()) || o.get<double>() < 0.0 || o.get<double>() > 1.0) {
+            throwType(env, std::string(sig) + ": opacity must be in [0, 1]"); return env.Undefined();
+        }
+        trail.opacity = o.get<double>();
+    }
+    if (patch.contains("opacityKeys")) {
+        std::string err;
+        if (!parseOpacityKeysStrict(patch["opacityKeys"], trail.opacityKeys, err)) {
+            throwType(env, std::string(sig) + ": " + err); return env.Undefined();
+        }
+    }
+    BridgeCallLog log("timeline.setCloneSettings");
+    auto cmd = std::make_unique<SetCloneSettingsCommand>(trackId, mode, std::move(lens), std::move(trail), *g_timeline);
+    const bool changed = cmd->changesAnything();
+    if (changed) {
+        g_undoManager->execute(std::move(cmd), *g_timeline);
+        g_previewDirty = true;
+    }
+    log.done(changed ? "changed" : "unchanged");
+    JsonApi::Object r = JsonApi::Object::New(env);
+    r.Set("trackId", JsonApi::Number::New(env, trackId));
+    r.Set("changed", JsonApi::Boolean::New(env, changed));
+    if (const TrackInfo* after = g_timeline->getTrack(trackId)) r.Set("clone", cloneToJs(env, *after));
+    return r;
+}
+
+// timeline_reorderClones(sourceTrackId, cloneIds[]) -> { sourceTrackId, changed }
+// cloneIds = every Clone of the source, once, in the new order. Voice clones
+// renumber; pins follow their Clones. Throws on an invalid list.
+JsonApi::Value Timeline_ReorderClones(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!cloneRpcReady(env)) return env.Undefined();
+    const char* sig = "timeline_reorderClones(sourceTrackId: number, cloneIds: number[])";
+    int sourceId = -1;
+    if (info.Length() < 2 || !intArg(info[0], sourceId) || !info[1].IsArray()) { throwType(env, sig); return env.Undefined(); }
+    std::vector<int> ids;
+    JsonApi::Array arr = info[1].As<JsonApi::Array>();
+    for (uint32_t i = 0; i < arr.Length(); ++i) {
+        int id = -1;
+        if (!intArg(arr.Get(i), id)) { throwType(env, std::string(sig) + ": cloneIds must be integers"); return env.Undefined(); }
+        ids.push_back(id);
+    }
+    BridgeCallLog log("timeline.reorderClones");
+    auto cmd = std::make_unique<ReorderClonesCommand>(sourceId, ids, *g_timeline);
+    if (!cmd->isValid()) {
+        log.done("rejected");
+        JsonApi::Error::New(env, "timeline.reorderClones: cloneIds must list every Clone of track "
+                                 + std::to_string(sourceId) + " exactly once").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const bool changed = cmd->changesAnything();
+    if (changed) {
+        g_undoManager->execute(std::move(cmd), *g_timeline);
+        g_previewDirty = true;
+    }
+    log.done(changed ? "changed" : "unchanged");
+    JsonApi::Object r = JsonApi::Object::New(env);
+    r.Set("sourceTrackId", JsonApi::Number::New(env, sourceId));
+    r.Set("changed", JsonApi::Boolean::New(env, changed));
+    return r;
+}
+
+// timeline_setNotesVoicePin(notes: {patternId, noteId}[], pin: number /* -1 = Auto */)
+//   -> { changed, count }   One undo step for every note. Unknown refs are skipped.
+JsonApi::Value Timeline_SetNotesVoicePin(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!cloneRpcReady(env)) return env.Undefined();
+    const char* sig = "timeline_setNotesVoicePin(notes: {patternId, noteId}[], pin: number /* -1 = Auto */)";
+    int pin = -1;
+    if (info.Length() < 2 || !info[0].IsArray() || !intArg(info[1], pin, -1.0, kMaxVoicePin)) { throwType(env, sig); return env.Undefined(); }
+    std::vector<SetNotesVoicePinCommand::Ref> refs;
+    JsonApi::Array arr = info[0].As<JsonApi::Array>();
+    for (uint32_t i = 0; i < arr.Length(); ++i) {
+        JsonApi::Value v = arr.Get(i);
+        if (!v.IsObject() || v.IsArray()) { throwType(env, std::string(sig) + ": each note must be {patternId, noteId}"); return env.Undefined(); }
+        JsonApi::Object o = v.As<JsonApi::Object>();
+        SetNotesVoicePinCommand::Ref r;
+        if (!intArg(o.Get("patternId"), r.patternId) || !intArg(o.Get("noteId"), r.noteId)) {
+            throwType(env, std::string(sig) + ": patternId and noteId must be integers"); return env.Undefined();
+        }
+        refs.push_back(r);
+    }
+    BridgeCallLog log("timeline.setNotesVoicePin");
+    auto cmd = std::make_unique<SetNotesVoicePinCommand>(refs, pin, *g_timeline);
+    const std::size_t count = cmd->noteCount();
+    const bool changed = cmd->changesAnything();
+    const std::string what = cmd->describe();
+    if (changed) {
+        g_undoManager->execute(std::move(cmd), *g_timeline);
+        g_previewDirty = true;
+    }
+    log.done(what + (changed ? "" : " (unchanged)"));
+    JsonApi::Object r = JsonApi::Object::New(env);
+    r.Set("changed", JsonApi::Boolean::New(env, changed));
+    r.Set("count",   JsonApi::Number::New(env, static_cast<double>(count)));
+    return r;
+}
+
+// timeline_getVoiceAssignment(trackId) -> { trackId, voices, cloneIds,
+//   patterns: [{ patternId, notes: [{ noteId, voice, overflow }] }] }
+// For a source (or any of its Clones: the answer is the source's). The engine's
+// own assignment (model/Clone.h assignVoices), for the UI's parity tests and
+// tools; the Reel lane uses its JS port.
+JsonApi::Value Timeline_GetVoiceAssignment(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!cloneRpcReady(env)) return env.Undefined();
+    int trackId = -1;
+    if (info.Length() < 1 || !intArg(info[0], trackId)) { throwType(env, "timeline_getVoiceAssignment(trackId: number)"); return env.Undefined(); }
+    const TrackInfo* t = g_timeline->getTrack(trackId);
+    if (!t) { JsonApi::Error::New(env, "timeline.getVoiceAssignment: no track " + std::to_string(trackId)).ThrowAsJavaScriptException(); return env.Undefined(); }
+    if (t->isClone()) {
+        if (const TrackInfo* s = clones::sourceOf(*g_timeline, *t)) t = s;
+    }
+    const auto voiceClones = clones::voiceClonesOf(*g_timeline, t->id);
+    JsonApi::Object r = JsonApi::Object::New(env);
+    r.Set("trackId", JsonApi::Number::New(env, t->id));
+    r.Set("voices",  JsonApi::Number::New(env, static_cast<double>(voiceClones.size())));
+    JsonApi::Array ids = JsonApi::Array::New(env, voiceClones.size());
+    for (uint32_t i = 0; i < voiceClones.size(); ++i) ids.Set(i, JsonApi::Number::New(env, voiceClones[i]->id));
+    r.Set("cloneIds", ids);
+    JsonApi::Array pats = JsonApi::Array::New(env);
+    uint32_t np = 0;
+    for (int pid : clones::patternsPlayedBy(*g_timeline, t->id)) {
+        const Pattern* p = g_timeline->getPattern(pid);
+        if (!p) continue;
+        const auto slots = clones::assignVoices(*p, static_cast<int>(voiceClones.size()));
+        JsonApi::Object po = JsonApi::Object::New(env);
+        po.Set("patternId", JsonApi::Number::New(env, pid));
+        JsonApi::Array notes = JsonApi::Array::New(env, p->notes.size());
+        for (uint32_t i = 0; i < p->notes.size(); ++i) {
+            JsonApi::Object n = JsonApi::Object::New(env);
+            n.Set("noteId",   JsonApi::Number::New(env, p->notes[i].id));
+            n.Set("voice",    JsonApi::Number::New(env, slots[i].voice));
+            n.Set("overflow", JsonApi::Boolean::New(env, slots[i].overflow));
+            notes.Set(i, n);
+        }
+        po.Set("notes", notes);
+        pats.Set(np++, po);
+    }
+    r.Set("patterns", pats);
+    return r;
 }
 
 // timeline_setTrackSlideNoteEffect(trackId, sObj)
@@ -17493,6 +18973,472 @@ void Timeline_SetPreviewResolutionAutoMode(const JsonApi::CallbackInfo& info)
     if (info.Length() < 1 || !info[0].IsBoolean()) return;
     g_previewResolutionAutoMode.store(
         info[0].As<JsonApi::Boolean>().Value(), std::memory_order_relaxed);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Color Grade (model/ColorGrade.h)
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// A target is { level: "source" | "clip" | "region" | "layer" | "master", id }.
+// `id` is the source / clip / region / track id; Master has none.
+//
+//   colorGrade_get(target)                -> { level, id, exists, grade, isDefault, lutError }
+//   colorGrade_getAll()                   -> every non-default grade, by level
+//   colorGrade_preview(target, grade)     live write, no undo entry (a drag in progress)
+//   colorGrade_commit(target, grade)      ends the drag as ONE undo step (or writes outright)
+//   colorGrade_cancel(target)             drops the drag, restoring what was there
+//   colorGrade_setMany(entries, label)    several targets, ONE undo step (bulk apply, paste, reset)
+//   colorGrade_analyze(target, opts)      statistics + the grade Auto proposes at full strength
+//   colorGrade_setCompare(bool)           preview-only hold-to-compare (all grades off)
+//   colorGrade_checkLut(path)             is this a usable .cube file?
+
+static bool parseGradeTarget(const JsonApi::Value& v, xleth::grade::Level& level, int& id) {
+    if (!v.IsObject()) return false;
+    JsonApi::Object o = v.As<JsonApi::Object>();
+    if (!o.Has("level") || !o.Get("level").IsString()) return false;
+    if (!xleth::grade::levelFromName(o.Get("level").As<JsonApi::String>().Utf8Value(), level))
+        return false;
+    id = 0;
+    if (level != xleth::grade::Level::Master) {
+        if (!o.Has("id") || !o.Get("id").IsNumber()) return false;
+        id = o.Get("id").As<JsonApi::Number>().Int32Value();
+    }
+    return true;
+}
+
+static bool colorGradeReady(JsonApi::Env env) {
+    if (isInitialised() && g_timeline && g_undoManager) return true;
+    JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+    return false;
+}
+
+// Why a grade's LUT is not rendering, or "" when it is fine / there is none.
+static std::string gradeLutError(const ColorGrade& g) {
+    if (g.lutPath.empty()) return {};
+    std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
+    if (g_gradeLuts.get(g.lutPath)) return {};
+    const std::string why = g_gradeLuts.errorFor(g.lutPath);
+    return why.empty() ? std::string("the LUT file could not be loaded") : why;
+}
+
+static JsonApi::Object gradeStateToJs(JsonApi::Env env, xleth::grade::Level level, int id) {
+    const ColorGrade* g = g_timeline->getColorGrade(level, id);
+    JsonApi::Object o = JsonApi::Object::New(env);
+    o.Set("level",  JsonApi::String::New(env, xleth::grade::levelName(level)));
+    o.Set("id",     JsonApi::Number::New(env, id));
+    o.Set("exists", JsonApi::Boolean::New(env, g != nullptr));
+    const ColorGrade value = g ? *g : ColorGrade{};
+    o.Set("grade",     opaqueJsonToValue(env, xleth::grade::colorGradeToJson(value)));
+    o.Set("isDefault", JsonApi::Boolean::New(env, value.isDefault()));
+    o.Set("isNeutral", JsonApi::Boolean::New(env, value.isNeutral()));
+    o.Set("lutError",  JsonApi::String::New(env, gradeLutError(value)));
+    return o;
+}
+
+JsonApi::Value ColorGrade_Get(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!colorGradeReady(env)) return env.Undefined();
+    xleth::grade::Level level; int id = 0;
+    if (info.Length() < 1 || !parseGradeTarget(info[0], level, id)) {
+        JsonApi::TypeError::New(env, "colorGrade_get({ level, id })").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    return gradeStateToJs(env, level, id);
+}
+
+// Every grade that is not the default, for the indicators and the stack view.
+// A level with nothing graded is an empty list, so the renderer can tell "no
+// grades" from "not asked".
+JsonApi::Value ColorGrade_GetAll(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!colorGradeReady(env)) return env.Undefined();
+
+    nlohmann::json out = nlohmann::json::object();
+    auto entry = [](int id, const ColorGrade& g) {
+        return nlohmann::json{
+            {"id", id},
+            {"grade", xleth::grade::colorGradeToJson(g)},
+            {"active", g.isActive()},
+        };
+    };
+    nlohmann::json sources = nlohmann::json::array();
+    for (const SourceMedia* s : g_timeline->getAllSources())
+        if (!s->colorGrade.isDefault()) sources.push_back(entry(s->id, s->colorGrade));
+    nlohmann::json clips = nlohmann::json::array();
+    for (const Clip* c : g_timeline->getAllClips())
+        if (!c->colorGrade.isDefault()) clips.push_back(entry(c->id, c->colorGrade));
+    nlohmann::json regions = nlohmann::json::array();
+    for (const SampleRegion* r : g_timeline->getAllRegions())
+        if (!r->colorGrade.isDefault()) regions.push_back(entry(r->id, r->colorGrade));
+    nlohmann::json layers = nlohmann::json::array();
+    for (const TrackInfo* t : g_timeline->getAllTracks())
+        if (!t->colorGrade.isDefault()) layers.push_back(entry(t->id, t->colorGrade));
+
+    out["sources"] = std::move(sources);
+    out["clips"]   = std::move(clips);
+    out["regions"] = std::move(regions);
+    out["layers"]  = std::move(layers);
+    const ColorGrade& master = g_timeline->getMasterColorGrade();
+    out["master"]  = master.isDefault() ? nlohmann::json(nullptr) : entry(0, master);
+    out["compare"] = g_gradeCompare.load(std::memory_order_acquire);
+    return opaqueJsonToValue(env, out);
+}
+
+// Live write of a drag in progress. No undo entry: see ColorGradeEditSession.
+JsonApi::Value ColorGrade_Preview(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!colorGradeReady(env)) return env.Undefined();
+    xleth::grade::Level level; int id = 0;
+    if (info.Length() < 2 || !parseGradeTarget(info[0], level, id) || !info[1].IsObject()) {
+        JsonApi::TypeError::New(env, "colorGrade_preview({ level, id }, grade)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const ColorGrade grade = xleth::grade::colorGradeFromJson(valueToJson(info[1]));
+
+    bool ok = false;
+    {
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
+        const ColorGrade* current = g_timeline->getColorGrade(level, id);
+        if (current) {
+            if (findColorGradeEdit(level, id) < 0)
+                g_colorGradeEdits.push_back(ColorGradeEditSession{ level, id, *current });
+            ok = g_timeline->setColorGrade(level, id, grade);
+        }
+    }
+    if (ok) {
+        publishColorGradeSnapshot();
+        g_previewDirty = true;   // a paused preview redraws with the new look
+    }
+    return JsonApi::Boolean::New(env, ok);
+}
+
+JsonApi::Value ColorGrade_Cancel(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!colorGradeReady(env)) return env.Undefined();
+    xleth::grade::Level level; int id = 0;
+    if (info.Length() < 1 || !parseGradeTarget(info[0], level, id)) {
+        JsonApi::TypeError::New(env, "colorGrade_cancel({ level, id })").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (restoreColorGradeEdit(level, id)) {
+        publishColorGradeSnapshot();
+        g_previewDirty = true;
+    }
+    return gradeStateToJs(env, level, id);
+}
+
+// The undo boundary. With a drag open on this target it rolls back to the
+// value from before the drag and runs ONE command from there to `grade`;
+// without one it is a plain undoable write (a typed value, a reset, Auto).
+JsonApi::Value ColorGrade_Commit(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!colorGradeReady(env)) return env.Undefined();
+    xleth::grade::Level level; int id = 0;
+    if (info.Length() < 2 || !parseGradeTarget(info[0], level, id) || !info[1].IsObject()) {
+        JsonApi::TypeError::New(env, "colorGrade_commit({ level, id }, grade, label?)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const ColorGrade grade = xleth::grade::colorGradeFromJson(valueToJson(info[1]));
+    std::string label;
+    if (info.Length() > 2 && info[2].IsString())
+        label = info[2].As<JsonApi::String>().Utf8Value();
+
+    BridgeCallLog log("colorGrade.commit");
+    restoreColorGradeEdit(level, id);   // back to the pre-drag value, if a drag was open
+
+    if (!g_timeline->getColorGrade(level, id)) {
+        log.done("no such target");
+        return gradeStateToJs(env, level, id);
+    }
+
+    std::vector<SetColorGradesCommand::Target> targets;
+    targets.push_back(SetColorGradesCommand::Target{ level, id, grade });
+    auto command = std::make_unique<SetColorGradesCommand>(std::move(targets), *g_timeline,
+                                                           std::move(label));
+    const int changed = command->changedCount();
+    g_undoManager->execute(std::move(command), *g_timeline);
+    // The post-mutation hook republishes; an unchanged commit that only rolled
+    // a drag back did not go through it with anything to do, so publish here
+    // as well. Cheap: an unchanged grade is reused, not re-baked.
+    publishColorGradeSnapshot();
+    g_previewDirty = true;
+    log.done(changed ? "changed" : "unchanged");
+
+    JsonApi::Object state = gradeStateToJs(env, level, id);
+    state.Set("changed", JsonApi::Boolean::New(env, changed > 0));
+    return state;
+}
+
+// Several grades, one undo step: bulk apply across sources, Auto over a
+// selection, paste, reset. entries = [{ level, id, grade }].
+JsonApi::Value ColorGrade_SetMany(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!colorGradeReady(env)) return env.Undefined();
+    if (info.Length() < 1 || !info[0].IsArray()) {
+        JsonApi::TypeError::New(env, "colorGrade_setMany([{ level, id, grade }], label?)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    JsonApi::Array arr = info[0].As<JsonApi::Array>();
+    std::string label;
+    if (info.Length() > 1 && info[1].IsString())
+        label = info[1].As<JsonApi::String>().Utf8Value();
+
+    std::vector<SetColorGradesCommand::Target> targets;
+    targets.reserve(arr.Length());
+    for (uint32_t i = 0; i < arr.Length(); ++i) {
+        JsonApi::Value v = arr.Get(i);
+        xleth::grade::Level level; int id = 0;
+        if (!parseGradeTarget(v, level, id)) {
+            JsonApi::TypeError::New(env, "colorGrade_setMany: every entry needs { level, id, grade }")
+                .ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+        JsonApi::Object o = v.As<JsonApi::Object>();
+        if (!o.Has("grade") || !o.Get("grade").IsObject()) {
+            JsonApi::TypeError::New(env, "colorGrade_setMany: every entry needs { level, id, grade }")
+                .ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+        targets.push_back(SetColorGradesCommand::Target{
+            level, id, xleth::grade::colorGradeFromJson(valueToJson(o.Get("grade"))) });
+    }
+
+    BridgeCallLog log("colorGrade.setMany");
+    // A drag still open on any of these targets is superseded.
+    for (const auto& t : targets) restoreColorGradeEdit(t.level, t.id);
+
+    auto command = std::make_unique<SetColorGradesCommand>(std::move(targets), *g_timeline,
+                                                           std::move(label));
+    const int changed = command->changedCount();
+    g_undoManager->execute(std::move(command), *g_timeline);
+    publishColorGradeSnapshot();
+    g_previewDirty = true;
+    log.done(std::to_string(changed) + " changed");
+
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("changed", JsonApi::Number::New(env, changed));
+    return out;
+}
+
+void ColorGrade_SetCompare(const JsonApi::CallbackInfo& info)
+{
+    if (info.Length() < 1 || !info[0].IsBoolean()) return;
+    g_gradeCompare.store(info[0].As<JsonApi::Boolean>().Value(), std::memory_order_release);
+    g_previewDirty = true;   // a paused preview has to redraw to show the change
+}
+
+JsonApi::Value ColorGrade_CheckLut(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    JsonApi::Object out = JsonApi::Object::New(env);
+    if (info.Length() < 1 || !info[0].IsString()) {
+        out.Set("ok", JsonApi::Boolean::New(env, false));
+        out.Set("error", JsonApi::String::New(env, "no file given"));
+        return out;
+    }
+    const std::string path = info[0].As<JsonApi::String>().Utf8Value();
+    std::shared_ptr<const xleth::grade::Lut3D> lut;
+    std::string error;
+    {
+        // Through the library, so the file is read once and a file that has
+        // been replaced on disk is picked up by this explicit check.
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
+        g_gradeLuts.forget(path);
+        lut = g_gradeLuts.get(path);
+        if (!lut) error = g_gradeLuts.errorFor(path);
+    }
+    out.Set("ok", JsonApi::Boolean::New(env, lut != nullptr));
+    if (lut) {
+        out.Set("size",  JsonApi::Number::New(env, lut->size));
+        out.Set("title", JsonApi::String::New(env, lut->title));
+    } else {
+        out.Set("error", JsonApi::String::New(env, error.empty() ? "could not read the file" : error));
+    }
+    return out;
+}
+
+// ── Auto: analysis ───────────────────────────────────────────────────────────
+// One span of one source to look at, and the grade that sits ABOVE the level
+// being analysed (so Auto corrects what that level actually receives).
+struct GradeAnalysisSpan {
+    int         sourceId = 0;
+    std::string filePath;
+    double      startSec = 0.0;
+    double      endSec   = 0.0;     // <= startSec: to the end of the file
+    std::shared_ptr<const xleth::grade::BakedGrade> upstream;   // nullptr = none
+};
+
+static void accumulateGradeSpan(const GradeAnalysisSpan& span, int frames,
+                                xleth::grade::GradeAnalysis& out, std::string& error)
+{
+    xleth::grade::sampleSourceFrames(span.filePath, span.startSec, span.endSec,
+        frames, /*maxWidth=*/192, /*maxHeight=*/108,
+        [&](const xleth::grade::SampledFrame& f) {
+            if (!span.upstream) {
+                out.addFrame(f.rgb.data(), f.width, f.height, f.width * 3, 3, 0, 1, 2);
+                return;
+            }
+            // Through the grade above this level, on the CPU reference.
+            std::vector<uint8_t> graded(f.rgb.size());
+            const size_t n = static_cast<size_t>(f.width) * f.height;
+            for (size_t i = 0; i < n; ++i) {
+                float c[3] = { f.rgb[i * 3] / 255.0f, f.rgb[i * 3 + 1] / 255.0f, f.rgb[i * 3 + 2] / 255.0f };
+                xleth::grade::applyBakedGrade(*span.upstream, c);
+                graded[i * 3]     = static_cast<uint8_t>(std::lround(c[0] * 255.0f));
+                graded[i * 3 + 1] = static_cast<uint8_t>(std::lround(c[1] * 255.0f));
+                graded[i * 3 + 2] = static_cast<uint8_t>(std::lround(c[2] * 255.0f));
+            }
+            out.addFrame(graded.data(), f.width, f.height, f.width * 3, 3, 0, 1, 2);
+        },
+        error);
+}
+
+// colorGrade_analyze(target, { refresh? }) -> { ok, analysis, auto, error }
+//
+// What Auto looks at, by level:
+//   source  the whole source file
+//   clip    the clip's region of its source, through the Source grade
+//   region  the region of its source, through the Source grade
+//   layer   every source the track plays (clips and patterns), each through
+//           its Source grade
+//   master  every video source in the project, each through its Source grade
+// Always whole spans, many frames, one set of statistics: one steady grade.
+JsonApi::Value ColorGrade_Analyze(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!colorGradeReady(env)) return env.Undefined();
+    xleth::grade::Level level; int id = 0;
+    if (info.Length() < 1 || !parseGradeTarget(info[0], level, id)) {
+        JsonApi::TypeError::New(env, "colorGrade_analyze({ level, id }, opts?)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    bool refresh = false;
+    if (info.Length() > 1 && info[1].IsObject()) {
+        JsonApi::Object opts = info[1].As<JsonApi::Object>();
+        if (opts.Has("refresh") && opts.Get("refresh").IsBoolean())
+            refresh = opts.Get("refresh").As<JsonApi::Boolean>().Value();
+    }
+    BridgeCallLog log("colorGrade.analyze");
+
+    using xleth::grade::Level;
+    auto fail = [&](const std::string& why) {
+        JsonApi::Object o = JsonApi::Object::New(env);
+        o.Set("ok", JsonApi::Boolean::New(env, false));
+        o.Set("error", JsonApi::String::New(env, why));
+        log.done(why.c_str());
+        return o;
+    };
+
+    // The Source grade a span is seen through. Baked here, on the RPC thread,
+    // from the timeline's current value (which includes a drag in progress).
+    auto sourceGradeFor = [&](const SourceMedia& s) -> std::shared_ptr<const xleth::grade::BakedGrade> {
+        std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
+        return xleth::grade::bakeColorGrade(s.colorGrade, &g_gradeLuts);
+    };
+    auto spanForRegion = [&](const SampleRegion& r, GradeAnalysisSpan& span) -> bool {
+        const SourceMedia* s = g_timeline->getSource(r.sourceId);
+        if (!s || !s->hasVideo || s->filePath.empty()) return false;
+        span.sourceId = s->id;
+        span.filePath = s->filePath;
+        span.startSec = r.startTime;
+        span.endSec   = r.endTime;
+        span.upstream = sourceGradeFor(*s);
+        return true;
+    };
+
+    xleth::grade::GradeAnalysis analysis;
+    std::string error;
+
+    if (level == Level::Source) {
+        const SourceMedia* s = g_timeline->getSource(id);
+        if (!s) return fail("no such source");
+        if (!s->hasVideo || s->filePath.empty()) return fail("this source has no picture");
+        auto cached = g_gradeAnalysisBySource.find(id);
+        if (!refresh && cached != g_gradeAnalysisBySource.end()
+            && cached->second.filePath == s->filePath) {
+            analysis = cached->second.analysis;
+        } else {
+            GradeAnalysisSpan span;
+            span.sourceId = s->id;
+            span.filePath = s->filePath;
+            accumulateGradeSpan(span, /*frames=*/24, analysis, error);
+            if (!analysis.empty())
+                g_gradeAnalysisBySource[id] = CachedGradeAnalysis{ s->filePath, analysis };
+        }
+    } else if (level == Level::Clip || level == Level::Region) {
+        const SampleRegion* r = nullptr;
+        if (level == Level::Clip) {
+            const Clip* c = g_timeline->getClip(id);
+            if (!c) return fail("no such clip");
+            r = g_timeline->getRegion(c->regionId);
+        } else {
+            r = g_timeline->getRegion(id);
+        }
+        if (!r) return fail("no such region");
+        GradeAnalysisSpan span;
+        if (!spanForRegion(*r, span)) return fail("this region has no picture");
+        accumulateGradeSpan(span, /*frames=*/12, analysis, error);
+    } else {
+        // Layer: the regions this track plays. Master: every video source.
+        std::vector<GradeAnalysisSpan> spans;
+        if (level == Level::Layer) {
+            if (!g_timeline->getTrack(id)) return fail("no such track");
+            std::vector<int> regionIds;
+            auto addRegion = [&](int regionId) {
+                if (std::find(regionIds.begin(), regionIds.end(), regionId) == regionIds.end())
+                    regionIds.push_back(regionId);
+            };
+            for (const Clip* c : g_timeline->getClipsOnTrack(id)) addRegion(c->regionId);
+            for (const PatternBlock* b : g_timeline->getPatternBlocksOnTrack(id))
+                if (const Pattern* p = g_timeline->getPattern(b->patternId)) addRegion(p->regionId);
+            std::sort(regionIds.begin(), regionIds.end());   // a fixed order: a fixed result
+            for (int regionId : regionIds) {
+                const SampleRegion* r = g_timeline->getRegion(regionId);
+                GradeAnalysisSpan span;
+                if (r && spanForRegion(*r, span)) spans.push_back(std::move(span));
+            }
+        } else {
+            for (const SourceMedia* s : g_timeline->getAllSources()) {
+                if (!s->hasVideo || s->filePath.empty()) continue;
+                GradeAnalysisSpan span;
+                span.sourceId = s->id;
+                span.filePath = s->filePath;
+                span.upstream = sourceGradeFor(*s);
+                spans.push_back(std::move(span));
+            }
+        }
+        if (spans.empty()) return fail("nothing with a picture to analyse here");
+        // Keep the wait bounded on a big project: at most 16 spans, and fewer
+        // frames from each as there are more of them.
+        if (spans.size() > 16) spans.resize(16);
+        const int framesEach = std::max(4, 48 / static_cast<int>(spans.size()));
+        for (const auto& span : spans) {
+            std::string spanError;
+            accumulateGradeSpan(span, framesEach, analysis, spanError);
+            if (error.empty()) error = spanError;
+        }
+    }
+
+    if (analysis.empty())
+        return fail(error.empty() ? "no frame could be analysed" : error);
+
+    const ColorGrade proposal = xleth::grade::autoGradeFromAnalysis(analysis);
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("ok", JsonApi::Boolean::New(env, true));
+    out.Set("analysis", opaqueJsonToValue(env, xleth::grade::gradeAnalysisToJson(analysis)));
+    out.Set("auto", opaqueJsonToValue(env, xleth::grade::colorGradeToJson(proposal)));
+    log.done("ok");
+    return out;
 }
 
 JsonApi::Value Timeline_GetPreviewEffectsBypass(const JsonApi::CallbackInfo& info)
@@ -17589,6 +19535,7 @@ static JsonApi::Array visualChainToJs(JsonApi::Env env, const std::vector<Visual
         const VisualEffect& fx = chain[i];
         JsonApi::Object fxObj = JsonApi::Object::New(env);
         fxObj.Set("type",     JsonApi::Number::New(env, static_cast<int>(fx.type)));
+        fxObj.Set("uid",      JsonApi::Number::New(env, fx.uid));
         fxObj.Set("bypassed", JsonApi::Boolean::New(env, fx.bypassed));
         JsonApi::Array paramsArr = JsonApi::Array::New(env, 16);
         for (int pi = 0; pi < 16; ++pi)
@@ -17850,8 +19797,9 @@ JsonApi::Value Timeline_GetVisualEffectChain(const JsonApi::CallbackInfo& info)
 
 // timeline_autoTrimClip(clipId, thresholdDb) →
 //   { success, trimmed, newOffset?, newDuration?, reason? }
-// Detects leading silence in the sample backing this clip's region and shifts
-// the clip's regionOffset forward + shrinks its duration by the silence amount.
+// Detects the silence this clip plays first — measured over the clip's own
+// source window, from whichever end of it plays first — and removes it: the
+// window loses that much, and the duration shrinks to match.
 // The clip's timeline position is NOT touched — audible content now begins at
 // the clip's left edge.
 JsonApi::Value Timeline_AutoTrimClip(const JsonApi::CallbackInfo& info)
@@ -17884,18 +19832,46 @@ JsonApi::Value Timeline_AutoTrimClip(const JsonApi::CallbackInfo& info)
     const int sampleId = audioEngine->getMixEngine().getSampleIdForRegion(clip->regionId);
     if (sampleId < 0)              return makeFailure("sample not loaded");
 
-    int64_t silenceSamples = sampleBank->getLeadingSilenceSamples(sampleId, thresholdDb);
+    // The silence that matters is the silence THIS CLIP plays first, so it is
+    // measured over the clip's own source window — where it starts in the
+    // sample (syllable start + regionOffset, exactly as
+    // MixEngine::buildClipCacheKey places it) and how much source it consumes
+    // (duration / stretchRatio). Measuring from sample 0 and adding the result
+    // to regionOffset trimmed an already-trimmed clip a second time, and cut
+    // into any clip that started past the sample's opening silence (the right
+    // half of a split, a syllable clip, a clip trimmed by hand).
+    const double bpm        = audioEngine->getTransport().getBPM();
+    const double bufferRate = sampleBank->getSampleBufferRate(sampleId);
+    if (!(bpm > 0.0) || !(bufferRate > 0.0)) return makeFailure("invalid sample");
+
+    double windowStartSec = xleth::anchoring::ticksToSeconds(
+        std::max<int64_t>(0, clip->regionOffset.ticks), bpm);
+    if (clip->syllableIndex >= 0) {
+        const SampleRegion* region = g_timeline->getRegion(clip->regionId);
+        if (region && clip->syllableIndex < static_cast<int>(region->syllables.size()))
+            windowStartSec += region->syllables[static_cast<size_t>(clip->syllableIndex)].startTime;
+    }
+    const double windowLengthSec =
+        xleth::anchoring::ticksToSeconds(clip->duration.ticks, bpm)
+        / xleth::anchoring::effectiveStretchRatio(clip->stretchRatio);
+
+    const int64_t windowStart  = static_cast<int64_t>(std::floor(windowStartSec * bufferRate));
+    const int64_t windowLength = static_cast<int64_t>(std::llround(windowLengthSec * bufferRate));
+
+    // A reversed clip plays its window backwards: what it plays first is the
+    // END of the window, so that is the end the silence is counted from.
+    const bool reversed = clip->reversed;
+    int64_t silenceSamples = sampleBank->countEdgeSilence(
+        sampleId, thresholdDb, windowStart, windowLength, reversed);
     if (silenceSamples < 0)        return makeFailure("invalid sample");
 
-    // Convert samples → ticks using current BPM and engine sample rate.
-    const double bpm        = audioEngine->getTransport().getBPM();
-    const double sampleRate = audioEngine->getSampleRate();
+    // Samples → ticks at the buffer's own rate.
     int64_t silenceTicks = 0;
     if (silenceSamples > 0) {
         // AV_ROUND_ZERO keeps the truncation of the old double expression, so
         // the trim never eats a partial tick of audio.
         silenceTicks = RenderClock::sampleToPPQ(
-            silenceSamples, static_cast<int>(sampleRate), bpm, AV_ROUND_ZERO);
+            silenceSamples, static_cast<int>(std::llround(bufferRate)), bpm, AV_ROUND_ZERO);
     }
 
     if (silenceTicks <= 0) {
@@ -17928,9 +19904,12 @@ JsonApi::Value Timeline_AutoTrimClip(const JsonApi::CallbackInfo& info)
               << durationTrimTicks << " timeline ticks at "
               << clip->stretchRatio << "x)\n" << std::flush;
 
+    // Forward clip: the window's start moves past the silence. Reversed clip:
+    // the silence is at the window's end, so the window only gets shorter.
     g_undoManager->execute(
-        std::make_unique<AutoTrimClipCommand>(clipId, silenceTicks, durationTrimTicks),
+        std::make_unique<AutoTrimClipCommand>(clipId, reversed ? 0 : silenceTicks, durationTrimTicks),
         *g_timeline);
+    if (audioEngine) audioEngine->getMixEngine().invalidateClipCache(clipId, "autoTrimClip");
 
     // Re-read clip state for return payload.
     const Clip* updated = g_timeline->getClip(clipId);
@@ -17940,6 +19919,8 @@ JsonApi::Value Timeline_AutoTrimClip(const JsonApi::CallbackInfo& info)
     if (updated) {
         o.Set("newOffset",   JsonApi::Number::New(env, static_cast<double>(updated->regionOffset.ticks)));
         o.Set("newDuration", JsonApi::Number::New(env, static_cast<double>(updated->duration.ticks)));
+        // Post-state, so the renderer splices this one clip in.
+        o.Set("clip", clipToJs(env, *updated));
     }
     log.done("trimmed=" + std::to_string(silenceTicks));
     return o;
@@ -17995,7 +19976,9 @@ void Timeline_ModifyRegion(const JsonApi::CallbackInfo& info)
         hadRegion    = true;
     }
 
-    SampleRegion newState = jsToRegion(info[1].As<JsonApi::Object>());
+    // Patch semantics: start from the stored region so unparsed fields survive.
+    SampleRegion newState = jsToRegion(info[1].As<JsonApi::Object>(),
+                                       g_timeline->getRegion(id));
     g_undoManager->execute(
         std::make_unique<ModifyRegionCommand>(id, newState, *g_timeline),
         *g_timeline);
@@ -18130,6 +20113,7 @@ JsonApi::Value Undo_Undo(const JsonApi::CallbackInfo& info)
     }
     BridgeCallLog log("undo.undo");
     restoreAndClearClipControlEdit();
+    restoreAndClearColorGradeEdits();
     bool ok;
     {
         // Undo may touch GridLayout (grid-slot/chorus/crash/preview-fps commands) —
@@ -18145,6 +20129,9 @@ JsonApi::Value Undo_Undo(const JsonApi::CallbackInfo& info)
     // Patterns may have been restored/mutated — rebuild samplers to stay in sync.
     if (ok) rebuildAllSamplers();
     if (ok) refreshAllClipCaches();
+    // Routing commands (routes, sends, sidechain) may have been undone: re-sync
+    // the sidechain key buses and the live latency snapshot. Idempotent.
+    if (ok && isInitialised()) audioEngine->refreshLivePresentationLatency();
     log.done(ok ? "true" : "false (nothing to undo)");
     return JsonApi::Boolean::New(env, ok);
 }
@@ -18158,6 +20145,7 @@ JsonApi::Value Undo_Redo(const JsonApi::CallbackInfo& info)
     }
     BridgeCallLog log("undo.redo");
     restoreAndClearClipControlEdit();
+    restoreAndClearColorGradeEdits();
     bool ok;
     {
         std::lock_guard<std::recursive_mutex> lock(syncEventsMutex);
@@ -18168,8 +20156,35 @@ JsonApi::Value Undo_Redo(const JsonApi::CallbackInfo& info)
     if (ok) syncTransportLoopFromTimeline();
     if (ok) rebuildAllSamplers();
     if (ok) refreshAllClipCaches();
+    if (ok && isInitialised()) audioEngine->refreshLivePresentationLatency();
     log.done(ok ? "true" : "false (nothing to redo)");
     return JsonApi::Boolean::New(env, ok);
+}
+
+// undo_beginGroup(label?) → token
+// Everything recorded until the matching undo_endGroup(token) becomes ONE undo
+// entry. For gestures that take several calls (a bulk pitch shift, a bulk
+// delete of pattern blocks): one Ctrl+Z reverses the gesture, and a gesture
+// larger than the history cap can still be undone in full. See
+// UndoManager::beginGroup for why an abandoned group cannot stay open.
+JsonApi::Value Undo_BeginGroup(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!g_undoManager) return JsonApi::Number::New(env, 0);
+    std::string label;
+    if (info.Length() > 0 && info[0].IsString())
+        label = info[0].As<JsonApi::String>().Utf8Value();
+    return JsonApi::Number::New(env, g_undoManager->beginGroup(std::move(label)));
+}
+
+// undo_endGroup(token) → bool  (false: that group was already closed)
+JsonApi::Value Undo_EndGroup(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!g_undoManager || info.Length() < 1 || !info[0].IsNumber())
+        return JsonApi::Boolean::New(env, false);
+    const int token = info[0].As<JsonApi::Number>().Int32Value();
+    return JsonApi::Boolean::New(env, g_undoManager->endGroup(token));
 }
 
 JsonApi::Value Undo_CanUndo(const JsonApi::CallbackInfo& info)
@@ -21844,12 +23859,24 @@ JsonApi::Value Audio_ExportStart(const JsonApi::CallbackInfo& info)
         cfg.warmUpStartBeat = scope.scoped
             ? RenderClock::ppqToBeats(scope.warmUpStartTick)
             : -1.0;   // full timeline: legacy latency-only pre-roll
-        // Tail policy from the project LoopRegion (built at the export sample
-        // rate). hardCut → no tail; tailClamp → ring out effects past the capture
-        // end; wrap (Phase 3B) → fold the post-end tail onto the region head for a
-        // seamless loop. resolveTailPlanForScope fails wrap CLOSED to tailClamp for
-        // a non-scoped (full-timeline) render — there is no region head to fold.
-        const int srForTail = cfg.sampleRate > 0 ? cfg.sampleRate : 44100;
+        // Mix at the session rate and resample the finished render to the file
+        // rate — same reasoning as video_exportStart (the mix must be the one
+        // on the speakers, whatever rate the file is written at). The audio
+        // dialog defaults to 44.1 kHz, so on a 48 kHz device this is the common
+        // case, not a corner. XLETH_EXPORT_MIX_AT_OUTPUT_RATE=1 restores the old
+        // re-prepare-at-the-file-rate behaviour for A/B.
+        {
+            const int sessionRate = static_cast<int>(std::lround(audioEngine->getSampleRate()));
+            const bool mixAtOutputRate = std::getenv("XLETH_EXPORT_MIX_AT_OUTPUT_RATE") != nullptr;
+            cfg.mixSampleRate = (!mixAtOutputRate && sessionRate > 0) ? sessionRate : 0;
+        }
+        // Tail policy from the project LoopRegion (built at the MIX rate, which
+        // is what the exporter counts its samples in). hardCut → no tail;
+        // tailClamp → ring out effects past the capture end; wrap (Phase 3B) →
+        // fold the post-end tail onto the region head for a seamless loop.
+        // resolveTailPlanForScope fails wrap CLOSED to tailClamp for a
+        // non-scoped (full-timeline) render — there is no region head to fold.
+        const int srForTail = cfg.renderRate();
         cfg.tail = xleth::resolveTailPlanForScope(g_timeline->getLoopRegion(),
                                                   static_cast<double>(srForTail),
                                                   scope.scoped);
@@ -21899,14 +23926,16 @@ JsonApi::Value Audio_ExportStart(const JsonApi::CallbackInfo& info)
     // on every track buffer that has an effect chain — silencing the export.
     {
         auto& mixer = audioEngine->getMixEngine();
-        const int sr = cfg.sampleRate > 0 ? cfg.sampleRate : 44100;
+        const int sr = cfg.renderRate();   // the MIX rate (session rate by default)
         mixer.setNonRealtime(true);
         mixer.prepare(static_cast<double>(sr), 4096);
-        // Warm + await the clip render cache at the EXPORT rate so pitched/
+        // Make sure the clip render cache is warm at the mix rate so pitched/
         // stretched clips hit the cache (which applies pitch) instead of the
         // rate-corrected-but-pitchless raw fallback. Must run after prepare()
-        // so cache keys are built at the export rate, on the message thread,
-        // before the render thread spawns. The Clip-mode transform table is
+        // so cache keys are built at that rate, on the message thread, before
+        // the render thread spawns. At the session rate the entries the live
+        // engine rendered are still valid, so this normally re-renders nothing.
+        // The Clip-mode transform table is
         // published first, with no settle, so the shifted renders are keyed
         // (and awaited) on the transform the export will actually play.
         mixer.prepareSourceTransformsForExport();
@@ -22003,6 +24032,9 @@ JsonApi::Value Audio_ExportGetProgress(const JsonApi::CallbackInfo& info)
     {
         audioEngine->getMixEngine().prepare(audioEngine->getSampleRate(),
                                             audioEngine->getBufferSize());
+        // Back at the live rate: re-submit the clip caches against it. A no-op
+        // when the export mixed at the session rate; the repair when it did not.
+        refreshAllClipCaches();
     }
 
     JsonApi::Object o = JsonApi::Object::New(env);
@@ -22192,22 +24224,45 @@ JsonApi::Value Video_ExportStart(const JsonApi::CallbackInfo& info)
     const auto scope = resolveExportScope(exportTimeline, hasStartBeat, startBeatArg,
                                           hasEndBeat, endBeatArg);
 
-    // Convert ticks → samples. Four distinct concepts (spec §5): warm-up start,
-    // capture start, capture end, and the output timestamp (always 0).
+    // ── Mix rate vs. encode rate ─────────────────────────────────────────────
+    // settings.sampleRate is the rate of the ENCODED audio (what the dialog's
+    // "Sample rate" means). The engine does NOT render at it: it renders at the
+    // rate the session is running — the rate the user has been listening at —
+    // and the muxer resamples the finished master. Re-preparing the whole
+    // engine at the export rate made the export a different mix from the one
+    // on the speakers: the pitch/stretch engines place note onsets differently
+    // at 44.1 kHz than at 48 kHz (measured: up to ~17 ms per pitched clip), a
+    // plugin's latency in samples no longer matched the PDC it was measured
+    // for, and every clip cache had to be re-rendered at the new rate before
+    // the export could even start. One rate for the mix removes all three.
+    // XLETH_EXPORT_MIX_AT_OUTPUT_RATE=1 restores the old behaviour for A/B.
+    {
+        const int sessionRate = static_cast<int>(std::lround(audioEngine->getSampleRate()));
+        const bool mixAtOutputRate = std::getenv("XLETH_EXPORT_MIX_AT_OUTPUT_RATE") != nullptr;
+        settings.mixSampleRate = (!mixAtOutputRate && sessionRate > 0)
+            ? sessionRate : settings.sampleRate;
+    }
+    const int mixRate = settings.audioInputRate();
+
+    // Convert ticks → samples AT THE MIX RATE. Four distinct concepts (spec §5):
+    // warm-up start, capture start, capture end, and the output timestamp
+    // (always 0).
     const double bpm = exportTimeline.getBPM();
-    const double sampleRate = static_cast<double>(settings.sampleRate);
-    const int64_t startSample = RenderClock::ppqToSample(scope.captureStartTick, settings.sampleRate, bpm);
-    const int64_t endSample   = RenderClock::ppqToSample(scope.captureEndTick,   settings.sampleRate, bpm);
+    const double sampleRate = static_cast<double>(mixRate);
+    const int64_t startSample = RenderClock::ppqToSample(scope.captureStartTick, mixRate, bpm);
+    const int64_t endSample   = RenderClock::ppqToSample(scope.captureEndTick,   mixRate, bpm);
     // Scoped absolute window warms up from tick 0; full timeline / unscoped uses
     // legacy latency-only pre-roll (warm-up == capture start).
     const int64_t warmUpStartSample = scope.scoped
-        ? RenderClock::ppqToSample(scope.warmUpStartTick, settings.sampleRate, bpm)
+        ? RenderClock::ppqToSample(scope.warmUpStartTick, mixRate, bpm)
         : startSample;
 
     std::fprintf(stderr,
-        "[RenderScope] video scoped=%s capture=[%lld,%lld) warmUpSample=%lld outputStart=0\n",
+        "[RenderScope] video scoped=%s capture=[%lld,%lld) warmUpSample=%lld outputStart=0 "
+        "mixRate=%d encodeRate=%d\n",
         scope.scoped ? "true" : "false",
-        (long long)startSample, (long long)endSample, (long long)warmUpStartSample);
+        (long long)startSample, (long long)endSample, (long long)warmUpStartSample,
+        mixRate, settings.sampleRate);
 
     if (endSample <= startSample) {
         JsonApi::Error::New(env, "Export range is empty (endSample <= startSample)").ThrowAsJavaScriptException();
@@ -22240,10 +24295,14 @@ JsonApi::Value Video_ExportStart(const JsonApi::CallbackInfo& info)
     {
         auto& mixer = audioEngine->getMixEngine();
         mixer.setNonRealtime(true);
-        mixer.prepare(static_cast<double>(settings.sampleRate), 512);
-        // Warm + await the clip render cache at the EXPORT rate (see audio
-        // export above) so pitched/stretched clips hit the cache rather than the
-        // pitchless raw fallback. Message thread, before the render thread spawns.
+        mixer.prepare(static_cast<double>(mixRate), 512);
+        // Make sure every processed clip has its cache entry before the render
+        // thread starts, so pitched/stretched clips hit the cache rather than
+        // the pitchless raw fallback. At the session rate the entries the live
+        // engine already rendered are still valid (the cache key depends on the
+        // prepared rate, and that has not changed), so this is normally a no-op
+        // instead of a re-render of the whole project. Message thread, before
+        // the render thread spawns.
         mixer.prepareSourceTransformsForExport();
         refreshAllClipCaches();
         waitForClipCachesReady(15000);
@@ -22265,7 +24324,8 @@ JsonApi::Value Video_ExportStart(const JsonApi::CallbackInfo& info)
     if (g_projectManager)
         g_videoRenderer->setProxiesDir(g_projectManager->getProxiesDir());
 
-    // Tail policy from the project LoopRegion (built at the export sample rate).
+    // Tail policy from the project LoopRegion (built at the MIX rate — `sampleRate`
+    // above — because that is the rate the renderer counts its samples in).
     // Must be set before startRender (captured by the render thread). hardCut → no
     // tail; tailClamp → ring out effects + freeze last video frame; wrap (Phase
     // 3B) → fold the post-end audio tail onto the region head (video is NOT frozen
@@ -22325,6 +24385,14 @@ JsonApi::Value Video_ExportGetProgress(const JsonApi::CallbackInfo& info)
         restoreLiveTimelineAfterExport("export finished");
         audioEngine->resumeCallback();
         std::fprintf(stderr, "[Bridge] Audio callback resumed after video export\n");
+
+        // resumeCallback() re-prepared the engine at the live device settings.
+        // Re-submit the clip caches against that rate: a no-op when the export
+        // mixed at the session rate (every key already has its entry), and the
+        // repair when it did not (XLETH_EXPORT_MIX_AT_OUTPUT_RATE) — otherwise
+        // the first playback after such an export would start every pitched
+        // clip on the unprocessed fallback until its miss was noticed.
+        refreshAllClipCaches();
 
         // [PreviewUnify] Resume GPU preview compositing
         g_previewPauseForExport.store(false);
@@ -22707,31 +24775,51 @@ JsonApi::Value Audio_LoadRegionAudio(const JsonApi::CallbackInfo& info)
     const double engineRate = audioEngine->getSampleRate();
     int sampleId = -1;
 
-    std::string mipmapSourcePath;
-    bool mipmapSaveXlpeak = false;
+    RegionAudioOrigin want;
+    if (!regionAudioOriginFor(*region, engineRate, want)) {
+        const bool swapped = region->hasSwappedAudio && !region->swappedAudioPath.empty();
+        if (!swapped && !g_timeline->getSource(region->sourceId)) { log.done("no source"); return JsonApi::Number::New(env, -1); }
+        log.done("decode failed");
+        return JsonApi::Number::New(env, -1);
+    }
+    // The waveform mipmap follows the same file; only swapped audio (a file of
+    // its own) keeps a .xlpeak sidecar.
+    const std::string& mipmapSourcePath = want.path;
+    const bool mipmapSaveXlpeak = want.toContainerEnd;
 
-    if (region->hasSwappedAudio && !region->swappedAudioPath.empty()) {
-        const auto probed = probeAudioInfo(region->swappedAudioPath);
-        const double endT = probed.duration > 0.0 ? probed.duration : 3600.0;
-        sampleId = sampleBank->loadSampleFromSource(
-            region->swappedAudioPath, 0.0, endT, engineRate);
-        mipmapSourcePath = region->swappedAudioPath;
-        mipmapSaveXlpeak = true;
-    } else {
-        const SourceMedia* source = g_timeline->getSource(region->sourceId);
-        if (!source) { log.done("no source"); return JsonApi::Number::New(env, -1); }
-        sampleId = sampleBank->loadSampleFromSource(
-            source->filePath, region->startTime, region->endTime, engineRate);
-        mipmapSourcePath = source->filePath;
+    // Already holding exactly this? (project_load decoded it, or an earlier
+    // call did.) Then there is nothing to decode, nothing to remap and no clip
+    // render to invalidate — only the waveform mipmap may still be missing,
+    // and asking for it twice is harmless. See g_regionAudioOrigin.
+    {
+        const int mapped = audioEngine->getMixEngine().getSampleIdForRegionSlot(regionId, 0);
+        const auto have = g_regionAudioOrigin.find(regionId);
+        if (mapped >= 0 && have != g_regionAudioOrigin.end()
+            && have->second.sampleId == mapped && have->second.sameSource(want)
+            && sampleBank->getSample(mapped) != nullptr)
+        {
+            triggerMipmapGeneration(mapped, mipmapSourcePath, mipmapSaveXlpeak);
+            log.done(std::to_string(mapped) + " (already loaded)");
+            return JsonApi::Number::New(env, mapped);
+        }
+    }
+
+    {
+        SampleBank::SourceRequest req;
+        req.filePath       = want.path;
+        req.startTimeSec   = want.startTimeSec;
+        req.endTimeSec     = want.endTimeSec;
+        req.toContainerEnd = want.toContainerEnd;
+        req.sampleRate     = want.sampleRate;
+        sampleId = sampleBank->loadSamplesFromSources({ req }, engineRate).front();
     }
 
     if (sampleId < 0) { log.done("decode failed"); return JsonApi::Number::New(env, -1); }
     triggerMipmapGeneration(sampleId, mipmapSourcePath, mipmapSaveXlpeak);
 
-    fprintf(stderr, "[PITCHDBG] audio_loadRegionAudio: mapRegionToSample region=%d sampleId=%d\n",
-            regionId, sampleId);
-    fflush(stderr);
     audioEngine->getMixEngine().mapRegionToSample(regionId, sampleId);
+    want.sampleId = sampleId;
+    g_regionAudioOrigin[regionId] = want;
 
     // Now that this region's audio is mapped, warm clip caches for any clips
     // referencing it that have non-identity processing params (pitch/stretch/reverse).
@@ -24708,7 +26796,12 @@ static SmartBalanceEffect* getSmartBalance(JsonApi::Env env, int trackId, int no
 }
 
 // audio_smartBalanceGetDebug(trackId, nodeId)
-// → { dryRms: [f,f,f,f], dynDelta: [f,f,f,f], transient: [b,b,b,b], overallRms: f }
+// → { level: [f x4], ref: [f x4], presence: [f x4], transient: [b x4], program: f, makeup: f }
+//   level     each band's short-term level, dB
+//   ref       Relative: each band's balanced reference level, dB (-100 = none yet)
+//   presence  0..1, how much each band may be lifted (0 = not really there)
+//   transient Preserve is holding the band
+//   program   the balanced-reference anchor, dB; makeup the loudness match, dB
 // Polled at ~30 fps from React — only atomic reads, no locks.
 JsonApi::Value Audio_SmartBalance_GetDebug(const JsonApi::CallbackInfo& info)
 {
@@ -24728,22 +26821,26 @@ JsonApi::Value Audio_SmartBalance_GetDebug(const JsonApi::CallbackInfo& info)
     auto* sb = getSmartBalance(env, trackId, nodeId);
     if (!sb) return env.Null();
 
-    JsonApi::Array dryRms    = JsonApi::Array::New(env, 4);
-    JsonApi::Array dynDelta  = JsonApi::Array::New(env, 4);
+    JsonApi::Array level     = JsonApi::Array::New(env, 4);
+    JsonApi::Array ref       = JsonApi::Array::New(env, 4);
+    JsonApi::Array presence  = JsonApi::Array::New(env, 4);
     JsonApi::Array transient = JsonApi::Array::New(env, 4);
 
     for (uint32_t b = 0; b < 4; ++b)
     {
-        dryRms.Set(b,    JsonApi::Number::New(env, sb->debugDryRms_[b].load(std::memory_order_relaxed)));
-        dynDelta.Set(b,  JsonApi::Number::New(env, sb->debugDynDelta_[b].load(std::memory_order_relaxed)));
+        level.Set(b,     JsonApi::Number::New(env, sb->debugLevel_[b].load(std::memory_order_relaxed)));
+        ref.Set(b,       JsonApi::Number::New(env, sb->debugRef_[b].load(std::memory_order_relaxed)));
+        presence.Set(b,  JsonApi::Number::New(env, sb->debugPresence_[b].load(std::memory_order_relaxed)));
         transient.Set(b, JsonApi::Boolean::New(env, sb->debugTransient_[b].load(std::memory_order_relaxed) > 0.5f));
     }
 
     JsonApi::Object result = JsonApi::Object::New(env);
-    result.Set("dryRms",    dryRms);
-    result.Set("dynDelta",  dynDelta);
+    result.Set("level",     level);
+    result.Set("ref",       ref);
+    result.Set("presence",  presence);
     result.Set("transient", transient);
-    result.Set("overallRms", JsonApi::Number::New(env, sb->debugOverallRms_.load(std::memory_order_relaxed)));
+    result.Set("program",   JsonApi::Number::New(env, sb->debugProgram_.load(std::memory_order_relaxed)));
+    result.Set("makeup",    JsonApi::Number::New(env, sb->debugMakeup_.load(std::memory_order_relaxed)));
     return result;
 }
 

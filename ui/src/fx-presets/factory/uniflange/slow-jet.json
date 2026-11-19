@@ -1,0 +1,19 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "uniflange",
+  "name": "Slow Jet",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "order": 2,
+      "depth": 100,
+      "speed": 10,
+      "delay": 0,
+      "spread": 30,
+      "cross": 0,
+      "dry": 100,
+      "wet": 100
+    }
+  }
+}

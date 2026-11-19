@@ -27,7 +27,15 @@ export const LENS_IDENTITY = Object.freeze({
 })
 export const ROAM_IDENTITY = Object.freeze({
   offsetX: 0, offsetY: 0, scale: 1, rotationDeg: 0, bounds: 'Clip', layer: 'GridOrder',
+  // Scale Y is read only while scaleLinked is false (Scale then drives both axes). The
+  // crop edges are fractions 0..CROP_MAX of the drawn cell, trimmed off each side.
+  scaleY: 1, scaleLinked: true, cropLeft: 0, cropRight: 0, cropTop: 0, cropBottom: 0,
 })
+export const CROP_FIELDS = Object.freeze(['cropLeft', 'cropRight', 'cropTop', 'cropBottom'])
+export const CROP_MAX = 0.99
+
+/** The wire form of a Roam base omits fields at their defaults; fill them in. */
+export const normalizeRoam = (r) => ({ ...ROAM_IDENTITY, ...(r ?? {}) })
 
 // The engine clamps zoom and scale to this range; the UI never offers more.
 export const ZOOM_MIN = 0.1
@@ -41,9 +49,15 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v))
 const DEG = Math.PI / 180
 
 export const lensEquals = (a, b) => LENS_KEYS.every((k) => a?.[k] === b?.[k])
-export const roamEquals = (a, b) => ROAM_KEYS.every((k) => a?.[k] === b?.[k])
+// scaleY of a LINKED cell is never read (Scale drives both axes), so it does not count.
+export const roamEquals = (a, b) => {
+  const x = normalizeRoam(a)
+  const y = normalizeRoam(b)
+  return ROAM_KEYS.every((k) => (k === 'scaleY' && x.scaleLinked && y.scaleLinked) || x[k] === y[k])
+}
 const LENS_KEYS = ['fit', 'centerX', 'centerY', 'zoom', 'rotationDeg', 'flip']
-const ROAM_KEYS = ['offsetX', 'offsetY', 'scale', 'rotationDeg', 'bounds', 'layer']
+const ROAM_KEYS = ['offsetX', 'offsetY', 'scale', 'rotationDeg', 'bounds', 'layer',
+  'scaleY', 'scaleLinked', 'cropLeft', 'cropRight', 'cropTop', 'cropBottom']
 
 /** True when nothing but fit differs from neutral: the framing is untouched. */
 export function lensIsNeutral(lens) {
@@ -216,11 +230,14 @@ export function roamQuad(roam, geo) {
   const ox = Number.isFinite(r.offsetX) ? r.offsetX : 0
   const oy = Number.isFinite(r.offsetY) ? r.offsetY : 0
   const sc = clamp(Number.isFinite(r.scale) ? r.scale : 1, 1e-3, 1e3)
+  const scY = r.scaleLinked === false
+    ? clamp(Number.isFinite(r.scaleY) ? r.scaleY : 1, 1e-3, 1e3)
+    : sc
 
   const cx = home.x + ox * unit.w + home.w * 0.5
   const cy = home.y + oy * unit.h + home.h * 0.5
   const w = home.w * sc
-  const h = home.h * sc
+  const h = home.h * scY
   const rect = { x: cx - w / 2, y: cy - h / 2, w, h }
   const rotRad = (Number.isFinite(r.rotationDeg) ? r.rotationDeg : 0) * DEG
 

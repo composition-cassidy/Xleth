@@ -4,6 +4,7 @@ import useMixerStore from '../../stores/mixerStore.js'
 import useEffectChainStore, { resolveFxMode } from '../../stores/effectChainStore.js'
 import useFxChainDragStore from '../../stores/fxChainDragStore.js'
 import InsertList from './InsertList.jsx'
+import RouteArrow from './RouteArrow.jsx'
 import { METER_FLOOR_DB, subscribeMeter } from './mixerMeterBus.js'
 import { GAIN_FORMAT, dbToGain, gainToDb } from './mixerMath.js'
 import { VerticalName, openDevicesFor, useFxDropState, useMeterSubscribe } from './MixerStrip.jsx'
@@ -134,7 +135,7 @@ export default function MasterStrip({ stripW = 72, insertRowCount = 5, insertsOp
 
       <div className={styles.field}>
         <NumberBox
-          label="Master volume" hideLabel fill={false} width={masterW - 7} scale={dbTaperScale} unit="dB"
+          className={styles.readout} label="Master volume" hideLabel fill={false} width={masterW - 7} scale={dbTaperScale} unit="dB"
           formatOptions={GAIN_FORMAT} defaultValue={0}
           value={db} onChange={handleLive} onCommit={handleCommit} hint="Master volume"
         />
@@ -151,7 +152,7 @@ export default function MasterStrip({ stripW = 72, insertRowCount = 5, insertsOp
         <VerticalName name="Master" />
       </div>
       <div className={styles.cableSpace} aria-hidden="true" />
-      <div className={styles.outSpace} aria-hidden="true" />
+      <RouteArrow targetTrackId={-1} targetName="Master" />
     </div>
   )
 }

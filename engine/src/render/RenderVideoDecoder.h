@@ -185,6 +185,25 @@ public:
     };
     const ExtractStats& extractStats() const { return extractStats_; }
 
+    /** Cumulative decode() cost since construction. `opens` is the number of
+     *  times a file was (re)opened — each one is an avformat open, a stream
+     *  probe and a codec/D3D11VA init (`openUs` is the time spent in exactly
+     *  that), so a count far above the number of distinct sources means
+     *  contexts are being evicted and reopened. `seeks` counts requests no open
+     *  stream could reach by decoding forward; `framesDecoded / calls` is how
+     *  many codec frames each delivered frame cost (GOP walk-ups after a seek).
+     *  The export logs this once per render. */
+    struct DecodeStats {
+        uint64_t calls         = 0;
+        uint64_t opens         = 0;
+        uint64_t seeks         = 0;
+        uint64_t framesDecoded = 0;   // codec frames produced, incl. GOP walk-ups
+        int64_t  openUs        = 0;
+        int64_t  decodeUs      = 0;   // seek + packet read + codec
+        int64_t  extractUs     = 0;   // texture extraction / colour convert
+    };
+    const DecodeStats& decodeStats() const { return decodeStats_; }
+
     /** Cap decoded frames to fit within w x h (aspect preserved, never
      *  upscaled); 0 x 0 = no cap, the default. The preview sets this to its
      *  compositor surface. Export never sets it, so export decodes originals
@@ -290,6 +309,28 @@ public:
      *  the video thread, BETWEEN decode() calls — not from inside one. */
     void pruneIdleContexts(double idleSeconds = kIdleContextSeconds);
 
+    /** Drive the stream pool's notion of "now" from the OUTPUT timeline instead
+     *  of the wall clock. Call once per output frame, before its decode()s,
+     *  with that frame's presentation time.
+     *
+     *  The pool decides whether a stream is "busy following a playing cell" by
+     *  how recently it was touched (kStreamBusyMs). That is a statement about
+     *  playback time. The live preview runs at 1x, so wall time is playback
+     *  time there. An offline render does not: 200 ms of wall time covers
+     *  however much output the machine happens to get through, so which stream
+     *  serves a request — and with it how many contexts get opened and how the
+     *  decode work is ordered — depended on render speed, and the faster the
+     *  export ran the more streams looked "busy". On the presentation clock the
+     *  heuristic means what it was written to mean and a render makes the same
+     *  stream choices on every machine at every speed.
+     *
+     *  This is about determinism, not speed: measured on a 4-source project it
+     *  did not change the open count on its own (the frame-cache budget is what
+     *  cut decode work — see exportFrameCacheBytes in OfflineRenderer.cpp).
+     *
+     *  Never called by the preview, which keeps the wall clock. */
+    void setPresentationClock(double seconds);
+
     // ── Decode-path introspection (diagnostics) ─────────────────────────────
     // Reports the active decode path for each currently-open source so the
     // Visual Preview Diagnostic Log can show whether a 1080p source is being
@@ -339,6 +380,12 @@ private:
     // passing a keyframe — i.e. forward is never more work than seeking.
     bool canContinueForward(const DecoderContext& ctx, int64_t frameIndex) const;
     bool closeKey(const std::string& key);
+
+    // "Now" for stream recency: the wall clock, or the presentation clock once
+    // setPresentationClock() has been called (offline render).
+    std::chrono::steady_clock::time_point clockNow() const;
+    bool   usePresentationClock_ = false;
+    std::chrono::steady_clock::time_point presentationNow_{};
 
     // Adaptive ceiling applied by openStreamAt(); set via
     // setActiveContextBudget(), starts at the historical fixed value.
@@ -409,6 +456,7 @@ private:
     // NV12 → BGRA shader pass for the GPU-resident hw path (initHwDevice).
     Nv12Converter nv12Converter_;
     ExtractStats  extractStats_;
+    DecodeStats   decodeStats_;
 
     int maxOutputW_ = 0;   // setMaxOutputSize(); 0 = decode size
     int maxOutputH_ = 0;

@@ -157,7 +157,7 @@ export default function DeviceChain() {
     return (
       <div className={styles.scroller} data-testid="xleth-device-chain">
         <div className={styles.row}>
-          <ChainHead name={chainName} identityColor={identityColor} videoDisabled={master} />
+          <ChainHead name={chainName} identityColor={identityColor} />
           <div className={styles.empty}>
             <EmptyState
               message={`${chainName} routes its effects in the FX Graph, so there is no chain to show here.`}
@@ -173,7 +173,7 @@ export default function DeviceChain() {
   return (
     <div className={styles.scroller} data-testid="xleth-device-chain" aria-label={`${chainName} devices`} role="list">
       <div className={styles.row} ref={rowRef} onPointerDownCapture={revealedIndex >= 0 ? clearReveal : undefined}>
-        <ChainHead name={chainName} identityColor={identityColor} videoDisabled={master} />
+        <ChainHead name={chainName} identityColor={identityColor} />
         {displayChain.map((effect, index) => {
           const live = Number.isInteger(effect.nodeId) && effect.nodeId >= 0
           const moveItems = live ? [

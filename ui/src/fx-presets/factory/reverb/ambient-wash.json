@@ -1,0 +1,24 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "reverb",
+  "name": "Ambient Wash",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "decay": 6,
+      "predelay": 50,
+      "size": 100,
+      "damping": 35,
+      "mod_rate": 40,
+      "mod_depth": 50,
+      "er_level": 20,
+      "er_late": 100,
+      "hicut": 6000,
+      "locut": 200,
+      "mix": 40,
+      "smoothness": 60,
+      "style": 3
+    }
+  }
+}

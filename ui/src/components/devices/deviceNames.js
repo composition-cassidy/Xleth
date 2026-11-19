@@ -38,6 +38,7 @@ export const DEVICE_NAMES = Object.freeze({
   fet: 'FET Comp',
   varimu: 'Vari-Mu Comp',
   fedda: 'Fedda',
+  szkrezh: 'Szkrezh',
 })
 
 export const DEVICE_SHORT_NAMES = Object.freeze({
@@ -68,6 +69,7 @@ export const DEVICE_SHORT_NAMES = Object.freeze({
   fet: 'FET Comp',
   varimu: 'Vari-Mu',
   fedda: 'Fedda',
+  szkrezh: 'Szkrezh',
 })
 
 /** Display name for a chain entry: stock name, else the plugin's own, else its id. */

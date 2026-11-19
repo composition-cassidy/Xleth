@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { getPresetAdapter, defaultAdapter, apexAdapter, xformAdapter } from '../effectPresetAdapters.js'
+import {
+  getPresetAdapter, defaultAdapter, apexAdapter, xformAdapter,
+  waveshaperAdapter, eqAdapter, filterAdapter,
+} from '../effectPresetAdapters.js'
 
 const target = { trackId: 3, nodeId: 7, storeKey: '3' }
 
@@ -157,5 +160,91 @@ describe('xform adapter', () => {
     const written = setTrackZprTracks.mock.calls[0][1]
     expect(written.panX.keys[0].c).toEqual([1 / 3, 1 / 3, 2 / 3, 2 / 3])
     expect(written.panX.keys[0].c).not.toBeUndefined()
+  })
+})
+
+describe('waveshaper adapter', () => {
+  it('sets a named shape with wsSetPreset, never through the generic parameter write', async () => {
+    const setEffectParameter = vi.fn()
+    const wsSetPreset = vi.fn(async () => true)
+    const wsSetCurvePoints = vi.fn()
+    installAudio({ setEffectParameter, wsSetPreset, wsSetCurvePoints })
+    await waveshaperAdapter.applyState(target, { params: { pregain: 2, postgain: -4, mix: 100, preset: 3 }, points: null })
+    expect(setEffectParameter).toHaveBeenCalledWith(3, 7, 'pregain', 2)
+    expect(setEffectParameter).not.toHaveBeenCalledWith(3, 7, 'preset', expect.anything())
+    expect(wsSetPreset).toHaveBeenCalledWith(3, 7, 3)
+    expect(wsSetCurvePoints).not.toHaveBeenCalled()
+  })
+
+  it('writes a custom curve, then asks for Custom again so the spline survives a shape change', async () => {
+    const calls = []
+    installAudio({
+      setEffectParameter: vi.fn(),
+      wsSetCurvePoints: vi.fn(async (t, n, json) => { calls.push(['points', JSON.parse(json)]) }),
+      wsSetPreset: vi.fn(async (t, n, index) => { calls.push(['preset', index]) }),
+    })
+    const points = [[-1, -0.8], [0, 0], [1, 0.8]]
+    await waveshaperAdapter.applyState(target, { params: { pregain: 0, preset: 0 }, points })
+    expect(calls).toEqual([['points', points], ['preset', 0]])
+  })
+})
+
+describe('eq adapter', () => {
+  it('reconciles the band count, then writes every field as a number', async () => {
+    let count = 3
+    const eqSetBandParam = vi.fn()
+    const eqSetGlobalParam = vi.fn()
+    installAudio({
+      eqGetBands: vi.fn(async () => JSON.stringify(Array.from({ length: count }, () => ({})))),
+      eqAddBand: vi.fn(async () => { count += 1 }),
+      eqRemoveBand: vi.fn(async () => { count -= 1 }),
+      eqSetBandParam,
+      eqSetGlobalParam,
+    })
+    // `enabled: true` is what a captured band looks like; the engine setter rejects a boolean.
+    await eqAdapter.applyState(target, {
+      bands: [{ freq: 100, type: 4, enabled: true }, { freq: 3000, gain: 2, enabled: false }],
+      global: { linphase: false, oversample: 1 },
+    })
+    expect(count).toBe(2)
+    expect(eqSetBandParam).toHaveBeenCalledWith(3, 7, 0, 'enabled', 1)
+    expect(eqSetBandParam).toHaveBeenCalledWith(3, 7, 1, 'enabled', 0)
+    expect(eqSetBandParam).toHaveBeenCalledWith(3, 7, 1, 'gain', 2)
+    expect(eqSetGlobalParam).toHaveBeenCalledWith(3, 7, 'linphase', 0)
+    for (const call of eqSetBandParam.mock.calls) expect(typeof call[4]).toBe('number')
+  })
+})
+
+describe('filter adapter', () => {
+  it('writes each lane\'s kind before its other fields, and booleans as numbers', async () => {
+    const writes = []
+    installAudio({
+      filterGetSlots: vi.fn(async () => '[{}]'),
+      filterSetSlotParam: vi.fn((t, n, slot, name, value) => { writes.push([slot, name, value]) }),
+    })
+    // Key order as the engine reports it (sorted): `kind` arrives after attack / depth / dest.
+    await filterAdapter.applyState(target, {
+      slots: [{
+        params: { cutoff: 500, enabled: true },
+        mods: [{ attack: 2, depth: 0.5, dest: 0, kind: 1, slides: true, sync: 8 }],
+      }],
+    })
+    expect(writes).toContainEqual([0, 'enabled', 1])
+    const lane = writes.filter(w => w[1].startsWith('m0_')).map(w => w[1])
+    expect(lane[0]).toBe('m0_kind')
+    expect(lane).toEqual(expect.arrayContaining(['m0_attack', 'm0_depth', 'm0_dest', 'm0_slides', 'm0_sync']))
+    expect(writes).toContainEqual([0, 'm0_slides', 1])
+  })
+
+  it('captures head and drops the read-only telemetry', async () => {
+    installAudio({
+      filterGetSlots: vi.fn(async () => JSON.stringify([{
+        index: 0, cutoff: 800, head: 3, enabled: true, eff_cutoff: 812, eff_valid: true, dyn_env: 0.2,
+        mods: [{ index: 0, kind: 1, depth: 0.5, env: 0.3, accent: 0, src: 0.1 }],
+      }])),
+    })
+    const state = await filterAdapter.captureState(target)
+    expect(state.slots[0].params).toEqual({ cutoff: 800, head: 3, enabled: true })
+    expect(state.slots[0].mods[0]).toEqual({ kind: 1, depth: 0.5 })
   })
 })

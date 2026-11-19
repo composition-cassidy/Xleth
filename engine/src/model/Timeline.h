@@ -224,6 +224,21 @@ public:
     double getDeclickMs()   const { return m_declickMs; }
     void   setGlobalStretchMethod(int method);
     int    getGlobalStretchMethod() const { return m_globalStretchMethod; }
+    // Project-wide motion blur for Lens / Roam / Sweep (MotionBlurSettings in
+    // TimelineTypes.h). A render preference like declickMs: not an undoable
+    // edit. The shutter is sanitized on the way in.
+    void   setMotionBlur(const MotionBlurSettings& m);
+    const MotionBlurSettings& getMotionBlur() const { return m_motionBlur; }
+
+    // ── Color Grade (model/ColorGrade.h) ──────────────────────────────────────
+    // The Master grade lives here; the Source, Clip / Region and Layer grades
+    // live on SourceMedia, Clip / SampleRegion and TrackInfo. One accessor pair
+    // for all of them, so the undo command and the bridge do not each repeat
+    // the level switch. `id` is ignored for Master. getColorGrade returns
+    // nullptr and setColorGrade returns false when the owner does not exist.
+    const ColorGrade* getColorGrade(xleth::grade::Level level, int id) const;
+    bool              setColorGrade(xleth::grade::Level level, int id, const ColorGrade& grade);
+    const ColorGrade& getMasterColorGrade() const { return m_masterColorGrade; }
 
     // ── Loop / render region ──────────────────────────────────────────────────
     // Single global project loop region. setLoopRegion enforces the length
@@ -270,6 +285,14 @@ public:
     // it is safe to call from the render thread while edits run on the main
     // thread. The editing path keeps reading getGridLayout() (the active snapshot).
     GridLayout gridLayoutAt(TickTime t) const;
+
+    // gridLayoutAt's arrangement read IN PLACE (no copy, no allocation): the
+    // snapshot in effect at `t`, or nullptr when the project has no snapshot
+    // (getGridLayout() is then the arrangement). For the render path's Parent
+    // lookups (docs/XLETH_MOTION_VIEW_DESIGN.md R7), which need the FULL
+    // layout even while the collector draws a transition / Landing override.
+    // Valid while the caller holds the lock that guards the timeline.
+    const GridSnapshot* gridSnapshotAt(TickTime t) const { return snapshotAt(t); }
 
     // ── Grid cues (CRUD; sorted-by-tick invariant maintained internally) ──────
     // addGridCue inserts keeping ascending tick order; if a cue already exists at
@@ -511,6 +534,8 @@ public:
     bool setTrackVideoHoldLastFrame(int trackId, bool hold);
     // thresholdBeats < 0 is normalized to kHoldLastFrameThresholdUnlimited.
     bool setTrackVideoHoldLastFrameThresholdBeats(int trackId, double thresholdBeats);
+    // Smart gap detection + freeze/keep-playing fill (see TrackInfo).
+    bool setTrackVideoHoldBehavior(int trackId, bool smart, bool keepPlaying);
     bool setTrackFxMode(int trackId, TrackFxMode mode);
     bool setTrackGraphState(int trackId, const nlohmann::json& graphState);
     bool setTrackCornerRadius(int trackId, float radius);
@@ -549,6 +574,15 @@ public:
     // pushing to undo stack. Does NOT push to undo; use SetTrackOutputRouteCommand.
     xleth::RoutingValidationResult setTrackOutputRoute(int sourceTrackId, int targetTrackId);
     TrackOutputRoute               getTrackOutputRoute(int sourceTrackId) const;
+
+    // FL multi-wiring: replace a track's whole audible destination set (primary
+    // output + sends) after validateTrackRoutes. Send gains are clamped [0,2].
+    xleth::RoutingValidationResult setTrackRoutes(int sourceTrackId, int targetTrackId,
+                                                  const std::vector<TrackSend>& sends);
+    // Live level of one existing send (a knob drag; not undo-tracked, like the
+    // fader). Returns unknown_route when the source has no send to targetTrackId.
+    xleth::RoutingValidationResult setTrackSendGain(int sourceTrackId, int targetTrackId,
+                                                    float gain);
 
     // ── Sidechain routes (Prompt 4B) ──────────────────────────────────────────
     // Silent key/detector routes owned by the source track. These validate then
@@ -720,6 +754,8 @@ private:
     LoopRegion                  m_loopRegion;   // single global loop/render region
     double m_declickMs = 0.5; // global clip boundary fade duration in ms (0 = disabled)
     int    m_globalStretchMethod = static_cast<int>(StretchMethod::PSOLA);
+    MotionBlurSettings m_motionBlur;   // project-wide Lens/Roam/Sweep motion blur (default off)
+    ColorGrade         m_masterColorGrade;   // applied to the final composite (default neutral)
 
     std::function<void(int, const char*)> m_clipCacheInvalidator;
 

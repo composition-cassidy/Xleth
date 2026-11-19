@@ -8,6 +8,7 @@ import Fader from '../Fader';
 import FaderMeter from '../FaderMeter';
 import Knob from '../Knob';
 import Meter from '../Meter';
+import Slider from '../Slider';
 import NumberBox from '../NumberBox';
 import { syncCodec } from '../parse';
 import { MINUS, THIN_SPACE } from '../format';
@@ -249,6 +250,50 @@ describe('Fader', () => {
     key(slider('L'), 'ArrowUp');
     expect(onCommit.mock.calls[0][0]).toBeGreaterThan(0);
     key(slider('L'), 'PageDown');
+    expect(onCommit.mock.calls.at(-1)![0]).toBeLessThan(0);
+  });
+});
+
+describe('Slider', () => {
+  const pointer = (type: string, x: number) => {
+    const ev = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: 0 });
+    Object.defineProperty(ev, 'pointerId', { value: 1 });
+    return ev;
+  };
+  const dragBy = (weight: number, dx: number) => {
+    const onChange = vi.fn();
+    render(<Slider label="Pan" bipolar min={-1} max={1} value={0} weight={weight} onChange={onChange} />);
+    const el = slider('Pan');
+    act(() => { el.dispatchEvent(pointer('pointerdown', 100)); });
+    act(() => { el.dispatchEvent(pointer('pointermove', 100 + dx)); });
+    runFrames();
+    act(() => { el.dispatchEvent(pointer('pointerup', 100 + dx)); });
+    return onChange.mock.calls.at(-1)![0] as number;
+  };
+
+  it('is a horizontal slider that reads its formatted value', () => {
+    render(<Slider label="Pan" bipolar min={-1} max={1} value={0.5} format={(v) => `R ${Math.round(v * 100)}`} />);
+    const s = slider('Pan');
+    expect(s.getAttribute('aria-orientation')).toBe('horizontal');
+    expect(s.getAttribute('aria-valuetext')).toBe('Pan, R 50');
+    expect(s.style.getPropertyValue('--norm')).toBe('0.75');
+  });
+
+  it('a heavier weight moves the value less for the same drag', () => {
+    const light = dragBy(1, 20);
+    const heavy = dragBy(1.5, 20);
+    expect(light).toBeGreaterThan(0);
+    expect(heavy).toBeGreaterThan(0);
+    expect(heavy).toBeLessThan(light);
+    expect(heavy).toBeCloseTo(light / 1.5, 5);
+  });
+
+  it('arrow keys step it', () => {
+    const onCommit = vi.fn();
+    render(<Slider label="Pan" min={-1} max={1} value={0} onCommit={onCommit} />);
+    key(slider('Pan'), 'ArrowRight');
+    expect(onCommit.mock.calls[0][0]).toBeGreaterThan(0);
+    key(slider('Pan'), 'ArrowLeft');
     expect(onCommit.mock.calls.at(-1)![0]).toBeLessThan(0);
   });
 });

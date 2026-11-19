@@ -18,6 +18,7 @@
 #include "render/RenderClock.h"
 #include "audio/AutomationPlan.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
@@ -252,9 +253,95 @@ static void testAutomationPlanAgrees()
     checkEq(xleth::automation::tickAtSamplePosition(48000, 120.0, 0.0), 0, "sampleRate 0 -> tick 0");
 }
 
+// frameBoundsForBuffer must TILE the frame sequence: walking any audio length in
+// any block size, every frame whose start sample lies in the audio is reported
+// by exactly one block — never dropped, never repeated.
+//
+// The regression this pins: both ends used to be derived from
+// sampleToVideoFrame(), which rounds to the nearest frame. With a block longer
+// than half a frame (512 samples vs an 800-sample 60 fps frame) the block's
+// last sample often rounded up to the NEXT frame, the code found that frame's
+// start outside the block and reported "no frame here" — dropping the frame
+// that did start inside. A 60 fps export lost one frame in four; 30 fps, whose
+// frames are longer than two blocks, lost none, which is why it went unseen.
+static void testFrameBoundsTileEveryFrame()
+{
+    std::fprintf(stderr, "\n-- frameBoundsForBuffer tiles the frame sequence --\n");
+
+    const AVRational fpsList[] = { {24, 1}, {25, 1}, {30, 1}, {50, 1}, {60, 1},
+                                   {120, 1}, {30000, 1001}, {60000, 1001} };
+    const int blockSizes[] = { 64, 256, 512, 1024, 4096 };
+    const int rates[]      = { 44100, 48000, 96000 };
+
+    for (int sr : rates) {
+        for (const AVRational fps : fpsList) {
+            for (int block : blockSizes) {
+                const int64_t total = static_cast<int64_t>(sr) * 7 + 1234;   // ~7 s, off-grid
+                int64_t next = 0;          // the frame index that must come next
+                bool ok = true;
+                for (int64_t pos = 0; pos < total; pos += block) {
+                    const int n = static_cast<int>(std::min<int64_t>(block, total - pos));
+                    const auto [first, last] = RenderClock::frameBoundsForBuffer(pos, n, sr, fps);
+                    if (first > last) {                // empty: nothing may start here
+                        if (first != next) ok = false;
+                        continue;
+                    }
+                    if (first != next) ok = false;     // gap or repeat
+                    for (int64_t f = first; f <= last; ++f) {
+                        const int64_t s = RenderClock::videoFrameToSample(f, sr, fps);
+                        if (s < pos || s >= pos + n) ok = false;   // not actually in this block
+                    }
+                    next = last + 1;
+                }
+                // Every frame starting before `total` was emitted, and no more.
+                const int64_t expected = RenderClock::frameCountForSamples(total, sr, fps);
+                if (next != expected) ok = false;
+                if (RenderClock::videoFrameToSample(expected, sr, fps) < total) ok = false;
+                if (expected > 0 && RenderClock::videoFrameToSample(expected - 1, sr, fps) >= total)
+                    ok = false;
+
+                char what[128];
+                std::snprintf(what, sizeof(what), "tile sr=%d fps=%d/%d block=%d (%lld frames)",
+                              sr, fps.num, fps.den, block, (long long)next);
+                checkTrue(ok, what);
+            }
+        }
+    }
+
+    // The exact case from the field: 48 kHz, 60 fps, 512-sample blocks, 8 bars
+    // at 142 BPM. 811 frames expected; the old math wrote 609.
+    {
+        const AVRational fps60 = { 60, 1 };
+        const int64_t total = 649014;
+        int64_t count = 0;
+        for (int64_t pos = 0; pos < total; pos += 512) {
+            const int n = static_cast<int>(std::min<int64_t>(512, total - pos));
+            const auto [first, last] = RenderClock::frameBoundsForBuffer(pos, n, 48000, fps60);
+            if (first <= last) count += last - first + 1;
+        }
+        checkEq(count, 812, "48k/60fps/512: every frame emitted (was 609)");
+        checkEq(RenderClock::frameCountForSamples(total, 48000, fps60), 812,
+                "frameCountForSamples agrees with the walk");
+    }
+
+    // Documented single-buffer contract, unchanged.
+    {
+        const AVRational fps30 = { 30, 1 };
+        auto b = RenderClock::frameBoundsForBuffer(0, 512, 48000, fps30);
+        checkEq(b.first, 0, "[0,512) first");   checkEq(b.second, 0, "[0,512) last");
+        b = RenderClock::frameBoundsForBuffer(1500, 512, 48000, fps30);
+        checkEq(b.first, 1, "[1500,2012) first"); checkEq(b.second, 1, "[1500,2012) last");
+        b = RenderClock::frameBoundsForBuffer(1601, 512, 48000, fps30);
+        checkTrue(b.first > b.second, "[1601,2113) is empty");
+        checkEq(b.second, b.first - 1, "empty is reported as (first, first-1)");
+    }
+}
+
 int main()
 {
     std::fprintf(stderr, "=== test_render_clock ===\n");
+
+    testFrameBoundsTileEveryFrame();
 
     testValidate();
     testRoundingModes();

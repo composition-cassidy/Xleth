@@ -22,6 +22,8 @@
 #include "model/TimelineSnapshot.h"
 #include "render/VideoEventBuilder.h"
 #include "model/LensHitPresets.h"
+#include "model/MotionSchema.h"
+#include "model/ParentMath.h"
 
 #include <algorithm>
 #include <atomic>
@@ -34,6 +36,8 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <iterator>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -304,6 +308,40 @@ static void test_round_trip() {
     // Writing twice gives the same JSON: the format is stable.
     json jt2 = t2;
     CHECK(jt2["roam"] == jt["roam"] && jt2["trackLens"] == jt["trackLens"], "re-serialization is stable");
+
+    // Bezier keys carry their handles as "bez": [x1, y1, x2, y2]; no other key
+    // writes them, and a missing / malformed "bez" loads as the default.
+    TrackInfo tb;
+    tb.id = 4; tb.name = "B"; tb.type = TrackInfo::Type::Pattern;
+    RoamKey bk;
+    bk.channel = RoamChannel::Scale; bk.pos = 0.0; bk.value = 1.0;
+    bk.interp = xleth::keycurve::Interp::Bezier;
+    bk.bez = { 0.1, -0.25, 0.9, 1.3 };
+    tb.roam.keys.push_back(bk);
+    RoamKey lk = bk;
+    lk.pos = 960.0; lk.value = 2.0; lk.interp = xleth::keycurve::Interp::Linear;
+    tb.roam.keys.push_back(lk);
+    json jb = tb;
+    CHECK(jb["roam"]["keys"][0]["interp"] == "Bezier" && jb["roam"]["keys"][0]["bez"].is_array()
+          && jb["roam"]["keys"][0]["bez"].size() == 4 && jb["roam"]["keys"][0]["bez"][1] == -0.25,
+          "a Bezier key writes interp Bezier and its four handles");
+    CHECK(!jb["roam"]["keys"][1].contains("bez"), "a Linear key never writes handles");
+    TrackInfo tb2 = jb.get<TrackInfo>();
+    const xleth::keycurve::BezierHandles wantBez{ 0.1, -0.25, 0.9, 1.3 };
+    CHECK(tb2.roam.keys.size() == 2 && tb2.roam.keys[0] == bk && tb2.roam.keys[0].bez == wantBez,
+          "Bezier handles round-trip exactly");
+    json loose = jb;
+    loose["roam"]["keys"][0]["bez"] = json::array({ 0.2, "x", 0.8, 1.0 });
+    TrackInfo tb3 = loose.get<TrackInfo>();
+    CHECK(tb3.roam.keys.size() == 2 && tb3.roam.keys[0].interp == xleth::keycurve::Interp::Bezier
+          && tb3.roam.keys[0].bez == xleth::keycurve::BezierHandles{},
+          "malformed bez loads as the default handles, the key is kept");
+    RoamKey other = bk;
+    other.bez = { 0.5, 0.5, 0.5, 0.5 };
+    CHECK(!(other == bk), "two Bezier keys with different handles differ");
+    RoamKey linA = lk, linB = lk;
+    linB.bez = { 0.5, 0.5, 0.5, 0.5 };
+    CHECK(linA == linB, "a non-Bezier key's unread handles never make it differ");
 }
 
 // ─── [3] tolerant loading ─────────────────────────────────────────────────────
@@ -434,8 +472,10 @@ static void test_migration() {
     // written: schema 7 and no Lens/Roam keys anywhere.
     const fs::path file = dir / "project.json";
     json j = readJson(file);
-    CHECK(j.value("schema_version", 0) == XLETH_PROJECT_SCHEMA_VERSION && XLETH_PROJECT_SCHEMA_VERSION == 8,
-          "the current schema is v8");
+    // v9 (Motion view) bumped the schema; the v7 -> v8 Lens migration below is
+    // unchanged by it.
+    CHECK(j.value("schema_version", 0) == XLETH_PROJECT_SCHEMA_VERSION && XLETH_PROJECT_SCHEMA_VERSION >= 9,
+          "the current schema is v9 or later");
     j["schema_version"] = 7;
     for (auto& c : j["clips"]) c.erase("lens");
     for (auto& t : j["tracks"]) { t.erase("roam"); t.erase("trackLens"); }
@@ -498,7 +538,7 @@ static void test_migration() {
     ProjectManager pm3;
     CHECK(pm3.saveProjectAs((dir.parent_path() / "v8").string(), "lens_roam_v8", tl), "saveProjectAs v8");
     const json j8 = readJson(dir.parent_path() / "v8" / "project.json");
-    CHECK(j8.value("schema_version", 0) == 8, "re-saved at schema v8");
+    CHECK(j8.value("schema_version", 0) == XLETH_PROJECT_SCHEMA_VERSION, "re-saved at the current schema");
     bool allLens = true, allRoam = true;
     for (const auto& c : j8["clips"])  allLens = allLens && c.contains("lens");
     for (const auto& t : j8["tracks"]) allRoam = allRoam && t.contains("roam") && t.contains("trackLens");
@@ -506,7 +546,7 @@ static void test_migration() {
 
     ProjectManager pm4;
     auto re = pm4.loadProject((dir.parent_path() / "v8").string());
-    CHECK(re.has_value() && pm4.loadedSchemaVersion() == 8, "v8 reload");
+    CHECK(re.has_value() && pm4.loadedSchemaVersion() == XLETH_PROJECT_SCHEMA_VERSION, "v8+ reload");
     if (re) {
         CHECK(re->getClip(newClip) && re->getClip(newClip)->lens.base.fit == LensFit::Cover,
               "the new clip stays Cover across save/load");
@@ -1439,6 +1479,25 @@ static void test_p7_roam_keys() {
     CHECK(h != nullptr, "the gap is filled by a held frame");
     CHECK(h && h->roam == s->roamAt(f.clipTrack, 4800) && h->roam.offsetX == 1.25f,
           "a held frame's Roam keeps moving on the timeline tick");
+
+    // Bezier: the handles reach the render path; an overshoot below 0 on a
+    // multiplier is held at the positive floor.
+    RoamKey bz = roamKey(RoamChannel::Scale, 0, 1.0, Interp::Bezier);
+    bz.bez = { 0.42, 0.0, 0.58, 1.0 };
+    RoamKey dive = roamKey(RoamChannel::OffsetX, 0, 0.0, Interp::Bezier);
+    dive.bez = { 0.5, -4.0, 0.5, -4.0 };
+    ct->roam.keys = { bz, roamKey(RoamChannel::Scale, 960, 3.0),
+                      dive, roamKey(RoamChannel::OffsetX, 960, 1.0) };
+    s = buildLensRoamSnapshot(f.tl);
+    const float quarter = static_cast<float>(1.0 + 2.0 * xleth::keycurve::bezierEase(bz.bez, 0.25));
+    CHECK(s->roamAt(f.clipTrack, 240).scale == quarter, "Bezier scale: base + (b - a) * ease(u)");
+    CHECK(s->roamAt(f.clipTrack, 480).scale == 2.0f, "Bezier ease-in-out: midway at the middle");
+    CHECK(s->roamAt(f.clipTrack, 480).offsetX < 0.0f, "an additive Bezier channel may overshoot freely");
+    ct->roam.keys = { [] { RoamKey k = roamKey(RoamChannel::Scale, 0, 0.1, Interp::Bezier);
+                           k.bez = { 0.5, -4.0, 0.5, -4.0 }; return k; }(),
+                      roamKey(RoamChannel::Scale, 960, 2.0) };
+    s = buildLensRoamSnapshot(f.tl);
+    CHECK(s->roamAt(f.clipTrack, 480).scale > 0.0f, "a Bezier scale overshoot never reaches 0");
 }
 
 static void test_p7_hit_curve() {
@@ -2767,6 +2826,1260 @@ static void test_p11_sweep() {
     CHECK(f.tl.getTrack(f.patTrack)->sweep.keys == bump, "undo the clear");
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// Motion view (docs/XLETH_MOTION_VIEW_DESIGN.md): schema, Masks, Parent,
+// keep-on-screen, commands, persistence.
+// ═════════════════════════════════════════════════════════════════════════════
+
+static bool nearD(double a, double b, double eps = 1e-6) { return std::fabs(a - b) <= eps; }
+
+static MaskKey maskKey(MaskChannel ch, double pos, double value, Interp interp = Interp::Linear) {
+    MaskKey k;
+    k.channel = ch; k.anchor = KeyAnchor::Origin; k.pos = pos; k.value = value; k.interp = interp;
+    return k;
+}
+
+static MaskShapeKey shapeKeyAt(double pos, const MaskShape& s, Interp interp = Interp::Linear) {
+    MaskShapeKey k;
+    k.pos = pos; k.interp = interp; k.vertices = s.vertices;
+    return k;
+}
+
+static RoamMask rectMask(int id, double half) {
+    RoamMask m;
+    m.id = id;
+    m.name = "Mask " + std::to_string(id);
+    m.kind = MaskKind::Rectangle;
+    m.base.shape = lensroam::rectangleMaskShape(half, half);
+    return m;
+}
+
+// A 32-vertex path (a polygon on a circle), for the vertex caps.
+static MaskShape polyShape(int n, double r = 0.4) {
+    MaskShape s;
+    for (int i = 0; i < n; ++i) {
+        const double a = 6.283185307179586 * i / n;
+        s.vertices.push_back({ r * std::cos(a), r * std::sin(a), 0, 0, 0, 0 });
+    }
+    return s;
+}
+
+// ─── [M1] the schema matches the engine enums ────────────────────────────────
+
+static void test_mv_schema_matches_enums() {
+    std::cout << "[M1] motion schema == LensChannel / RoamChannel / MaskChannel / options / caps\n";
+    namespace ms = motionschema;
+
+    auto lensKeyName = [](LensChannel c) {
+        LensTrack t; LensKey k; k.channel = c; t.keys.push_back(k);
+        return lensroam::lensTrackToJson(t, "keys")["keys"][0]["channel"].get<std::string>();
+    };
+    auto roamKeyName = [](RoamChannel c) {
+        RoamTrack t; RoamKey k; k.channel = c; t.keys.push_back(k);
+        return lensroam::roamTrackToJson(t)["keys"][0]["channel"].get<std::string>();
+    };
+    for (int c = 0; c < kLensRoamChannels; ++c) {
+        const ms::Property* r = ms::propertyByEngineIndex("roam", "track", c);
+        CHECK(r && roamKeyName(static_cast<RoamChannel>(c)) == r->channel,
+              "roam engineIndex " + std::to_string(c) + " is RoamChannel " + std::to_string(c));
+    }
+    for (int c = 0; c < kLensChannelCount; ++c) {
+        for (const char* owner : { "clip", "source" }) {
+            const ms::Property* p = ms::propertyByEngineIndex("lens", owner, c);
+            CHECK(p && lensKeyName(static_cast<LensChannel>(c)) == p->channel && p->animatable,
+                  std::string("lens/") + owner + " engineIndex " + std::to_string(c) + " is LensChannel " + std::to_string(c));
+        }
+        const ms::Property* sw = ms::propertyByEngineIndex("sweep", "track", c);
+        CHECK(sw && lensKeyName(static_cast<LensChannel>(c)) == sw->channel,
+              "sweep engineIndex " + std::to_string(c) + " is LensChannel " + std::to_string(c));
+    }
+    CHECK(ms::propertyByEngineIndex("roam", "track", kLensRoamChannels) == nullptr
+          && ms::propertyByEngineIndex("lens", "clip", kLensChannelCount) == nullptr,
+          "exactly four keyed Lens channels, nine Roam channels (Scale Y, four crop edges)");
+
+    const LensParams L;
+    const RoamParams R;
+    for (const char* owner : { "clipLens", "sourceLens" }) {
+        const std::string o = owner;
+        CHECK(ms::motionProperty((o + ".centerX").c_str())->identity == L.centerX
+              && ms::motionProperty((o + ".centerY").c_str())->identity == L.centerY
+              && ms::motionProperty((o + ".zoom").c_str())->identity == L.zoom
+              && ms::motionProperty((o + ".rotationDeg").c_str())->identity == L.rotationDeg,
+              o + " identities == LensParams{}");
+    }
+    CHECK(ms::motionProperty("roam.offsetX")->identity == R.offsetX
+          && ms::motionProperty("roam.offsetY")->identity == R.offsetY
+          && ms::motionProperty("roam.scale")->identity == R.scale
+          && ms::motionProperty("roam.rotationDeg")->identity == R.rotationDeg,
+          "roam identities == RoamParams{}");
+    // Sweep is a layer: identity = zoom x1, centre / rotation +0.
+    CHECK(ms::motionProperty("sweep.zoom")->identity == 1.0 && ms::motionProperty("sweep.centerX")->identity == 0.0
+          && ms::motionProperty("sweep.centerY")->identity == 0.0 && ms::motionProperty("sweep.rotationDeg")->identity == 0.0
+          && ms::motionProperty("sweep.zoom")->blend == ms::Blend::Multiply
+          && ms::motionProperty("sweep.centerX")->blend == ms::Blend::Add,
+          "sweep identities / blends are the layer's (applySweep)");
+    CHECK(ms::motionProperty("sourceLens.zoom")->blend == ms::Blend::Multiply
+          && ms::motionProperty("sourceLens.centerX")->blend == ms::Blend::Add
+          && ms::motionProperty("clipLens.zoom")->blend == ms::Blend::Absolute
+          && ms::motionProperty("roam.scale")->blend == ms::Blend::Absolute,
+          "blend modes match the evaluator (hit curve layers, clip / roam absolute)");
+    CHECK(ms::motionProperty("roam.offsetX")->timeBase == ms::TimeBase::Timeline
+          && ms::motionProperty("clipLens.zoom")->timeBase == ms::TimeBase::Event
+          && ms::motionProperty("sourceLens.zoom")->timeBase == ms::TimeBase::Note
+          && ms::motionProperty("mask.feather")->timeBase == ms::TimeBase::Timeline,
+          "time bases match the key compilers");
+
+    bool optOk = true;
+    for (int i = 0; i < 3; ++i) optOk = optOk && std::string(ms::optionName("clipLens.fit", i)) == lensroam::lensFitToString(static_cast<LensFit>(i));
+    for (int i = 0; i < 4; ++i) optOk = optOk && std::string(ms::optionName("clipLens.flip", i)) == lensroam::lensFlipToString(static_cast<LensFlip>(i));
+    for (int i = 0; i < 2; ++i) optOk = optOk && std::string(ms::optionName("roam.bounds", i)) == lensroam::roamBoundsToString(static_cast<RoamBounds>(i));
+    for (int i = 0; i < 3; ++i) optOk = optOk && std::string(ms::optionName("roam.layer", i)) == lensroam::roamLayerToString(static_cast<RoamLayer>(i));
+    for (int i = 0; i < 3; ++i) optOk = optOk && std::string(ms::optionName("mask.mode", i)) == lensroam::maskModeToString(static_cast<MaskMode>(i));
+    for (int i = 0; i < 3; ++i) optOk = optOk && std::string(ms::optionName("mask.shape", i)) == lensroam::maskKindToString(static_cast<MaskKind>(i));
+    CHECK(optOk, "every enum option index == the engine enum's string");
+    CHECK(ms::optionCount("clipLens.fit") == 3 && ms::optionCount("clipLens.flip") == 4
+          && ms::optionCount("roam.bounds") == 2 && ms::optionCount("roam.layer") == 3,
+          "no extra options");
+
+    const MaskParams M;
+    bool maskOk = true;
+    for (int c = 0; c < kMaskChannels; ++c) {
+        const ms::Property* p = ms::propertyByEngineIndex("mask", "mask", c);
+        maskOk = maskOk && p && std::string(p->channel) == lensroam::maskChannelToString(static_cast<MaskChannel>(c))
+               && p->animatable && p->hasClamp;
+    }
+    CHECK(maskOk, "MaskChannel 0..2 == mask.feather / expansion / opacity");
+    CHECK(ms::motionProperty("mask.feather")->identity == M.feather
+          && ms::motionProperty("mask.expansion")->identity == M.expansion
+          && ms::motionProperty("mask.opacity")->identity == M.opacity
+          && ms::motionProperty("mask.mode")->identity == static_cast<int>(M.mode)
+          && ms::motionProperty("mask.feather")->clampLo == 0.0 && ms::motionProperty("mask.feather")->clampHi == 1.0
+          && ms::motionProperty("mask.expansion")->clampLo == -1.0 && ms::motionProperty("mask.opacity")->clampHi == 1.0,
+          "mask identities and clamps (design 2.2)");
+    CHECK(ms::kMaxParentDepth == 4 && ms::kMaxMasksPerTrack == 8 && ms::kMaxVerticesPerMask == 32
+          && ms::kMinVerticesPerMask == 3 && ms::kMaxMaskVerticesPerTrack == 64
+          && kMaxMasksPerTrack == 8 && kMaxMaskVerticesPerTrack == 64 && parentmath::kMaxParentDepth == 4,
+          "caps (R15) from the schema limits");
+
+    // The checked-in .inc against the JSON it was generated from (the UI test
+    // byte-compares the generator output; this pins the values the engine uses).
+    std::ifstream in("ui/src/motion/motionSchema.json");
+    if (in) {
+        json js;
+        try { in >> js; } catch (...) { js = json(); }
+        bool all = js.is_object() && js.contains("properties");
+        int n = 0;
+        if (all) for (const auto& p : js["properties"]) {
+            ++n;
+            const ms::Property* e = ms::motionProperty(p.value("id", "").c_str());
+            all = all && e && p.value("group", "") == e->group && p.value("channel", "") == e->channel
+                && p.value("animatable", false) == e->animatable
+                && (!p.contains("engineIndex") || p["engineIndex"].get<int>() == e->engineIndex)
+                && (!p.contains("identity") || !p["identity"].is_number() || p["identity"].get<double>() == e->identity);
+        }
+        CHECK(all && n == ms::kPropertyCount, "motionSchema.json == MotionSchema.generated.inc (ids, channels, identities, engineIndex)");
+        CHECK(js.contains("limits") && js["limits"].value("maxParentDepth", 0) == ms::kMaxParentDepth
+              && js["limits"].value("maxMasksPerTrack", 0) == ms::kMaxMasksPerTrack
+              && js["limits"].value("maxMaskVerticesPerTrack", 0) == ms::kMaxMaskVerticesPerTrack,
+              "schema JSON limits == the engine's");
+    } else {
+        std::cout << "    (motionSchema.json not found from " << fs::current_path().string()
+                  << "; JSON-vs-inc check skipped)\n";
+    }
+}
+
+// ─── [M2] masks + parent: JSON round trip ────────────────────────────────────
+
+static RoamTrack sampleMaskedRoam() {
+    RoamTrack t;
+    t.base = someRoam();
+    RoamMask a = rectMask(3, 0.4);
+    a.name = "Window";
+    a.base.feather = 0.05; a.base.expansion = -0.1; a.base.opacity = 0.8;
+    MaskKey bz = maskKey(MaskChannel::Feather, 960, 0.2, Interp::Bezier);
+    bz.bez = { 0.1, 0.2, 0.3, 1.4 };
+    a.keys = { maskKey(MaskChannel::Feather, 0, 0.0), bz, maskKey(MaskChannel::Opacity, 480, 0.5, Interp::Hold) };
+    MaskShapeKey s2 = shapeKeyAt(3840, lensroam::rectangleMaskShape(0.3, 0.25), Interp::Bezier);
+    s2.bez = { 0.25, 0.1, 0.25, 1.0 };
+    a.shapeKeys = { shapeKeyAt(0, lensroam::rectangleMaskShape(0.4, 0.4)),
+                    shapeKeyAt(1920, lensroam::rectangleMaskShape(0.2, 0.2), Interp::EaseOut), s2 };
+    RoamMask b;
+    b.id = 7;
+    b.name = "Ma\xC3\x9F" "ke \xC3\xBC";   // UTF-8
+    b.kind = MaskKind::Ellipse;
+    b.base.shape = lensroam::ellipseMaskShape(0.4, 0.3);
+    b.base.mode = MaskMode::Subtract;
+    b.base.invert = true;
+    t.masks = { a, b };
+    return t;
+}
+
+static void test_mv_mask_json() {
+    std::cout << "[M2] masks / parentTrackId: JSON round trip, written only when set\n";
+    const RoamTrack t = sampleMaskedRoam();
+    const json j = lensroam::roamTrackToJson(t);
+    CHECK(j.contains("masks") && j["masks"].is_array() && j["masks"].size() == 2, "masks written");
+    if (j.contains("masks") && j["masks"].size() == 2) {
+        const json& m0 = j["masks"][0];
+        CHECK(m0["id"] == 3 && m0["name"] == "Window" && m0["kind"] == "Rectangle"
+              && m0["base"]["shape"]["closed"] == true && m0["base"]["shape"]["vertices"].size() == 4
+              && m0["base"]["shape"]["vertices"][0].size() == 6 && m0["base"]["mode"] == "Add"
+              && m0["base"]["invert"] == false && m0["keys"].size() == 3 && m0["shapeKeys"].size() == 3,
+              "mask 0 wire shape (design 2.2)");
+        CHECK(m0["keys"][0]["channel"] == "feather" && m0["keys"][0]["anchor"] == "Origin"
+              && m0["keys"][2]["channel"] == "opacity" && m0["keys"][1]["interp"] == "Bezier"
+              && m0["keys"][1].contains("bez") && !m0["keys"][0].contains("bez"),
+              "mask keys: schema channel names, Origin, bez only on Bezier");
+        CHECK(m0["shapeKeys"][2]["interp"] == "Bezier" && m0["shapeKeys"][2].contains("bez")
+              && !m0["shapeKeys"][1].contains("bez") && m0["shapeKeys"][1]["interp"] == "EaseOut",
+              "shape keys: bez only on Bezier");
+        CHECK(j["masks"][1]["base"]["mode"] == "Subtract" && j["masks"][1]["base"]["invert"] == true
+              && j["masks"][1]["kind"] == "Ellipse", "mask 1 mode / invert / kind");
+    }
+    const RoamTrack t2 = lensroam::roamTrackFromJson(j);
+    CHECK(t2.base == t.base && t2.keys == t.keys && t2.masks == t.masks, "roam with masks round-trips exactly");
+    const RoamTrack t3 = lensroam::roamTrackFromJson(json::parse(j.dump()));
+    CHECK(t3.masks == t.masks, "masks round-trip through JSON text (doubles exact)");
+
+    {
+        RoamMask u = rectMask(1, 0.3);
+        u.shapeKeys = { shapeKeyAt(1920, lensroam::rectangleMaskShape(0.2, 0.2)),
+                        shapeKeyAt(0, lensroam::rectangleMaskShape(0.3, 0.3)) };   // edited directly, unsorted
+        const json uj = lensroam::maskToJson(u);
+        CHECK(uj["shapeKeys"].size() == 2 && uj["shapeKeys"][0]["pos"] == 0 && uj["shapeKeys"][1]["pos"] == 1920,
+              "shape keys are saved sorted by pos");
+    }
+
+    RoamTrack none;
+    none.base = someRoam();
+    CHECK(!lensroam::roamTrackToJson(none).contains("masks"), "a roam without masks writes no 'masks' key");
+    CHECK(lensroam::roamTrackFromJson(lensroam::roamTrackToJson(none)).masks.empty(), "... and loads none");
+
+    TrackInfo ti;
+    ti.id = 12; ti.name = "Child"; ti.parentTrackId = 5; ti.roam = t;
+    const json tj = ti;
+    CHECK(tj.contains("parentTrackId") && tj["parentTrackId"] == 5, "parentTrackId written when set");
+    const TrackInfo back = tj.get<TrackInfo>();
+    CHECK(back.parentTrackId == 5 && back.roam.masks == t.masks, "TrackInfo round-trips parent + masks");
+    ti.parentTrackId = -1;
+    ti.roam = RoamTrack{};
+    const json tj2 = ti;
+    CHECK(!tj2.contains("parentTrackId") && !tj2["roam"].contains("masks"),
+          "no parent, no masks: neither key is written (old projects re-save byte-identically)");
+
+    // The default shapes (design 2.2).
+    const MaskShape e = lensroam::ellipseMaskShape(0.4, 0.3);
+    const double k = lensroam::kEllipseKappa;
+    CHECK(e.vertices.size() == 4 && e.vertices[0].x == 0.0 && e.vertices[0].y == -0.3
+          && nearD(e.vertices[0].outX, 0.4 * k) && nearD(e.vertices[0].inX, -0.4 * k)
+          && e.vertices[1].x == 0.4 && nearD(e.vertices[1].outY, 0.3 * k)
+          && e.vertices[2].y == 0.3 && e.vertices[3].x == -0.4,
+          "ellipse: top, right, bottom, left with kappa tangents (clockwise, y down)");
+    const MaskShape r = lensroam::rectangleMaskShape(0.4, 0.2);
+    CHECK(r.vertices.size() == 4 && r.vertices[0].x == -0.4 && r.vertices[0].y == -0.2
+          && r.vertices[2].x == 0.4 && r.vertices[2].y == 0.2 && r.vertices[1].outX == 0.0,
+          "rectangle: 4 corners clockwise from the top left, zero tangents");
+}
+
+// ─── [M3] tolerant load ──────────────────────────────────────────────────────
+
+static void test_mv_tolerant_load() {
+    std::cout << "[M3] masks / parentTrackId: tolerant load\n";
+    auto rectV = [] {
+        json v = json::array();
+        for (const auto& p : lensroam::rectangleMaskShape(0.4, 0.4).vertices)
+            v.push_back(json::array({ p.x, p.y, p.inX, p.inY, p.outX, p.outY }));
+        return v;
+    };
+    auto maskJ = [&](json id) {
+        json m = { { "id", id }, { "base", { { "shape", { { "vertices", rectV() } } } } } };
+        return m;
+    };
+
+    CHECK(lensroam::masksFromJson(json(5)).empty() && lensroam::masksFromJson(json::object()).empty(),
+          "non-array masks -> none");
+    {
+        json arr = json::array();
+        json bad = maskJ(1); bad["base"]["shape"]["vertices"].erase(0); bad["base"]["shape"]["vertices"].erase(0);
+        arr.push_back(bad);                                              // 2 vertices: dropped
+        json badV = maskJ(2); badV["base"]["shape"]["vertices"][1] = json::array({ 1, 2, 3 });
+        arr.push_back(badV);                                             // malformed vertex: dropped
+        arr.push_back(json(3));                                          // not an object
+        arr.push_back(json{ { "id", 4 } });                              // no base: dropped
+        json good = maskJ(9);
+        good["name"] = std::string(70, 'n');
+        good["kind"] = "Star";
+        good["base"]["mode"] = "Multiply";
+        good["base"]["feather"] = 5.0;
+        good["base"]["expansion"] = -3.0;
+        good["base"]["opacity"] = "half";
+        good["base"]["invert"] = 1;
+        good["base"]["shape"]["closed"] = false;
+        good["keys"] = json::array({
+            { { "channel", "feather" }, { "anchor", "Origin" }, { "pos", 0 }, { "value", 3.0 } },
+            { { "channel", "feather" }, { "anchor", "Head" }, { "pos", 0 }, { "value", 0.1 } },
+            { { "channel", "shape" }, { "anchor", "Origin" }, { "pos", 0 }, { "value", 0.1 } },
+            { { "channel", "opacity" }, { "anchor", "Origin" }, { "pos", -5 }, { "value", 0.1 } },
+        });
+        json sk = json::array();
+        sk.push_back({ { "pos", 1920 }, { "vertices", rectV() }, { "interp", "EaseOut" } });
+        sk.push_back({ { "pos", 0 }, { "vertices", rectV() }, { "interp", "Wobble" } });
+        sk.push_back({ { "pos", 1920 }, { "vertices", rectV() }, { "interp", "Hold" } });        // same pos: later wins
+        json shortSk = { { "pos", 960 }, { "vertices", rectV() } };
+        shortSk["vertices"].erase(0);
+        sk.push_back(shortSk);                                                                   // wrong count: dropped
+        sk.push_back({ { "pos", 480 } });                                                        // no vertices: dropped
+        good["shapeKeys"] = sk;
+        arr.push_back(good);
+        json dup = maskJ(9);                                                                     // duplicate id
+        arr.push_back(dup);
+        json noId = maskJ("x");                                                                  // invalid id
+        arr.push_back(noId);
+        const std::vector<RoamMask> ms = lensroam::masksFromJson(arr);
+        CHECK(ms.size() == 3, "malformed masks dropped, the three good ones kept");
+        if (ms.size() == 3) {
+            const RoamMask& g = ms[0];
+            CHECK(g.id == 9 && g.name.size() == 64 && g.kind == MaskKind::Path && g.base.mode == MaskMode::Add
+                  && g.base.feather == 1.0 && g.base.expansion == -1.0 && g.base.opacity == 1.0
+                  && !g.base.invert && g.base.shape.closed,
+                  "name cut to 64, unknown kind -> Path, unknown mode -> Add, clamped / identity scalars, closed");
+            CHECK(g.keys.size() == 1 && g.keys[0].value == 1.0,
+                  "keys: only Origin, pos >= 0, mask channels; values clamped");
+            CHECK(g.shapeKeys.size() == 2 && g.shapeKeys[0].pos == 0 && g.shapeKeys[0].interp == Interp::Linear
+                  && g.shapeKeys[1].pos == 1920 && g.shapeKeys[1].interp == Interp::Hold,
+                  "shape keys sorted, one per pos (later wins), wrong vertex count dropped, unknown interp Linear");
+            CHECK(ms[1].id == 1 && ms[2].id == 2 && ms[1].name == "Mask 1",
+                  "duplicate / invalid ids get the smallest unused ids; missing name -> 'Mask <id>'");
+        }
+    }
+    {
+        // Fresh ids never overflow: a kept INT_MAX id, then one without an id.
+        json arr = json::array({ maskJ(2147483647), maskJ(1), maskJ("x") });
+        const auto ms = lensroam::masksFromJson(arr);
+        CHECK(ms.size() == 3 && ms[0].id == 2147483647 && ms[1].id == 1 && ms[2].id == 2,
+              "a fresh id after INT_MAX is the smallest unused (2), not an overflow");
+        // An empty name loads as 'Mask <id>'.
+        json named = maskJ(5); named["name"] = "";
+        const auto mn = lensroam::masksFromJson(json::array({ named }));
+        CHECK(mn.size() == 1 && mn[0].name == "Mask 5", "an empty name -> 'Mask <id>'");
+        // A Rectangle / Ellipse without exactly 4 points loads as a Path.
+        json five = maskJ(3); five["kind"] = "Ellipse";
+        five["base"]["shape"]["vertices"].push_back(json::array({ 0.0, 0.45, 0, 0, 0, 0 }));
+        json four = maskJ(4); four["kind"] = "Rectangle";
+        const auto mk = lensroam::masksFromJson(json::array({ five, four }));
+        CHECK(mk.size() == 2 && mk[0].kind == MaskKind::Path && mk[1].kind == MaskKind::Rectangle,
+              "a 5-point Ellipse loads as a Path; a 4-point Rectangle stays a Rectangle");
+        // A vertex or tangent coordinate past +-10000: the mask (or shape key) is dropped.
+        json farV = maskJ(6); farV["base"]["shape"]["vertices"][0][0] = 10000.5;
+        json farT = maskJ(7); farT["base"]["shape"]["vertices"][2][5] = -20000.0;
+        json edge = maskJ(8); edge["base"]["shape"]["vertices"][1][4] = 10000.0;
+        json farK = maskJ(9);
+        json kv = rectV(); kv[0][2] = 1e9;
+        farK["shapeKeys"] = json::array({ { { "pos", 0 }, { "vertices", rectV() } }, { { "pos", 960 }, { "vertices", kv } } });
+        const auto mf = lensroam::masksFromJson(json::array({ farV, farT, edge, farK }));
+        CHECK(mf.size() == 2 && mf[0].id == 8 && mf[1].id == 9 && mf[1].shapeKeys.size() == 1,
+              "|coord| > 10000 drops the mask (base) or the shape key; exactly 10000 is kept");
+    }
+    {
+        json arr = json::array();
+        for (int i = 1; i <= 10; ++i) arr.push_back(maskJ(i));
+        CHECK(lensroam::masksFromJson(arr).size() == 8, "more than 8 masks: the first 8 load");
+        json big = json::array();
+        for (int i = 1; i <= 3; ++i) {
+            json m = maskJ(i);
+            json v = json::array();
+            for (const auto& p : polyShape(32).vertices) v.push_back(json::array({ p.x, p.y, 0, 0, 0, 0 }));
+            m["base"]["shape"]["vertices"] = v;
+            big.push_back(m);
+        }
+        big.push_back(maskJ(4));
+        const auto ms = lensroam::masksFromJson(big);
+        CHECK(ms.size() == 2 && lensroam::maskVertexTotal(ms) == 64,
+              "64 vertices per track: a mask that does not fit is dropped (later ones too when they do not fit)");
+    }
+    {
+        auto parentOf = [](json v) {
+            TrackInfo t; t.id = 4; t.name = "T";
+            json j = t;
+            if (!v.is_null()) j["parentTrackId"] = v;
+            return j.get<TrackInfo>().parentTrackId;
+        };
+        CHECK(parentOf(json()) == -1 && parentOf("3") == -1 && parentOf(-5) == -1 && parentOf(2.5) == -1
+              && parentOf(4) == -1 && parentOf(-1) == -1,
+              "parentTrackId: missing / string / < -1 / fractional / self / -1 -> no parent");
+        CHECK(parentOf(7) == 7 && parentOf(0) == 0, "a valid id loads as is (dangling ids resolve later)");
+    }
+}
+
+// ─── [M4] strict parse (the setTrackMasks RPC) ───────────────────────────────
+
+static void test_mv_strict_parse() {
+    std::cout << "[M4] masks: strict parse (RPC contract, caps R15)\n";
+    const json good = lensroam::masksToJson(sampleMaskedRoam().masks);
+    std::vector<RoamMask> out;
+    std::string err;
+    CHECK(lensroam::masksFromJsonStrict(good, out, err) && out == sampleMaskedRoam().masks,
+          "the writer's own output parses strictly to the same masks (" + err + ")");
+
+    auto rejects = [&](const json& j, const char* what, const char* needle) {
+        std::vector<RoamMask> o = { rectMask(99, 0.1) };
+        std::string e;
+        const bool ok = lensroam::masksFromJsonStrict(j, o, e);
+        CHECK(!ok && e.find(needle) != std::string::npos && o.size() == 1 && o[0].id == 99,
+              std::string("rejects ") + what + " (err: " + e + ")");
+    };
+    auto with = [&](const std::function<void(json&)>& edit) { json j = good; edit(j); return j; };
+
+    rejects(json::object(), "a non-array", "array");
+    rejects(with([](json& j) { j[0]["colour"] = 1; }), "an unknown mask field", "unknown field 'colour'");
+    rejects(with([](json& j) { j[0]["base"]["blur"] = 1; }), "an unknown base field", "unknown field 'blur'");
+    rejects(with([](json& j) { j[0]["base"]["shape"]["smooth"] = 1; }), "an unknown shape field", "unknown field 'smooth'");
+    rejects(with([](json& j) { j[0]["keys"][0]["ease"] = 1; }), "an unknown key field", "unknown field 'ease'");
+    rejects(with([](json& j) { j[0]["shapeKeys"][0]["closed"] = true; }), "an unknown shape key field", "unknown field 'closed'");
+    rejects(with([](json& j) { j[0]["id"] = "3"; }), "a string id", "positive integer");
+    rejects(with([](json& j) { j[0]["id"] = 0; }), "id 0", "positive integer");
+    rejects(with([](json& j) { j[0]["id"] = 1.5; }), "a fractional id", "positive integer");
+    rejects(with([](json& j) { j[1]["id"] = 3; }), "a duplicate id", "duplicate id");
+    rejects(with([](json& j) { j[0].erase("id"); }), "a missing id", "positive integer");
+    rejects(with([](json& j) { j[0]["name"] = std::string(65, 'a'); }), "a 65-character name", "64");
+    rejects(with([](json& j) { j[0]["name"] = 5; }), "a non-string name", "name must be a string");
+    rejects(with([](json& j) { j[0]["kind"] = "Star"; }), "an unknown kind", "kind must be");
+    rejects(with([](json& j) { j[0].erase("base"); }), "a missing base", "base must be an object");
+    rejects(with([](json& j) { j[0]["base"].erase("shape"); }), "a missing shape", "shape must be an object");
+    rejects(with([](json& j) { j[0]["base"]["shape"]["closed"] = false; }), "an open path", "open paths");
+    rejects(with([](json& j) { j[0]["base"]["shape"]["vertices"].erase(0); j[0]["base"]["shape"]["vertices"].erase(0); j[0].erase("shapeKeys"); }),
+            "2 vertices", "2 vertices");
+    rejects(with([](json& j) { j[0]["base"]["shape"]["vertices"][1][3] = "x"; }), "a malformed vertex", "six finite numbers");
+    rejects(with([](json& j) { j[0]["base"]["shape"]["vertices"][1][3] = std::nan(""); }), "a NaN vertex", "six finite numbers");
+    rejects(with([](json& j) { j[0]["base"]["shape"]["vertices"][1][0] = 10000.5; }), "a vertex x past 10000", "|v| <= 10000");
+    rejects(with([](json& j) { j[0]["base"]["shape"]["vertices"][2][4] = -1e7; }), "a tangent past -10000", "|v| <= 10000");
+    rejects(with([](json& j) { j[0]["shapeKeys"][1]["vertices"][0][1] = 2e4; }), "a shape key vertex past 10000", "|v| <= 10000");
+    rejects(with([](json& j) {
+                j[0]["kind"] = "Rectangle";
+                j[0]["base"]["shape"]["vertices"].push_back(json::array({ 0.0, 0.45, 0, 0, 0, 0 }));
+                j[0].erase("shapeKeys"); }),
+            "a 5-point Rectangle", "a Rectangle has exactly 4 points");
+    rejects(with([](json& j) {
+                j[0]["kind"] = "Ellipse";
+                j[0]["base"]["shape"]["vertices"].erase(0);
+                j[0].erase("shapeKeys"); }),
+            "a 3-point Ellipse", "an Ellipse has exactly 4 points");
+    rejects(with([](json& j) { j[0]["base"]["feather"] = 1.5; }), "feather > 1", "feather must be in [0, 1]");
+    rejects(with([](json& j) { j[0]["base"]["expansion"] = -1.5; }), "expansion < -1", "expansion must be in [-1, 1]");
+    rejects(with([](json& j) { j[0]["base"]["opacity"] = -0.01; }), "opacity < 0", "opacity must be in [0, 1]");
+    rejects(with([](json& j) { j[0]["base"]["opacity"] = std::numeric_limits<double>::infinity(); }), "a non-finite opacity", "finite");
+    rejects(with([](json& j) { j[0]["base"]["opacity"] = "1"; }), "a string opacity", "finite number");
+    rejects(with([](json& j) { j[0]["base"]["mode"] = "Multiply"; }), "an unknown mode", "mode must be");
+    rejects(with([](json& j) { j[0]["base"]["invert"] = 1; }), "a numeric invert", "invert must be a boolean");
+    rejects(with([](json& j) { j[0]["keys"][0]["anchor"] = "Head"; }), "a note anchor", "anchor must be 'Origin'");
+    rejects(with([](json& j) { j[0]["keys"][0]["channel"] = "shape"; }), "a non-scalar channel", "channel must be");
+    rejects(with([](json& j) { j[0]["keys"][0]["pos"] = -1; }), "a negative key pos", "pos must be");
+    rejects(with([](json& j) { j[0]["keys"][0]["value"] = 2.0; }), "a feather key > 1", "feather value must be in");
+    rejects(with([](json& j) { j[0]["keys"][0]["interp"] = "Cubic"; }), "an unknown interp", "interp must be");
+    rejects(with([](json& j) { j[0]["keys"][1]["bez"] = json::array({ 1, 2 }); }), "a malformed bez", "bez must be");
+    rejects(with([](json& j) { j[0]["shapeKeys"][1]["vertices"].erase(0); }), "a shape key with the wrong vertex count", "the base has 4");
+    rejects(with([](json& j) { j[0]["shapeKeys"][1]["pos"] = 0; }), "two shape keys at one pos", "already sits at pos");
+    rejects(with([](json& j) { j[0]["shapeKeys"][1]["pos"] = -2; }), "a negative shape key pos", "pos must be");
+    rejects(with([](json& j) { j[0]["shapeKeys"][1].erase("vertices"); }), "a shape key with no vertices", "vertices is required");
+    {
+        json nine = json::array();
+        for (int i = 1; i <= 9; ++i) nine.push_back(lensroam::maskToJson(rectMask(i, 0.3)));
+        rejects(nine, "9 masks", "at most 8");
+        json tooMany = json::array();
+        for (int i = 1; i <= 3; ++i) { RoamMask m = rectMask(i, 0.3); m.kind = MaskKind::Path; m.base.shape = polyShape(24); tooMany.push_back(lensroam::maskToJson(m)); }
+        rejects(tooMany, "72 vertices on a track", "at most 64");
+        json v33 = json::array();
+        { RoamMask m = rectMask(1, 0.3); m.base.shape = polyShape(33); v33.push_back(lensroam::maskToJson(m)); }
+        rejects(v33, "33 vertices in one mask", "33 vertices");
+    }
+    {
+        // Minimal input: id + vertices; everything else defaults. Shape keys sorted.
+        json m = { { "id", 4 }, { "base", { { "shape", { { "vertices", good[0]["base"]["shape"]["vertices"] } } } } },
+                   { "shapeKeys", json::array({ { { "pos", 960 }, { "vertices", good[0]["base"]["shape"]["vertices"] } },
+                                                { { "pos", 0 }, { "vertices", good[0]["base"]["shape"]["vertices"] }, { "bez", nullptr } } }) } };
+        // A 64-code-point UTF-8 name is fine even though it is 128 bytes.
+        std::string name;
+        for (int i = 0; i < 64; ++i) name += "\xC3\xBC";
+        m["name"] = name;
+        std::vector<RoamMask> o;
+        std::string e;
+        const bool ok = lensroam::masksFromJsonStrict(json::array({ m }), o, e);
+        CHECK(ok && o.size() == 1 && o[0].name == name && o[0].kind == MaskKind::Path
+              && o[0].base.feather == 0.0 && o[0].base.expansion == 0.0 && o[0].base.opacity == 1.0
+              && o[0].base.mode == MaskMode::Add && !o[0].base.invert && o[0].keys.empty()
+              && o[0].shapeKeys.size() == 2 && o[0].shapeKeys[0].pos == 0 && o[0].shapeKeys[1].pos == 960,
+              "defaults: kind Path, identity scalars, no keys; shape keys sorted; 64 code points OK (" + e + ")");
+        json noName = { { "id", 6 }, { "base", { { "shape", { { "vertices", good[0]["base"]["shape"]["vertices"] } } } } } };
+        CHECK(lensroam::masksFromJsonStrict(json::array({ noName }), o, e) && o[0].name == "Mask 6",
+              "a missing name is 'Mask <id>'");
+        json emptyName = noName; emptyName["name"] = "";
+        CHECK(lensroam::masksFromJsonStrict(json::array({ emptyName }), o, e) && o[0].name == "Mask 6",
+              "an empty name is 'Mask <id>' (as the tolerant load)");
+        json edge = noName; edge["base"]["shape"]["vertices"][0][2] = -10000.0;
+        CHECK(lensroam::masksFromJsonStrict(json::array({ edge }), o, e), "|v| == 10000 is accepted (" + e + ")");
+        CHECK(lensroam::masksFromJsonStrict(json::array(), o, e) && o.empty(), "an empty list clears the masks");
+    }
+}
+
+// ─── [M5] masksAt: the render-thread evaluator ───────────────────────────────
+
+static void test_mv_masks_at() {
+    std::cout << "[M5] LensRoamSnapshot::masksAt: scalars, shape keys (Hold/Linear/EaseOut/Bezier), caps, no alloc\n";
+    Fixture f;
+    buildFixture(f);
+    // (not `small`: a Windows header #defines it)
+    const MaskShape bigShape = lensroam::rectangleMaskShape(0.4, 0.4), smallShape = lensroam::rectangleMaskShape(0.2, 0.2);
+
+    auto evalAt = [&](const std::vector<RoamMask>& masks, double tick, MaskFrame& out) {
+        f.tl.getTrackMutable(f.clipTrack)->roam.masks = masks;
+        return buildLensRoamSnapshot(f.tl)->masksAt(f.clipTrack, tick, out);
+    };
+
+    MaskFrame fr;
+    // No masks.
+    CHECK(!buildLensRoamSnapshot(f.tl)->masksAt(f.clipTrack, 0, fr) && fr.count == 0, "a track with no masks: count 0");
+    CHECK(!buildLensRoamSnapshot(f.tl)->masksAt(9999, 0, fr) && fr.count == 0, "an unknown track: count 0");
+
+    // Base only: copied, scalars clamped to float.
+    {
+        RoamMask m = rectMask(1, 0.4);
+        m.base.feather = 0.1; m.base.expansion = -0.25; m.base.opacity = 0.5;
+        m.base.mode = MaskMode::Intersect; m.base.invert = true;
+        RoamMask e = rectMask(2, 0.3);
+        e.base.shape = lensroam::ellipseMaskShape(0.4, 0.3);
+        CHECK(evalAt({ m, e }, 1234, fr) && fr.count == 2, "two masks evaluated");
+        CHECK(fr.masks[0].mode == static_cast<uint8_t>(MaskMode::Intersect) && fr.masks[0].invert == 1
+              && fr.masks[0].vertexCount == 4 && fr.masks[0].firstVertex == 0
+              && fr.masks[0].feather == 0.1f && fr.masks[0].expansion == -0.25f && fr.masks[0].opacity == 0.5f,
+              "mask 0: mode, invert, count, base scalars");
+        CHECK(fr.masks[1].firstVertex == 4 && fr.masks[1].vertexCount == 4 && fr.masks[1].mode == 0
+              && fr.verts[4].y == -0.3f && fr.verts[4].outX == static_cast<float>(0.4 * lensroam::kEllipseKappa)
+              && fr.verts[0].x == -0.4f && fr.verts[2].y == 0.4f,
+              "vertices land in one pool, mask 1 after mask 0, tangents carried");
+    }
+
+    // Scalar keys: Linear feather, Hold opacity, unkeyed expansion holds the base.
+    {
+        RoamMask m = rectMask(1, 0.4);
+        m.base.expansion = -0.1;
+        m.keys = { maskKey(MaskChannel::Feather, 0, 0.0), maskKey(MaskChannel::Feather, 960, 0.5),
+                   maskKey(MaskChannel::Opacity, 0, 0.3, Interp::Hold), maskKey(MaskChannel::Opacity, 960, 1.0) };
+        evalAt({ m }, 480, fr);
+        CHECK(fr.count == 1 && fr.masks[0].feather == 0.25f && fr.masks[0].opacity == 0.3f
+              && fr.masks[0].expansion == -0.1f, "feather Linear 0 -> 0.5 at u=0.5 is 0.25; opacity Hold; expansion base");
+        evalAt({ m }, 2000, fr);
+        CHECK(fr.masks[0].feather == 0.5f && fr.masks[0].opacity == 1.0f, "after the last key: the last values");
+        // A Bezier overshoot past the clamp is held inside it.
+        RoamMask o = rectMask(1, 0.4);
+        MaskKey k0 = maskKey(MaskChannel::Feather, 0, 0.0, Interp::Bezier);
+        k0.bez = { 0.2, 3.0, 0.8, 1.0 };
+        o.keys = { k0, maskKey(MaskChannel::Feather, 1000, 1.0) };
+        evalAt({ o }, 300, fr);
+        CHECK(fr.masks[0].feather == 1.0f, "a Bezier overshoot is clamped into the schema clamp (feather <= 1)");
+    }
+
+    // Shape keys: before / at / between / after, every interp.
+    auto vertex0X = [&](Interp interp, xleth::keycurve::BezierHandles bez, double tick) {
+        RoamMask m = rectMask(1, 0.1);   // base differs from every key: keys REPLACE it
+        MaskShapeKey a = shapeKeyAt(960, bigShape, interp);
+        a.bez = bez;
+        m.shapeKeys = { a, shapeKeyAt(1920, smallShape) };
+        MaskFrame o;
+        evalAt({ m }, tick, o);
+        return o.count == 1 ? o.verts[0].x : 999.0f;
+    };
+    const xleth::keycurve::BezierHandles ease{ 0.25, 0.1, 0.25, 1.0 };
+    CHECK(vertex0X(Interp::Linear, {}, 0) == -0.4f, "before the first shape key: the first key's path (not the base)");
+    CHECK(vertex0X(Interp::Linear, {}, 960) == -0.4f, "at the first key: its path");
+    CHECK(vertex0X(Interp::Linear, {}, 1920) == -0.2f && vertex0X(Interp::Linear, {}, 5000) == -0.2f,
+          "at / after the last key: its path");
+    CHECK(nearD(vertex0X(Interp::Linear, {}, 1440), -0.3, 1e-6), "Linear at u=0.5: halfway");
+    CHECK(vertex0X(Interp::Hold, {}, 1900) == -0.4f, "Hold: the leaving key's path until the next key");
+    CHECK(nearD(vertex0X(Interp::EaseOut, {}, 1440), -0.4 + 0.2 * 0.75, 1e-6), "EaseOut at u=0.5: factor 0.75");
+    const double bf = xleth::keycurve::bezierEase(ease, 0.25);
+    CHECK(nearD(vertex0X(Interp::Bezier, ease, 1200), -0.4 + 0.2 * bf, 1e-6) && bf > 0.3,
+          "Bezier: the leaving key's handles give the factor");
+    {
+        // Every coordinate (tangents too) lerps by the same factor.
+        RoamMask m = rectMask(1, 0.1);
+        m.kind = MaskKind::Ellipse;
+        m.base.shape = lensroam::ellipseMaskShape(0.4, 0.4);
+        m.shapeKeys = { shapeKeyAt(0, lensroam::ellipseMaskShape(0.4, 0.4), Interp::EaseOut),
+                        shapeKeyAt(1000, lensroam::ellipseMaskShape(0.2, 0.3)) };
+        evalAt({ m }, 500, fr);
+        const double k = lensroam::kEllipseKappa;
+        CHECK(nearD(fr.verts[0].outX, 0.4 * k + (0.2 * k - 0.4 * k) * 0.75, 1e-6)
+              && nearD(fr.verts[0].y, -0.4 + (-0.3 + 0.4) * 0.75, 1e-6)
+              && nearD(fr.verts[1].outY, 0.4 * k + (0.3 * k - 0.4 * k) * 0.75, 1e-6),
+              "vertices and tangents lerp by the same blend factor");
+    }
+
+    // Caps re-enforced at compile: 9 masks -> 8; 72 vertices -> fits 64.
+    {
+        std::vector<RoamMask> nine;
+        for (int i = 1; i <= 9; ++i) nine.push_back(rectMask(i, 0.3));
+        evalAt(nine, 0, fr);
+        CHECK(fr.count == 8, "at most 8 masks per track reach the frame");
+        std::vector<RoamMask> heavy;
+        for (int i = 1; i <= 3; ++i) { RoamMask m = rectMask(i, 0.3); m.base.shape = polyShape(24); heavy.push_back(m); }
+        evalAt(heavy, 0, fr);
+        CHECK(fr.count == 2 && fr.masks[1].firstVertex == 24, "at most 64 vertices: the mask that does not fit is skipped");
+        RoamMask bad = rectMask(1, 0.3);
+        bad.base.shape.vertices.resize(2);
+        RoamMask badKey = rectMask(2, 0.3);
+        badKey.shapeKeys = { shapeKeyAt(0, lensroam::rectangleMaskShape(0.1, 0.1)), shapeKeyAt(100, polyShape(5)) };
+        evalAt({ bad, badKey }, 500, fr);
+        CHECK(fr.count == 1 && fr.verts[0].x == -0.1f, "a 2-vertex mask is skipped; a shape key with the wrong count is dropped");
+    }
+
+    // Render-thread rule: no allocation.
+    {
+        RoamMask m = rectMask(1, 0.4);
+        m.keys = { maskKey(MaskChannel::Feather, 0, 0.0), maskKey(MaskChannel::Feather, 960, 0.5) };
+        m.shapeKeys = { shapeKeyAt(0, bigShape, Interp::Bezier), shapeKeyAt(960, smallShape) };
+        f.tl.getTrackMutable(f.clipTrack)->roam.masks = { m, rectMask(2, 0.2) };
+        auto snap = buildLensRoamSnapshot(f.tl);
+        const long long before = g_allocs.load();
+        float sink = 0.0f;
+        MaskFrame o;
+        for (int i = 0; i < 20000; ++i) {
+            snap->masksAt(f.clipTrack, static_cast<double>(i % 1200), o);
+            sink += o.verts[0].x + o.masks[0].feather;
+        }
+        CHECK(g_allocs.load() == before && sink != 0.0f, "masksAt: zero allocations over 20k lookups");
+        const auto c = snap->counts();
+        CHECK(c.masks == 2 && c.maskTracks == 1, "Counts: masks, maskTracks");
+    }
+}
+
+// ─── [M6] snapshot parent resolution ─────────────────────────────────────────
+
+static void test_mv_snapshot_parent() {
+    std::cout << "[M6] snapshot: parent resolution, bounded chain, counts\n";
+    Fixture f;
+    buildFixture(f);
+    auto* ct = f.tl.getTrackMutable(f.clipTrack);
+    auto* pt = f.tl.getTrackMutable(f.patTrack);
+    ct->parentTrackId = f.patTrack;
+    pt->parentTrackId = 9999;   // dangling
+    auto snap = buildLensRoamSnapshot(f.tl);
+    int chain[motionschema::kMaxParentDepth] = {};
+    CHECK(snap->parentOf(f.clipTrack) == f.patTrack && snap->parentOf(f.patTrack) == -1,
+          "a valid parent resolves; a dangling one is no parent");
+    CHECK(snap->parentChain(f.clipTrack, chain) == 1 && chain[0] == f.patTrack, "chain stops at the dangling id");
+    CHECK(snap->counts().parentedTracks == 1, "Counts.parentedTracks");
+    pt->parentTrackId = f.clipTrack;   // damaged data: a 2-cycle
+    snap = buildLensRoamSnapshot(f.tl);
+    CHECK(snap->parentChain(f.clipTrack, chain) == 1 && chain[0] == f.patTrack
+          && snap->parentChain(f.patTrack, chain) == 1 && chain[0] == f.clipTrack,
+          "a cycle ends the chain before any id repeats");
+    pt->parentTrackId = f.patTrack;    // self (only reachable by editing the model directly)
+    snap = buildLensRoamSnapshot(f.tl);
+    CHECK(snap->parentOf(f.patTrack) == -1, "a self-reference is no parent");
+    // A long stored chain is cut at 4 ancestors.
+    std::vector<int> ids;
+    for (int i = 0; i < 7; ++i) {
+        TrackInfo t; t.name = "C" + std::to_string(i);
+        ids.push_back(f.tl.addTrack(t));
+    }
+    for (int i = 1; i < 7; ++i) f.tl.getTrackMutable(ids[i])->parentTrackId = ids[i - 1];
+    snap = buildLensRoamSnapshot(f.tl);
+    CHECK(snap->parentChain(ids[6], chain) == 4 && chain[0] == ids[5] && chain[3] == ids[2],
+          "the chain is capped at kMaxParentDepth, nearest first");
+    const long long before = g_allocs.load();
+    int sink = 0;
+    for (int i = 0; i < 10000; ++i) sink += snap->parentChain(ids[i % 7], chain) + snap->parentOf(ids[i % 7]);
+    CHECK(g_allocs.load() == before && sink > 0, "parentOf / parentChain: zero allocations");
+}
+
+// ─── Parent fixtures ─────────────────────────────────────────────────────────
+
+struct ParentFixture {
+    Timeline tl{ 120.0, 48000.0 };
+    std::vector<int> ids;
+};
+
+// `cols` x 1 grid on a 1920 x 1080 canvas, no gap; track i in column i.
+static void buildParentFixture(ParentFixture& p, int cols) {
+    GridLayout layout;
+    layout.columns = cols;
+    layout.rows = 1;
+    layout.canvasWidth = 1920;
+    layout.canvasHeight = 1080;
+    for (int i = 0; i < cols; ++i) {
+        TrackInfo t;
+        t.name = "T" + std::to_string(i);
+        const int id = p.tl.addTrack(t);
+        p.ids.push_back(id);
+        layout.slots.push_back({ id, i * kGridSubUnitsPerColumn, 0, kGridSubUnitsPerColumn, kGridSubUnitsPerRow, 1.0f, i });
+    }
+    p.tl.setGridLayout(layout);
+}
+
+// The child's final on-screen pose at `tick` under its stored chain (pixels
+// of the authoring canvas), via the public ParentMath helpers.
+static parentmath::Pose finalPose(const Timeline& tl, int trackId, double tick) {
+    const GridLayout layout = tl.gridLayoutAt(TickTime{ static_cast<int64_t>(tick) });
+    const TrackInfo* t = tl.getTrack(trackId);
+    parentmath::HomeUv hu;
+    parentmath::homeRectUv(layout, parentmath::findPlacement(layout, trackId), t->gapScaleOverride, hu);
+    const parentmath::Home home = parentmath::toPixels(hu, 1920, 1080);
+    const parentmath::Similarity chain =
+        parentmath::chainAt(tl, layout, trackId, t->parentTrackId, tick, 1920, 1080);
+    return parentmath::carry(chain, parentmath::roamedPose(home, lensroam::roamAtTick(t->roam, tick)));
+}
+
+static bool samePose(const parentmath::Pose& a, const parentmath::Pose& b, double eps = 1e-3) {
+    return nearD(a.centre.x, b.centre.x, eps) && nearD(a.centre.y, b.centre.y, eps)
+        && nearD(a.scale, b.scale, 1e-6) && nearD(a.rotDeg, b.rotDeg, 1e-4)
+        && nearD(a.w, b.w, eps) && nearD(a.h, b.h, eps);
+}
+
+// ─── [M7] pure similarity math ───────────────────────────────────────────────
+
+static void test_mv_parent_math() {
+    std::cout << "[M7] ParentMath: similarity compose / inverse, parent similarity, chain order\n";
+    using namespace parentmath;
+    Similarity a; a.s = 2.0; a.rotDeg = 90.0; a.tx = 10.0; a.ty = -4.0;
+    Similarity b; b.s = 0.5; b.rotDeg = -30.0; b.tx = 3.0; b.ty = 7.0;
+    const Vec2 p{ 12.5, -3.25 };
+    const Vec2 ab = apply(compose(a, b), p), seq = apply(a, apply(b, p));
+    CHECK(nearD(ab.x, seq.x, 1e-9) && nearD(ab.y, seq.y, 1e-9), "compose(a, b) == a after b");
+    const Vec2 back = apply(inverse(a), apply(a, p));
+    CHECK(nearD(back.x, p.x, 1e-9) && nearD(back.y, p.y, 1e-9), "inverse undoes");
+    const Vec2 r90 = rotate(90.0, { 1.0, 0.0 });
+    CHECK(nearD(r90.x, 0.0, 1e-12) && nearD(r90.y, 1.0, 1e-12),
+          "+90 deg turns +x to +y (clockwise on a y-down screen, computeRoamInverse's convention)");
+    const Similarity id = compose(a, Similarity{});
+    CHECK(id.s == a.s && id.rotDeg == a.rotDeg && id.tx == a.tx && id.ty == a.ty, "compose with identity is exact");
+
+    // S_A(p) = c' + s R (p - c): the home centre goes to the Roamed centre.
+    Home h; h.x = 0; h.y = 0; h.w = 960; h.h = 1080; h.unitW = 960; h.unitH = 1080;
+    RoamParams r; r.offsetX = 0.5f; r.offsetY = 0.25f; r.scale = 2.0f; r.rotationDeg = 90.0f;
+    const Similarity S = parentSimilarity(h, r);
+    const Vec2 c2 = apply(S, h.centre());
+    CHECK(nearD(c2.x, 960.0, 1e-9) && nearD(c2.y, 810.0, 1e-9), "parent home centre -> its Roamed centre");
+    const Vec2 q = apply(S, { 480.0 + 100.0, 540.0 });
+    CHECK(nearD(q.x, 960.0, 1e-9) && nearD(q.y, 810.0 + 200.0, 1e-9), "a point 100 px right of the pivot lands 200 px below");
+    const Similarity I = parentSimilarity(h, RoamParams{});
+    const Vec2 z = apply(I, Vec2{ 123.0, 456.0 });
+    CHECK(nearD(z.x, 123.0, 1e-12) && nearD(z.y, 456.0, 1e-12) && I.s == 1.0 && I.rotDeg == 0.0,
+          "an identity Roam parent passes nothing on");
+
+    // Chain order: final = S_root o S_parent o T_child (3 x 1 grid, 640 px cells).
+    ParentFixture pf;
+    buildParentFixture(pf, 3);
+    const int G = pf.ids[0], P = pf.ids[1], C = pf.ids[2];
+    pf.tl.getTrackMutable(G)->roam.base.scale = 2.0f;
+    pf.tl.getTrackMutable(P)->roam.base.rotationDeg = 90.0f;
+    pf.tl.getTrackMutable(P)->parentTrackId = G;
+    pf.tl.getTrackMutable(C)->parentTrackId = P;
+    const Pose fp = finalPose(pf.tl, C, 0);
+    CHECK(nearD(fp.centre.x, 1600.0, 1e-3) && nearD(fp.centre.y, 1820.0, 1e-3) && nearD(fp.scale, 2.0)
+          && nearD(fp.rotDeg, 90.0) && nearD(fp.w, 1280.0, 1e-3) && nearD(fp.h, 2160.0, 1e-3),
+          "grandparent o parent o child: centre (1600, 1820), scale 2, rotation 90 (hand-computed)");
+    // A parent that is not placed contributes identity; the chain continues above it.
+    GridLayout l = pf.tl.getGridLayout();
+    l.slots.erase(l.slots.begin() + 1);   // unplace P
+    pf.tl.setGridLayout(l);
+    const Pose up = finalPose(pf.tl, C, 0);
+    CHECK(nearD(up.centre.x, 320.0 + 2.0 * (1600.0 - 320.0), 1e-3) && nearD(up.centre.y, 540.0, 1e-3)
+          && nearD(up.rotDeg, 0.0) && nearD(up.scale, 2.0),
+          "an unplaced parent is identity; the grandparent still carries");
+    // A fullscreen parent: home = unit = canvas.
+    l.fullscreenLayers.push_back({ P, FullscreenLayerPlacement::BehindGrid, 1.0f, -1 });
+    pf.tl.setGridLayout(l);
+    pf.tl.getTrackMutable(P)->roam.base.rotationDeg = 0.0f;
+    pf.tl.getTrackMutable(P)->roam.base.offsetX = 0.25f;   // a quarter canvas
+    pf.tl.getTrackMutable(P)->parentTrackId = -1;
+    const Pose fs = finalPose(pf.tl, C, 0);
+    CHECK(nearD(fs.centre.x, 1600.0 + 480.0, 1e-3) && nearD(fs.centre.y, 540.0, 1e-3),
+          "a fullscreen (Chorus behind-layer) parent's offset unit is the canvas");
+}
+
+// ─── [M8] validation: self / unknown / cycle / depth ─────────────────────────
+
+static void test_mv_validate_parent() {
+    std::cout << "[M8] validateParent: self, unknown, cycle, depth > 4 (incl. the child's subtree)\n";
+    using parentmath::ParentReject;
+    ParentFixture pf;
+    buildParentFixture(pf, 7);
+    const auto& t = pf.ids;
+    auto v = [&](int child, int parent) { return parentmath::validateParent(pf.tl, child, parent); };
+    CHECK(v(t[0], t[0]) == ParentReject::Self, "self");
+    CHECK(v(t[0], 9999) == ParentReject::UnknownTrack && v(9999, t[0]) == ParentReject::UnknownTrack,
+          "unknown parent / child");
+    CHECK(v(t[0], -1) == ParentReject::None, "detach is always allowed");
+    // t1 <- t2 <- t3 (t3's parent is t2, t2's is t1)
+    pf.tl.getTrackMutable(t[2])->parentTrackId = t[1];
+    pf.tl.getTrackMutable(t[3])->parentTrackId = t[2];
+    CHECK(v(t[1], t[3]) == ParentReject::Cycle && v(t[2], t[3]) == ParentReject::Cycle, "a loop is refused");
+    CHECK(v(t[1], t[0]) == ParentReject::None, "the chain's root may take a parent (depth 3 below it fits)");
+    pf.tl.getTrackMutable(t[1])->parentTrackId = t[0];          // t0 <- t1 <- t2 <- t3: t3 has 3 ancestors
+    CHECK(v(t[4], t[3]) == ParentReject::None, "a 4th ancestor is allowed");
+    pf.tl.getTrackMutable(t[4])->parentTrackId = t[3];
+    CHECK(v(t[5], t[4]) == ParentReject::TooDeep, "a 5th ancestor is refused");
+    CHECK(parentmath::parentRejectToString(ParentReject::TooDeep) == std::string("too_deep")
+          && parentmath::parentRejectToString(ParentReject::Cycle) == std::string("cycle")
+          && parentmath::parentRejectToString(ParentReject::Self) == std::string("self")
+          && parentmath::parentRejectToString(ParentReject::UnknownTrack) == std::string("unknown_track"),
+          "reason strings (design 3.1)");
+    // Subtree: t5 <- t6 (height 1). t5 under t2 (2 ancestors) -> t6 would have 4: OK.
+    pf.tl.getTrackMutable(t[6])->parentTrackId = t[5];
+    CHECK(v(t[5], t[2]) == ParentReject::None, "child subtree fits");
+    CHECK(v(t[5], t[3]) == ParentReject::TooDeep, "the child's deepest descendant would exceed 4: refused");
+    CHECK(parentmath::ancestorCount(pf.tl, t[4]) == 4 && parentmath::descendantHeight(pf.tl, t[0]) == 4,
+          "ancestorCount / descendantHeight");
+}
+
+// ─── Scale X / Y and border crop ─────────────────────────────────────────────
+
+static void test_scale_xy_and_crop() {
+    std::cout << "[SC] independent Scale X/Y (linked by default, old projects load linked) and Roam crop\n";
+    // Old projects: no scaleLinked / scaleY / crop fields -> linked, uniform, no crop.
+    {
+        const RoamParams p = lensroam::roamParamsFromJson(nlohmann::json{ {"offsetX", 0.25}, {"scale", 1.5} });
+        CHECK(p.scaleLinked && p.scale == 1.5f && p.scaleYEff() == 1.5f && !p.hasCrop(),
+              "a pre-split Roam loads linked with scaleY following scale");
+        // And re-saves with none of the new fields (byte-identical to before).
+        const nlohmann::json j = lensroam::roamParamsToJson(p);
+        CHECK(!j.contains("scaleY") && !j.contains("scaleLinked") && !j.contains("cropLeft"),
+              "a linked, uncropped Roam writes none of the new fields");
+    }
+    // Unlinked + crop round-trip.
+    {
+        RoamParams p; p.scale = 2.0f; p.scaleLinked = false; p.scaleY = 0.5f;
+        p.cropLeft = 0.1f; p.cropBottom = 0.25f;
+        const RoamParams q = lensroam::roamParamsFromJson(lensroam::roamParamsToJson(p));
+        CHECK(q == p && !q.scaleLinked && q.scaleYEff() == 0.5f && q.cropLeft == 0.1f && q.cropBottom == 0.25f,
+              "unlinked scale and crop edges round-trip through JSON");
+        CHECK(!p.isIdentity() && RoamParams{}.isIdentity(), "identity reflects Scale Y and crop");
+    }
+    // Evaluation: a linked cell ignores ScaleY keys, an unlinked one follows them.
+    Fixture f;
+    buildFixture(f);
+    auto roamAt = [&](double tick) { return buildLensRoamSnapshot(f.tl)->roamAt(f.clipTrack, tick); };
+    TrackInfo* t = f.tl.getTrackMutable(f.clipTrack);
+    RoamKey sy; sy.channel = RoamChannel::ScaleY; sy.pos = 0; sy.value = 3.0;
+    RoamKey sy2 = sy; sy2.pos = 960; sy2.value = 1.0;
+    t->roam.keys = { sy, sy2 };
+    t->roam.base.scale = 2.0f;
+    CHECK(nearD(roamAt(0).scaleYEff(), 2.0, 1e-6), "linked: ScaleY keys are ignored, height follows scale");
+    t->roam.base.scaleLinked = false;
+    CHECK(nearD(roamAt(0).scaleYEff(), 3.0, 1e-6) && nearD(roamAt(480).scaleYEff(), 2.0, 1e-6)
+          && nearD(roamAt(0).scale, 2.0, 1e-6), "unlinked: ScaleY follows its own keys, Scale stays");
+    t->roam.keys.clear();
+
+    // Crop: appended as the LAST mask (Intersect rectangle in cell space).
+    t->roam.base = RoamParams{};
+    MaskFrame fr;
+    CHECK(!buildLensRoamSnapshot(f.tl)->masksAt(f.clipTrack, 0, fr) && fr.count == 0, "no crop, no masks: nothing to draw");
+    t->roam.base.cropLeft = 0.25f; t->roam.base.cropTop = 0.1f;
+    CHECK(buildLensRoamSnapshot(f.tl)->masksAt(f.clipTrack, 0, fr) && fr.count == 1, "a crop alone is one mask");
+    const MaskFrameEntry& e = fr.masks[0];
+    CHECK(e.mode == static_cast<uint8_t>(MaskMode::Intersect) && e.vertexCount == 4 && e.opacity == 1.0f && e.invert == 0,
+          "the crop is an Intersect rectangle at full opacity");
+    const MaskVertexF* v = fr.verts.data() + e.firstVertex;
+    CHECK(nearD(v[0].x, -0.25, 1e-6) && nearD(v[0].y, -0.4, 1e-6) && nearD(v[2].x, 0.5, 1e-6) && nearD(v[2].y, 0.5, 1e-6),
+          "crop left 0.25 / top 0.1: corners from (-0.25, -0.4) to (0.5, 0.5)");
+    // Even with the full eight user masks, the crop still gets its slot.
+    {
+        std::vector<RoamMask> eight;
+        for (int i = 1; i <= kMaxMasksPerTrack; ++i) eight.push_back(rectMask(i, 0.05));
+        t->roam.masks = eight;
+        CHECK(buildLensRoamSnapshot(f.tl)->masksAt(f.clipTrack, 0, fr) && fr.count == kMaxMasksPerTrack + 1,
+              "eight user masks plus the crop");
+        CHECK(fr.masks[kMaxMasksPerTrack].mode == static_cast<uint8_t>(MaskMode::Intersect), "the crop is last");
+        t->roam.masks.clear();
+    }
+    // Keys: a crop channel follows its keys; opposite edges never meet.
+    RoamKey cr; cr.channel = RoamChannel::CropRight; cr.pos = 0; cr.value = 0.0;
+    RoamKey cr2 = cr; cr2.pos = 960; cr2.value = 0.99;
+    t->roam.keys = { cr, cr2 };
+    const RoamParams mid = roamAt(480);
+    CHECK(nearD(mid.cropRight, 0.495, 1e-5), "cropRight follows its keys");
+    const RoamParams end = roamAt(960);
+    CHECK(end.cropLeft + end.cropRight <= 0.99f + 1e-6f, "left + right never reach the full width");
+}
+
+// ─── Video effect param keys ─────────────────────────────────────────────────
+
+static void test_fx_keys() {
+    std::cout << "[FX] video effect param keys: uid identity, evaluation, reorder / remove / undo, save and load\n";
+    Fixture f;
+    buildFixture(f);
+    const int tid = f.clipTrack;
+    const int ck = f.tl.addVisualEffect(tid, VisualEffect::Type::ChromaKey);
+    const int ol = f.tl.addVisualEffect(tid, VisualEffect::Type::Outline);
+    CHECK(ck == 0 && ol == 1, "two effects added");
+    const std::vector<VisualEffect>& chain = *f.tl.getVisualEffectChain(tid);
+    const int ckUid = chain[0].uid, olUid = chain[1].uid;
+    CHECK(ckUid > 0 && olUid > 0 && ckUid != olUid, "every added effect gets its own uid");
+
+    TrackInfo* t = f.tl.getTrackMutable(tid);
+    auto key = [](int uid, int param, double pos, double value) {
+        FxKey k; k.uid = uid; k.param = param; k.pos = pos; k.value = value; return k;
+    };
+    // Chroma key Tolerance (3) 0.1 -> 0.5 over one beat; Outline Thickness (3) held at 12.
+    t->fxKeys = { key(ckUid, 3, 0, 0.1), key(ckUid, 3, 960, 0.5), key(olUid, 3, 0, 12.0) };
+
+    auto eval = [&](double tick) {
+        std::vector<VisualEffect> c = *f.tl.getVisualEffectChain(tid);
+        buildLensRoamSnapshot(f.tl)->applyFxKeys(tid, tick, c);
+        return c;
+    };
+    CHECK(nearD(eval(480)[0].params[3], 0.3, 1e-6), "a keyed param follows its keys (linear)");
+    CHECK(nearD(eval(2000)[0].params[3], 0.5, 1e-6), "held at the last key after it");
+    CHECK(nearD(eval(0)[1].params[3], 12.0, 1e-6), "the other effect's own key");
+    CHECK(nearD(eval(480)[0].params[5], chain[0].params[5], 1e-9), "an unkeyed param holds the effect's own value");
+    {
+        // A value outside the param's range is held to it when rendered.
+        t->fxKeys = { key(ckUid, 3, 0, 99.0) };
+        CHECK(nearD(eval(0)[0].params[3], 0.6, 1e-6), "clamped to the param's range (Tolerance 0..0.6)");
+        // Chroma Key: Softness stays above Tolerance even when keyed curves cross.
+        t->fxKeys = { key(ckUid, 3, 0, 0.5), key(ckUid, 4, 0, 0.2) };
+        CHECK(eval(0)[0].params[4] > eval(0)[0].params[3], "softness kept above tolerance");
+        // A param that cannot be animated (the colour channels) is ignored.
+        t->fxKeys = { key(ckUid, 0, 0, 0.9) };
+        CHECK(nearD(eval(0)[0].params[0], chain[0].params[0], 1e-9), "a colour param is never driven by keys");
+        t->fxKeys = { key(ckUid, 3, 0, 0.1), key(ckUid, 3, 960, 0.5), key(olUid, 3, 0, 12.0) };
+    }
+    // Reordering moves the effect with its uid: the keys follow it.
+    CHECK(f.tl.setTrackVisualEffectChainOrder(tid, { 1, 0 }), "reorder");
+    {
+        const std::vector<VisualEffect> c = eval(480);
+        CHECK(c[1].uid == ckUid && nearD(c[1].params[3], 0.3, 1e-6) && c[0].uid == olUid,
+              "keys follow their effect through a reorder");
+    }
+    // Removing an effect: its keys do nothing, and undoing the remove (re-insert) brings them back.
+    const VisualEffect removed = (*f.tl.getVisualEffectChain(tid))[1];   // the chroma key
+    CHECK(f.tl.removeVisualEffect(tid, 1), "remove");
+    CHECK(eval(480).size() == 1 && nearD(eval(480)[0].params[3], 12.0, 1e-6), "a removed effect's keys are ignored");
+    CHECK(f.tl.insertVisualEffectAt(tid, 1, removed), "undo re-insert");
+    CHECK(nearD(eval(480)[1].params[3], 0.3, 1e-6), "the keys are back with the re-inserted effect");
+    // A new effect never reuses a uid, even after the highest one was removed.
+    f.tl.removeVisualEffect(tid, 1);
+    const int fresh = f.tl.addVisualEffect(tid, VisualEffect::Type::Desaturation);
+    CHECK((*f.tl.getVisualEffectChain(tid))[fresh].uid > ckUid && (*f.tl.getVisualEffectChain(tid))[fresh].uid > olUid,
+          "a uid is never handed out twice");
+    f.tl.removeVisualEffect(tid, fresh);
+    f.tl.insertVisualEffectAt(tid, 1, removed);
+
+    // The strict-ish undo command: one swap, exact undo.
+    {
+        std::vector<FxKey> next = { key(ckUid, 3, 0, 0.2) };
+        SetTrackFxKeysCommand cmd(tid, next, f.tl);
+        CHECK(cmd.changesAnything(), "the command sees a change");
+        cmd.execute(f.tl);
+        CHECK(f.tl.getTrack(tid)->fxKeys == next, "executed");
+        cmd.undo(f.tl);
+        CHECK(f.tl.getTrack(tid)->fxKeys.size() == 3, "undone exactly");
+    }
+
+    // Save and load: keyed effects keep their uid, orphan keys are dropped, unkeyed ones are renumbered.
+    {
+        t = f.tl.getTrackMutable(tid);
+        t->fxKeys.push_back(key(9999, 3, 0, 1.0));   // an effect that is not in the chain
+        nlohmann::json j;
+        to_json(j, *f.tl.getTrack(tid));
+        CHECK(j["visualEffectChain"][0]["uid"].get<int>() == (*f.tl.getVisualEffectChain(tid))[0].uid
+              || j["visualEffectChain"][1]["uid"].get<int>() == ckUid, "a keyed effect saves its uid");
+        CHECK(j["fxKeys"].size() == 3, "orphan keys are not saved");
+        TrackInfo back;
+        from_json(j, back);
+        CHECK(back.fxKeys.size() == 3 && back.visualEffectChain.size() == 2, "keys and chain load back");
+        int keyedUid = -1;
+        for (const auto& fx : back.visualEffectChain) if (fx.type == VisualEffect::Type::ChromaKey) keyedUid = fx.uid;
+        CHECK(keyedUid == ckUid, "the keyed effect has the same uid after a load");
+        bool distinct = back.visualEffectChain[0].uid != back.visualEffectChain[1].uid
+            && back.visualEffectChain[0].uid > 0 && back.visualEffectChain[1].uid > 0;
+        CHECK(distinct, "every loaded effect has its own uid");
+        // A project with no fx keys writes neither "fxKeys" nor any "uid".
+        TrackInfo plain = back;
+        plain.fxKeys.clear();
+        nlohmann::json pj;
+        to_json(pj, plain);
+        CHECK(!pj.contains("fxKeys") && !pj["visualEffectChain"][0].contains("uid") && !pj["visualEffectChain"][1].contains("uid"),
+              "no keys: nothing new is saved");
+    }
+}
+
+// ─── [M9] keep on screen: numbers ────────────────────────────────────────────
+
+static void test_mv_keep_on_screen() {
+    std::cout << "[M9] keep-on-screen: rotated + scaled parent, keyed channels, chains, detach\n";
+    // 2 x 1 grid on 1920 x 1080: P in column 0 (home 960 x 1080 at 0,0), C in column 1.
+    ParentFixture pf;
+    buildParentFixture(pf, 2);
+    const int P = pf.ids[0], C = pf.ids[1];
+    RoamParams pr; pr.offsetX = 0.5f; pr.offsetY = 0.25f; pr.scale = 2.0f; pr.rotationDeg = 90.0f;
+    pf.tl.getTrackMutable(P)->roam.base = pr;
+    RoamParams cr; cr.offsetX = 0.1f; cr.offsetY = -0.2f; cr.scale = 0.5f; cr.rotationDeg = 10.0f;
+    cr.bounds = RoamBounds::Float; cr.layer = RoamLayer::Top;
+    pf.tl.getTrackMutable(C)->roam.base = cr;
+
+    const parentmath::Pose before = finalPose(pf.tl, C, 0);
+    const parentmath::KeepOnScreen k = parentmath::keepOnScreen(pf.tl, C, P, 0);
+    CHECK(k.placed, "the child is placed at the tick");
+    // Hand-computed (R7): S_P(p) = (960, 810) + 2 R90 (p - (480, 540)); the
+    // child's centre (1536, 324) maps back to (237, 252) -> offset
+    // ((237 - 1440) / 960, (252 - 540) / 1080); scale 0.5 / 2; rotation 10 - 90.
+    CHECK(nearD(k.solve.base.offsetX, -1203.0 / 960.0, 1e-5) && nearD(k.solve.base.offsetY, -288.0 / 1080.0, 1e-5)
+          && nearD(k.solve.base.scale, 0.25, 1e-7) && nearD(k.solve.base.rotationDeg, -80.0, 1e-5),
+          "offset (-1.253125, -0.26667), scale 0.25, rotation -80");
+    CHECK(k.solve.base.bounds == RoamBounds::Float && k.solve.base.layer == RoamLayer::Top,
+          "bounds and layer untouched");
+    bool allComp = true;
+    // The first four (offset, scale, rotation) are the ones a parent change compensates;
+    // a linked cell's Scale Y and the crop edges are not part of the solve.
+    for (int c = 0; c < 4; ++c) allComp = allComp && k.solve.compensated[c] && !k.solve.uncompensated[c];
+    CHECK(allComp, "every unkeyed channel is compensated");
+    {
+        // A tick past int64 range is clamped to 2^53 before the cast (no UB):
+        // same solve as at 2^53; infinity / NaN / negative read as tick 0.
+        const parentmath::KeepOnScreen huge = parentmath::keepOnScreen(pf.tl, C, P, 1e300);
+        const parentmath::KeepOnScreen cap  = parentmath::keepOnScreen(pf.tl, C, P, 9007199254740992.0);
+        const parentmath::KeepOnScreen inf  = parentmath::keepOnScreen(pf.tl, C, P, std::numeric_limits<double>::infinity());
+        CHECK(huge.placed == cap.placed && huge.solve.base == cap.solve.base,
+              "keepOnScreen at tick 1e300 == at 2^53 (clamped before the int64 cast)");
+        CHECK(inf.placed == k.placed && inf.solve.base == k.solve.base, "a non-finite tick reads as tick 0");
+    }
+
+    // Apply it through the command; the on-screen pose is unchanged.
+    UndoManager um;
+    um.execute(std::make_unique<SetTrackParentCommand>(C, P, pf.tl, k.solve.base), pf.tl);
+    CHECK(pf.tl.getTrack(C)->parentTrackId == P && pf.tl.getTrack(C)->roam.base == k.solve.base,
+          "SetTrackParentCommand swaps parent and base in one step");
+    CHECK(samePose(finalPose(pf.tl, C, 0), before), "the child stays where it was on screen");
+    um.undo(pf.tl);
+    CHECK(pf.tl.getTrack(C)->parentTrackId == -1 && pf.tl.getTrack(C)->roam.base == cr, "undo restores parent and base");
+    um.redo(pf.tl);
+    CHECK(pf.tl.getTrack(C)->parentTrackId == P && pf.tl.getTrack(C)->roam.base == k.solve.base, "redo");
+
+    // Detach with keep-on-screen: back to the same pose without a parent.
+    const parentmath::Pose attached = finalPose(pf.tl, C, 0);
+    const parentmath::KeepOnScreen d = parentmath::keepOnScreen(pf.tl, C, -1, 0);
+    um.execute(std::make_unique<SetTrackParentCommand>(C, -1, pf.tl, d.solve.base), pf.tl);
+    CHECK(samePose(finalPose(pf.tl, C, 0), attached)
+          && nearD(pf.tl.getTrack(C)->roam.base.offsetX, cr.offsetX, 1e-5)
+          && nearD(pf.tl.getTrack(C)->roam.base.offsetY, cr.offsetY, 1e-5)
+          && nearD(pf.tl.getTrack(C)->roam.base.scale, cr.scale, 1e-6)
+          && nearD(pf.tl.getTrack(C)->roam.base.rotationDeg, cr.rotationDeg, 1e-4),
+          "detach keeps the pose: the base returns to the original values");
+    um.undo(pf.tl);
+
+    // A keyed channel is not compensated (its keys are never rewritten).
+    {
+        ParentFixture q;
+        buildParentFixture(q, 2);
+        const int qp = q.ids[0], qc = q.ids[1];
+        q.tl.getTrackMutable(qp)->roam.base = pr;
+        q.tl.getTrackMutable(qc)->roam.base = cr;
+        q.tl.getTrackMutable(qc)->roam.keys = { roamKey(RoamChannel::RotationDeg, 0, 30.0),
+                                                roamKey(RoamChannel::OffsetY, 0, 0.1) };
+        const parentmath::KeepOnScreen kk = parentmath::keepOnScreen(q.tl, qc, qp, 0);
+        constexpr int X = 0, Y = 1, S = 2, R = 3;
+        CHECK(kk.solve.uncompensated[R] && !kk.solve.compensated[R] && kk.solve.base.rotationDeg == cr.rotationDeg,
+              "a keyed rotation is uncompensated and its base untouched");
+        CHECK(kk.solve.uncompensated[X] && kk.solve.uncompensated[Y] && !kk.solve.compensated[X]
+              && kk.solve.base.offsetX == cr.offsetX && kk.solve.base.offsetY == cr.offsetY,
+              "offset is a pair: one keyed axis leaves both uncompensated");
+        CHECK(kk.solve.compensated[S] && nearD(kk.solve.base.scale, 0.25, 1e-7),
+              "scale is still compensated independently");
+    }
+
+    // A chain: detach from (grandparent o parent) keeps the pose; hand numbers.
+    {
+        ParentFixture g;
+        buildParentFixture(g, 3);
+        const int G = g.ids[0], Pp = g.ids[1], Cc = g.ids[2];
+        g.tl.getTrackMutable(G)->roam.base.scale = 2.0f;
+        g.tl.getTrackMutable(Pp)->roam.base.rotationDeg = 90.0f;
+        g.tl.getTrackMutable(Pp)->parentTrackId = G;
+        g.tl.getTrackMutable(Cc)->parentTrackId = Pp;
+        const parentmath::KeepOnScreen kd = parentmath::keepOnScreen(g.tl, Cc, -1, 0);
+        CHECK(nearD(kd.solve.base.offsetX, 0.0, 1e-6) && nearD(kd.solve.base.offsetY, 1280.0 / 1080.0, 1e-6)
+              && nearD(kd.solve.base.scale, 2.0, 1e-7) && nearD(kd.solve.base.rotationDeg, 90.0, 1e-6),
+              "detach from G o P: offset (0, 1.18519), scale 2, rotation 90 (hand-computed)");
+        // Re-parent to G alone with keep-on-screen.
+        const parentmath::Pose b0 = finalPose(g.tl, Cc, 0);
+        const parentmath::KeepOnScreen kg = parentmath::keepOnScreen(g.tl, Cc, G, 0);
+        UndoManager u2;
+        u2.execute(std::make_unique<SetTrackParentCommand>(Cc, G, g.tl, kg.solve.base), g.tl);
+        CHECK(samePose(finalPose(g.tl, Cc, 0), b0), "re-parent within a chain keeps the pose");
+    }
+
+    // A child with no placement at the tick: nothing to keep.
+    {
+        ParentFixture n;
+        buildParentFixture(n, 2);
+        TrackInfo t; t.name = "Unplaced";
+        const int u = n.tl.addTrack(t);
+        const parentmath::KeepOnScreen kn = parentmath::keepOnScreen(n.tl, u, n.ids[0], 0);
+        bool none = true;
+        for (int c = 0; c < kLensRoamChannels; ++c) none = none && !kn.solve.compensated[c] && !kn.solve.uncompensated[c];
+        CHECK(!kn.placed && none && kn.solve.base == RoamParams{}, "an unplaced child: placed=false, base unchanged");
+    }
+
+    // Keys: the solve uses the Roam AT THE TICK (a keyed parent moves the chain).
+    {
+        ParentFixture m;
+        buildParentFixture(m, 2);
+        const int mp = m.ids[0], mc = m.ids[1];
+        m.tl.getTrackMutable(mp)->roam.keys = { roamKey(RoamChannel::RotationDeg, 0, 0.0),
+                                                roamKey(RoamChannel::RotationDeg, 3840, 180.0) };
+        const parentmath::Pose b = finalPose(m.tl, mc, 1920);
+        const parentmath::KeepOnScreen km = parentmath::keepOnScreen(m.tl, mc, mp, 1920);
+        UndoManager u3;
+        u3.execute(std::make_unique<SetTrackParentCommand>(mc, mp, m.tl, km.solve.base), m.tl);
+        CHECK(nearD(km.solve.base.rotationDeg, -90.0, 1e-5) && samePose(finalPose(m.tl, mc, 1920), b),
+              "a keyed parent at tick 1920 (rotation 90): the child keeps its pose at that tick");
+    }
+}
+
+// ─── [M10] commands: SetTrackParent / SetTrackMasks / RemoveTrack detach ─────
+
+static void test_mv_commands() {
+    std::cout << "[M10] commands: parent / masks undo-redo, refused attach, removeTrack detaches children\n";
+    ParentFixture pf;
+    buildParentFixture(pf, 3);
+    const int G = pf.ids[0], P = pf.ids[1], C = pf.ids[2];
+    UndoManager um;
+
+    // SetTrackParentCommand without a base: parent only.
+    {
+        auto cmd = std::make_unique<SetTrackParentCommand>(P, G, pf.tl);
+        CHECK(cmd->changesAnything(), "attach changes something");
+        um.execute(std::move(cmd), pf.tl);
+        CHECK(pf.tl.getTrack(P)->parentTrackId == G && pf.tl.getTrack(P)->roam.base == RoamParams{},
+              "attach: parent set, base untouched (no keep-on-screen)");
+        CHECK(!SetTrackParentCommand(P, G, pf.tl).changesAnything(), "the same parent again changes nothing");
+    }
+    // A refused attach (loop) is never recorded.
+    {
+        const int undoBefore = um.getUndoCount();
+        um.execute(std::make_unique<SetTrackParentCommand>(G, P, pf.tl), pf.tl);
+        CHECK(pf.tl.getTrack(G)->parentTrackId == -1 && um.getUndoCount() == undoBefore,
+              "a loop executed directly is declined (setApplied false), no undo entry");
+    }
+    // Masks: whole-vector swap.
+    {
+        const std::vector<RoamMask> masks = sampleMaskedRoam().masks;
+        auto cmd = std::make_unique<SetTrackMasksCommand>(C, masks, pf.tl);
+        CHECK(cmd->changesAnything(), "setting masks changes something");
+        um.execute(std::move(cmd), pf.tl);
+        CHECK(pf.tl.getTrack(C)->roam.masks == masks, "masks set");
+        CHECK(!SetTrackMasksCommand(C, masks, pf.tl).changesAnything(), "the same masks again change nothing");
+        um.undo(pf.tl);
+        CHECK(pf.tl.getTrack(C)->roam.masks.empty(), "undo removes them");
+        um.redo(pf.tl);
+        CHECK(pf.tl.getTrack(C)->roam.masks == masks, "redo restores them");
+        CHECK(buildLensRoamSnapshot(pf.tl)->counts().masks == 2, "the snapshot sees them");
+    }
+
+    // RemoveTrackCommand: removing P (rotated, under scaled G) detaches C with
+    // keep-on-screen at the tick, in ONE undo step.
+    pf.tl.getTrackMutable(G)->roam.base.scale = 2.0f;
+    pf.tl.getTrackMutable(P)->roam.base.rotationDeg = 90.0f;
+    um.execute(std::make_unique<SetTrackParentCommand>(C, P, pf.tl), pf.tl);
+    TrackInfo other; other.name = "Sibling";
+    const int S = pf.tl.addTrack(other);
+    pf.tl.getTrackMutable(S)->parentTrackId = P;   // a second (unplaced) child
+    const parentmath::Pose before = finalPose(pf.tl, C, 0);
+    const RoamParams cBase = pf.tl.getTrack(C)->roam.base;
+    const int undoBefore = um.getUndoCount();
+    auto rm = std::make_unique<RemoveTrackCommand>(P, pf.tl, 0.0);
+    CHECK(rm->detachedChildCount() == 2, "both children are captured");
+    um.execute(std::move(rm), pf.tl);
+    CHECK(um.getUndoCount() == undoBefore + 1, "one undo entry");
+    CHECK(!pf.tl.getTrack(P) && pf.tl.getTrack(C)->parentTrackId == -1 && pf.tl.getTrack(S)->parentTrackId == -1,
+          "the parent is gone and its children are detached");
+    CHECK(nearD(pf.tl.getTrack(C)->roam.base.offsetY, 1280.0 / 1080.0, 1e-5)
+          && nearD(pf.tl.getTrack(C)->roam.base.scale, 2.0, 1e-7)
+          && nearD(pf.tl.getTrack(C)->roam.base.rotationDeg, 90.0, 1e-5)
+          && samePose(finalPose(pf.tl, C, 0), before),
+          "the detached child keeps its on-screen pose (keep-on-screen base)");
+    CHECK(pf.tl.getTrack(S)->roam.base == RoamParams{}, "an unplaced child keeps its base");
+    um.undo(pf.tl);
+    CHECK(pf.tl.getTrack(P) && pf.tl.getTrack(P)->parentTrackId == G && pf.tl.getTrack(C)->parentTrackId == P
+          && pf.tl.getTrack(S)->parentTrackId == P && pf.tl.getTrack(C)->roam.base == cBase
+          && samePose(finalPose(pf.tl, C, 0), before),
+          "ONE undo restores the parent, its own parent, both children and the child's base");
+    um.redo(pf.tl);
+    CHECK(!pf.tl.getTrack(P) && pf.tl.getTrack(C)->parentTrackId == -1 && samePose(finalPose(pf.tl, C, 0), before),
+          "redo detaches again");
+    um.undo(pf.tl);
+
+    // keepOnScreenTick: a keyed parent, solved at the given tick.
+    pf.tl.getTrackMutable(P)->roam.keys = { roamKey(RoamChannel::OffsetX, 0, 0.0), roamKey(RoamChannel::OffsetX, 3840, 1.0) };
+    const parentmath::Pose at1920 = finalPose(pf.tl, C, 1920);
+    um.execute(std::make_unique<RemoveTrackCommand>(P, pf.tl, 1920.0), pf.tl);
+    CHECK(samePose(finalPose(pf.tl, C, 1920), at1920), "keepOnScreenTick 1920: the pose at that tick is kept");
+    um.undo(pf.tl);
+}
+
+// ─── [M11] persistence: project.json, motionView, schema v9 ──────────────────
+
+static void test_mv_persistence() {
+    std::cout << "[M11] persistence: masks + parent survive save/load; motionView saved only when set; v9\n";
+    ParentFixture pf;
+    buildParentFixture(pf, 2);
+    const int P = pf.ids[0], C = pf.ids[1];
+    pf.tl.getTrackMutable(C)->parentTrackId = P;
+    pf.tl.getTrackMutable(C)->roam.masks = sampleMaskedRoam().masks;
+
+    const fs::path dir = freshDir("motion_view");
+    ProjectManager pm;
+    CHECK(pm.createProject(dir.string(), "motion_view"), "createProject");
+    const json mv = { { "v", 1 }, { "view", "motion" }, { "graph", false },
+                      { "motion", { { "trackRowHeight", 28 }, { "expanded", json::array({ "t:2", "t:2/roam" }) } } } };
+    CHECK(pm.saveProject(pf.tl, json::object(), json(), 1.0f, json(), mv), "saveProject with motionView");
+    const json j = readJson(dir / "project.json");
+    CHECK(j.value("schema_version", 0) >= 9, "schema_version 9 or later");
+    CHECK(j.contains("motionView") && j["motionView"] == mv, "motionView written as given");
+    bool parentKey = false, hasMasks = false, othersClean = true;
+    for (const auto& t : j["tracks"]) {
+        if (t.value("id", -1) == C) { parentKey = t.value("parentTrackId", -1) == P; hasMasks = t["roam"].contains("masks"); }
+        else if (t.contains("parentTrackId") || t["roam"].contains("masks")) othersClean = false;
+    }
+    CHECK(parentKey && hasMasks && othersClean, "only the child writes parentTrackId / masks");
+
+    ProjectManager pm2;
+    auto loaded = pm2.loadProject(dir.string());
+    CHECK(loaded.has_value() && pm2.getLoadedMotionViewState() == mv, "motionView stashed on load");
+    if (loaded) {
+        const TrackInfo* lc = loaded->getTrack(C);
+        CHECK(lc && lc->parentTrackId == P && lc->roam.masks == sampleMaskedRoam().masks,
+              "parent and masks survive save / load");
+        auto snap = buildLensRoamSnapshot(*loaded);
+        MaskFrame fr;
+        CHECK(snap->parentOf(C) == P && snap->masksAt(C, 0, fr) && fr.count == 2, "the loaded snapshot resolves them");
+    }
+
+    // Save without motionView: no key; the same ProjectManager loading it
+    // reports none (never the previous project's).
+    CHECK(pm.saveProject(pf.tl), "saveProject without motionView");
+    const json j2 = readJson(dir / "project.json");
+    CHECK(!j2.contains("motionView"), "no motionView key when none is set");
+    CHECK(pm.saveProject(pf.tl, json::object(), json(), 1.0f, json(), json::object()) && !readJson(dir / "project.json").contains("motionView"),
+          "an empty object is not written either");
+    auto again = pm2.loadProject(dir.string());
+    CHECK(again.has_value() && pm2.getLoadedMotionViewState().is_null(), "a project without the key loads null state");
+    pm2.resetToBlank();
+    CHECK(pm2.getLoadedMotionViewState().is_null(), "resetToBlank clears it");
+
+    // A project with no Motion view features re-saves with neither key.
+    ParentFixture plain;
+    buildParentFixture(plain, 2);
+    const fs::path d2 = freshDir("motion_view_plain");
+    ProjectManager pm3;
+    CHECK(pm3.createProject(d2.string(), "plain") && pm3.saveProject(plain.tl), "save plain");
+    const std::string text = [&] { std::ifstream in(d2 / "project.json"); return std::string(std::istreambuf_iterator<char>(in), {}); }();
+    CHECK(text.find("parentTrackId") == std::string::npos && text.find("\"masks\"") == std::string::npos
+          && text.find("motionView") == std::string::npos,
+          "a project without Motion view features writes none of the new keys");
+}
+
 int main() {
     std::cout << "[LensRoam] Lens + Roam P1 tests\n";
     test_defaults();
@@ -2795,6 +4108,19 @@ int main() {
     test_p9_batch_note_keys();
     test_p10_roam_keys_command();
     test_p11_sweep();
+    test_mv_schema_matches_enums();
+    test_mv_mask_json();
+    test_mv_tolerant_load();
+    test_mv_strict_parse();
+    test_mv_masks_at();
+    test_mv_snapshot_parent();
+    test_mv_parent_math();
+    test_mv_validate_parent();
+    test_mv_keep_on_screen();
+    test_scale_xy_and_crop();
+    test_fx_keys();
+    test_mv_commands();
+    test_mv_persistence();
     std::cout << "[LensRoam] " << g_pass << " passed, " << g_fail << " failed\n";
     return g_fail == 0 ? 0 : 1;
 }

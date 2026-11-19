@@ -187,6 +187,8 @@ describe('lane scale', () => {
     expect(roamLaneRange('rotationDeg', [], BASE).max).toBe(45)
     expect(roamLaneRange('rotationDeg', [K('rotationDeg', 0, 100)], BASE).max).toBe(180)
     expect(roamLaneRange('rotationDeg', [K('rotationDeg', 0, -500)], BASE).max).toBe(720)
+    // past the last step the lane keeps doubling, so any key fits
+    expect(roamLaneRange('rotationDeg', [K('rotationDeg', 0, 2000)], BASE).max).toBe(2880)
   })
 
   it('scale: log, in octave steps around 1, always containing 1 and every key', () => {
@@ -197,14 +199,17 @@ describe('lane scale', () => {
     expect(r.max).toBeGreaterThanOrEqual(5)
   })
 
-  it('value <-> y round-trips and clamps to the lane', () => {
+  it('value <-> y round-trips; past the lane edge it extrapolates up to what a key may hold', () => {
     const inner = { top: 10, height: 40 }
     for (const [ch, range, v] of [['offsetX', { min: -2, max: 2, log: false }, 0.75], ['scale', { min: 0.25, max: 4, log: true }, 2]]) {
       const y = laneValueToY(range, inner, v)
       expect(laneYToValue(range, inner, y, ch)).toBeCloseTo(v, 6)
     }
-    expect(laneYToValue({ min: -2, max: 2, log: false }, inner, -999, 'offsetX')).toBe(2)
-    expect(laneYToValue({ min: -2, max: 2, log: false }, inner, 999, 'offsetX')).toBe(-2)
+    // offsets keep their eight-cell ceiling
+    expect(laneYToValue({ min: -2, max: 2, log: false }, inner, -999, 'offsetX')).toBe(8)
+    expect(laneYToValue({ min: -2, max: 2, log: false }, inner, 999, 'offsetX')).toBe(-8)
+    // rotation has none: a drag above the lane keeps turning (a 40 px lane over +-45 deg)
+    expect(laneYToValue({ min: -45, max: 45, log: false }, inner, 10 - 40, 'rotationDeg')).toBeCloseTo(135, 6)
     // the top of the lane is the maximum
     expect(laneValueToY({ min: -2, max: 2, log: false }, inner, 2)).toBe(10)
   })
