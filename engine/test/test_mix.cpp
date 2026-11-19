@@ -309,6 +309,7 @@ static juce::AudioBuffer<float> renderTrimmedRange(MixEngine& engine, Transport&
 
         juce::AudioBuffer<float> block(2, thisBlockSize);
         block.clear();
+        engine.refreshTimelineSnapshot();   // the bridge publishes after every edit
         engine.processBlock(block, thisBlockSize, transport);
 
         const int discardThisBlock = static_cast<int>(
@@ -390,6 +391,7 @@ static juce::AudioBuffer<float> renderRawLivePreview(MixEngine& engine,
         const int n = std::min(blockSize, outputSamples - written);
         juce::AudioBuffer<float> block(2, n);
         block.clear();
+        engine.refreshTimelineSnapshot();   // the bridge publishes after every edit
         engine.processBlock(block, n, transport);
 
         for (int ch = 0; ch < 2; ++ch)
@@ -434,6 +436,7 @@ static juce::AudioBuffer<float> offlineRender(MixEngine& engine, Transport& tran
         juce::AudioBuffer<float> block(2, n);
         block.clear();
 
+        engine.refreshTimelineSnapshot();   // the bridge publishes after every edit
         engine.processBlock(block, n, transport);
 
         // Copy block into output at position
@@ -455,6 +458,7 @@ static void renderMeterBlock(MixEngine& engine, Transport& transport, int blockS
 
     transport.seekToSample(0);
     transport.play();
+    engine.refreshTimelineSnapshot();   // the bridge publishes after every edit
     engine.processBlock(block, blockSize, transport);
     transport.pause();
 }
@@ -882,6 +886,7 @@ static void testPeakMeters()
 
     juce::AudioBuffer<float> block(2, 512);
     block.clear();
+    engine.refreshTimelineSnapshot();   // the bridge publishes after every edit
     engine.processBlock(block, 512, transport);
 
     float masterL = engine.getMasterPeakL();
@@ -1092,6 +1097,7 @@ static void testPatternStopDoesNotLeakPlaybackSamplers()
 
     juce::AudioBuffer<float> block(2, blockSize);
     block.clear();
+    engine.refreshTimelineSnapshot();   // the bridge publishes after every edit
     engine.processBlock(block, blockSize, transport);
     CHECK(block.getMagnitude(0, 0, blockSize) < 1.0e-6f,
           "muted pattern track should be silent while playing");
@@ -1099,6 +1105,7 @@ static void testPatternStopDoesNotLeakPlaybackSamplers()
 
     transport.pause();
     block.clear();
+    engine.refreshTimelineSnapshot();   // the bridge publishes after every edit
     engine.processBlock(block, blockSize, transport);
     CHECK(block.getMagnitude(0, 0, blockSize) < 1.0e-6f,
           "first stopped block must not leak playback samplers around mute/effects");
@@ -1111,6 +1118,7 @@ static void testPatternStopDoesNotLeakPlaybackSamplers()
     {
         previewSampler->noteOn(60, 1.0f);
         block.clear();
+        engine.refreshTimelineSnapshot();   // the bridge publishes after every edit
         engine.processBlock(block, blockSize, transport);
         CHECK(block.getMagnitude(0, 0, blockSize) > 1.0e-3f,
               "dedicated note preview should remain audible while stopped");
@@ -1473,6 +1481,7 @@ static void testTrackPdcTwoTrackImpulseAlignment()
     firstBlock.clear();
     transport.seekToSample(0);
     transport.play();
+    engine.refreshTimelineSnapshot();   // the bridge publishes after every edit
     engine.processBlock(firstBlock, blockSize, transport);
     transport.pause();
 
@@ -2313,6 +2322,7 @@ static bool processRealtimeDiagnosticBlocks(MixEngine& engine, Transport& transp
     {
         juce::AudioBuffer<float> buffer(2, blockSize);
         buffer.clear();
+        engine.refreshTimelineSnapshot();   // the bridge publishes after every edit
         engine.processBlock(buffer, blockSize, transport);
         finite = finite && allSamplesFinite(buffer);
         transport.advance(blockSize);

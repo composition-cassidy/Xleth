@@ -1946,16 +1946,127 @@ bool MixEngine::isPluginEditorOpen(int trackId, int nodeId) const
 void MixEngine::setTimeline(const Timeline* timeline)
 {
     timeline_ = timeline;
-    // Force refreshTrackSnapshotIfNeeded()/findActiveClips() to rebuild on the
-    // next block: a new Timeline instance's generation counters start back at
-    // 0 and could otherwise coincidentally match the old instance's
-    // last-seen value, leaving the caches pointing at the PREVIOUS
-    // Timeline's tracks/clips.
-    cachedTrackTopologyGeneration_ = ~static_cast<uint64_t>(0);
-    cachedClipTopologyGeneration_  = ~static_cast<uint64_t>(0);
-    clipScanLastBufferEnd_ = -1;
+    // A new snapshot serial makes findActiveClips rescan from scratch.
+    refreshTimelineSnapshot();
     syncTrackSlotsFromTimeline(false);
 }
+
+// ── Published timeline (main thread builds, audio thread reads) ─────────────
+
+const Pattern* MixEngine::TimelineSnapshot::findPattern(int id) const noexcept
+{
+    const auto it = std::lower_bound(patterns->begin(), patterns->end(), id,
+        [](const Pattern& p, int v) { return p.id < v; });
+    return (it != patterns->end() && it->id == id) ? &*it : nullptr;
+}
+
+const std::vector<double>* MixEngine::TimelineSnapshot::findSyllableStarts(int regionId) const noexcept
+{
+    const auto it = std::lower_bound(syllableStarts->begin(), syllableStarts->end(), regionId,
+        [](const auto& e, int v) { return e.first < v; });
+    return (it != syllableStarts->end() && it->first == regionId) ? &it->second : nullptr;
+}
+
+namespace {
+bool clipStartsBefore(const Clip* a, const Clip* b)
+{
+    return a->position.ticks != b->position.ticks ? a->position.ticks < b->position.ticks
+                                                  : a->id < b->id;
+}
+} // namespace
+
+std::shared_ptr<MixEngine::TimelineSnapshot> MixEngine::buildTimelineSnapshot() const
+{
+    const Timeline& tl = *timeline_;
+    auto snap = std::make_shared<TimelineSnapshot>();
+
+    auto tracks = std::make_shared<std::vector<TrackInfo>>();
+    for (const TrackInfo* t : tl.getAllTracks())
+        if (t != nullptr) tracks->push_back(*t);
+    snap->tracks = std::move(tracks);
+
+    std::map<int, std::vector<Clip>> byTrack;
+    for (const Clip* c : tl.getAllClips())
+        if (c != nullptr) byTrack[c->trackId].push_back(*c);
+    snap->clips.reserve(tl.getAllClips().size());
+    for (auto& [trackId, list] : byTrack)
+    {
+        auto part = std::make_shared<const std::vector<Clip>>(std::move(list));
+        for (const Clip& c : *part) snap->clips.push_back(&c);
+        snap->clipTrackIds.push_back(trackId);
+        snap->clipTracks.push_back(std::move(part));
+    }
+    std::sort(snap->clips.begin(), snap->clips.end(), clipStartsBefore);
+
+    auto blocks = std::make_shared<std::vector<PatternBlock>>();
+    blocks->reserve(tl.getPatternBlockMap().size());
+    for (const auto& [id, b] : tl.getPatternBlockMap()) blocks->push_back(b);
+    snap->blocks = std::move(blocks);
+
+    auto patterns = std::make_shared<std::vector<Pattern>>();
+    patterns->reserve(tl.getAllPatterns().size());
+    for (const auto& [id, p] : tl.getAllPatterns()) patterns->push_back(p);
+    snap->patterns = std::move(patterns);
+
+    auto syllables = std::make_shared<std::vector<std::pair<int, std::vector<double>>>>();
+    for (const SampleRegion* r : tl.getAllRegions())   // id order
+    {
+        if (r == nullptr || r->syllables.empty()) continue;
+        std::vector<double> starts;
+        starts.reserve(r->syllables.size());
+        for (const auto& syl : r->syllables) starts.push_back(syl.startTime);
+        syllables->emplace_back(r->id, std::move(starts));
+    }
+    snap->syllableStarts = std::move(syllables);
+    return snap;
+}
+
+void MixEngine::refreshTimelineSnapshot()
+{
+    if (timeline_ == nullptr)
+    {
+        timelineSnapshot_.publish(nullptr);
+        return;
+    }
+    auto snap = buildTimelineSnapshot();
+    snap->serial = ++timelineSnapshotSerial_;
+    timelineSnapshot_.publish(std::move(snap));
+}
+
+void MixEngine::refreshTimelineSnapshotForClip(int clipId)
+{
+    const auto current = timelineSnapshot_.load();
+    const Clip* live = timeline_ != nullptr ? timeline_->getClip(clipId) : nullptr;
+    if (!current || live == nullptr) { refreshTimelineSnapshot(); return; }
+
+    const auto t = std::lower_bound(current->clipTrackIds.begin(), current->clipTrackIds.end(),
+                                    live->trackId);
+    const size_t part = static_cast<size_t>(t - current->clipTrackIds.begin());
+    if (t == current->clipTrackIds.end() || *t != live->trackId) { refreshTimelineSnapshot(); return; }
+    const std::vector<Clip>& oldClips = *current->clipTracks[part];
+    const auto old = std::find_if(oldClips.begin(), oldClips.end(),
+                                  [&](const Clip& c) { return c.id == clipId; });
+    // Placement changes move the clip in the start order: not this path.
+    if (old == oldClips.end() || old->position.ticks != live->position.ticks
+        || old->duration.ticks != live->duration.ticks)
+    {
+        refreshTimelineSnapshot();
+        return;
+    }
+
+    auto copy = std::make_shared<std::vector<Clip>>(oldClips);
+    (*copy)[static_cast<size_t>(old - oldClips.begin())] = *live;
+
+    auto snap = std::make_shared<TimelineSnapshot>(*current);
+    const Clip* oldBase = oldClips.data();
+    const Clip* oldEnd  = oldBase + oldClips.size();
+    for (const Clip*& c : snap->clips)                 // same order, new addresses
+        if (c >= oldBase && c < oldEnd) c = copy->data() + (c - oldBase);
+    snap->clipTracks[part] = std::move(copy);
+    snap->serial = ++timelineSnapshotSerial_;
+    timelineSnapshot_.publish(std::move(snap));
+}
+
 
 void MixEngine::setSampleBank(const SampleBank* bank)
 {
@@ -2375,6 +2486,7 @@ nlohmann::json MixEngine::describeSamplers() const
 void MixEngine::reclaimRetiredSamplers()
 {
     samplerSet_.prune();
+    timelineSnapshot_.prune();
 }
 
 void MixEngine::loadSamplerForTrackRegion(int trackId, int regionId)
@@ -4819,17 +4931,14 @@ void MixEngine::evaluateLfoModulation(int64_t positionSamples,
     // cannot be expressed by omitting structure the way Envelope's gate
     // timeline can. This mirrors buildEnvelopeModulationSnapshot's own use
     // of xleth::buildRoutePlan, just moved from PREPARE time to EVALUATE
-    // time, once per block. The track list comes from the same generation-
-    // gated snapshot processBlock uses — timeline_->getAllTracks() builds and
-    // sorts a fresh vector, which would allocate on every callback.
-    refreshTrackSnapshotIfNeeded();
+    // time, once per block. The track list is the block's pinned snapshot,
+    // the same one processBlock mixes from.
     xleth::RoutePlanSlotInput routeInputs[xleth::RoutePlan::kMaxSlots];
     int slotCount = 0;
-    if (timeline_ != nullptr) {
-        for (int ti = 0; ti < cachedTrackSnapshotCount_; ++ti) {
-            const auto* t = cachedTrackSnapshot_[ti];
-            if (t == nullptr || slotCount >= xleth::RoutePlan::kMaxSlots) continue;
-            xleth::fillRoutePlanSlotInput(routeInputs[slotCount], *t);
+    if (rtTimeline_ != nullptr) {
+        for (const TrackInfo& t : *rtTimeline_->tracks) {
+            if (slotCount >= xleth::RoutePlan::kMaxSlots) break;
+            xleth::fillRoutePlanSlotInput(routeInputs[slotCount], t);
             ++slotCount;
         }
     }
@@ -6045,64 +6154,12 @@ inline int trackSlotTableFind(const TrackSlotEntry* table, int trackId)
 
 } // namespace
 
-// ── Per-block track snapshot cache (Finding 2b) ─────────────────────────────
-// Rebuilds cachedTrackSnapshot_ from timeline_->getAllTracks() only when the
-// track topology has actually changed since the last call. Audio-thread only:
-// the occasional rebuild (on a real track add/remove/reorder) is the sole
-// place this allocates — every other block is a relaxed load and compare.
-void MixEngine::refreshTrackSnapshotIfNeeded()
-{
-    if (timeline_ == nullptr)
-    {
-        cachedTrackSnapshotCount_ = 0;
-        return;
-    }
-
-    const uint64_t generation = timeline_->getTrackTopologyGeneration();
-    if (generation == cachedTrackTopologyGeneration_) return;
-
-    const auto allTracks = timeline_->getAllTracks();
-    int n = 0;
-    for (const auto* t : allTracks)
-    {
-        if (t == nullptr || n >= kMaxTracks) continue;
-        cachedTrackSnapshot_[n++] = t;
-    }
-    cachedTrackSnapshotCount_       = n;
-    cachedTrackTopologyGeneration_  = generation;
-}
-
-// ── Sorted-by-start clip snapshot (Finding 2c) ──────────────────────────────
-// Rebuilt only when Timeline's clip topology generation has advanced.
-// Ordering by tick position matches ordering by sample position for any
-// fixed bpm (sample = ticks * a positive per-bpm scale factor), so this sort
-// stays valid across a live tempo change — no re-sort needed when bpm alone
-// moves.
-void MixEngine::rebuildSortedClipsByStart()
-{
-    sortedClipsByStart_.clear();
-    if (timeline_ == nullptr) return;
-
-    const auto allClips = timeline_->getAllClips();
-    sortedClipsByStart_.reserve(allClips.size());
-    for (const Clip* c : allClips)
-        if (c != nullptr)
-            sortedClipsByStart_.push_back(c);
-
-    std::stable_sort(sortedClipsByStart_.begin(), sortedClipsByStart_.end(),
-        [](const Clip* a, const Clip* b) {
-            if (a->position.ticks != b->position.ticks)
-                return a->position.ticks < b->position.ticks;
-            return a->id < b->id;
-        });
-}
-
 // ── Find active clips ────────────────────────────────────────────────────────
 
 void MixEngine::findActiveClips(int64_t bufferStart, int64_t bufferEnd,
                                 double bpm, double sampleRate)
 {
-    if (timeline_ == nullptr)
+    if (rtTimeline_ == nullptr)
     {
         activeClips_.clear();
         clipScanCursor_ = 0;
@@ -6120,18 +6177,16 @@ void MixEngine::findActiveClips(int64_t bufferStart, int64_t bufferEnd,
     // publishing mid-block cannot change or free what we are reading.
     const auto regionMap = loadRegionSampleMap();
 
-    const uint64_t clipGeneration = timeline_->getClipTopologyGeneration();
-    const bool topologyChanged = (clipGeneration != cachedClipTopologyGeneration_);
-    if (topologyChanged)
-    {
-        rebuildSortedClipsByStart();
-        cachedClipTopologyGeneration_ = clipGeneration;
-    }
+    // A new snapshot (any edit) can move or delete the very clips
+    // activeClips_ points at, in a snapshot that may already be freed.
+    const std::vector<const Clip*>& clips = rtTimeline_->clips;
+    const bool topologyChanged = (rtTimeline_->serial != clipScanSerial_);
+    clipScanSerial_ = rtTimeline_->serial;
 
     // A seek — or a topology change, which can move clips arbitrarily far
     // from where the cursor left off, or delete the very clips activeClips_
     // is still holding pointers to — forces a full rebuild. Everything below
-    // this point re-derives from sortedClipsByStart_/live clip state only;
+    // this point re-derives from rtTimeline_->clips only;
     // stale entries left over in activeClips_ are never dereferenced.
     const bool isSeek = topologyChanged
                        || clipScanLastBufferEnd_ < 0
@@ -6163,12 +6218,9 @@ void MixEngine::findActiveClips(int64_t bufferStart, int64_t bufferEnd,
         int64_t regionOffset = 0;
         if (clip->syllableIndex >= 0)
         {
-            const auto* region = timeline_->getRegion(clip->regionId);
-            if (region != nullptr && clip->syllableIndex < static_cast<int>(region->syllables.size()))
-            {
-                const auto& syl = region->syllables[clip->syllableIndex];
-                regionOffset = static_cast<int64_t>(syl.startTime * sampleRate);
-            }
+            const auto* starts = rtTimeline_->findSyllableStarts(clip->regionId);
+            if (starts != nullptr && clip->syllableIndex < static_cast<int>(starts->size()))
+                regionOffset = static_cast<int64_t>((*starts)[clip->syllableIndex] * sampleRate);
         }
 
         if (clip->regionOffset.ticks > 0)
@@ -6180,15 +6232,15 @@ void MixEngine::findActiveClips(int64_t bufferStart, int64_t bufferEnd,
     if (isSeek)
     {
         activeClips_.clear();
-        for (const Clip* clip : sortedClipsByStart_)
+        for (const Clip* clip : clips)
             tryActivate(clip);
 
         // Position the cursor just past every clip whose start sample is
         // already < bufferEnd, so the next (sequential) call resumes here
         // instead of re-scanning from the top.
         clipScanCursor_ = 0;
-        while (clipScanCursor_ < static_cast<int>(sortedClipsByStart_.size())
-               && sortedClipsByStart_[clipScanCursor_]->position.toSamples(bpm, sampleRate) < bufferEnd)
+        while (clipScanCursor_ < static_cast<int>(clips.size())
+               && clips[clipScanCursor_]->position.toSamples(bpm, sampleRate) < bufferEnd)
             ++clipScanCursor_;
     }
     else
@@ -6205,9 +6257,9 @@ void MixEngine::findActiveClips(int64_t bufferStart, int64_t bufferEnd,
             tryActivate(ac.clip);
 
         // Advance the cursor, activating clips newly entering the window.
-        while (clipScanCursor_ < static_cast<int>(sortedClipsByStart_.size()))
+        while (clipScanCursor_ < static_cast<int>(clips.size()))
         {
-            const Clip* clip = sortedClipsByStart_[clipScanCursor_];
+            const Clip* clip = clips[clipScanCursor_];
             if (clip->position.toSamples(bpm, sampleRate) >= bufferEnd)
                 break;
             ++clipScanCursor_;
@@ -6236,13 +6288,10 @@ void MixEngine::findActivePatternBlocks(int64_t bufferStart, int64_t bufferEnd,
     jassert(prevActiveBlocks_.size() < 64);
 #endif
 
-    if (timeline_ != nullptr)
+    if (rtTimeline_ != nullptr)
     {
-        // Walk the map directly: getAllPatternBlocks() builds a fresh vector,
-        // which would be a heap allocation on every callback.
-        for (const auto& [blockId, blockRef] : timeline_->getPatternBlockMap())
+        for (const PatternBlock& blockRef : *rtTimeline_->blocks)
         {
-            juce::ignoreUnused(blockId);
             const PatternBlock* block = &blockRef;
 
             const int64_t blockStart = block->position.toSamples(bpm, sampleRate);
@@ -6250,7 +6299,7 @@ void MixEngine::findActivePatternBlocks(int64_t bufferStart, int64_t bufferEnd,
 
             if (blockEnd <= bufferStart || blockStart >= bufferEnd) continue;
 
-            const Pattern* pattern = timeline_->getPattern(block->patternId);
+            const Pattern* pattern = rtTimeline_->findPattern(block->patternId);
             if (pattern == nullptr) continue;
             if (pattern->regionId < 0) continue;
 
@@ -6265,7 +6314,7 @@ void MixEngine::findActivePatternBlocks(int64_t bufferStart, int64_t bufferEnd,
             Sampler* sampler = sit->second.get();
             if (sampler == nullptr || !sampler->hasSample()) continue;
 
-            activeBlocks_.push_back({block, pattern, sampler, blockStart, blockEnd});
+            activeBlocks_.push_back({block, pattern, sampler, blockStart, blockEnd, block->id});
         }
     }
 
@@ -6277,13 +6326,15 @@ void MixEngine::findActivePatternBlocks(int64_t bufferStart, int64_t bufferEnd,
     // block and can strand. This diff identifies blocks that were active
     // last buffer but aren't anymore, and if the sampler is still alive it
     // releases only the voices that spawned inside the dropped block.
+    // Matched by id: an edit republishes every block at a new address, and
+    // prev.block may point into a snapshot that is already freed.
     for (const auto& prev : prevActiveBlocks_)
     {
-        if (prev.block == nullptr || prev.sampler == nullptr) continue;
+        if (prev.blockId < 0 || prev.sampler == nullptr) continue;
 
         bool stillActive = false;
         for (const auto& cur : activeBlocks_) {
-            if (cur.block == prev.block) { stillActive = true; break; }
+            if (cur.blockId == prev.blockId) { stillActive = true; break; }
         }
         if (stillActive) continue;
 
@@ -6605,7 +6656,7 @@ void MixEngine::runPatternAudition(int numSamples, double bpm, double sampleRate
     const uint32_t seq = auditionStartSeq_.load(std::memory_order_acquire);
     const bool loop = auditionLoop_.load(std::memory_order_relaxed);
 
-    const Pattern* pattern = timeline_ != nullptr ? timeline_->getPattern(requested) : nullptr;
+    const Pattern* pattern = rtTimeline_ != nullptr ? rtTimeline_->findPattern(requested) : nullptr;
     if (pattern == nullptr || pattern->regionId < 0 || pattern->length.ticks <= 0)
     {
         if (auditionRunningPatternId_ >= 0) haltPatternAudition();
@@ -6747,8 +6798,20 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     if (numSamplerEvents > 0 || samplerPanic)
         applySamplerEvents(samplerEvents, numSamplerEvents, samplerPanic);
 
+    // The timeline, pinned the same way: every Clip / PatternBlock / Pattern /
+    // TrackInfo pointer taken below (and by the worker-pool helpers, which
+    // finish before this returns) stays alive until the block ends.
+    struct TimelinePin
+    {
+        MixEngine& engine;
+        xleth::util::RtPublished<TimelineSnapshot>::Ptr held;
+        explicit TimelinePin(MixEngine& e) : engine(e), held(e.timelineSnapshot_.load())
+        { engine.rtTimeline_ = held.get(); }
+        ~TimelinePin() { engine.rtTimeline_ = nullptr; }
+    } timelinePin { *this };
+
     // Early out: no timeline
-    if (timeline_ == nullptr)
+    if (rtTimeline_ == nullptr)
     {
         masterPeakL_.store(0.0f, std::memory_order_relaxed);
         masterPeakR_.store(0.0f, std::memory_order_relaxed);
@@ -6935,13 +6998,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     // per-block RoutePlan (route-aware closure, built below from this same track
     // list), so no separate anySolo scan is needed here.
     //
-    // Finding 2b: refreshTrackSnapshotIfNeeded() mirrors getAllTracks() into
-    // cachedTrackSnapshot_ but only rebuilds it (and only then pays getAllTracks()'s
-    // allocation + stable_sort) when Timeline's track topology generation has
-    // actually advanced since the last block — i.e. on an add/remove/reorder,
-    // not on every callback.
-    refreshTrackSnapshotIfNeeded();
-
+    // Tracks come from the pinned snapshot, in getAllTracks() order.
     // Build a set of track IDs that have active clips (to know which buffers to clear).
     // Track ids are not small dense integers (see TrackSlotEntry above), so slot
     // lookup goes through the hashed fixed-capacity table built below.
@@ -6958,10 +7015,10 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     int numTrackSlots = 0;
     TrackSlotEntry trackIdToSlot[kTrackSlotTableCapacity];
 
-    for (int ti = 0; ti < cachedTrackSnapshotCount_; ++ti)
+    for (const TrackInfo& track : *rtTimeline_->tracks)
     {
-        const auto* t = cachedTrackSnapshot_[ti];
-        if (t == nullptr || numTrackSlots >= kMaxTracks) continue;
+        const TrackInfo* t = &track;
+        if (numTrackSlots >= kMaxTracks) break;
         const int slot = numTrackSlots++;
         trackSlots[slot] = {slot, t, false, false};
         trackSlotTableInsert(trackIdToSlot, t->id, slot);
@@ -7875,7 +7932,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     // target chains). The resolved plan adds source→target processing-order
     // constraints and the per-target key taps; the audible output plan and
     // junction PDC above are untouched. A missed lock keeps the passthrough plan.
-    if (chainsLocked && timeline_ != nullptr)
+    if (chainsLocked)
     {
         xleth::SidechainTapInput scTaps[xleth::SidechainPlan::kMaxTaps];
         int scTapCount = 0;
@@ -8616,12 +8673,11 @@ void MixEngine::maybeLogDebug(int numSamples, double sampleRate)
         debugLog_.push(entry);
     }
 
-    // Warn on unmapped regions. sortedClipsByStart_ mirrors every clip and was
-    // refreshed by findActiveClips() this block; getAllClips() would allocate.
-    if (timeline_ != nullptr)
+    // Warn on unmapped regions, from the block's pinned snapshot.
+    if (rtTimeline_ != nullptr)
     {
         const auto regionMap = loadRegionSampleMap();
-        for (const auto* clip : sortedClipsByStart_)
+        for (const Clip* clip : rtTimeline_->clips)
         {
             if (regionMap->find(clip->regionId) == regionMap->end())
             {

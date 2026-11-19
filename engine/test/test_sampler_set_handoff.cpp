@@ -204,6 +204,7 @@ struct Rig
     {
         juce::AudioBuffer<float> buf(2, kBlock);
         buf.clear();
+        engine->refreshTimelineSnapshot();   // the bridge publishes after every edit
         engine->processBlock(buf, kBlock, transport);
         transport.advance(kBlock);
         float peak = 0.0f;

@@ -283,6 +283,17 @@ struct ClipControlEditSession {
 std::map<uint32_t, ClipControlEditSession> g_clipControlEdits;
 uint32_t g_nextClipControlEditSessionId = 1;
 
+// The drag preview writes the live model outside UndoManager, so it publishes
+// the audio thread's timeline copy itself (see MixEngine::refreshTimelineSnapshot).
+// While an export owns MixEngine the live model is not what it plays.
+extern bool g_mixOnExportTimeline;   // defined with the export state below
+static void publishLiveTimelineEdit(int onlyClipId = -1)
+{
+    if (!audioEngine || g_mixOnExportTimeline) return;
+    if (onlyClipId >= 0) audioEngine->getMixEngine().refreshTimelineSnapshotForClip(onlyClipId);
+    else                 audioEngine->getMixEngine().refreshTimelineSnapshot();
+}
+
 // Roll one session's clip back to the values captured when it opened.
 static void restoreClipControlEditSession(const ClipControlEditSession& edit)
 {
@@ -291,6 +302,7 @@ static void restoreClipControlEditSession(const ClipControlEditSession& edit)
         clip->velocity = edit.initialVelocity;
         clip->fadeInPercent = edit.initialFadeInPercent;
         clip->fadeOutPercent = edit.initialFadeOutPercent;
+        publishLiveTimelineEdit(edit.clipId);
     }
 }
 
@@ -5975,6 +5987,9 @@ JsonApi::Value Initialize(const JsonApi::CallbackInfo& info)
             // (restoreLiveTimelineAfterExport) rebuilds all three from the live
             // timeline once the export ends.
             const bool exportOwnsMix = g_mixOnExportTimeline;
+            // The audio thread plays from a published copy of the timeline,
+            // never the live one: without this the edit is not heard.
+            if (ae && !exportOwnsMix) ae->getMixEngine().refreshTimelineSnapshot();
             if (ae && !exportOwnsMix) ae->getMixEngine().refreshEnvelopeDefinitions();
             if (ae && !exportOwnsMix) ae->getMixEngine().refreshLfoDefinitions();
             // Automation clips live in the Timeline, so EVERY automation edit —
@@ -9907,6 +9922,7 @@ JsonApi::Value Timeline_SetTrackSendGain(const JsonApi::CallbackInfo& info)
     const int   targetTrackId = info[1].As<JsonApi::Number>().Int32Value();
     const float gain          = info[2].As<JsonApi::Number>().FloatValue();
     auto result = g_timeline->setTrackSendGain(sourceTrackId, targetTrackId, gain);
+    if (result.ok()) publishLiveTimelineEdit();   // a live knob: bypasses UndoManager
     JsonApi::Object ret = JsonApi::Object::New(env);
     ret.Set("ok", JsonApi::Boolean::New(env, result.ok()));
     if (!result.ok())
@@ -11396,6 +11412,7 @@ JsonApi::Value Timeline_PreviewClipControlEdit(const JsonApi::CallbackInfo& info
     JsonApi::Object patch = info[1].As<JsonApi::Object>();
     if (!validateClipControlPatch(env, patch)) return env.Undefined();
     applyClipControlPatch(*clip, patch);
+    publishLiveTimelineEdit(edit->clipId);
     g_previewDirty.store(true);
     return clipToJs(env, *clip);
 }
