@@ -1,4 +1,4 @@
-import { buildAudioUrl } from '../constants/labels.js'
+import { buildAudioUrl, buildMediaServerUrl } from '../constants/labels.js'
 
 // The Browser's one audio preview: a singleton <audio> element, so only one
 // sample sounds at a time. It is the SAME path the sample row's play button has
@@ -49,7 +49,7 @@ export function startPreview({ region, sourceFilePath, mediaPort }) {
   if (!sourceFilePath) return false
 
   const audioUrl = mediaPort
-    ? `http://127.0.0.1:${mediaPort}/media?path=${encodeURIComponent(sourceFilePath)}`
+    ? buildMediaServerUrl(mediaPort, sourceFilePath)
     : buildAudioUrl(sourceFilePath)
   const audio = new Audio(audioUrl)
   previewAudio = audio

@@ -85,9 +85,16 @@ const log = consoleLog.wrapMainLogger(writeLogLine);
 const workerBridge = require('./electron-main/worker');
 const mediaServer = require('./electron-main/media-server');
 workerBridge.init({ log });
-mediaServer.init({ log });
 const { startWorker, callWorker, isWorkerReady, getAddonError, setAddonError, killWorker } = workerBridge;
-const { startMediaServer, getMediaPort } = mediaServer;
+mediaServer.init({
+  log,
+  // The media server may only read files under the open project folder and the folders of its sources.
+  getRoots: async () => {
+    const [info, sources] = await Promise.all([callWorker('project_getInfo'), callWorker('timeline_getSources')]);
+    return [info && info.projectDir, ...(sources || []).map((s) => s && s.filePath && path.dirname(s.filePath))];
+  },
+});
+const { startMediaServer, getMediaPort, getMediaToken } = mediaServer;
 
 // ── Extracted main-process persistence stores + autosave (S5 Stage 2) ────────
 // File-backed stores moved verbatim to ui/electron-main/: user settings +
@@ -2436,6 +2443,8 @@ ipcMain.handle('xleth:shell:openPath', async (_, filePath) => {
 // ── Media server port (for <video> elements) ──────────────────────────────────
 
 ipcMain.handle('xleth:getMediaPort', () => getMediaPort());
+// Read synchronously by preload so media URLs can be built synchronously.
+ipcMain.on('xleth:getMediaTokenSync', (event) => { event.returnValue = getMediaToken(); });
 
 // ── Window controls (frameless title bar) ─────────────────────────────────────
 

@@ -1,5 +1,5 @@
 import { memo, useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react'
-import { labelColor, labelHexColor, buildAudioUrl, formatDuration, midiToNoteName } from '../constants/labels.js'
+import { labelColor, labelHexColor, buildAudioUrl, buildMediaServerUrl, formatDuration, midiToNoteName } from '../constants/labels.js'
 import { peekStill, requestStill, stillKeyFor } from './sampleStills.js'
 import { iconComponent } from '../ui-kit/icons'
 
@@ -136,7 +136,7 @@ function SampleThumbnail({
 
   const videoUrl = useMemo(() => {
     if (!isVideo || !sourceFilePath || !mediaPort) return null
-    return `http://127.0.0.1:${mediaPort}/media?path=${encodeURIComponent(sourceFilePath)}`
+    return buildMediaServerUrl(mediaPort, sourceFilePath)
   }, [isVideo, sourceFilePath, mediaPort])
 
   useEffect(() => {
