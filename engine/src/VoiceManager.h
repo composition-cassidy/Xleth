@@ -26,8 +26,6 @@ public:
     void processBlock(juce::AudioBuffer<float>& outputBuffer,
                       const SampleBank&         sampleBank);
 
-    int getActiveVoiceCount() const;
-
 private:
     std::vector<Voice> voices_;
     int                maxVoices_;

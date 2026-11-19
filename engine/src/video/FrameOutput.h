@@ -6,8 +6,6 @@
 #include <string>
 #include <vector>
 
-struct SwsContext;  // forward-declare (libswscale)
-
 // ─── FrameOutput ─────────────────────────────────────────────────────────────
 // Double-buffered RGBA frame output for zero-copy delivery to JS/Electron.
 //
@@ -58,15 +56,6 @@ public:
     bool isInitialized() const { return width_ > 0 && height_ > 0; }
 
     // ── Writer API (video thread only) ───────────────────────────────────────
-
-    // Convert a YUV420P frame to RGBA and write to back buffer, then swap.
-    void writeFrameYUV(const uint8_t* yPlane, const uint8_t* uPlane, const uint8_t* vPlane,
-                       int yStride, int uStride, int vStride,
-                       int srcWidth, int srcHeight);
-
-    // Write pre-composed RGBA data to back buffer, then swap.
-    // size must equal getBufferSize().
-    void writeFrameRGBA(const uint8_t* rgba, size_t size);
 
     // Get the back buffer pointer for manual compositing.
     // Call swapBuffers() after writing.
@@ -126,11 +115,6 @@ private:
     // Pointer to the atomic index within data_ (at offset 2*bufferSize).
     // Aligned to 4 bytes since bufferSize = W*H*4 is always 4-byte aligned.
     std::atomic<int32_t>* indexPtr_ = nullptr;
-
-    // libswscale context for YUV→RGBA conversion (lazily created)
-    SwsContext* swsCtx_  = nullptr;
-    int         lastSrcW_ = 0;
-    int         lastSrcH_ = 0;
 
     int bufferSize() const { return width_ * height_ * 4; }
 };

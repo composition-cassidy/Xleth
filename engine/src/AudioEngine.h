@@ -32,7 +32,7 @@ public:
                                          const juce::AudioIODeviceCallbackContext& context) override;
     void audioDeviceStopped() override;
 
-    bool initialize(bool recordToFile = false);
+    bool initialize();
     void shutdown();
 
     // Connect the sample bank. Call from main thread before playback starts.
@@ -146,7 +146,6 @@ public:
     // notification, and directly by tests.
     void notifySystemResume() { resumeFromSleepPending_.store(true, std::memory_order_release); }
 
-    bool   analyzeRecording(const juce::File& wavFile) const;
     double getSampleRate()  const { return sampleRate_; }
     int    getBufferSize()  const { return bufferSize_; }
 
@@ -256,10 +255,6 @@ private:
     MixEngine                mixEngine_;
     SourcePlayer             sourcePlayer_;
     xleth::Metronome         metronome_;
-
-    juce::TimeSliceThread                                    writerThread_ { "WavWriter" };
-    std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> wavWriter_;
-    juce::File                                               recordingFile_;
 
     double sampleRate_  = 44100.0;
     int    bufferSize_  = 256;

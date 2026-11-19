@@ -200,7 +200,6 @@ public:
     void recordTimingFromAudioThread(const AudioTelemetryTimingSample& sample) noexcept;
     void incrementChainLockMiss() noexcept;
     void incrementChainSnapshotMissing() noexcept;
-    void incrementMasterChainSkipped() noexcept;
     void incrementTrackChainSkipped(std::uint64_t amount = 1) noexcept;
     void incrementStaleSnapshotReuse() noexcept;
     void incrementGuardedPluginCrashedSkipped() noexcept;
@@ -240,7 +239,6 @@ private:
     void appendCaptureSampleLocked(const AudioTelemetryTimingSample& sample);
     bool popTimingSample(AudioTelemetryTimingSample& sample) noexcept;
     void clearRing() noexcept;
-    static std::uint32_t elapsedNsToUs(std::uint64_t elapsedNs) noexcept;
     static std::uint32_t deadlineUsFor(std::uint32_t blockSize,
                                        std::uint64_t sampleRateMilliHz) noexcept;
 

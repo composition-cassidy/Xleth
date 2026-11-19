@@ -5873,7 +5873,7 @@ JsonApi::Value Initialize(const JsonApi::CallbackInfo& info)
     audioEngine = std::make_unique<AudioEngine>();
     audioEngine->setSampleBank(sampleBank.get());
 
-    if (!audioEngine->initialize(false)) {
+    if (!audioEngine->initialize()) {
         audioEngine.reset();
         sampleBank.reset();
         juceInit.reset();

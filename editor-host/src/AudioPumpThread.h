@@ -40,19 +40,11 @@ public:
         if (thread_.joinable()) thread_.join();
     }
 
-    // Message-thread: toggle pump activity based on window visibility. Hooked
-    // for a future throttle; today the pump always runs when visible_ is true.
-    void setVisible(bool visible)
-    {
-        visible_.store(visible, std::memory_order_release);
-    }
-
 private:
     void run();
 
     juce::AudioPluginInstance*      plugin_;
     std::unique_ptr<NamedAudioRing> ring_;
     std::atomic<bool>               stop_   {false};
-    std::atomic<bool>               visible_{true};
-    std::thread                     thread_;
+    std::thread                    thread_;
 };

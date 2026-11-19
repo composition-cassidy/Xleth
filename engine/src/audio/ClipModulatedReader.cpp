@@ -31,20 +31,6 @@ void ClipModulatedReader::resetAllStates() noexcept
     }
 }
 
-void ClipModulatedReader::resetClipState(int clipId) noexcept
-{
-    auto& s = states_[slotFor(clipId)];
-    s.sourcePosD            = 0.0;
-    s.vibTrimD              = 0.0;
-    s.expectedNextPosInClip = -1;
-    s.prevRate              = 1.0;
-    s.smoothedRate          = 1.0;
-    s.declickRemaining      = 0;
-    s.declickWidth          = 0;
-    s.declickInverting      = false;
-    s.seenThisBlock         = false;
-}
-
 void ClipModulatedReader::markClipSeen(int clipId) noexcept
 {
     states_[slotFor(clipId)].seenThisBlock = true;

@@ -94,7 +94,6 @@ public:
         lastOutput_[0] = 0.0f;
         lastOutput_[1] = 0.0f;
         lfoPhase_      = 0.0f;
-        debugThrottle_ = 0;
     }
 
     void processEffect(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& /*midi*/) override
@@ -197,20 +196,6 @@ public:
 
             peakL = std::max(peakL, std::abs(xL));
             peakR = std::max(peakR, std::abs(xR));
-
-#ifdef XLETH_DEBUG
-            if (++debugThrottle_ >= kDebugInterval)
-            {
-                debugThrottle_ = 0;
-                float fcDbg = centerFreq * std::exp(sweepL * halfRangeLog);
-                DBG("[Phaser] fc=" + juce::String(fcDbg, 1)
-                    + " Q=" + juce::String(resonance, 2)
-                    + " stages=" + juce::String(numStages)
-                    + " spread=" + juce::String(spread, 0)
-                    + " freqLow=" + juce::String(freqLow, 0)
-                    + " freqHigh=" + juce::String(freqHigh, 0));
-            }
-#endif
         }
 
         writeMeterValue(0, peakL);
@@ -300,7 +285,6 @@ private:
 
     // ── Constants ─────────────────────────────────────────────────────────────
     static constexpr int kMaxStages    = 6;
-    static constexpr int kDebugInterval = 4410;
 
     // ── State ─────────────────────────────────────────────────────────────────
     BiquadAllpassStage stages_[kMaxStages];
@@ -308,7 +292,6 @@ private:
     float              lastOutput_[2] = {0.0f, 0.0f};
     std::atomic<float>* stagesPtr_ = nullptr;
     double             sampleRate_ = 44100.0;
-    int                debugThrottle_ = 0;
 
     // ── Handle-based smoother access (Phase 4 CPU pass) ──────────────────────
     SmoothedHandle hRate_, hDepth_, hFeedback_, hResonance_, hWidth_,

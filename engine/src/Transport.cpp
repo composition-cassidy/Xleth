@@ -150,26 +150,6 @@ void Transport::seekToBeat(double beat)
     seekToSample(beatsToSamples(beat));
 }
 
-void Transport::seekToBar(int bar)
-{
-    seekToBeat(static_cast<double>(bar - 1) * 4.0);
-}
-
-void Transport::configureLivePresentationTiming(int64_t renderStart,
-                                                int64_t requestedStart,
-                                                int64_t totalLatency,
-                                                int64_t discardSamples)
-{
-    (void) requestedStart;
-    (void) totalLatency;
-    (void) discardSamples;
-    positionSamples_.store(renderStart, std::memory_order_release);
-}
-
-void Transport::clearLivePresentationTiming()
-{
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Loop trap — message-thread setters / reads
 void Transport::setLoopBounds(int64_t startSamples, int64_t endSamples, bool enabled)

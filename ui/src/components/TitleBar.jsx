@@ -193,9 +193,7 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction, a
   }, [])
 
   const scheduleOpenDropdown = useCallback((idx) => {
-    const menu = TITLEBAR_MENUS[idx]
     openTimerRef.current = setTimeout(() => {
-      console.log(`[MenuDropdown] open:${menu.label}`)
       setRenderedMenu(idx)
       setDropdownState('opening')
       enterTimerRef.current = setTimeout(() => {
@@ -211,8 +209,6 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction, a
       setOpenMenu(null)
       return
     }
-    const menu = TITLEBAR_MENUS[renderedMenu]
-    console.log(`[MenuDropdown] close:${menu.label}`)
     setOpenMenu(null)
     setDropdownState('closing')
     closeTimerRef.current = setTimeout(() => {
@@ -221,10 +217,7 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction, a
     }, dropdownCloseMs())
   }, [clearDropdownTimers, dropdownState, renderedMenu])
 
-  useEffect(() => {
-    console.log('[MenuBar] mount')
-    return clearDropdownTimers
-  }, [clearDropdownTimers])
+  useEffect(() => clearDropdownTimers, [clearDropdownTimers])
 
   useEffect(() => {
     if (renderedMenu === null) return
@@ -253,8 +246,6 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction, a
     }
 
     if (renderedMenu !== null && dropdownState !== 'closing') {
-      const currentMenu = TITLEBAR_MENUS[renderedMenu]
-      console.log(`[MenuDropdown] close:${currentMenu.label}`)
       setOpenMenu(null)
       setDropdownState('closing')
       closeTimerRef.current = setTimeout(() => {
@@ -284,8 +275,6 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction, a
 
   const handleMenuClick = useCallback((idx) => {
     const menu = TITLEBAR_MENUS[idx]
-    console.log('[MenuBar] pill click:', menu.label)
-    if (idx === 0) console.log('[TitleBar] fix verified — FILE click fires')
     if (isDirectTitlebarMenu(menu)) {
       closeDropdown()
       if (onAction) onAction(menu.action || menu.label)

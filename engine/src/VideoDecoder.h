@@ -50,9 +50,8 @@ public:
     double getDuration()    const;
     int    getTotalFrames() const;
 
-    // Timestamp <-> frame number conversion
+    // Timestamp -> frame number conversion
     int    timeToFrame(double seconds)     const;
-    double frameToTime(int frameNumber)    const;
 
 private:
     AVFormatContext* formatCtx_ = nullptr;

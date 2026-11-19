@@ -717,12 +717,6 @@ bool PluginRegistry::unquarantine(const juce::String& format, const juce::String
     return true;
 }
 
-std::vector<PluginRegistry::QuarantineEntry> PluginRegistry::getQuarantine() const
-{
-    std::lock_guard<std::mutex> lock(quarantineMutex_);
-    return quarantine_;
-}
-
 juce::var PluginRegistry::takeLastLoadCrash()
 {
     const auto file = dataDir_.getChildFile("plugin-load-crash.json");

@@ -108,9 +108,6 @@ public:
     // transport stop, and transport seek.
     void resetAllStates() noexcept;
 
-    // Reset a single clip's state. (Also called internally by the unseen sweep.)
-    void resetClipState(int clipId) noexcept;
-
     // Per-block bookkeeping for stale-state detection.
     // Call markClipSeen(clipId) for each clip rendered through the reader in
     // a block; after the clip-render loop, call resetUnseenStates() to clear

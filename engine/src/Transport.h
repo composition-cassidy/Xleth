@@ -37,13 +37,6 @@ public:
     // Seek
     void seekToSample(int64_t sample);
     void seekToBeat(double beat);
-    void seekToBar(int bar);
-
-    void configureLivePresentationTiming(int64_t renderStart,
-                                         int64_t requestedStart,
-                                         int64_t totalLatency,
-                                         int64_t discardSamples);
-    void clearLivePresentationTiming();
 
     // ── Live playback loop trap ───────────────────────────────────────────────
     // Set the loop window (already converted to samples by the caller using the

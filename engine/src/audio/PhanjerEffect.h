@@ -501,18 +501,6 @@ public:
         writeMeterValue(0, peakL);
         writeMeterValue(1, numCh > 1 ? peakR : peakL);
         writeMeterValue(2, levelGain_);
-
-#ifdef XLETH_DEBUG
-        debugThrottle_ += numSamples;
-        if (debugThrottle_ >= kDebugInterval)
-        {
-            debugThrottle_ = 0;
-            DBG("[Phanjer] mode=" + juce::String(mode)
-                + " shape=" + juce::String(shape)
-                + " L=" + juce::String(levelGain_, 3)
-                + " Ltarget=" + juce::String(levelTarget_, 3));
-        }
-#endif
     }
 
 private:
@@ -835,7 +823,6 @@ private:
     // ── Constants ────────────────────────────────────────────────────────────
     static constexpr float kSatDrive        = 1.5f;
     static constexpr float kInvTanhSatDrive = 1.1047914f;   // 1 / tanh(1.5)
-    static constexpr int   kDebugInterval   = 44100;
 
     // ── State ────────────────────────────────────────────────────────────────
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Lagrange3rd>
@@ -883,8 +870,4 @@ private:
     SmoothedHandle hFMix_, hFDepth_, hFFeedback_,
                    hPMix_, hPDepth_, hPFeedback_,
                    hGlobalMix_, hChaos_, hPFreqMin_, hPFreqMax_;
-
-#ifdef XLETH_DEBUG
-    int debugThrottle_ = 0;
-#endif
 };
