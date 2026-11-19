@@ -102,6 +102,18 @@ Since the 1.3.0-beta build (last commit in it: `752aa00`, 2026-11-11). 34 commit
 
 ### Fixed
 
+- **Editing a sampler during playback no longer crashes or glitches the engine.**
+  Sampler knobs, slot edits and undo/redo rebuilt the samplers in place while the
+  audio callback was playing them, which could corrupt memory, and every edit cut
+  every sounding note in the project. Samplers are now swapped in as one snapshot
+  and freed only after the callback has let go of them, and a knob on one
+  instrument leaves the others playing.
+- **Sampler changes made outside the sampler panel reach the sound straight away.**
+  Slot settings sent with a region edit, relinked or remapped region audio, and a
+  deleted region all kept playing from the old sampler until the next Play (a
+  deleted region's until the project was reloaded), and undo left the piano-roll
+  preview on the undone settings. Every rebuild now replaces any sampler that no
+  longer matches its region.
 - **Switching Sample Picker sources while one is previewing no longer reads freed
   audio.** `unloadSource` freed the decoded buffer while the audio callback could
   still be mixing it, so clicking source B during A's preview could burst noise or

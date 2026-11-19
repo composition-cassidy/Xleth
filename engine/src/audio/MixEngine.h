@@ -19,6 +19,7 @@
 #include "audio/SamplerPreviewRoute.h"
 #include "audio/SourceTransformTable.h"
 #include "dsp/LoudnessAnalyzer.h"
+#include "util/RtPublished.h"
 
 #include <algorithm>
 #include <atomic>
@@ -165,11 +166,36 @@ public:
     // edits (block add/move/delete, pattern regionId change, region settings
     // change, SampleBank load completion).
     //
-    // THREADING: May only be called when the audio device is stopped or when
-    // processBlock() is guaranteed not to be executing concurrently.
-    // SmoothedValue is not thread-safe; setCurrentAndTargetValue() called inside
-    // this function is not safe to race with the audio thread's getNextValue().
-    void rebuildAllSamplers();
+    // onlyRegionId >= 0 narrows the forced RELOAD to samplers of that region (a
+    // region-settings edit). Every other sampler that is still needed and
+    // still matches its region (same settings, same audio — see
+    // samplerBuiltFrom_) is carried over untouched, so its sounding voices
+    // keep playing; one that no longer matches is rebuilt whichever region
+    // was asked for. Pruning, building of missing pairs, and the same check on
+    // preview samplers always cover the whole timeline. A pair whose region no
+    // longer exists is dropped.
+    //
+    // THREADING: main thread, safe while the audio callback runs. The new set
+    // is published as one immutable snapshot (samplerSet_); replaced samplers
+    // are freed here, later, once no block still holds them. The volume
+    // smoother snap at the end is still done in place (SmoothedValue is not
+    // thread-safe, so it can race the audio thread's getNextValue()).
+    void rebuildAllSamplers(int onlyRegionId = -1);
+
+    // Rebuild only what no longer matches its region, and nothing else: the
+    // right call after an edit that MAY have touched sampler inputs (a region
+    // patch, an audio remap). Same threading as rebuildAllSamplers.
+    void refreshStaleSamplers();
+
+    // Diagnostic (main thread): every live sampler with the inputs it was
+    // built from, whether those still match its region, and a few values read
+    // straight off the Sampler. { playback: [...], preview: [...] }.
+    nlohmann::json describeSamplers() const;
+
+    // Main-thread pump: frees samplers a rebuild replaced while a block was
+    // still rendering from them, now that the block is over. Cheap (usually an
+    // empty list); call from any regular main-thread poll.
+    void reclaimRetiredSamplers();
 
     // ── Per-slot PREP bake (main thread) ─────────────────────────────────────
     // The sampler's offline time-stretch / pitch-shift stage. buildSamplerForRegion
@@ -1927,8 +1953,6 @@ public:
         }
     };
 private:
-    std::unordered_map<TrackRegionKey, std::unique_ptr<Sampler>, TrackRegionKeyHash> samplers_;
-
     // {regionId, slotIndex} → SampleBank id, for slots 1..7 only (see
     // mapRegionSlotToSample). Keyed by regionId*MAX_SAMPLE_SLOTS + slotIndex.
     std::unordered_map<int, int> slotSampleMap_;
@@ -1956,8 +1980,64 @@ private:
         // the audio thread must never take that lock, so the answer is
         // published here instead. -1 when the route has no live mixer slot.
         std::atomic<int> routeTrackSlot { -1 };
+        // samplerInputs() of the region when this sampler was built. Written
+        // once, before the slot is published; main thread reads only.
+        nlohmann::json builtFrom;
+        uint64_t       buildSerial = 0;
     };
-    std::unordered_map<int, std::unique_ptr<PreviewSamplerSlot>> previewSamplers_;
+
+    // ── Published sampler set ────────────────────────────────────────────────
+    // Every sampler the audio thread may play, as ONE immutable snapshot. The
+    // maps are never edited in place: a writer copies the current set, changes
+    // the copy and publishes it. processBlock pins the set for the whole block
+    // (rtSamplers_), so every Sampler* it derives stays alive until the block
+    // ends, however many rebuilds land meanwhile; a replaced Sampler is freed
+    // on the main thread once no block holds the set that owned it.
+    //
+    // The Sampler objects themselves are mutable: their voice state belongs to
+    // the audio thread, and the atomically published parts (PREP buffers,
+    // route atomics) are all the main thread may safely touch.
+    struct SamplerSet
+    {
+        std::unordered_map<TrackRegionKey, std::shared_ptr<Sampler>, TrackRegionKeyHash> playback;
+        std::unordered_map<int, std::shared_ptr<PreviewSamplerSlot>> preview;
+    };
+    xleth::util::RtPublished<SamplerSet> samplerSet_ { std::make_shared<const SamplerSet>() };
+    // The set this block is rendering from. Audio thread, valid only inside
+    // processBlock (set and cleared by its pin guard).
+    const SamplerSet* rtSamplers_ = nullptr;
+
+    // Copy the current set, apply `edit` to the copy, publish it. Main thread.
+    template <class Fn> void editSamplerSet(Fn&& edit);
+    // Build {trackId, regionId}'s sampler into `set`. False (set untouched)
+    // when the track / region / audio is not there to build from.
+    bool buildSamplerInto(SamplerSet& set, int trackId, int regionId);
+
+    // ── What each live sampler was built from ────────────────────────────────
+    // samplerInputs() is everything buildSamplerForRegion reads: the region's
+    // sampler settings, every slot, the modulation config, and the SampleBank
+    // id behind each slot. It is recorded per sampler at build time (here for
+    // playback samplers, on the slot for preview ones). A sampler whose record
+    // no longer equals its region's current inputs is STALE, and every rebuild
+    // replaces stale samplers — so a rebuild scoped to one region can leave the
+    // rest playing without trusting that every handler remembered to refresh.
+    // Main thread only.
+    nlohmann::json samplerInputs(const SampleRegion& region) const;
+    struct SamplerBuild
+    {
+        nlohmann::json inputs;
+        uint64_t       serial = 0;   // samplerBuildSerial_ at build: tells a rebuild from a carry-over
+    };
+    std::unordered_map<TrackRegionKey, SamplerBuild, TrackRegionKeyHash> samplerBuiltFrom_;
+    uint64_t samplerBuildSerial_ = 0;
+
+    enum class SamplerRebuild { All, Region, StaleOnly };
+    void rebuildSamplers(SamplerRebuild mode, int regionId);
+    // A fresh preview slot for `region` (null when it has no audio to play).
+    // Carries `previous`'s published route over, so replacing the sampler of a
+    // running audition does not drop it back to dry.
+    std::shared_ptr<PreviewSamplerSlot> makePreviewSlot(const SampleRegion& region,
+                                                        const PreviewSamplerSlot* previous);
 
     // Audition routing preference (main thread writes, main thread reads during
     // route resolution). selectedTrackId is only meaningful in Selected mode.

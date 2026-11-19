@@ -18,7 +18,7 @@
 // ─── Sampler ─────────────────────────────────────────────────────────────────
 // Polyphonic pitched sample player with ADSR envelope and optional loop.
 // NOT a JUCE AudioProcessor — plain C++ class, similar to MixEngine.
-// One instance per {trackId, regionId}: MixEngine owns the samplers_ map.
+// One instance per {trackId, regionId}: MixEngine owns them (its SamplerSet).
 //
 // ── Layered slots ────────────────────────────────────────────────────────────
 // A sampler holds up to MAX_SAMPLE_SLOTS (8) sample slots. Every note-on
