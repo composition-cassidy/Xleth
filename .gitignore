@@ -7,24 +7,12 @@ out/
 # Build logs
 build_out.txt
 build_bridge_out.txt
-CWINDOWSsystem32cmd.exe.txt
-
-# Dev-only render scripts
-render-1080p.bat
-render-360p.bat
-render-test.bat
 
 # LMMS reference (not part of Xleth source)
 lmms/
 
-# Scratch files
-WORK ON PROMPT 2C #7
-
 # Test scratch folders
 test/
-test 2/
-test 3/
-test-sampler-pertrack/
 !engine/test/
 !engine/test/**
 
@@ -78,7 +66,6 @@ desktop.ini
 # Test/proxy media assets
 media/
 proxies/
-*.dnxhr.mov
 *.xlpeak
 *.rar
 
@@ -124,7 +111,6 @@ art/
 /telem.txt
 /terminal_log.txt
 /CWINDOWSsystem32cmd.exe*.txt
-*pass-6g-plan.txt
 
 # Root dev scripts & stray files
 /*.bat
@@ -134,7 +120,6 @@ art/
 !/push.bat
 /project.json
 /test.mid
-/XlethSampler.jsx
 
 # Root internal planning/audit/spec docs
 /xleth-*.md
@@ -164,9 +149,6 @@ art/
 /portable-verify/
 # One-off scratch scripts/dumps (underscore-prefixed); local copies live in archives/.
 /scripts/_*
-# Prompt-related scripts moved into scripts/
-/scripts/slider_prompts_docx.py
-/scripts/XlethSampler.jsx
 
 # Separation sidecar: the bundled Python runtime and its download cache.
 # Built by tools/separation_sidecar/tools/build_sidecar_runtime.py and copied
