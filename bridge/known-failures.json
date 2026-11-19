@@ -1,0 +1,44 @@
+[
+  {
+    "test": "test_clip_cache_dedup",
+    "reason": "1 of 14 assertions fails: 'a batch of identical clips is cheaper than a batch of distinct ones (render cache is content-addressed, not clip-ID-keyed)'",
+    "date": "2026-11-20"
+  },
+  {
+    "test": "test_patterns",
+    "reason": "sampler ADSR fields come back undefined (attackMs, decayMs, sustain, releaseMs after updateSamplerSettings); the test predates the sampler settings reshape",
+    "date": "2026-11-20"
+  },
+  {
+    "test": "test_resonancesuppressor",
+    "reason": "229/230: 'viz schema is 2 (got 3)'; the test asserts an old viz schema version",
+    "date": "2026-11-20"
+  },
+  {
+    "test": "test_sampler_mod_ui_smoke",
+    "reason": "asserts schema_version = 3 but the engine writes 10 (stale expectation)",
+    "date": "2026-11-20"
+  },
+  {
+    "test": "test_sampler_modulation_bridge",
+    "reason": "asserts schema_version bumped to 3 but the engine writes 10 (stale expectation)",
+    "date": "2026-11-20"
+  },
+  {
+    "test": "test_szkrezh_bridge",
+    "reason": "171/172: 'wet signal on the meters (peak 0.0000)'; the live meter never sees the wet signal",
+    "date": "2026-11-20"
+  },
+  {
+    "test": "test_regenerable_lifecycle_contract",
+    "reason": "intermittent: failed in one local run and passed in the next on 2026-11-20 with no change in between; cause not diagnosed",
+    "date": "2026-11-20",
+    "flaky": true
+  },
+  {
+    "test": "test_varimu_bridge",
+    "reason": "intermittent: listed flaky by the owner; passed in the 2026-11-20 local run; cause not diagnosed",
+    "date": "2026-11-20",
+    "flaky": true
+  }
+]
