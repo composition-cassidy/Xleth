@@ -10,10 +10,11 @@ Xleth is a **Windows-only** application with three build layers:
 
 ## What CI checks
 
-Every pull request and every push to `main` runs [.github/workflows/ci.yml](.github/workflows/ci.yml), which has two jobs (both pinned to `windows-2022` — the VS 2022 generator and its bundled CMake 3.x are load-bearing):
+Every pull request and every push to `main` runs [.github/workflows/ci.yml](.github/workflows/ci.yml), which has three jobs (all pinned to `windows-2022` — the VS 2022 generator and its bundled CMake 3.x are load-bearing):
 
-1. **Engine + bridge (MSVC x64)** — *gating.* Configures and builds the full CMake project (engine libraries, scanner, editor-host, and the engine test executables), then builds the bridge addon with cmake-js and verifies `xleth_native.node` was produced. If this job is red, the PR broke the native build.
-2. **UI (Vite build + vitest)** — the Vite production build is *gating*; the vitest suite runs on every PR but is currently **non-blocking** because it has known pre-existing failures (see `AUDIT.md` §3.5). A red vitest step is visible in the job log but does not fail the workflow. Once the suite is green, the `continue-on-error` line in the workflow should be removed so tests gate merges too.
+1. **Engine + bridge (MSVC x64)** — *gating.* Configures and builds the full CMake project (engine libraries, scanner, editor-host, and the engine test executables), then builds the bridge addon with cmake-js and verifies `xleth_native.node` was produced. If this job is red, the PR broke the native build. It then runs `ctest`, which fails the job on any red that is not listed (with a reason and a date) in [engine/known-ctest-failures.json](engine/known-ctest-failures.json); listed tests are excluded, so delete the entry when you fix the test.
+2. **Bridge contract tests** — runs `bridge/run_contract_tests.js` against the addon the first job built. It fails on any red that is not listed in [bridge/known-failures.json](bridge/known-failures.json) (a listed test that now passes is reported so its entry can go; `flaky` entries get one retry). GitHub's Windows runners have no audio device, so most scripts cannot run there: the runner reports them as **skipped**, never as passed, and the log and job summary say how many ("N of M bridge tests SKIPPED: no audio device").
+3. **UI (Vite build + vitest)** — the Vite production build is *gating*; the vitest suite runs on every PR but is currently **non-blocking** because it has known pre-existing failures (see `AUDIT.md` §3.5). A red vitest step is visible in the job log but does not fail the workflow. Once the suite is green, the `continue-on-error` line in the workflow should be removed so tests gate merges too.
 
 The first CI run on a cold cache is slow (~1–2 h) because vcpkg compiles FFmpeg from source; compiled packages are stored in the GitHub Actions cache, so subsequent runs skip that.
 
