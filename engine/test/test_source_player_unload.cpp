@@ -40,6 +40,20 @@ static int g_failed = 0;
         }                                                                     \
     } while (0)
 
+// The friend SourcePlayer names for tests: reaches the pin (the one-slot hazard
+// pointer processBlock sets while it reads a buffer) and the retire list.
+struct SourcePlayerTestAccess
+{
+    using Buffer = juce::AudioBuffer<float>;
+    static Buffer* current(SourcePlayer& sp) { return sp.current_.load(std::memory_order_seq_cst); }
+    // What a callback stuck inside its block looks like to unloadSource.
+    static void holdPin(SourcePlayer& sp, Buffer* b) { sp.inUse_.store(b, std::memory_order_seq_cst); }
+    static void releasePin(SourcePlayer& sp) { sp.inUse_.store(nullptr, std::memory_order_release); }
+    static size_t   retiredCount(const SourcePlayer& sp)  { return sp.retired_.size(); }
+    static uint64_t deferredFrees(const SourcePlayer& sp) { return sp.deferredFrees_; }
+    static int      unloadWaitMs() { return SourcePlayer::kUnloadWaitMs; }
+};
+
 static constexpr double kRate      = 48000.0;
 static constexpr int    kBlock     = 16384;
 static constexpr float  kLevels[3] = { 0.25f, 0.5f, 0.75f };   // exact in float WAV
@@ -181,6 +195,81 @@ int main()
         sp.play(0.0);
         sp.processBlock(buf, kBlock);
         CHECK(buf.getMagnitude(0, kBlock) == 0.0f, "unloaded player renders silence");
+    }
+
+    // ── Bounded unload: the callback holds its pin for ~200 ms ───────────────
+    // A stalled device leaves processBlock inside its block with the pin set.
+    // unloadSource must come back within its bound anyway, must not free the
+    // pinned buffer, and the buffer must be freed once the pin is gone.
+    {
+        using Clock = std::chrono::steady_clock;
+        using Access = SourcePlayerTestAccess;
+        const auto msSince = [](Clock::time_point t) {
+            return std::chrono::duration<double, std::milli>(Clock::now() - t).count();
+        };
+        const double bound = Access::unloadWaitMs();
+        const double slack = 150.0;   // scheduler quantum, and ASAN
+
+        CHECK(sp.loadSource(paths[0], kRate), "load source 0 for the bounded unload");
+        Access::Buffer* const held = Access::current(sp);
+        CHECK(held != nullptr && Access::retiredCount(sp) == 0, "a buffer is published and nothing is parked");
+        if (held == nullptr) return 1;
+        const int last = held->getNumSamples() - 1;
+        // Reading the buffer is the canary: it holds source 0's constant end to
+        // end, and under ASAN a read after a free aborts the test.
+        const auto intact = [&] {
+            return held->getReadPointer(0)[0] == kLevels[0] && held->getReadPointer(1)[last] == kLevels[0];
+        };
+
+        const auto holdStart = Clock::now();
+        Access::holdPin(sp, held);
+
+        auto t = Clock::now();
+        sp.unloadSource();
+        const double waited = msSince(t);
+        CHECK(waited >= bound - 5.0, "unloadSource waited for the pin (" << waited << " ms)");
+        CHECK(waited <= bound + slack, "unloadSource returned within its bound (" << waited
+                                       << " ms, bound " << bound << ")");
+        CHECK(!sp.isLoaded(), "the source is unloaded as far as callers can tell");
+        CHECK(Access::retiredCount(sp) == 1 && Access::deferredFrees(sp) == 1,
+              "the pinned buffer is parked, not freed");
+        CHECK(intact(), "and is still intact");
+
+        // Life goes on while it is parked.
+        CHECK(sp.loadSource(paths[1], kRate), "another source loads while the old buffer is parked");
+        CHECK(Access::current(sp) != held && Access::retiredCount(sp) == 1 && intact(),
+              "the parked buffer is untouched by the load");
+        t = Clock::now();
+        sp.unloadSource();
+        const double second = msSince(t);
+        CHECK(second < bound - 10.0, "a later unload does not wait for the parked buffer again ("
+                                     << second << " ms)");
+        CHECK(Access::retiredCount(sp) == 1 && Access::deferredFrees(sp) == 1,
+              "its own buffer was freed at once; the parked one stays, counted once");
+
+        while (msSince(holdStart) < 200.0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        CHECK(Access::retiredCount(sp) == 1 && intact(), "still not freed after 200 ms pinned");
+
+        Access::releasePin(sp);
+        sp.unloadSource();               // any later load / unload sweeps it up
+        CHECK(Access::retiredCount(sp) == 0, "freed once the pin is released");
+    }
+
+    // A player destroyed while its buffer is pinned leaks the buffer rather
+    // than free it under a thread that may be reading.
+    {
+        using Access = SourcePlayerTestAccess;
+        Access::Buffer* held = nullptr;
+        {
+            SourcePlayer doomed;
+            CHECK(doomed.loadSource(paths[2], kRate), "load a source into a short-lived player");
+            held = Access::current(doomed);
+            if (held != nullptr) Access::holdPin(doomed, held);
+        }
+        CHECK(held != nullptr && held->getReadPointer(0)[0] == kLevels[2],
+              "a buffer pinned at destruction is left alive");
+        delete held;                     // the test owns the deliberate leak
     }
 
     dir.deleteRecursively();
