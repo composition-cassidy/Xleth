@@ -755,6 +755,11 @@ Napi::Value Diag_GetVisualPreviewDiagnostic(const Napi::CallbackInfo& info)
     return dispatchToService(info, "diag_getVisualPreviewDiagnostic");
 }
 
+Napi::Value Diag_GetSamplerState(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "diag_getSamplerState");
+}
+
 Napi::Value HwEnc_Refresh(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "hwenc_refresh");
@@ -1001,6 +1006,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     // ── Diagnostics (Settings → Graphics → Export Visual Preview Log) ───────
     exports.Set("diag_getVisualPreviewDiagnostic",
                 Napi::Function::New(env, Diag_GetVisualPreviewDiagnostic));
+    // Contract tests only: what each live sampler was built from.
+    exports.Set("diag_getSamplerState",
+                Napi::Function::New(env, Diag_GetSamplerState));
 
     // ── Hardware encoder detection ───────────────────────────────────────────
     // hwenc_getAvailableEncoders / hwenc_getDefaultEncoder migrated to the RPC

@@ -2622,6 +2622,69 @@ target_compile_definitions(test_device_watchdog PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# SourcePlayer buffer lifetime: a callback thread reads while the main thread
+# loads/unloads constant-valued WAVs. Needs FFmpeg DLLs (ctest sets PATH).
+add_executable(test_source_player_unload
+    test/test_source_player_unload.cpp
+)
+
+target_link_libraries(test_source_player_unload PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_devices
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_source_player_unload PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# Sampler set snapshot + sampler event queue: a second thread rebuilds, replaces
+# and plays samplers while blocks render. Also the RtPublished / SpscRing units.
+add_executable(test_sampler_set_handoff
+    test/test_sampler_set_handoff.cpp
+)
+
+target_link_libraries(test_sampler_set_handoff PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_sampler_set_handoff PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+target_link_options(test_sampler_set_handoff PRIVATE /STACK:8388608)
+
 add_executable(test_distortion
     test/test_distortion.cpp
 )
@@ -4038,6 +4101,8 @@ set(XLETH_ENGINE_TESTS
     test_chain_effect_identity
     test_pdc_stage1
     test_device_watchdog
+    test_source_player_unload
+    test_sampler_set_handoff
     test_distortion
     test_phanjer
     test_reverb

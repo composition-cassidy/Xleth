@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 
 /// Plays source media files through the engine's audio output for the Sample
@@ -15,6 +16,11 @@
 ///   - play / pause / resume / seek / stop: any thread (atomic state)
 ///   - processBlock: audio thread only (called from AudioEngine callback)
 ///   - isPlaying / isLoaded / getPosition / getDuration: any thread (atomic reads)
+///
+/// Buffer lifetime: the main thread owns the decoded buffer and publishes it
+/// through `current_`; processBlock pins what it reads in `inUse_` (a one-slot
+/// hazard pointer), and unloadSource frees only once the pin has moved off it.
+/// The audio thread never allocates or frees.
 class SourcePlayer
 {
 public:
@@ -61,9 +67,15 @@ public:
     void processBlock(juce::AudioBuffer<float>& outputBuffer, int numSamples);
 
 private:
-    juce::AudioBuffer<float> decodedAudio_;   // entire source in RAM (stereo)
+    using Buffer = juce::AudioBuffer<float>;
+
+    void mixBlock(const Buffer& src, juce::AudioBuffer<float>& outputBuffer, int numSamples);
+
+    std::unique_ptr<Buffer> decodedAudio_;     // entire source in RAM (stereo); main thread owns
+    std::atomic<Buffer*>    current_ { nullptr };   // what processBlock may pick up
+    std::atomic<Buffer*>    inUse_   { nullptr };   // what processBlock is reading right now
     double sampleRate_  = 48000.0;
-    int64_t totalSamples_ = 0;
+    int64_t totalSamples_ = 0;   // main-thread copy; the audio thread uses the buffer's own size
     double duration_      = 0.0;
     std::string loadedFilePath_;
 

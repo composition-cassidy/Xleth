@@ -21,6 +21,8 @@
 #endif
 #include "dsp/DeclickEnvelope.h"
 #include "model/ClipModulationCompatibility.h"
+#include "model/SampleRegion.h"            // to_json(SampleSlot) for samplerInputs
+#include "model/SamplerModulationJson.h"   // to_json(ModConfig)
 #include "render/RenderClock.h"
 #include "XlethDebug.h"
 
@@ -2191,12 +2193,13 @@ void MixEngine::publishSlotBuffer(int regionId, int slotIndex,
     // playback samplers and the preview sampler alike. Each swap is a single
     // atomic store inside the Sampler — no rebuild, so notes already sounding
     // keep their envelopes and simply start reading the new audio.
-    for (auto& [key, sampler] : samplers_)
+    const auto set = samplerSet_.load();
+    for (auto& [key, sampler] : set->playback)
         if (key.regionId == regionId && sampler)
             sampler->setSlotPreparedBuffer(slotIndex, buffer);
 
-    auto pv = previewSamplers_.find(regionId);
-    if (pv != previewSamplers_.end() && pv->second && pv->second->sampler)
+    auto pv = set->preview.find(regionId);
+    if (pv != set->preview.end() && pv->second && pv->second->sampler)
         pv->second->sampler->setSlotPreparedBuffer(slotIndex, buffer);
 }
 
@@ -2242,93 +2245,338 @@ std::vector<MixEngine::SlotBakeJobInfo> MixEngine::getPendingSlotBakes() const
     return out;
 }
 
-void MixEngine::loadSamplerForTrackRegion(int trackId, int regionId)
+template <class Fn>
+void MixEngine::editSamplerSet(Fn&& edit)
 {
-    if (sampleBank_ == nullptr || timeline_ == nullptr) return;
-    if (regionId < 0) return;
+    SamplerSet next = *samplerSet_.load();
+    edit(next);
+    samplerSet_.publish(std::make_shared<const SamplerSet>(std::move(next)));
+}
+
+// Everything buildSamplerForRegion reads. Keep the two in step: a region field
+// the builder starts using has to appear here, or a change to it will not mark
+// that region's samplers stale.
+nlohmann::json MixEngine::samplerInputs(const SampleRegion& region) const
+{
+    nlohmann::json j = {
+        {"crossfadeEnabled",  region.crossfadeEnabled},
+        {"monoEnabled",       region.monoEnabled},
+        {"voiceCount",        region.voiceCount},
+        {"legatoEnabled",     region.legatoEnabled},
+        {"portamentoEnabled", region.portamentoEnabled},
+        {"portamentoTimeMs",  region.portamentoTimeMs},
+        {"portamentoMode",    region.portamentoMode},
+        {"portamentoCurve",   region.portamentoCurve},
+        {"arpEnabled",        region.arpEnabled},
+        {"arpTempoSync",      region.arpTempoSync},
+        {"arpDivision",       region.arpDivision},
+        {"arpFreeTimeMs",     region.arpFreeTimeMs},
+        {"arpGate",           region.arpGate},
+        {"arpRange",          region.arpRange},
+        {"arpDirection",      region.arpDirection},
+        {"slots",             region.slots},
+        {"modulation",        region.modulation},
+    };
+    nlohmann::json bankIds = nlohmann::json::array();
+    const int nSlots = std::min(region.slotCount(), MAX_SAMPLE_SLOTS);
+    for (int i = 0; i < nSlots; ++i)
+        bankIds.push_back(getSampleIdForRegionSlot(region.id, i));
+    j["bankIds"] = std::move(bankIds);
+    return j;
+}
+
+bool MixEngine::buildSamplerInto(SamplerSet& set, int trackId, int regionId)
+{
+    if (sampleBank_ == nullptr || timeline_ == nullptr) return false;
+    if (regionId < 0) return false;
 
     const TrackInfo* track = timeline_->getTrack(trackId);
-    if (track == nullptr) return;
-    if (track->type != TrackInfo::Type::Pattern) return;
+    if (track == nullptr) return false;
+    if (track->type != TrackInfo::Type::Pattern) return false;
 
     const SampleRegion* region = timeline_->getRegion(regionId);
-    if (region == nullptr) return;
+    if (region == nullptr) return false;
 
     auto s = buildSamplerForRegion(*region);
-    if (s == nullptr) return;
+    if (s == nullptr) return false;
 
-    samplers_[{trackId, regionId}] = std::move(s);
+    const TrackRegionKey key{trackId, regionId};
+    set.playback[key]      = std::move(s);
+    samplerBuiltFrom_[key] = { samplerInputs(*region), ++samplerBuildSerial_ };
+    return true;
+}
+
+std::shared_ptr<MixEngine::PreviewSamplerSlot>
+MixEngine::makePreviewSlot(const SampleRegion& region, const PreviewSamplerSlot* previous)
+{
+    auto s = buildSamplerForRegion(region);
+    if (s == nullptr) return nullptr;
+
+    auto slot = std::make_shared<PreviewSamplerSlot>();
+    slot->sampler     = std::move(s);
+    slot->builtFrom   = samplerInputs(region);
+    slot->buildSerial = ++samplerBuildSerial_;
+    if (previous != nullptr) {
+        slot->routeTrackSlot.store(previous->routeTrackSlot.load(std::memory_order_relaxed),
+                                   std::memory_order_relaxed);
+        slot->routeTrackId.store(previous->routeTrackId.load(std::memory_order_acquire),
+                                 std::memory_order_release);
+    }
+    return slot;
+}
+
+nlohmann::json MixEngine::describeSamplers() const
+{
+    const auto set = samplerSet_.load();
+
+    // Values read off the live Sampler itself, not off the record.
+    const auto live = [](const Sampler& s) {
+        nlohmann::json slots = nlohmann::json::array();
+        for (int i = 0; i < s.slotCount(); ++i)
+            slots.push_back({ {"hasAudio", s.slotHasAudio(i)},
+                              {"sounds",   s.slotSounds(i)},
+                              {"mangleCount", s.debugSlotMangleCount(i)} });
+        return nlohmann::json{
+            {"slotCount", s.slotCount()},
+            {"slots", std::move(slots)},
+            {"modulationRoutes", s.modulationConfig().numRoutes},
+            {"activeVoices", s.activeVoiceCount()},
+        };
+    };
+    const auto staleAgainst = [this](int regionId, const nlohmann::json& builtFrom) {
+        const SampleRegion* r = timeline_ != nullptr ? timeline_->getRegion(regionId) : nullptr;
+        return r == nullptr || builtFrom != samplerInputs(*r);
+    };
+
+    nlohmann::json playback = nlohmann::json::array();
+    for (const auto& [key, sampler] : set->playback) {
+        if (!sampler) continue;
+        const auto built = samplerBuiltFrom_.find(key);
+        const bool known = built != samplerBuiltFrom_.end();
+        const nlohmann::json builtFrom = known ? built->second.inputs : nlohmann::json();
+        playback.push_back({ {"trackId", key.trackId}, {"regionId", key.regionId},
+                             {"stale", staleAgainst(key.regionId, builtFrom)},
+                             {"buildSerial", known ? built->second.serial : 0},
+                             {"builtFrom", builtFrom}, {"live", live(*sampler)} });
+    }
+
+    nlohmann::json preview = nlohmann::json::array();
+    for (const auto& [regionId, slot] : set->preview) {
+        if (!slot || !slot->sampler) continue;
+        preview.push_back({ {"regionId", regionId},
+                            {"stale", staleAgainst(regionId, slot->builtFrom)},
+                            {"buildSerial", slot->buildSerial},
+                            {"builtFrom", slot->builtFrom}, {"live", live(*slot->sampler)} });
+    }
+
+    return { {"playback", std::move(playback)}, {"preview", std::move(preview)} };
+}
+
+void MixEngine::reclaimRetiredSamplers()
+{
+    samplerSet_.prune();
+}
+
+void MixEngine::loadSamplerForTrackRegion(int trackId, int regionId)
+{
+    SamplerSet next = *samplerSet_.load();
+    if (buildSamplerInto(next, trackId, regionId))
+        samplerSet_.publish(std::make_shared<const SamplerSet>(std::move(next)));
 }
 
 void MixEngine::unloadSamplerForTrackRegion(int trackId, int regionId)
 {
-    samplers_.erase({trackId, regionId});
+    editSamplerSet([&](SamplerSet& set) { set.playback.erase({trackId, regionId}); });
 }
 
 void MixEngine::unloadSamplersForTrack(int trackId)
 {
-    for (auto it = samplers_.begin(); it != samplers_.end(); ) {
-        if (it->first.trackId == trackId)
-            it = samplers_.erase(it);
-        else
-            ++it;
-    }
+    editSamplerSet([&](SamplerSet& set) {
+        std::erase_if(set.playback, [&](const auto& kv) { return kv.first.trackId == trackId; });
+    });
 }
 
 void MixEngine::unloadSamplersForRegion(int regionId)
 {
-    for (auto it = samplers_.begin(); it != samplers_.end(); ) {
-        if (it->first.regionId == regionId)
-            it = samplers_.erase(it);
-        else
-            ++it;
-    }
+    editSamplerSet([&](SamplerSet& set) {
+        std::erase_if(set.playback, [&](const auto& kv) { return kv.first.regionId == regionId; });
+    });
     // The region is gone, so its slot→sample registrations are dead too.
     unmapAllRegionSlots(regionId);
 }
 
-void MixEngine::silenceAllSamplers()
+// ── Sampler events (main thread -> audio thread) ─────────────────────────────
+
+void MixEngine::postSamplerEvent(const SamplerEvent& e)
 {
-    for (auto& [key, sampler] : samplers_)
-        if (sampler) sampler->allNotesOff();
-    for (auto& [id, slot] : previewSamplers_)
-        if (slot && slot->sampler) slot->sampler->allNotesOff();
+    if (samplerEvents_.push(e)) return;
+    // Ring full: the audio thread is not draining (device stalled). A note-on
+    // nobody will hear is dropped; anything that RELEASES must not be lost.
+    if (e.kind != SamplerEvent::Kind::PreviewNoteOn
+        && e.kind != SamplerEvent::Kind::SnapVolumeSmoothers)
+        samplerPanic_.store(true, std::memory_order_release);
 }
 
-void MixEngine::rebuildAllSamplers()
+void MixEngine::silenceAllSamplers()
 {
-    if (timeline_ == nullptr) { samplers_.clear(); return; }
+    postSamplerEvent({ SamplerEvent::Kind::AllNotesOff });
+}
+
+void MixEngine::previewNoteOn(int regionId, int pitch, float velocity)
+{
+    postSamplerEvent({ SamplerEvent::Kind::PreviewNoteOn, regionId, pitch, velocity });
+}
+
+void MixEngine::previewNoteOff(int regionId, int pitch)
+{
+    postSamplerEvent({ SamplerEvent::Kind::PreviewNoteOff, regionId, pitch });
+}
+
+void MixEngine::previewAllNotesOff(int regionId)
+{
+    postSamplerEvent({ SamplerEvent::Kind::PreviewAllNotesOff, regionId });
+}
+
+// AUDIO THREAD. The one place a sampler's voices are touched on behalf of the
+// main thread, so they have a single writer.
+void MixEngine::applySamplerEvents(const SamplerEvent* events, int count, bool releaseAll)
+{
+    const SamplerSet& set = *rtSamplers_;
+
+    const auto allNotesOffEverywhere = [&set] {
+        for (auto& kv : set.playback)
+            if (kv.second) kv.second->allNotesOff();
+        for (auto& kv : set.preview)
+            if (kv.second && kv.second->sampler) kv.second->sampler->allNotesOff();
+    };
+
+    // In arrival order: a Stop followed by a preview key must leave the key sounding.
+    for (int i = 0; i < count; ++i)
+    {
+        const SamplerEvent& e = events[i];
+        switch (e.kind)
+        {
+            case SamplerEvent::Kind::AllNotesOff:
+                allNotesOffEverywhere();
+                break;
+
+            case SamplerEvent::Kind::SnapVolumeSmoothers:
+                for (int s = 0; s < std::min(e.value, static_cast<int>(kMaxTracks)); ++s)
+                    volumeSmoothed_[s].setCurrentAndTargetValue(
+                        trackParams_[s].volume.load(std::memory_order_relaxed));
+                break;
+
+            default:
+            {
+                auto it = set.preview.find(e.regionId);
+                if (it == set.preview.end() || !it->second || !it->second->sampler) break;
+                Sampler& s = *it->second->sampler;
+                if      (e.kind == SamplerEvent::Kind::PreviewNoteOn)  s.noteOn(e.value, e.velocity);
+                else if (e.kind == SamplerEvent::Kind::PreviewNoteOff) s.noteOff(e.value);
+                else                                                   s.allNotesOff();
+                break;
+            }
+        }
+    }
+
+    if (releaseAll) allNotesOffEverywhere();
+}
+
+void MixEngine::rebuildAllSamplers(int onlyRegionId)
+{
+    rebuildSamplers(onlyRegionId >= 0 ? SamplerRebuild::Region : SamplerRebuild::All, onlyRegionId);
+}
+
+void MixEngine::refreshStaleSamplers()
+{
+    rebuildSamplers(SamplerRebuild::StaleOnly, -1);
+}
+
+void MixEngine::rebuildSamplers(SamplerRebuild mode, int regionId)
+{
+    auto current = samplerSet_.load();
+    SamplerSet next;
+
+    if (timeline_ == nullptr) {
+        next.preview = current->preview;
+        samplerBuiltFrom_.clear();
+        current.reset();
+        samplerSet_.publish(std::make_shared<const SamplerSet>(std::move(next)));
+        return;
+    }
+
+    // A region's inputs are evaluated once per rebuild, however many tracks
+    // play it.
+    std::unordered_map<int, nlohmann::json> inputsByRegion;
+    const auto inputsOf = [&](const SampleRegion& r) -> const nlohmann::json& {
+        auto it = inputsByRegion.find(r.id);
+        if (it == inputsByRegion.end())
+            it = inputsByRegion.emplace(r.id, samplerInputs(r)).first;
+        return it->second;
+    };
 
     // 1. Collect the set of {trackId, regionId} pairs actually referenced
     //    by any PatternBlock in the timeline (via block → pattern.regionId).
+    //    A block whose region has been deleted needs no sampler.
     std::unordered_set<TrackRegionKey, TrackRegionKeyHash> needed;
     for (const PatternBlock* b : timeline_->getAllPatternBlocks()) {
         if (b == nullptr) continue;
         const Pattern* p = timeline_->getPattern(b->patternId);
         if (p == nullptr) continue;
         if (p->regionId < 0) continue;
+        if (timeline_->getRegion(p->regionId) == nullptr) continue;
         const TrackInfo* t = timeline_->getTrack(b->trackId);
         if (t == nullptr || t->type != TrackInfo::Type::Pattern) continue;
         needed.insert({b->trackId, p->regionId});
     }
 
-    // 2. Prune samplers that are no longer referenced by any block.
-    for (auto it = samplers_.begin(); it != samplers_.end(); ) {
-        if (needed.find(it->first) == needed.end())
-            it = samplers_.erase(it);
-        else
-            ++it;
-    }
-
-    // 3. Ensure every needed pair has a fresh sampler (reload to pick up any
-    //    region-level setting changes that happened since last rebuild).
+    // 2. Samplers no longer referenced by any block are pruned simply by not
+    //    being carried into `next`.
+    // 3. A needed pair is (re)built when it is missing, when the caller forces
+    //    it (everything, or one region), or when it is stale — built from
+    //    settings or audio its region no longer has. Anything else is carried
+    //    over as it is, voices and all. A pair that cannot be built right now
+    //    keeps the sampler it had.
     for (const auto& key : needed) {
-        loadSamplerForTrackRegion(key.trackId, key.regionId);
+        auto have = current->playback.find(key);
+        if (have != current->playback.end()) {
+            next.playback.insert(*have);
+
+            const bool forced = mode == SamplerRebuild::All
+                             || (mode == SamplerRebuild::Region && key.regionId == regionId);
+            if (!forced) {
+                auto built = samplerBuiltFrom_.find(key);
+                if (built != samplerBuiltFrom_.end()
+                    && built->second.inputs == inputsOf(*timeline_->getRegion(key.regionId)))
+                    continue;
+            }
+        }
+        buildSamplerInto(next, key.trackId, key.regionId);
     }
 
-    // 4. Sync slot mapping, slot-owned atomics, and the non-thread-safe
-    //    smoothers. Safe here because all callers hold no concurrent audio
-    //    thread — see threading constraint in MixEngine.h.
+    std::erase_if(samplerBuiltFrom_, [&](const auto& kv) {
+        return next.playback.find(kv.first) == next.playback.end();
+    });
+
+    // Preview samplers: never forced from here (the region's own refresh does
+    // that), but a stale one is replaced and one whose region is gone dropped.
+    for (const auto& [previewRegionId, slot] : current->preview) {
+        const SampleRegion* region = timeline_->getRegion(previewRegionId);
+        if (region == nullptr || !slot) continue;
+        if (slot->builtFrom == inputsOf(*region)) {
+            next.preview.emplace(previewRegionId, slot);
+            continue;
+        }
+        auto fresh = makePreviewSlot(*region, slot.get());
+        next.preview.emplace(previewRegionId, fresh ? fresh : slot);
+    }
+
+    // Let go first, so a set no block is holding is freed by this publish.
+    current.reset();
+    samplerSet_.publish(std::make_shared<const SamplerSet>(std::move(next)));
+
+    // 4. Sync slot mapping and slot-owned atomics; the smoother snap is queued
+    //    to the audio thread, which owns the smoothers.
     syncTrackSlotsFromTimeline(true);
 }
 
@@ -2793,10 +3041,13 @@ void MixEngine::syncTrackSlotsFromTimeline(bool snapVolumeSmoothers)
         trackParams_[i].volume.store(t->volume, std::memory_order_relaxed);
         trackParams_[i].pan.store(t->pan, std::memory_order_relaxed);
         trackParams_[i].spread.store(t->stereoSpread, std::memory_order_relaxed);
-
-        if (snapVolumeSmoothers)
-            volumeSmoothed_[i].setCurrentAndTargetValue(t->volume);
     }
+
+    // The smoothers belong to the audio thread (SmoothedValue is not
+    // thread-safe), so the snap to the volumes just stored is sent to it.
+    if (snapVolumeSmoothers)
+        postSamplerEvent({ SamplerEvent::Kind::SnapVolumeSmoothers, -1,
+                           std::min(static_cast<int>(allTracks.size()), static_cast<int>(kMaxTracks)) });
 
     // Envelope gates are muted/soloed with the track they follow, so the snapshot
     // has to be rebuilt whenever the slot params are resynced (which is what every
@@ -2853,13 +3104,17 @@ void MixEngine::syncSidechainTargetBuses()
 
 bool MixEngine::hasSampler(int trackId, int regionId) const
 {
-    return samplers_.find({trackId, regionId}) != samplers_.end();
+    const auto set = samplerSet_.load();
+    return set->playback.find({trackId, regionId}) != set->playback.end();
 }
 
 Sampler* MixEngine::getSamplerPtr(int trackId, int regionId)
 {
-    auto it = samplers_.find({trackId, regionId});
-    return it != samplers_.end() ? it->second.get() : nullptr;
+    // The raw pointer outlives the local pin because the main thread is the
+    // only publisher: nothing can retire the set between here and the caller.
+    const auto set = samplerSet_.load();
+    auto it = set->playback.find({trackId, regionId});
+    return it != set->playback.end() ? it->second.get() : nullptr;
 }
 
 // ── Preview samplers ─────────────────────────────────────────────────────────
@@ -2869,38 +3124,42 @@ void MixEngine::ensurePreviewSampler(int regionId)
     if (sampleBank_ == nullptr || timeline_ == nullptr) return;
     const SampleRegion* r = timeline_->getRegion(regionId);
     if (r == nullptr) {
-        previewSamplers_.erase(regionId);
+        unloadPreviewSampler(regionId);
         return;
     }
 
-    auto s = buildSamplerForRegion(*r);
-    if (s == nullptr) return;
+    const auto current = samplerSet_.load();
+    const auto old = current->preview.find(regionId);
+    auto slot = makePreviewSlot(*r, old != current->preview.end() ? old->second.get() : nullptr);
+    if (slot == nullptr) return;
 
-    auto slot = std::make_unique<PreviewSamplerSlot>();
-    slot->sampler = std::move(s);
-    previewSamplers_[regionId] = std::move(slot);
+    editSamplerSet([&](SamplerSet& set) { set.preview[regionId] = std::move(slot); });
 }
 
 void MixEngine::unloadPreviewSampler(int regionId)
 {
-    previewSamplers_.erase(regionId);
+    if (!hasPreviewSampler(regionId)) return;
+    editSamplerSet([&](SamplerSet& set) { set.preview.erase(regionId); });
 }
 
 Sampler* MixEngine::getPreviewSamplerPtr(int regionId)
 {
-    auto it = previewSamplers_.find(regionId);
-    return it != previewSamplers_.end() && it->second ? it->second->sampler.get() : nullptr;
+    const auto set = samplerSet_.load();
+    auto it = set->preview.find(regionId);
+    return it != set->preview.end() && it->second ? it->second->sampler.get() : nullptr;
 }
 
 bool MixEngine::hasPreviewSampler(int regionId) const
 {
-    return previewSamplers_.find(regionId) != previewSamplers_.end();
+    const auto set = samplerSet_.load();
+    return set->preview.find(regionId) != set->preview.end();
 }
 
 void MixEngine::silenceAllPreviewSamplers()
 {
-    for (auto& [id, slot] : previewSamplers_)
-        if (slot && slot->sampler) slot->sampler->allNotesOff();
+    const auto set = samplerSet_.load();
+    for (auto& [id, slot] : set->preview)
+        previewAllNotesOff(id);
 }
 
 // ── Preview effect routing (main thread) ─────────────────────────────────────
@@ -2957,8 +3216,9 @@ int MixEngine::refreshPreviewRoute(int regionId)
         if (slotIt != trackIdToSlot_.end()) slot = slotIt->second;
     }
 
-    auto it = previewSamplers_.find(regionId);
-    if (it != previewSamplers_.end() && it->second) {
+    const auto set = samplerSet_.load();
+    auto it = set->preview.find(regionId);
+    if (it != set->preview.end() && it->second) {
         it->second->routeTrackSlot.store(slot, std::memory_order_relaxed);
         it->second->routeTrackId.store(resolved, std::memory_order_release);
     }
@@ -2967,8 +3227,9 @@ int MixEngine::refreshPreviewRoute(int regionId)
 
 int MixEngine::getPreviewRouteTrack(int regionId) const
 {
-    auto it = previewSamplers_.find(regionId);
-    if (it == previewSamplers_.end() || !it->second) return xleth::kPreviewRouteNone;
+    const auto set = samplerSet_.load();
+    auto it = set->preview.find(regionId);
+    if (it == set->preview.end() || !it->second) return xleth::kPreviewRouteNone;
     return it->second->routeTrackId.load(std::memory_order_acquire);
 }
 
@@ -2986,8 +3247,9 @@ bool MixEngine::startPatternAudition(int patternId, bool loop)
     // the start is published. Never rebuilt here when present: that would swap
     // a sampler out from under a running audition.
     if (!hasPreviewSampler(regionId)) ensurePreviewSampler(regionId);
-    auto it = previewSamplers_.find(regionId);
-    if (it == previewSamplers_.end() || !it->second || !it->second->sampler
+    const auto set = samplerSet_.load();
+    auto it = set->preview.find(regionId);
+    if (it == set->preview.end() || !it->second || !it->second->sampler
         || !it->second->sampler->hasSample())
         return false;
 
@@ -3069,7 +3331,8 @@ void MixEngine::renderPreviewSamplers(juce::AudioBuffer<float>& outputBuffer,
                                       double bpm, const ChainSnapshot* chains)
 {
     const bool allowChainRouting = (chains != nullptr);
-    if (previewSamplers_.empty()) return;
+    const auto& previewSamplers = rtSamplers_->preview;
+    if (previewSamplers.empty()) return;
 
     if (previewBuffer_.getNumSamples() < numSamples)
         previewBuffer_.setSize(2, numSamples, false, true, false);
@@ -3085,7 +3348,7 @@ void MixEngine::renderPreviewSamplers(juce::AudioBuffer<float>& outputBuffer,
     int seenRoutes[kMaxPreviewRoutes];
     int numSeenRoutes = 0;
 
-    for (auto& kv : previewSamplers_)
+    for (auto& kv : previewSamplers)
     {
         auto* previewSlot = kv.second.get();
         if (previewSlot == nullptr || previewSlot->sampler == nullptr
@@ -3105,7 +3368,7 @@ void MixEngine::renderPreviewSamplers(juce::AudioBuffer<float>& outputBuffer,
 
         // Sum every preview sharing this route into the scratch bus.
         previewBuffer_.clear(0, numSamples);
-        for (auto& kv2 : previewSamplers_)
+        for (auto& kv2 : previewSamplers)
         {
             auto* other = kv2.second.get();
             if (other == nullptr || other->sampler == nullptr || !other->sampler->hasSample())
@@ -5997,8 +6260,8 @@ void MixEngine::findActivePatternBlocks(int64_t bufferStart, int64_t bufferEnd,
             // added mid-playback, SampleBank not yet populated), skip the
             // block. The main thread is responsible for ensuring every
             // referenced pair has a sampler before Play() starts.
-            auto sit = samplers_.find({block->trackId, pattern->regionId});
-            if (sit == samplers_.end()) continue;
+            auto sit = rtSamplers_->playback.find({block->trackId, pattern->regionId});
+            if (sit == rtSamplers_->playback.end()) continue;
             Sampler* sampler = sit->second.get();
             if (sampler == nullptr || !sampler->hasSample()) continue;
 
@@ -6057,8 +6320,8 @@ void MixEngine::findActivePatternBlocks(int64_t bufferStart, int64_t bufferEnd,
         const auto& key = prevActiveKeys_.keys[static_cast<size_t>(k)];
         if (!currentKeys.contains(key))
         {
-            auto it = samplers_.find(key);
-            if (it != samplers_.end() && it->second) it->second->allNotesOff();
+            auto it = rtSamplers_->playback.find(key);
+            if (it != rtSamplers_->playback.end() && it->second) it->second->allNotesOff();
         }
     }
     prevActiveKeys_.assign(currentKeys);
@@ -6319,8 +6582,8 @@ void MixEngine::haltPatternAudition()
 {
     if (auditionRunningRegionId_ >= 0)
     {
-        auto it = previewSamplers_.find(auditionRunningRegionId_);
-        if (it != previewSamplers_.end() && it->second && it->second->sampler)
+        auto it = rtSamplers_->preview.find(auditionRunningRegionId_);
+        if (it != rtSamplers_->preview.end() && it->second && it->second->sampler)
             it->second->sampler->allNotesOff();   // release envelope, not a hard cut
     }
     auditionRunningPatternId_ = -1;
@@ -6385,8 +6648,8 @@ void MixEngine::runPatternAudition(int numSamples, double bpm, double sampleRate
         }
     }
 
-    auto pv = previewSamplers_.find(pattern->regionId);
-    if (pv == previewSamplers_.end() || !pv->second || !pv->second->sampler
+    auto pv = rtSamplers_->preview.find(pattern->regionId);
+    if (pv == rtSamplers_->preview.end() || !pv->second || !pv->second->sampler
         || !pv->second->sampler->hasSample())
     {
         haltPatternAudition();
@@ -6455,6 +6718,35 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         rtDiagEnabled ? steadyNowNs() : 0
     };
 
+    // ── Sampler events, then the sampler set ─────────────────────────────────
+    // Events are taken off the ring BEFORE the set is pinned. The main thread
+    // publishes a sampler and only then queues the note for it, so any event
+    // seen here was queued after its sampler was published, and the pin taken
+    // next is at least that new. The other order could pin an old set, then
+    // pop the note and find no sampler to play it on.
+    SamplerEvent samplerEvents[kMaxSamplerEventsPerBlock];
+    int numSamplerEvents = 0;
+    while (numSamplerEvents < kMaxSamplerEventsPerBlock
+           && samplerEvents_.pop(samplerEvents[numSamplerEvents]))
+        ++numSamplerEvents;
+    const bool samplerPanic = samplerPanic_.load(std::memory_order_relaxed)
+                           && samplerPanic_.exchange(false, std::memory_order_acq_rel);
+
+    // Pinned for the whole block: every Sampler* derived below stays alive
+    // until this returns. Never the last owner (see RtPublished), so letting
+    // go of it here frees nothing on this thread.
+    struct SamplerSetPin
+    {
+        MixEngine& engine;
+        xleth::util::RtPublished<SamplerSet>::Ptr held;
+        explicit SamplerSetPin(MixEngine& e) : engine(e), held(e.samplerSet_.load())
+        { engine.rtSamplers_ = held.get(); }
+        ~SamplerSetPin() { engine.rtSamplers_ = nullptr; }
+    } samplerSetPin { *this };
+
+    if (numSamplerEvents > 0 || samplerPanic)
+        applySamplerEvents(samplerEvents, numSamplerEvents, samplerPanic);
+
     // Early out: no timeline
     if (timeline_ == nullptr)
     {
@@ -6474,9 +6766,9 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     // begin their release tail immediately instead of continuing to hold.
     if (wasPlaying_ && !isPlaying)
     {
-        for (auto& kv : samplers_)
+        for (auto& kv : rtSamplers_->playback)
             if (kv.second) kv.second->allNotesOff();
-        for (auto& kv : previewSamplers_)
+        for (auto& kv : rtSamplers_->preview)
             if (kv.second && kv.second->sampler) kv.second->sampler->allNotesOff();
         // Reset active-block tracking so a subsequent Play doesn't think the
         // pre-stop blocks were previously active (and spuriously silence them).
@@ -6561,7 +6853,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             runPatternAudition(numSamples, transport.getBPM(), sampleRateForPreview);
         }
 
-        if (!previewSamplers_.empty())
+        if (!rtSamplers_->preview.empty())
             renderPreviewSamplers(outputBuffer, numSamples, sampleRateForPreview,
                                   transport.getBPM(), stoppedChainsPtr.get());
 
@@ -6621,7 +6913,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     // voices from the old position don't ring indefinitely at the new one, and
     // reset the effect chains / PDC latency so the new position starts clean.
     if (lastBufferEnd_ >= 0 && bufStart != lastBufferEnd_) {
-        for (auto& kv : samplers_)
+        for (auto& kv : rtSamplers_->playback)
             if (kv.second) kv.second->allNotesOff();
         requestJumpChainReset();
         pendingLatencyCompensationReset_.store(true, std::memory_order_release);
@@ -7200,7 +7492,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     // After allNotesOff() fires in findActivePatternBlocks(), voices enter
     // their release phase but the block is no longer in activeBlocks_.
     // Render them here so the release tail is audible and feeds the effect chain.
-    for (auto& [key, sampler] : samplers_)
+    for (auto& [key, sampler] : rtSamplers_->playback)
     {
         if (!sampler || !sampler->hasSample()) continue;
         if (sampler->activeVoiceCount() == 0) continue;

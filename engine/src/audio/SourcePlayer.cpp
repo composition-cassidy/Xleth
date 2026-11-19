@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <iostream>
+#include <thread>
 #include <vector>
 
 extern "C" {
@@ -230,11 +231,12 @@ bool SourcePlayer::loadSource(const std::string& filePath, double engineSampleRa
     }
 
     // ── 7. Copy to juce::AudioBuffer ─────────────────────────────────────────
+    // Fill a fresh buffer off to the side; the callback only sees it once published.
     const int numSamples = static_cast<int>(chL.size());
-    decodedAudio_.setSize(2, numSamples, false, true, false);
-    std::memcpy(decodedAudio_.getWritePointer(0), chL.data(),
+    auto decoded = std::make_unique<Buffer>(2, numSamples);
+    std::memcpy(decoded->getWritePointer(0), chL.data(),
                 static_cast<size_t>(numSamples) * sizeof(float));
-    std::memcpy(decodedAudio_.getWritePointer(1), chR.data(),
+    std::memcpy(decoded->getWritePointer(1), chR.data(),
                 static_cast<size_t>(numSamples) * sizeof(float));
 
     totalSamples_ = numSamples;
@@ -243,6 +245,8 @@ bool SourcePlayer::loadSource(const std::string& filePath, double engineSampleRa
     playPosition_.store(0, std::memory_order_relaxed);
     previewEndSample_.store(-1, std::memory_order_relaxed);
     playing_.store(false, std::memory_order_relaxed);
+    decodedAudio_ = std::move(decoded);   // previous one was already freed by unloadSource()
+    current_.store(decodedAudio_.get(), std::memory_order_release);
     loaded_.store(true, std::memory_order_release);
 
     double sizeMB = (2.0 * numSamples * sizeof(float)) / (1024.0 * 1024.0);
@@ -308,12 +312,21 @@ void SourcePlayer::unloadSource()
 {
     playing_.store(false, std::memory_order_release);
     loaded_.store(false, std::memory_order_release);
+
+    // Unpublish, then wait out a processBlock that pinned the buffer before the
+    // swap. Bounded by one block's mix: a later block re-reads current_ and can
+    // never pin the old buffer again. seq_cst pairs with processBlock's pin.
+    current_.store(nullptr, std::memory_order_seq_cst);
+    if (Buffer* old = decodedAudio_.get())
+        while (inUse_.load(std::memory_order_seq_cst) == old)
+            std::this_thread::yield();
+    decodedAudio_.reset();
+
     playPosition_.store(0, std::memory_order_relaxed);
     previewEndSample_.store(-1, std::memory_order_relaxed);
     totalSamples_ = 0;
     duration_     = 0.0;
     loadedFilePath_.clear();
-    decodedAudio_.setSize(0, 0);
 }
 
 // ── Transport ────────────────────────────────────────────────────────────────
@@ -396,10 +409,27 @@ double SourcePlayer::getDuration() const
 void SourcePlayer::processBlock(juce::AudioBuffer<float>& outputBuffer, int numSamples)
 {
     if (!playing_.load(std::memory_order_acquire))  return;
-    if (!loaded_.load(std::memory_order_acquire))   return;
 
+    // Pin the published buffer, then re-check it is still published: either
+    // unloadSource sees the pin and waits, or we see its swap and retry.
+    Buffer* src = current_.load(std::memory_order_seq_cst);
+    for (;;)
+    {
+        inUse_.store(src, std::memory_order_seq_cst);
+        Buffer* const again = current_.load(std::memory_order_seq_cst);
+        if (again == src) break;
+        src = again;
+    }
+    if (src != nullptr)
+        mixBlock(*src, outputBuffer, numSamples);
+    inUse_.store(nullptr, std::memory_order_release);
+}
+
+void SourcePlayer::mixBlock(const Buffer& src, juce::AudioBuffer<float>& outputBuffer, int numSamples)
+{
+    const int64_t totalSamples = src.getNumSamples();
     int64_t pos = playPosition_.load(std::memory_order_acquire);
-    if (pos >= totalSamples_)
+    if (pos >= totalSamples)
     {
         playing_.store(false, std::memory_order_release);
         return;
@@ -408,8 +438,8 @@ void SourcePlayer::processBlock(juce::AudioBuffer<float>& outputBuffer, int numS
     const int64_t previewEnd = previewEndSample_.load(std::memory_order_acquire);
     const bool boundedPreview = previewEnd >= 0;
     const int64_t effectiveEnd = boundedPreview
-        ? std::min<int64_t>(previewEnd, totalSamples_)
-        : totalSamples_;
+        ? std::min<int64_t>(previewEnd, totalSamples)
+        : totalSamples;
     if (pos >= effectiveEnd)
     {
         playPosition_.store(effectiveEnd, std::memory_order_release);
@@ -419,18 +449,18 @@ void SourcePlayer::processBlock(juce::AudioBuffer<float>& outputBuffer, int numS
     }
 
     const int outChannels = outputBuffer.getNumChannels();
-    const int srcChannels = decodedAudio_.getNumChannels();  // always 2
+    const int srcChannels = src.getNumChannels();  // always 2
     const int available   = static_cast<int>(std::min<int64_t>(numSamples,
                                                                 effectiveEnd - pos));
 
     // Additive mix into the output buffer (other sources may already be mixed in)
     for (int ch = 0; ch < std::min(outChannels, srcChannels); ++ch)
     {
-        const float* src = decodedAudio_.getReadPointer(ch) + pos;
+        const float* in  = src.getReadPointer(ch) + pos;
         float*       dst = outputBuffer.getWritePointer(ch);
 
         for (int i = 0; i < available; ++i)
-            dst[i] += src[i];
+            dst[i] += in[i];
     }
 
     // If source is stereo but output is mono, skip the extra channel (already mixed ch 0).

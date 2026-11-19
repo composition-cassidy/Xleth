@@ -1144,10 +1144,12 @@ static void refreshSamplerForRegion(int regionId)
     if (r) mix.ensurePreviewSampler(regionId);
     else   mix.unloadPreviewSampler(regionId);
 
-    // Reload every {trackId, regionId} sampler pair that uses this region.
-    // rebuildAllSamplers prunes stale pairs and recreates every needed one
-    // from scratch — settings are re-read from the region in the process.
-    mix.rebuildAllSamplers();
+    // Reload every {trackId, regionId} sampler pair that uses this region —
+    // settings are re-read from the region in the process. Stale pairs are
+    // pruned and missing ones built across the whole timeline, but samplers of
+    // other regions are left playing: a knob on one instrument used to cut
+    // every sounding note in the project.
+    mix.rebuildAllSamplers(regionId);
 }
 
 // Point the per-slot PREP bake cache at the active project's audio cache dir.
@@ -1214,6 +1216,17 @@ static void rebuildAllSamplers()
 {
     if (!audioEngine) return;
     audioEngine->getMixEngine().rebuildAllSamplers();
+}
+
+// Rebuild only the samplers that no longer match their region — its settings
+// or its audio changed underneath them — and drop those whose region is gone.
+// For edits that MAY have touched what a sampler is built from (a region
+// patch, an audio remap, a region removal): everything else keeps playing, and
+// no preview sampler is created that was not already there.
+static void refreshStaleSamplers()
+{
+    if (!audioEngine || !g_timeline) return;
+    audioEngine->getMixEngine().refreshStaleSamplers();
 }
 
 static void syncMixerTrackSlots(bool snapVolumeSmoothers = false)
@@ -1344,6 +1357,8 @@ JsonApi::Value Cache_GetWorldActiveJobIds(const JsonApi::CallbackInfo& info)
     // renders are in flight and 1 Hz otherwise. A poll with no chain/parameter
     // change is an allocation-free walk that publishes nothing.
     audioEngine->getMixEngine().pollSourceTransformTable();
+    // Same cadence: free samplers a rebuild replaced mid-block.
+    audioEngine->getMixEngine().reclaimRetiredSamplers();
     // Same cadence: resubmit clips the audio thread reported as missing a
     // render (evicted, or a key that went stale), and flush a due Clip-mode
     // settle queue in case the settle timer has not fired yet.
@@ -8555,6 +8570,9 @@ JsonApi::Value Project_RelinkRegionAudio(const JsonApi::CallbackInfo& info)
             if (sampleId >= 0) {
                 triggerMipmapGeneration(sampleId, region->swappedAudioPath, true);
                 audioEngine->getMixEngine().mapRegionToSample(regionId, sampleId);
+                // Samplers copy their PCM, so the ones playing this region
+                // still hold the old file until they are rebuilt.
+                refreshStaleSamplers();
             }
         }
     }
@@ -16139,13 +16157,13 @@ void Timeline_PreviewNote(const JsonApi::CallbackInfo& info)
 
     auto& mix = audioEngine->getMixEngine();
     if (!mix.hasPreviewSampler(regionId)) mix.ensurePreviewSampler(regionId);
-    Sampler* s = mix.getPreviewSamplerPtr(regionId);
-    if (s == nullptr) return;
+    if (mix.getPreviewSamplerPtr(regionId) == nullptr) return;
     // Resolve the audition's effect route here, at note-on: the arrangement may
     // have changed since the last preview, and this is the one point where a
     // fresh answer is always cheap and always correct.
     mix.refreshPreviewRoute(regionId);
-    s->noteOn(pitch, velocity);
+    // Queued: the audio thread is the only writer of a sampler's voices.
+    mix.previewNoteOn(regionId, pitch, velocity);
 }
 
 // sampler_getPreviewRouting() → { mode, selectedTrackId }
@@ -16231,9 +16249,7 @@ void Timeline_PreviewNoteOff(const JsonApi::CallbackInfo& info)
 
     auto& mix = audioEngine->getMixEngine();
     if (!mix.hasPreviewSampler(regionId)) return;
-    Sampler* s = mix.getPreviewSamplerPtr(regionId);
-    if (s == nullptr) return;
-    s->noteOff(pitch);
+    mix.previewNoteOff(regionId, pitch);
 }
 
 // timeline_previewAllNotesOff(regionId) — releases every held preview note on
@@ -16255,9 +16271,7 @@ void Timeline_PreviewAllNotesOff(const JsonApi::CallbackInfo& info)
 
     auto& mix = audioEngine->getMixEngine();
     if (!mix.hasPreviewSampler(regionId)) return;
-    Sampler* s = mix.getPreviewSamplerPtr(regionId);
-    if (s == nullptr) return;
-    s->allNotesOff();
+    mix.previewAllNotesOff(regionId);
 }
 
 // timeline_startPatternAudition(patternId, loop) → boolean
@@ -19982,6 +19996,9 @@ void Timeline_ModifyRegion(const JsonApi::CallbackInfo& info)
     g_undoManager->execute(
         std::make_unique<ModifyRegionCommand>(id, newState, *g_timeline),
         *g_timeline);
+    // The patch can carry slot (sampler) settings. Rebuild this region's
+    // samplers if it did; a rename or a label change rebuilds nothing.
+    refreshStaleSamplers();
 
     // If the quote's trim window changed, any existing proxy no longer maps
     // to the right source range — invalidate it and, if the region is still
@@ -20097,6 +20114,9 @@ void Timeline_RemoveRegion(const JsonApi::CallbackInfo& info)
         }
     }
     g_undoManager->execute(std::make_unique<RemoveRegionCommand>(id, *g_timeline), *g_timeline);
+    // Drop the samplers that played it (playback and preview); they used to
+    // keep sounding from their own PCM copy. Undo rebuilds them.
+    refreshStaleSamplers();
     log.done();
 }
 
@@ -20238,6 +20258,8 @@ void Audio_MapRegionToSample(const JsonApi::CallbackInfo& info)
     std::cout << "[Bridge] → audio.mapRegionToSample region=" << regionId
               << " sample=" << sampleBankId << "\n" << std::flush;
     audioEngine->getMixEngine().mapRegionToSample(regionId, sampleBankId);
+    // Samplers copy their PCM: rebuild the ones this remap just made stale.
+    refreshStaleSamplers();
 }
 
 // audio_loadSourceRegion(filePath, startTime, endTime) → sampleId
@@ -24820,6 +24842,8 @@ JsonApi::Value Audio_LoadRegionAudio(const JsonApi::CallbackInfo& info)
     audioEngine->getMixEngine().mapRegionToSample(regionId, sampleId);
     want.sampleId = sampleId;
     g_regionAudioOrigin[regionId] = want;
+    // Samplers copy their PCM: rebuild the ones this remap just made stale.
+    refreshStaleSamplers();
 
     // Now that this region's audio is mapped, warm clip caches for any clips
     // referencing it that have non-identity processing params (pitch/stretch/reverse).
@@ -26905,6 +26929,24 @@ JsonApi::Value Gpu_GetAvailableGpus(const JsonApi::CallbackInfo& info)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// diag_getSamplerState() → { playback: [...], preview: [...] }
+//
+// Every live sampler with the inputs it was built from, whether they still
+// match its region ("stale"), and a few values read off the Sampler itself.
+// Test-and-diagnostics only: not in the UI manifest, never called by the app.
+// It is how a contract test proves that a settings RPC reached the sampler
+// that is actually playing, rather than only the model.
+JsonApi::Value Diag_GetSamplerState(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || audioEngine == nullptr) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    return JsonApi::Value(audioEngine->getMixEngine().describeSamplers());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // diag_getVisualPreviewDiagnostic()
 //
 // Returns a structured snapshot of the live preview / grid pipeline state for
@@ -28082,6 +28124,7 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     if (method == "waveform_getClipPeaks") return Waveform_GetClipPeaks(info).raw();
     if (method == "gpu_setAdapter") return Gpu_SetAdapter(info).raw();
     if (method == "diag_getVisualPreviewDiagnostic") return Diag_GetVisualPreviewDiagnostic(info).raw();
+    if (method == "diag_getSamplerState") return Diag_GetSamplerState(info).raw();
     if (method == "hwenc_refresh") return HwEnc_Refresh(info).raw();
     if (method == "midi_parseSummary") return Midi_ParseSummary(info).raw();
     if (method == "midi_importFull") return Midi_ImportFull(info).raw();

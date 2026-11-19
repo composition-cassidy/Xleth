@@ -78,6 +78,11 @@ Since the 1.3.0-beta build (last commit in it: `752aa00`, 2026-11-11). 34 commit
 
 ### Changed
 
+- **Preview notes start at the next audio block.** Piano-roll and keyboard audition
+  notes, and the all-notes-off sent on Stop and Pause, are now queued to the audio
+  thread instead of changing a sampler's voices from the UI thread in the middle
+  of a block. They land at most one buffer later (about 10 ms), and a preview key
+  or a Stop can no longer tear a voice or leave a note stuck.
 - **Compose is the default layout.** Preview sits at the top of the Browser's 304px
   column, there is no top row, and the Inspector docks right at 280 when opened.
   The old shell stays as "Tiled (preview row)". Arrangement chrome goes from 95
@@ -108,6 +113,23 @@ Since the 1.3.0-beta build (last commit in it: `752aa00`, 2026-11-11). 34 commit
   serves only files under the open project folder and its sources' folders
   (symlinks and `..` resolved first), sends no CORS header, and answers a bad
   `Range` with 416 instead of throwing.
+- **Editing a sampler during playback no longer crashes or glitches the engine.**
+  Sampler knobs, slot edits and undo/redo rebuilt the samplers in place while the
+  audio callback was playing them, which could corrupt memory, and every edit cut
+  every sounding note in the project. Samplers are now swapped in as one snapshot
+  and freed only after the callback has let go of them, and a knob on one
+  instrument leaves the others playing.
+- **Sampler changes made outside the sampler panel reach the sound straight away.**
+  Slot settings sent with a region edit, relinked or remapped region audio, and a
+  deleted region all kept playing from the old sampler until the next Play (a
+  deleted region's until the project was reloaded), and undo left the piano-roll
+  preview on the undone settings. Every rebuild now replaces any sampler that no
+  longer matches its region.
+- **Switching Sample Picker sources while one is previewing no longer reads freed
+  audio.** `unloadSource` freed the decoded buffer while the audio callback could
+  still be mixing it, so clicking source B during A's preview could burst noise or
+  crash the engine. The callback now pins the buffer it reads and the unload waits
+  for that pin (at most one block's mix) before freeing; the audio thread never frees.
 - **Renaming or relabelling a sample no longer wipes the rest of it.**
   `timeline_modifyRegion` replaced the stored region with a partly-parsed default,
   so a Browser rename dropped the swapped audio/video, proxy state, custom label and
