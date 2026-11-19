@@ -1,5 +1,6 @@
 import { useRef, useState, useEffect, useMemo } from 'react'
 import { formatTimecode, frameAt } from './pickerFormat.js'
+import { buildMediaServerUrl } from '../../constants/labels.js'
 import styles from './SamplePicker.module.css'
 
 /**
@@ -37,7 +38,7 @@ export default function PickerVideoPreview({
   // Build HTTP URL for the local media server
   const videoUrl = useMemo(() => {
     if (!filePath || !mediaPort) return null
-    return `http://127.0.0.1:${mediaPort}/media?path=${encodeURIComponent(filePath)}`
+    return buildMediaServerUrl(mediaPort, filePath)
   }, [filePath, mediaPort])
 
   // Track currentTime in a ref so the sync interval isn't rebuilt on every update

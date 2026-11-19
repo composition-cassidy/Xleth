@@ -85,6 +85,12 @@ export function buildAudioUrl(filePath) {
   return 'xleth-media:///' + normalised.split('/').map(encodeURIComponent).join('/')
 }
 
+// URL on the local media server (electron-main/media-server.js), which rejects
+// any request without this session's token (handed over by preload).
+export function buildMediaServerUrl(port, filePath) {
+  return `http://127.0.0.1:${port}/media?path=${encodeURIComponent(filePath)}&token=${window.xleth?.mediaToken ?? ''}`
+}
+
 // ── MIDI note name conversion ────────────────────────────────────────────────
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']

@@ -94,6 +94,8 @@ window.xleth = ({
 
   // ── Media server (for <video> elements) ────────────────────────────────────
   getMediaPort: () => invoke('xleth:getMediaPort'),
+  // Per-session secret every media-server request must carry (see buildMediaServerUrl).
+  mediaToken: ipcRenderer.sendSync('xleth:getMediaTokenSync'),
 
   // ── FL Studio Score (.fsc) parsing ─────────────────────────────────────────
   // Pure read-only parse: returns neutral note data (no Timeline mutation).

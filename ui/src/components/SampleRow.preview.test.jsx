@@ -33,7 +33,7 @@ describe('SampleRow preview playback', () => {
     MockAudio.instances = []
     vi.stubGlobal('Audio', MockAudio)
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
-    window.xleth = { getMediaPort: vi.fn(async () => 4321) }
+    window.xleth = { getMediaPort: vi.fn(async () => 4321), mediaToken: 'tok' }
   })
 
   afterEach(() => {
@@ -73,7 +73,7 @@ describe('SampleRow preview playback', () => {
     })
 
     const audio = MockAudio.instances[0]
-    expect(audio.src).toBe('http://127.0.0.1:4321/media?path=C%3A%5Cmedia%5Csource.mp4')
+    expect(audio.src).toBe('http://127.0.0.1:4321/media?path=C%3A%5Cmedia%5Csource.mp4&token=tok')
     expect(audio.play).not.toHaveBeenCalled()
     expect(audio.currentTime).toBe(0)
     act(() => vi.advanceTimersByTime(1000))

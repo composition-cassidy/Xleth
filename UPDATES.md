@@ -102,6 +102,12 @@ Since the 1.3.0-beta build (last commit in it: `752aa00`, 2026-11-11). 34 commit
 
 ### Fixed
 
+- **Web pages can no longer read files off the PC through the media server.** The
+  local server behind `<video>`/`<audio>` previews served any path to anyone who
+  found its port, with a wildcard CORS header. It now needs a per-session token,
+  serves only files under the open project folder and its sources' folders
+  (symlinks and `..` resolved first), sends no CORS header, and answers a bad
+  `Range` with 416 instead of throwing.
 - **Renaming or relabelling a sample no longer wipes the rest of it.**
   `timeline_modifyRegion` replaced the stored region with a partly-parsed default,
   so a Browser rename dropped the swapped audio/video, proxy state, custom label and
