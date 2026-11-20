@@ -2891,6 +2891,38 @@ target_compile_definitions(test_sample_bank_lifetime PRIVATE
 
 target_link_options(test_sample_bank_lifetime PRIVATE /STACK:8388608)
 
+# A clip whose region is mapped after its timeline was published (project load
+# while playing, a clip added before its region decodes) must still play.
+add_executable(test_load_while_playing
+    test/test_load_while_playing.cpp
+)
+
+target_link_libraries(test_load_while_playing PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_load_while_playing PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+target_link_options(test_load_while_playing PRIVATE /STACK:8388608)
+
 add_executable(test_distortion
     test/test_distortion.cpp
 )
@@ -4315,6 +4347,7 @@ set(XLETH_ENGINE_TESTS
     test_automation_plan_snapshot
     test_timeline_read_lifetime
     test_sample_bank_lifetime
+    test_load_while_playing
     test_distortion
     test_phanjer
     test_reverb

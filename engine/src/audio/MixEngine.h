@@ -2017,6 +2017,12 @@ private:
     int      clipScanCursor_ = 0;
     int64_t  clipScanLastBufferEnd_ = -1;
     uint64_t clipScanSerial_ = 0;            // snapshot the cursor indexes into
+    uint64_t clipScanRegionMapSerial_ = 0;   // region map the last full scan saw
+    // Bumped after every region map publish. A clip whose region was unmapped
+    // at the full scan was skipped and the cursor moved past it, so a later
+    // mapping (project load decodes after it publishes the timeline) must
+    // force a rescan or the clip stays silent until a seek.
+    std::atomic<uint64_t> regionSampleMapSerial_ { 0 };
     // Double-buffer scratch for refreshing the previous block's active set
     // without a per-block allocation (same swap-not-copy idiom prevActiveBlocks_
     // uses below for pattern blocks).

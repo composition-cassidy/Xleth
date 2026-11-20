@@ -107,6 +107,13 @@ Since the 1.3.0-beta build (last commit in it: `752aa00`, 2026-11-11). 34 commit
 
 ### Fixed
 
+- **Loading a project while playing no longer leaves the output silent.** The
+  transport kept running but nothing was heard until Stop + Play. The load
+  publishes the new timeline before it decodes the regions, so the first block
+  skipped every clip under the playhead and never looked at them again. A
+  region being mapped to its audio now makes the next block rescan the clips;
+  this also fixes a clip added under the playhead staying silent once its
+  audio finished decoding.
 - **File → New no longer leaks memory.** Starting a blank project kept the
   closed project's decoded audio and waveform peaks until the next project
   load, so repeated File → New (with work in between) grew without bound. They
