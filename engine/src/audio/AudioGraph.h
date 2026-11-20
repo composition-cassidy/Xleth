@@ -79,6 +79,11 @@ struct GraphRealtimeView
 {
     bool initialized = false;
 
+    // Identifies the juce::AudioProcessorGraph this view describes; never reused,
+    // 0 when there is none. Node uids restart at 1 in every new graph, so a
+    // nodeId alone cannot tell one chain's effect from another's.
+    std::uint64_t graphSerial = 0;
+
     // Effect nodes (excludes I/O and the gain/delay helper nodes).
     std::vector<GraphRealtimeNode> effects;
     // nodeId -> index into `effects`.
@@ -535,6 +540,7 @@ private:
     // ── Storage ─────────────────────────────────────────────────────────
 
     std::unique_ptr<juce::AudioProcessorGraph> graph_;
+    std::uint64_t graphSerial_ = 0;   // see GraphRealtimeView::graphSerial
     juce::AudioProcessorGraph::NodeID inputNode_{};
     juce::AudioProcessorGraph::NodeID outputNode_{};
 

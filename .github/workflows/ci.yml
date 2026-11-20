@@ -2,9 +2,13 @@
 #
 #   native : CMake engine build (engine + scanner + editor-host + test exes),
 #            then the Node-API bridge addon via cmake-js. Both must succeed.
-#            Also runs the engine's ctest suite (non-blocking for now; see
-#            the step comment for the known failures).
-#            Uploads the built addon as an artifact for the ui job.
+#            Uploads the built addon as an artifact for the jobs below, then
+#            runs the engine's ctest suite. ctest fails the job on any red that
+#            is not listed in engine/known-ctest-failures.json.
+#   bridge-tests : the bridge contract scripts (bridge/run_contract_tests.js)
+#            against the uploaded addon. Fails on any red not listed in
+#            bridge/known-failures.json. The runner has no audio device, so most
+#            scripts SKIP; the summary says how many (see the job comment).
 #   ui     : Vite production build + vitest suite (both must succeed). Runs
 #            after native: the vitest suite forks ui/addon-worker.js, which
 #            requires the addon binary the native job builds.
@@ -76,18 +80,6 @@ jobs:
       - name: Build engine, scanner, editor-host, tests
         run: cmake --build build --config Release --parallel
 
-      # Runs the 46 test_* executables registered with CTest (engine/CMakeLists
-      # sets WORKING_DIRECTORY and the vcpkg DLL PATH via ENVIRONMENT_MODIFICATION).
-      # Non-blocking for now: 6 failures are known and pre-existing, NOT
-      # regressions — test_video_flip_applier, test_flip_orientation_golden,
-      # test_effects, test_reverb, test_frame_collector, test_real_render.
-      # See CONTRIBUTING.md for local reproduction and triage notes.
-      # TODO: once stable, drop continue-on-error and make this a required
-      # check (same path vitest took in Q12).
-      - name: Engine tests (ctest)
-        continue-on-error: true
-        run: ctest --test-dir build -C Release --output-on-failure
-
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -137,7 +129,77 @@ jobs:
           if-no-files-found: error
           path: |
             bridge/build/Release/xleth_native.node
+            bridge/build/Release/test_export_naming.exe
             bridge/build/Release/*.dll
+
+      # Runs every test_* executable registered with CTest (engine/CMakeLists
+      # sets WORKING_DIRECTORY and the vcpkg DLL PATH via ENVIRONMENT_MODIFICATION)
+      # except the known failures in engine/known-ctest-failures.json, each of
+      # which carries a reason and a date. They are excluded, not run, so a fix
+      # does not show up here: delete the entry when you fix the test. Any other
+      # red fails the job. Runs after the artifact upload so the addon is
+      # available even when this step is red.
+      - name: Engine tests (ctest)
+        shell: pwsh
+        run: |
+          $known = Get-Content engine/known-ctest-failures.json -Raw | ConvertFrom-Json
+          $exclude = '^(' + (($known | ForEach-Object { [regex]::Escape($_.test) }) -join '|') + ')$'
+          Write-Host "Excluding $($known.Count) known failures: $(($known | ForEach-Object test) -join ', ')"
+          ctest --test-dir build -C Release --output-on-failure --timeout 300 -E $exclude
+          $rc = $LASTEXITCODE
+          Add-Content $env:GITHUB_STEP_SUMMARY "### Engine ctest`nexit $rc; excluded as known failures ($($known.Count)): $(($known | ForEach-Object test) -join ', ')`n"
+          exit $rc
+
+  # The bridge contract scripts, against the addon the native job built (no
+  # second build). Everything they need is the addon + its DLLs + the C++
+  # test_export_naming.exe, all in the artifact; the scripts themselves come
+  # from the checkout. No npm install: the scripts use only node built-ins.
+  #
+  # GitHub-hosted Windows runners have no audio endpoint, so the engine's
+  # initialize() throws and almost every script cannot run. XLETH_CI_NO_AUDIO=1
+  # makes the runner report those as SKIPPED (never as passed) and print
+  # "N of M bridge tests SKIPPED: no audio device" in the log and the job
+  # summary. Real failures still fail the job unless listed, with a reason and
+  # a date, in bridge/known-failures.json.
+  bridge-tests:
+    name: Bridge contract tests
+    needs: native
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      XLETH_CI_NO_AUDIO: '1'
+    defaults:
+      run:
+        working-directory: bridge
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download bridge addon from the native job
+        uses: actions/download-artifact@v4
+        with:
+          name: bridge-addon
+          path: bridge/build/Release
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # Evidence for the skip count in the summary: what audio the runner has.
+      - name: Audio devices on this runner
+        shell: pwsh
+        run: |
+          Get-Service Audiosrv -ErrorAction SilentlyContinue | Format-Table Name, Status
+          $snd = Get-CimInstance Win32_SoundDevice -ErrorAction SilentlyContinue
+          if ($snd) { $snd | Format-Table Name, Status } else { Write-Host 'Win32_SoundDevice: none' }
+
+      - name: Runner self-test
+        run: node run_contract_tests.selftest.js
+
+      # 300 s per script instead of the 120 s default: the slowest takes ~40 s
+      # on a fast desktop and CI cores are slower.
+      - name: Bridge contract tests
+        run: node run_contract_tests.js --timeout=300
 
   ui:
     name: UI (Vite build + vitest)

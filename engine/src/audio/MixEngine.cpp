@@ -5470,8 +5470,29 @@ void MixEngine::refreshAutomationPlan()
         rt.nodeId = chain->getNodeIdForEffectInstance(target.effectInstanceId);
         rt.effect = chain->getEffect(rt.nodeId);
         if (rt.effect == nullptr) { rt.raw = nullptr; rt.param = nullptr; continue; }
+        const auto view = chain->realtimeView();
+        rt.graphSerial = view ? view->graphSerial : 0;
         ++runtime->resolvedCount;
     }
+
+    // Key every chain (not only the ones with targets: a clip whose effect does
+    // not exist yet resolves nothing, and must come alive when it appears).
+    auto keyFor = [](int trackId, const EffectChainManager& chain) {
+        AutomationChainKey key;
+        key.trackId = trackId;
+        if (const auto view = chain.realtimeView())
+        {
+            key.graphSerial = view->graphSerial;
+            key.nodes.assign(view->byInstanceId.begin(), view->byInstanceId.end());
+            std::sort(key.nodes.begin(), key.nodes.end());
+        }
+        return key;
+    };
+    if (masterEffectChain_) runtime->chains.push_back(keyFor(-1, *masterEffectChain_));
+    for (const auto& [trackId, chain] : effectChains_)
+        if (chain) runtime->chains.push_back(keyFor(trackId, *chain));
+    std::sort(runtime->chains.begin(), runtime->chains.end(),
+              [](const AutomationChainKey& a, const AutomationChainKey& b) { return a.trackId < b.trackId; });
 
     // Swap. The previous runtime dies here, on the message thread, while this
     // thread holds chainsMutex_ — so the audio thread cannot be inside
@@ -5482,9 +5503,95 @@ void MixEngine::refreshAutomationPlan()
 
 int MixEngine::refreshAutomationPlanIfDirty()
 {
-    if (!automationBindingsDirty_.load(std::memory_order_acquire)) return 0;
+    // refreshAutomationPlan() is a no-op without a timeline; returning 1 here
+    // would keep the applier in its 1 ms busy cadence until one is set.
+    if (timeline_ == nullptr) return 0;
+
+    if (!automationBindingsDirty_.load(std::memory_order_acquire))
+    {
+        // The central rule: rebuild whenever the chains are not the ones the
+        // plan was resolved against, whoever changed them and whether or not
+        // they set the flag (addGraphEffectNode, hydrateGraphEffectNodes,
+        // syncGraphTopology and the chain create/destroy calls never did).
+        // try_lock: a mutator holding the lock (plugin instantiation can take
+        // a while) will publish its change; the next pass sees it.
+        std::unique_lock<std::mutex> lock(chainsMutex_, std::try_to_lock);
+        if (!lock.owns_lock()) return 0;
+        if (!automationChainsChangedLocked())
+        {
+            verifyAutomationPlanLocked();
+            return 0;
+        }
+    }
     refreshAutomationPlan();
+    automationVerifyMismatchPasses_ = 0;
     return 1;
+}
+
+bool MixEngine::automationChainsChangedLocked() const
+{
+    // PRECONDITION: chainsMutex_ is held. Allocation-free (applier thread).
+    if (!automationRuntime_) return false;   // nothing resolved yet; the first build comes from a refresh
+    const auto& keys = automationRuntime_->chains;
+
+    std::size_t live = masterEffectChain_ ? 1u : 0u;
+    for (const auto& [trackId, chain] : effectChains_)
+        if (chain) ++live;
+    if (live != keys.size()) return true;
+
+    auto differs = [&keys](int trackId, const EffectChainManager& chain) {
+        auto k = std::lower_bound(keys.begin(), keys.end(), trackId,
+                                  [](const AutomationChainKey& a, int id) { return a.trackId < id; });
+        if (k == keys.end() || k->trackId != trackId) return true;
+        const auto view = chain.realtimeView();
+        if (!view) return k->graphSerial != 0 || !k->nodes.empty();
+        if (view->graphSerial != k->graphSerial || view->byInstanceId.size() != k->nodes.size())
+            return true;
+        for (const auto& [instanceId, nodeId] : view->byInstanceId)
+        {
+            auto n = std::lower_bound(k->nodes.begin(), k->nodes.end(), instanceId,
+                                      [](const std::pair<std::string, int>& a, const std::string& id)
+                                      { return a.first < id; });
+            if (n == k->nodes.end() || n->first != instanceId || n->second != nodeId) return true;
+        }
+        return false;
+    };
+    if (masterEffectChain_ && differs(-1, *masterEffectChain_)) return true;
+    for (const auto& [trackId, chain] : effectChains_)
+        if (chain && differs(trackId, *chain)) return true;
+    return false;
+}
+
+void MixEngine::verifyAutomationPlanLocked()
+{
+    // PRECONDITION: chainsMutex_ is held; envelope applier thread.
+    static const bool enabled = [] {
+        const char* v = std::getenv("XLETH_VERIFY_AUTOMATION_PLAN");
+        return v != nullptr && v[0] != '\0' && v[0] != '0';
+    }();
+    if (!enabled || !automationRuntime_) return;
+
+    // Same liveness test the audio thread applies before writing a target.
+    int stale = 0;
+    for (const auto& rt : automationRuntime_->targets)
+    {
+        if (rt.raw == nullptr || rt.param == nullptr) continue;   // unresolved: never written
+        const EffectChainManager* chain = nullptr;
+        if (rt.trackId < 0) chain = masterEffectChain_.get();
+        else if (auto it = effectChains_.find(rt.trackId); it != effectChains_.end()) chain = it->second.get();
+        const auto view = chain ? chain->realtimeView() : nullptr;
+        if (!view || view->graphSerial != rt.graphSerial
+            || AudioGraph::effectFor(*view, rt.nodeId) != rt.effect)
+            ++stale;
+    }
+    constexpr int kAutomationVerifyPasses = 5;
+    if (stale == 0) { automationVerifyMismatchPasses_ = 0; return; }
+    if (++automationVerifyMismatchPasses_ == kAutomationVerifyPasses)
+        std::fprintf(stderr,
+                     "[AutomationVerify] %d resolved automation target(s) fail the audio thread's "
+                     "liveness check (graph serial / node) for %d applier passes: the plan was not "
+                     "rebuilt after a chain change, so that automation is silent\n",
+                     stale, kAutomationVerifyPasses);
 }
 
 nlohmann::json MixEngine::getAutomationPlanDiagnostics() const
@@ -5572,13 +5679,13 @@ void MixEngine::applyAutomationForBlock(const ChainSnapshot& chains, int64_t tic
         AutomationRuntimeTarget& rt = runtime->targets[static_cast<std::size_t>(i)];
         if (rt.raw == nullptr || rt.param == nullptr) continue;   // dead clip / VST3
 
-        // Liveness: re-derive the effect from this snapshot's view of its chain
-        // and confirm it is the same object the plan resolved. A removed effect
-        // yields nullptr (or a different pointer, since node ids are monotonic
-        // and never reused), and the target is skipped rather than written
-        // through a stale pointer. The view is immutable and holds a strong
-        // reference to every processor it names, so the comparison itself can
-        // never race a removal or read freed memory.
+        // Liveness: the view must describe the same juce graph the plan resolved
+        // against (node uids restart in every new graph, and a rebuilt chain's
+        // effect can sit at the freed one's address), then re-derive the effect
+        // by nodeId and confirm it is the same object. Anything else is skipped
+        // rather than written through a stale pointer. The view is immutable and
+        // holds a strong reference to every processor it names, so the
+        // comparison itself can never race a removal or read freed memory.
         const EffectChainManager* chain =
             (rt.trackId < 0) ? chains.master.get()
                              : (chains.find(rt.trackId) != nullptr
@@ -5586,7 +5693,7 @@ void MixEngine::applyAutomationForBlock(const ChainSnapshot& chains, int64_t tic
                                     : nullptr);
         if (chain == nullptr) continue;
         const auto view = chain->realtimeView();
-        if (!view) continue;
+        if (!view || view->graphSerial != rt.graphSerial) continue;
         if (AudioGraph::effectFor(*view, rt.nodeId) != rt.effect) continue;
 
         const double v = xleth::automation::evaluateTarget(*plan, i, tick);

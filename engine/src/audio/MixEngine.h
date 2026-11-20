@@ -489,6 +489,10 @@ public:
                                std::unique_ptr<juce::AudioProcessor> proc,
                                int position);
 
+    // Tests that must keep a stale automation plan installed: the applier
+    // thread would otherwise rebuild it within one pass.
+    void stopEnvelopeApplierForTesting() { stopEnvelopeApplierThread(); }
+
     struct RealtimeDiagnosticsSnapshot
     {
         bool enabled = false;
@@ -1147,11 +1151,12 @@ public:
     // from processBlock or from a function that already holds that lock.
     void refreshAutomationPlan();
 
-    // Rebuild only if a chain mutation has invalidated the resolved parameter
-    // handles since the last rebuild. Driven by the envelope applier thread, so
-    // adding or removing an effect re-resolves its automation without every
-    // chain mutator having to remember to call refreshAutomationPlan(). Returns
-    // 1 when it rebuilt, 0 when nothing was dirty.
+    // Rebuild only if the resolved parameter handles may be stale: the dirty
+    // flag is set, OR the live chains differ from what the plan was resolved
+    // against (a chain created/destroyed/rebuilt, an effect added/removed). The
+    // second check is the one that makes it complete: no chain mutator has to
+    // remember anything. Driven by the envelope applier thread. Returns 1 when
+    // it rebuilt, 0 otherwise (including when chainsMutex_ was busy).
     int refreshAutomationPlanIfDirty();
 
     // { targetCount, windowCount, pointCount, overflowed, droppedTargets,
@@ -1794,28 +1799,42 @@ private:
     // One entry per AutomationPlan target, in the same order. Resolution is main
     // thread; the audio thread only stores into `raw`.
     //
-    // `effect` + `nodeId` are a LIVENESS CHECK, not a shortcut: before writing,
-    // the audio thread re-derives the effect from its chain by nodeId and
-    // compares. If the effect was removed (or replaced) since the plan was
-    // built, the lookup returns a different pointer (node ids are monotonic
-    // uids, never reused) and the target is skipped — so a stale plan fails
-    // closed instead of writing through a dangling pointer.
+    // `graphSerial` + `nodeId` + `effect` are a LIVENESS CHECK, not a shortcut:
+    // before writing, the audio thread confirms its chain's view describes the
+    // same juce graph the plan resolved against, then re-derives the effect by
+    // nodeId and compares. Node uids are monotonic only WITHIN one graph: a
+    // chain rebuilt by project load starts again at the same uids, and its new
+    // effect is often allocated at the freed one's address, so nodeId + effect
+    // alone passed and the block wrote through the dead effect's parameter
+    // (0xC0000005 in convertFrom0to1). The serial is never reused, so a stale
+    // plan fails closed.
     //
-    // Finding 9 changed WHAT makes that check safe, not the check itself. The
-    // audio thread no longer holds chainsMutex_, so it re-derives through the
-    // ChainSnapshot's immutable RealtimeView rather than the live node map, and
-    // the snapshot's strong Node::Ptr references keep `effect` alive for as long
-    // as the block can still see it. A runtime is only ever reachable through
-    // the snapshot that resolved it, so a target can never outlive its chain.
+    // A runtime is NOT tied to the chains it resolved against: every publish
+    // attaches the current automationRuntime_, and a chain rebuild publishes
+    // before the envelope applier gets to refresh the plan. What makes reading
+    // `param`/`raw` safe is the check above plus the snapshot's strong Node::Ptr
+    // references, which keep a matching `effect` alive for the whole block.
     struct AutomationRuntimeTarget
     {
         std::atomic<float>*         raw    = nullptr;
         juce::RangedAudioParameter* param  = nullptr;
         XlethEffectBase*            effect = nullptr;
+        std::uint64_t graphSerial = 0;   // GraphRealtimeView::graphSerial at resolve time
         int   nodeId      = -1;
         int   trackId     = -1;     // -1 = master chain
         float lastWritten = 0.0f;   // skip redundant stores
         bool  everWritten = false;
+    };
+
+    // What a plan was resolved against, for one chain (master = -1): its graph
+    // serial and every effect instance -> node id in its realtime view. Node ids
+    // are monotonic within one graph and the serial is never reused, so equal
+    // keys mean no effect was added, removed or rebuilt since.
+    struct AutomationChainKey
+    {
+        int           trackId     = -1;
+        std::uint64_t graphSerial = 0;
+        std::vector<std::pair<std::string, int>> nodes;   // sorted by instance id
     };
 
     struct AutomationRuntime
@@ -1823,15 +1842,28 @@ private:
         std::shared_ptr<const xleth::automation::AutomationPlan> plan;
         std::vector<AutomationRuntimeTarget> targets;   // parallel to plan->targets
         int resolvedCount = 0;
+        std::vector<AutomationChainKey> chains;         // sorted by trackId; applier-side only
     };
+
+    // Envelope applier thread only (under chainsMutex_): true when the live
+    // chains no longer match the keys the current plan was resolved against.
+    bool automationChainsChangedLocked() const;
+    // XLETH_VERIFY_AUTOMATION_PLAN=1 safety net, applier thread only (under
+    // chainsMutex_): logs when resolved targets have failed the audio thread's
+    // liveness check for kAutomationVerifyPasses passes in a row.
+    void verifyAutomationPlanLocked();
+    int automationVerifyMismatchPasses_ = 0;   // applier thread only
 
     // Published by refreshAutomationPlan() under chainsMutex_, and handed to the
     // audio thread only as ChainSnapshot::automation — never read directly off
     // this member from the realtime path.
     std::shared_ptr<AutomationRuntime> automationRuntime_;
 
-    // Set by every chain mutator that can create or destroy a node; serviced by
-    // the envelope applier thread through refreshAutomationPlanIfDirty().
+    // Set by chain mutators that can create or destroy a node, for an immediate
+    // rebuild; serviced by the envelope applier thread through
+    // refreshAutomationPlanIfDirty(). Not load-bearing: that pass also rebuilds
+    // whenever the chains differ from the plan's AutomationChainKeys, so a
+    // mutator that forgets the flag only costs one applier pass.
     std::atomic<bool> automationBindingsDirty_{false};
 
 

@@ -1,0 +1,22 @@
+[
+  {
+    "test": "test_flip_orientation_golden",
+    "reason": "GPU shader golden mismatch for every orientation (corner colours come out rotated vs the golden)",
+    "date": "2026-11-20"
+  },
+  {
+    "test": "test_xlethfilter_analog",
+    "reason": "102/103: 'the follower actually swept the cutoff (320 -> 320 Hz)'; the dynamics follower does not move the cutoff",
+    "date": "2026-11-20"
+  },
+  {
+    "test": "test_frame_collector",
+    "reason": "fail-fast crash 0xc0000409 (STATUS_STACK_BUFFER_OVERRUN)",
+    "date": "2026-11-20"
+  },
+  {
+    "test": "test_real_render",
+    "reason": "fail-fast crash 0xc0000409; also hardcodes the dev machine's project path (needs --project <dir> elsewhere)",
+    "date": "2026-11-20"
+  }
+]

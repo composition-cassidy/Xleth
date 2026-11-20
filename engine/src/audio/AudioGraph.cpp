@@ -131,6 +131,8 @@ void AudioGraph::init(double sampleRate, int blockSize)
     blockSize_  = blockSize;
 
     graph_ = std::make_unique<juce::AudioProcessorGraph>();
+    static std::atomic<std::uint64_t> nextGraphSerial{0};
+    graphSerial_ = ++nextGraphSerial;
     graph_->setPlayConfigDetails(2, 2, sampleRate_, blockSize_);
     graph_->prepareToPlay(sampleRate_, blockSize_);
 
@@ -180,6 +182,7 @@ void AudioGraph::destroy()
     sidechainSourceProc_.store(nullptr, std::memory_order_release);
     sidechainSourceNode_ = {};
     graph_.reset();
+    graphSerial_ = 0;
     inputNode_  = {};
     outputNode_ = {};
 
@@ -1763,6 +1766,7 @@ void AudioGraph::publishRealtimeView()
 {
     auto view = std::make_shared<RealtimeView>();
     view->initialized = (graph_ != nullptr);
+    view->graphSerial = graphSerial_;
 
     if (graph_ != nullptr)
     {
