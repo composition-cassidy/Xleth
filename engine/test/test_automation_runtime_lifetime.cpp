@@ -144,6 +144,7 @@ int main()
     clip.duration.ticks = 1'000'000;
     CHECK(timeline.addAutomationClip(clip) > 0, "automation clip added");
 
+    engine.refreshTimelineSnapshot();   // the plan builds from the published timeline, as in the bridge hook
     engine.refreshAutomationPlan();
     renderBlock(engine, transport);
     CHECK(std::fabs(mixOf(engine, nodeId) - kAutomated) < 1e-3,
@@ -184,6 +185,7 @@ int main()
         CHECK(e != nullptr, "envelope still present");
         if (e != nullptr)
             e->binding.effectInstanceId = freshId;
+        engine.refreshTimelineSnapshot();
         engine.refreshAutomationPlan();
         renderBlock(engine, transport);
         CHECK(std::fabs(mixOf(engine, fresh) - kAutomated) < 1e-3,

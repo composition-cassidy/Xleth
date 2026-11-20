@@ -1122,8 +1122,10 @@ public:
     // Same three-role split as the Envelope/LFO modulators, but with the
     // publication step done under chainsMutex_ instead of an epoch-RCU swap:
     //
-    //   message  refreshAutomationPlan() flattens the Timeline's automation
-    //            model into an AutomationPlan and resolves each target to the
+    //   message  refreshAutomationPlan() flattens the automation model of the
+    //   + applier PUBLISHED timeline snapshot (never the live Timeline, which
+    //            the bridge edits without chainsMutex_) into an
+    //            AutomationPlan and resolves each target to the
     //            raw APVTS atomic its effect reads (both need the chains lock,
     //            so both happen here, together).
     //   audio    processBlock() evaluates the plan at this block's tick and
@@ -1149,6 +1151,8 @@ public:
     // it complete by construction for timeline edits), project load, and effect
     // chain changes. Cheap and idempotent. Takes chainsMutex_ — NEVER call it
     // from processBlock or from a function that already holds that lock.
+    // Builds from the PUBLISHED timeline: publish an edit
+    // (refreshTimelineSnapshot) before calling this, as the hook does.
     void refreshAutomationPlan();
 
     // Rebuild only if the resolved parameter handles may be stale: the dirty
@@ -1294,6 +1298,9 @@ private:
         std::vector<int> clipTrackIds;
         std::vector<std::shared_ptr<const std::vector<Clip>>> clipTracks;
         std::vector<const Clip*> clips;       // every clip, by (position, id)
+        // Not read by the audio thread: what refreshAutomationPlan() builds
+        // from, on the envelope applier thread too, so it never reads timeline_.
+        std::shared_ptr<const xleth::automation::AutomationModel> automation;   // never null
 
         const Pattern* findPattern(int id) const noexcept;
         const std::vector<double>* findSyllableStarts(int regionId) const noexcept;

@@ -37,10 +37,31 @@ bool higherPriority(const Candidate& a, const Candidate& b)
 } // namespace
 
 // ===========================================================================
-// Build (MAIN THREAD)
+// Build (off the audio thread)
 // ===========================================================================
 
+AutomationModel copyAutomationModel(const Timeline& timeline)
+{
+    AutomationModel m;
+    for (const AutomationLane* l : timeline.getAllAutomationLanes())         // id order
+        m.lanes.emplace_hint(m.lanes.end(), l->id, *l);
+    for (const AutomationClip* c : timeline.getAllAutomationClips())
+        m.clips.emplace_hint(m.clips.end(), c->id, *c);
+    for (const AutomationEnvelope* e : timeline.getAllAutomationEnvelopes())
+        m.envelopes.emplace_hint(m.envelopes.end(), e->id, *e);
+    m.baseValues = timeline.getAllAutomationBaseValues();
+    return m;
+}
+
 void buildAutomationPlan(const Timeline& timeline,
+                         const AutomationBindingResolver& resolver,
+                         const AutomationBaseValueResolver& baseResolver,
+                         AutomationPlan& out)
+{
+    buildAutomationPlan(copyAutomationModel(timeline), resolver, baseResolver, out);
+}
+
+void buildAutomationPlan(const AutomationModel& model,
                          const AutomationBindingResolver& resolver,
                          const AutomationBaseValueResolver& baseResolver,
                          AutomationPlan& out)
@@ -59,15 +80,17 @@ void buildAutomationPlan(const Timeline& timeline,
     // for no reason and makes the diagnostics reproducible.
     std::map<AutomationBinding, std::vector<Candidate>> byBinding;
 
-    for (const AutomationClip* clip : timeline.getAllAutomationClips()) {
-        if (clip == nullptr) continue;
+    for (const auto& [clipId, clipEntry] : model.clips) {
+        const AutomationClip* clip = &clipEntry;
         if (clip->duration.ticks <= 0) continue;   // no coverage, nothing to plan
 
-        const AutomationLane* lane = timeline.getAutomationLane(clip->laneId);
-        if (lane == nullptr) continue;             // orphan clip — fail closed
+        const auto laneIt = model.lanes.find(clip->laneId);
+        if (laneIt == model.lanes.end()) continue;  // orphan clip — fail closed
+        const AutomationLane* lane = &laneIt->second;
 
-        const AutomationEnvelope* env = timeline.getAutomationEnvelope(clip->envelopeId);
-        if (env == nullptr) continue;              // orphan clip — fail closed
+        const auto envIt = model.envelopes.find(clip->envelopeId);
+        if (envIt == model.envelopes.end()) continue;   // orphan clip — fail closed
+        const AutomationEnvelope* env = &envIt->second;
 
         if (!env->binding.valid()) { ++out.unresolvedClipCount; continue; }
 
@@ -135,8 +158,9 @@ void buildAutomationPlan(const Timeline& timeline,
         // Base value: the persisted manual value wins (it IS the knob position
         // the user last set outside every clip). Only when the project has never
         // recorded one do we ask the engine for the parameter's live value.
-        bool haveBase = false;
-        target.baseValue = timeline.getAutomationBaseValue(binding, &haveBase);
+        const auto baseIt = model.baseValues.find(binding);
+        const bool haveBase = baseIt != model.baseValues.end();
+        target.baseValue = haveBase ? baseIt->second : 0.0;
         if (!haveBase) {
             double live = 0.0;
             if (baseResolver && baseResolver(binding, live) && std::isfinite(live))

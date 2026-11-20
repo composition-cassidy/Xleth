@@ -2018,6 +2018,9 @@ std::shared_ptr<MixEngine::TimelineSnapshot> MixEngine::buildTimelineSnapshot() 
         syllables->emplace_back(r->id, std::move(starts));
     }
     snap->syllableStarts = std::move(syllables);
+
+    snap->automation = std::make_shared<const xleth::automation::AutomationModel>(
+        xleth::automation::copyAutomationModel(tl));
     return snap;
 }
 
@@ -2130,6 +2133,22 @@ std::string MixEngine::verifyTimelineSnapshot() const
                                        [](const Pattern& p) { return nlohmann::json(p); });
     if (d.empty() && *published->syllableStarts != *live->syllableStarts)
         d = "syllable starts differ";
+
+    // The automation plan builds from this copy: an unpublished automation edit
+    // is one the plan never sees.
+    const auto& pa = *published->automation;
+    const auto& la = *live->automation;
+    auto values = [](const auto& m) {
+        std::vector<typename std::decay_t<decltype(m)>::mapped_type> v;
+        for (const auto& [id, x] : m) v.push_back(x);
+        return v;
+    };
+    if (d.empty()) d = firstDifference("automation lane", values(pa.lanes), values(la.lanes), automationLaneToJson);
+    if (d.empty()) d = firstDifference("automation clip", values(pa.clips), values(la.clips), automationClipToJson);
+    if (d.empty()) d = firstDifference("automation envelope", values(pa.envelopes), values(la.envelopes),
+                                       automationEnvelopeToJson);
+    if (d.empty() && pa.baseValues != la.baseValues)
+        d = "automation base values differ";
     return d;
 }
 
@@ -5422,7 +5441,13 @@ void MixEngine::publishSourceTransformTableLocked(xleth::TrackSourceTransformTab
 
 void MixEngine::refreshAutomationPlan()
 {
-    if (timeline_ == nullptr) return;
+    // Pinned for the whole build. Never timeline_: this also runs on the
+    // envelope applier thread, and the bridge thread edits the live Timeline,
+    // move-assigns it on project load and swaps it for an export's frozen copy,
+    // none of it under chainsMutex_. The plan copies what it needs, so nothing
+    // in it points into the snapshot either.
+    const auto timeline = timelineSnapshot_.load();
+    if (!timeline) return;
 
     std::lock_guard<std::mutex> lock(chainsMutex_);
     ChainSnapshotPublisher chainSnapshotPublisher{this};
@@ -5445,7 +5470,7 @@ void MixEngine::refreshAutomationPlan()
     };
 
     auto plan = std::make_shared<xleth::automation::AutomationPlan>();
-    xleth::automation::buildAutomationPlan(*timeline_, resolver, baseResolver, *plan);
+    xleth::automation::buildAutomationPlan(*timeline->automation, resolver, baseResolver, *plan);
 
     auto runtime = std::make_shared<AutomationRuntime>();
     runtime->plan = plan;
@@ -5505,7 +5530,8 @@ int MixEngine::refreshAutomationPlanIfDirty()
 {
     // refreshAutomationPlan() is a no-op without a timeline; returning 1 here
     // would keep the applier in its 1 ms busy cadence until one is set.
-    if (timeline_ == nullptr) return 0;
+    // (The published one: timeline_ is the bridge thread's.)
+    if (!timelineSnapshot_.load()) return 0;
 
     if (!automationBindingsDirty_.load(std::memory_order_acquire))
     {
