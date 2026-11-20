@@ -2139,8 +2139,14 @@ void AddPatternBlockCommand::execute(Timeline& timeline) {
     if (firstExecute_) {
         int id = timeline.addPatternBlock(block_);
         if (id < 0) {
+            // Timeline::addPatternBlock refuses three ways; only the last is common.
+            const char* why = !timeline.getTrack(block_.trackId)     ? "trackId does not exist"
+                            : !timeline.getPattern(block_.patternId) ? "patternId does not exist"
+                            : "exact duplicate of an existing {trackId, patternId, position} block";
             std::cerr << "[Undo] ERROR AddPatternBlockCommand::execute: addPatternBlock"
-                         " failed (check trackId/patternId exist)\n";
+                         " refused (" << why << "; trackId=" << block_.trackId
+                      << " patternId=" << block_.patternId
+                      << " position=" << block_.position.ticks << ")\n";
             setApplied(false);
             return;
         }
