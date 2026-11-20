@@ -6383,6 +6383,17 @@ static void triggerMipmapGeneration(int sampleBankId,
         juce::File(juce::String(sourcePath)), saveXlpeak);
 }
 
+// Unloads `ids` from the SampleBank and drops their waveform mipmaps (keyed by
+// id, see triggerMipmapGeneration). A block or mipmap thread still reading one
+// keeps it alive until done; see SampleBank::unloadSample.
+static void unloadBankSamples(const std::vector<int>& ids)
+{
+    if (!sampleBank || ids.empty()) return;
+    sampleBank->unloadSamples(ids);
+    if (g_mipmapCache)
+        for (int id : ids) g_mipmapCache->remove(std::to_string(id));
+}
+
 // ─── PREP-baked slot waveforms ───────────────────────────────────────────────
 // A slot with an active PREP bake plays a DIFFERENT buffer from the one in the
 // SampleBank, at a different length. Everything the editor measures or draws
@@ -7960,6 +7971,11 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
         // decode each region's audio — swap-aware, same logic as audio_loadRegionAudio.
         mix.clearRegionToSampleMap();
         g_regionAudioOrigin.clear();
+        // Everything the bank holds belongs to the project being replaced: its
+        // regions, layers and sandbox sources, and the samples only its undo
+        // history could map back (swaps, bakes), which was cleared above.
+        // Without this every load kept the previous project's decoded audio.
+        if (sampleBank) unloadBankSamples(sampleBank->liveIds());
         endStage("teardown");
         if (sampleBank) {
             const double engineRate = g_timeline->getSampleRate();

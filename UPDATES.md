@@ -107,6 +107,13 @@ Since the 1.3.0-beta build (last commit in it: `752aa00`, 2026-11-11). 34 commit
 
 ### Fixed
 
+- **Memory no longer grows on every project load.** Opening a project kept the
+  previous project's decoded audio and waveform peaks in memory, so each load
+  of a project added its whole audio footprint again (about 220 MB per load
+  for a project with ~115 MB of audio; ~12 MB for two 8 s tones). The old
+  project's samples and peaks are now released on load, and a sample is only
+  freed once nothing still playing or drawing it can read it, so loading
+  while the transport runs is safe.
 - **Editing automation during playback no longer crashes.** After any effect
   chain change, a background thread rebuilt the automation plan from the live
   timeline while edits, undo/redo and project loads were freeing the lanes,
