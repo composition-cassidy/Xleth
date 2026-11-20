@@ -7769,6 +7769,12 @@ JsonApi::Value Project_NewBlank(const JsonApi::CallbackInfo& info)
         g_sandboxCore->clear();
     }
 
+    // 5c. Release the closed project's decoded audio and waveform peaks, same as
+    //     project_load. After the timeline, region map, undo history and sandbox
+    //     above: they are everything that could map a sample id back to a bank
+    //     buffer. A block still playing one keeps it alive through its bank pin.
+    if (sampleBank) unloadBankSamples(sampleBank->liveIds());
+
     // 6. Drop decoders, video events, frame caches. Must happen under
     //    syncEventsMutex so the video thread never sees a dangling pointer.
     {

@@ -107,6 +107,10 @@ Since the 1.3.0-beta build (last commit in it: `752aa00`, 2026-11-11). 34 commit
 
 ### Fixed
 
+- **File → New no longer leaks memory.** Starting a blank project kept the
+  closed project's decoded audio and waveform peaks until the next project
+  load, so repeated File → New (with work in between) grew without bound. They
+  are now released the same way a load releases them.
 - **Memory no longer grows on every project load.** Opening a project kept the
   previous project's decoded audio and waveform peaks in memory, so each load
   of a project added its whole audio footprint again (about 220 MB per load
