@@ -107,6 +107,13 @@ Since the 1.3.0-beta build (last commit in it: `752aa00`, 2026-11-11). 34 commit
 
 ### Fixed
 
+- **A seek or Stop during playback is no longer lost.** If it landed while the
+  audio thread was moving the playhead on by one block, that write put the old
+  position back: the playhead carried on from where it was, or Stop left it
+  there instead of at 0. With the loop on, a seek past the loop end could also be
+  pulled back to the loop start. Position, playing state and the loop latch are
+  now one atomic value, and the audio thread only moves the playhead if
+  nothing changed since it read it.
 - **Loading a project while playing no longer leaves the output silent.** The
   transport kept running but nothing was heard until Stop + Play. The load
   publishes the new timeline before it decodes the regions, so the first block

@@ -3,7 +3,7 @@
 /**
  * RenderClock — Integer-accurate timing utility for the offline render pipeline.
  *
- * ALL timestamp conversions flow from Transport::positionSamples_ (int64_t).
+ * ALL timestamp conversions flow from Transport's sample position (int64_t).
  * Every conversion that feeds into PTS, frame index, or PPQ uses av_rescale_q /
  * av_rescale (128-bit intermediate) to prevent overflow and eliminate floating-
  * point accumulation drift.

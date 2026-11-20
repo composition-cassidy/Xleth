@@ -642,6 +642,24 @@ target_include_directories(test_loop_region PRIVATE
     ${FFMPEG_INCLUDE_DIRS}
 )
 
+# ── test_transport_race ───────────────────────────────────────────────────────
+# A seek or stop from another thread is never overwritten by the audio thread's
+# Transport::advance(). Two threads; Transport.cpp is compiled in directly so the
+# test needs no JUCE (it lives in XlethEngineCore).
+add_executable(test_transport_race
+    test/test_transport_race.cpp
+    src/Transport.cpp
+)
+
+target_link_libraries(test_transport_race PRIVATE
+    XlethEngineModel
+)
+
+# Transport.cpp includes RenderClock.h, which pulls in libavutil headers.
+target_include_directories(test_transport_race PRIVATE
+    ${FFMPEG_INCLUDE_DIRS}
+)
+
 # ── test_metronome ────────────────────────────────────────────────────────────
 # Click-track beat grid / bar accent / +3 st resampling. Pure std — no JUCE.
 add_executable(test_metronome
@@ -4281,6 +4299,7 @@ set(XLETH_ENGINE_TESTS
     test_landing
     test_grid_rect_math
     test_loop_region
+    test_transport_race
     test_render_scope
     test_tail_render
     test_video_flip_resolver
