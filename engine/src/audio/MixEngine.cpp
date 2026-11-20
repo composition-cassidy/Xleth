@@ -2162,6 +2162,8 @@ void MixEngine::publishRegionSampleMapLocked(RegionSampleMap next)
     auto previous = regionToSampleMap_.exchange(
         std::make_shared<const RegionSampleMap>(std::move(next)),
         std::memory_order_acq_rel);
+    // After the exchange: a reader that sees the new serial sees this map.
+    regionSampleMapSerial_.fetch_add(1, std::memory_order_release);
 
     // Retire, never free here. An audio block may still hold `previous`; if it
     // dropped the last reference, the map's node frees would run on the
@@ -6374,6 +6376,12 @@ void MixEngine::findActiveClips(int64_t bufferStart, int64_t bufferEnd,
     const int64_t triggerCeiling =
         noteTriggerCeilingSample_.load(std::memory_order_relaxed);
 
+    // Read before the map (the writer bumps it after publishing), so a serial
+    // seen here never belongs to a map newer than the one scanned below.
+    const uint64_t regionMapSerial = regionSampleMapSerial_.load(std::memory_order_acquire);
+    const bool regionMapChanged = (regionMapSerial != clipScanRegionMapSerial_);
+    clipScanRegionMapSerial_ = regionMapSerial;
+
     // One atomic load pins the region map for this whole scan; a writer
     // publishing mid-block cannot change or free what we are reading.
     const auto regionMap = loadRegionSampleMap();
@@ -6390,6 +6398,7 @@ void MixEngine::findActiveClips(int64_t bufferStart, int64_t bufferEnd,
     // this point re-derives from rtTimeline_->clips only;
     // stale entries left over in activeClips_ are never dereferenced.
     const bool isSeek = topologyChanged
+                       || regionMapChanged
                        || clipScanLastBufferEnd_ < 0
                        || bufferStart != clipScanLastBufferEnd_;
 
