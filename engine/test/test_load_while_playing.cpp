@@ -143,7 +143,12 @@ void testLoadWhilePlaying()
     rig.timeline = std::move(loaded);
     rig.engine->setTimeline(&rig.timeline);
     rig.engine->clearRegionToSampleMap();
-    rig.loudest(4);                                   // the regions are decoding
+    // The ordering that causes the bug, forced rather than raced: these blocks
+    // are the audio thread's full scan of the PUBLISHED timeline while its region
+    // has no audio. Silence proves the scan ran and skipped the clip; only then
+    // does the region get its sample.
+    const float decoding = rig.loudest(4);
+    CHECK(decoding == 0.0f, "the new timeline was scanned while its region was unmapped (peak " << decoding << ")");
     rig.engine->mapRegionToSample(after.region, rig.bank.addSampleFromBuffer(rig.sine, kRate, "b"));
 
     const float afterLoad = rig.loudest(4);
