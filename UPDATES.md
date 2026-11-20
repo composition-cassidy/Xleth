@@ -107,6 +107,13 @@ Since the 1.3.0-beta build (last commit in it: `752aa00`, 2026-11-11). 34 commit
 
 ### Fixed
 
+- **Placing a pattern block on top of an identical one no longer reports success.**
+  The engine refuses a second block with the same track, pattern and position,
+  but `timeline_addPatternBlock` answered with the id of the newest block on the
+  timeline, so the timeline believed the add worked and a later move or delete
+  could hit the wrong block. It now returns `-1` when the add is refused; the
+  drop, pencil and split paths in the timeline check for it (a refused split puts
+  the first half back at its old length).
 - **Editing automation during playback no longer crashes.** After any effect
   chain change, a background thread rebuilt the automation plan from the live
   timeline while edits, undo/redo and project loads were freeing the lanes,
