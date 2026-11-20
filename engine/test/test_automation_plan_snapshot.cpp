@@ -28,6 +28,10 @@
 //   T5  Publish cost: ~5,000 clips, ~50,000 notes, with and without a full
 //       automation load (printed).
 //
+// T4 is work-bound (fixed edit / replace / export / rebuild counts, ~3 s), not
+// time-bound: with a fixed window the applier's rebuilds starved the editing
+// thread of chainsMutex_ and the replace/export counts depended on scheduling.
+//
 // T1-T2 are deterministic and failed on the unfixed code (the plan followed
 // the live timeline). T3 passed there too (it reads the frozen copy only while
 // the copy is alive); it pins the export behaviour. T4 is the crash/hang net,
@@ -292,7 +296,14 @@ void testExportRoundTrip()
 void testChurn()
 {
     std::cout << "[T4] churn: the applier rebuilds while the bridge edits, undoes and replaces\n";
-    constexpr auto kDuration = std::chrono::seconds(6);
+    // Work-bound, not time-bound: the churn runs until it has done this much,
+    // so how many edits fit does not depend on how the OS schedules the two
+    // threads. kHangGuard only catches a test that never gets there.
+    constexpr int      kMinEdits = 4096;     // 64 full cycles of the 64-edit pattern
+    constexpr int      kMinReplaces = 64;
+    constexpr int      kMinExports = 64;
+    constexpr uint64_t kMinPasses = 10000;
+    constexpr auto     kHangGuard = std::chrono::seconds(60);
     Rig r(2, 0.5);
 
     std::atomic<bool>     stop { false };
@@ -302,6 +313,8 @@ void testChurn()
     // The applier: one rebuild per pass (what it runs whenever the plan is
     // stale), forced every pass so each one overlaps an edit.
     std::thread applier([&] {
+        constexpr unsigned kBurst = 16;
+        unsigned burst = 0;
         while (!stop.load(std::memory_order_acquire))
         {
             r.engine.refreshAutomationPlan();
@@ -310,7 +323,15 @@ void testChurn()
                 || d.value("targetCount", 0) > kParamCount || d.value("droppedWindows", -1) != 0)
                 malformed.fetch_add(1, std::memory_order_relaxed);
             passes.fetch_add(1, std::memory_order_release);
-            std::this_thread::yield();   // let the bridge's hook take chainsMutex_ now and then
+            // Rate limit: a bare yield left the applier holding chainsMutex_ almost
+            // continuously (~57k rebuilds/s), starving the editing thread of the
+            // lock its undo hook needs. A real sleep hands the lock over; it is
+            // taken every kBurst passes so the applier stays busy while the
+            // editor is mid-edit (a sleep every pass hid the race).
+            if ((++burst % kBurst) == 0)
+                std::this_thread::sleep_for(std::chrono::microseconds(200));
+            else
+                std::this_thread::yield();
         }
     });
 
@@ -323,8 +344,15 @@ void testChurn()
     uint64_t lastSeen = 0;
     const auto start = std::chrono::steady_clock::now();
     auto lastProgress = start;
-    while (std::chrono::steady_clock::now() - start < kDuration)
+    bool timedOut = false;
+    while (edits < kMinEdits || replaces < kMinReplaces || exports < kMinExports
+           || passes.load(std::memory_order_acquire) < kMinPasses)
     {
+        if (std::chrono::steady_clock::now() - start > kHangGuard)
+        {
+            timedOut = true;
+            break;
+        }
         Timeline& tl = r.timeline;
         const auto lanes = tl.getAllAutomationLanes();
         const auto clips = tl.getAllAutomationClips();
@@ -446,6 +474,9 @@ void testChurn()
 
     std::cerr << "  " << edits << " edits (" << replaces << " project replaces, " << exports
               << " export round trips), " << passes.load() << " applier rebuilds\n";
+    CHECK(!timedOut, "the churn did not finish its work within " << kHangGuard.count() << " s (edits=" << edits
+          << "/" << kMinEdits << ", replaces=" << replaces << "/" << kMinReplaces << ", exports=" << exports
+          << "/" << kMinExports << ", passes=" << passes.load() << "/" << kMinPasses << ")");
     CHECK(passes.load() > 1000, "the applier rebuilt throughout the churn (" << passes.load() << ")");
     CHECK(replaces > 3 && exports > 3, "the churn replaced the project and round-tripped exports");
     CHECK(malformed.load() == 0, "every plan the applier built was well formed (" << malformed.load() << " not)");
