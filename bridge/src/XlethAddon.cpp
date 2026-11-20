@@ -760,6 +760,11 @@ Napi::Value Diag_GetSamplerState(const Napi::CallbackInfo& info)
     return dispatchToService(info, "diag_getSamplerState");
 }
 
+Napi::Value Diag_GetBankStats(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "diag_getBankStats");
+}
+
 Napi::Value HwEnc_Refresh(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "hwenc_refresh");
@@ -1009,6 +1014,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     // Contract tests only: what each live sampler was built from.
     exports.Set("diag_getSamplerState",
                 Napi::Function::New(env, Diag_GetSamplerState));
+    // Contract tests only: SampleBank slots and waveform mipmaps held.
+    exports.Set("diag_getBankStats",
+                Napi::Function::New(env, Diag_GetBankStats));
 
     // ── Hardware encoder detection ───────────────────────────────────────────
     // hwenc_getAvailableEncoders / hwenc_getDefaultEncoder migrated to the RPC

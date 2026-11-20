@@ -144,6 +144,9 @@ public:
     void remove(const std::string& key);
     void clear();
 
+    // Entries held, ready or still generating. Diagnostics.
+    std::size_t size() const;
+
 private:
     mutable std::mutex mutex_;
     std::unordered_map<std::string, Ptr> cache_;

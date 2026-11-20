@@ -925,3 +925,9 @@ void WaveformMipmapCache::clear()
     std::lock_guard<std::mutex> lock(mutex_);
     cache_.clear();
 }
+
+std::size_t WaveformMipmapCache::size() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return cache_.size();
+}

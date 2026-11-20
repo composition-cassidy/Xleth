@@ -26964,6 +26964,31 @@ JsonApi::Value Diag_GetSamplerState(const JsonApi::CallbackInfo& info)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// diag_getBankStats() → { slots, live, mipmapEntries }
+//
+// slots: SampleBank slots in storage; live: those holding audio; mipmapEntries:
+// waveform mipmaps held (ready or generating). Test-and-diagnostics only, like
+// diag_getSamplerState: how a contract test proves project load does not grow
+// the bank.
+JsonApi::Value Diag_GetBankStats(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !sampleBank) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int slots = sampleBank->getNumSamples();
+    int live = 0;
+    for (int id = 0; id < slots; ++id)
+        if (sampleBank->getSample(id) != nullptr) ++live;
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("slots",         JsonApi::Number::New(env, slots));
+    out.Set("live",          JsonApi::Number::New(env, live));
+    out.Set("mipmapEntries", JsonApi::Number::New(env, g_mipmapCache ? static_cast<double>(g_mipmapCache->size()) : 0.0));
+    return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // diag_getVisualPreviewDiagnostic()
 //
 // Returns a structured snapshot of the live preview / grid pipeline state for
@@ -28164,6 +28189,7 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     if (method == "gpu_setAdapter") return Gpu_SetAdapter(info).raw();
     if (method == "diag_getVisualPreviewDiagnostic") return Diag_GetVisualPreviewDiagnostic(info).raw();
     if (method == "diag_getSamplerState") return Diag_GetSamplerState(info).raw();
+    if (method == "diag_getBankStats") return Diag_GetBankStats(info).raw();
     if (method == "hwenc_refresh") return HwEnc_Refresh(info).raw();
     if (method == "midi_parseSummary") return Midi_ParseSummary(info).raw();
     if (method == "midi_importFull") return Midi_ImportFull(info).raw();
