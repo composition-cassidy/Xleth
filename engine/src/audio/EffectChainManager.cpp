@@ -1006,6 +1006,11 @@ void EffectChainManager::visitEffectsInChainOrder(
     if (graph_) graph_->visitEffectsInChainOrder(context, visit);
 }
 
+std::uint64_t EffectChainManager::graphSerial() const noexcept
+{
+    return graph_ ? graph_->graphSerial() : 0;
+}
+
 void EffectChainManager::setSidechainKeyBuffer(const float* left, const float* right,
                                                int numSamples) noexcept
 {

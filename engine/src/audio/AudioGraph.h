@@ -276,6 +276,10 @@ public:
     using EffectVisitor = void (*)(void* context, int nodeId, XlethEffectBase* effect);
     void visitEffectsInChainOrder(void* context, EffectVisitor visit) const;
 
+    // Never reused, 0 once released. Node uids restart at 1 in every graph, so
+    // (nodeId, effect*) alone cannot tell this graph's effect from a later one's.
+    std::uint64_t graphSerial() const noexcept { return graphSerial_; }
+
     // Returns the raw AudioProcessor for any node (stock XlethEffectBase OR
     // VST3 AudioPluginInstance).  Returns nullptr if nodeId is not found.
     juce::AudioProcessor* getProcessor(int nodeId);

@@ -85,11 +85,14 @@ namespace xleth
     // advance all make it differ.
     //
     // `effect` is an IDENTITY TOKEN ONLY and is never dereferenced from a
-    // snapshot. Paired with nodeId (monotonic, never reused) it cannot alias a
-    // different, later effect at a recycled address.
+    // snapshot. nodeId restarts at 1 in every graph, so on its own it cannot
+    // tell a rebuilt chain's effect from the old one's; graphSerial (one per
+    // graph, never reused) does, so a new effect at a recycled address with the
+    // same nodeId and epoch still differs.
     struct SourceTransformNodeStamp
     {
         int                    trackId  = -1;
+        std::uint64_t          graphSerial = 0;
         int                    nodeId   = -1;
         const XlethEffectBase* effect   = nullptr;
         std::uint64_t          epoch    = 0;
@@ -97,7 +100,7 @@ namespace xleth
 
         bool operator==(const SourceTransformNodeStamp& o) const noexcept
         {
-            return trackId == o.trackId && nodeId == o.nodeId && effect == o.effect
+            return trackId == o.trackId && graphSerial == o.graphSerial && nodeId == o.nodeId && effect == o.effect
                 && epoch == o.epoch && bypassed == o.bypassed;
         }
         bool operator!=(const SourceTransformNodeStamp& o) const noexcept { return !(*this == o); }
