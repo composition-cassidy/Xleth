@@ -2719,6 +2719,39 @@ target_compile_definitions(test_automation_runtime_lifetime PRIVATE
 
 target_link_options(test_automation_runtime_lifetime PRIVATE /STACK:8388608)
 
+# ── test_source_transform_stamp_aba ──────────────────────────────────────────
+# A rebuilt chain whose Pitch Shifter reuses the freed one's address and node id
+# must still republish the SourceTransform table (the stamp carries the graph serial).
+add_executable(test_source_transform_stamp_aba
+    test/test_source_transform_stamp_aba.cpp
+)
+
+target_link_libraries(test_source_transform_stamp_aba PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_source_transform_stamp_aba PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+target_link_options(test_source_transform_stamp_aba PRIVATE /STACK:8388608)
+
 # ── test_automation_plan_rebind ──────────────────────────────────────────────
 # After any chain or timeline mutation and its undo, one envelope applier pass
 # leaves automation driving its parameter again (no site has to remember to
@@ -4204,6 +4237,7 @@ set(XLETH_ENGINE_TESTS
     test_source_player_unload
     test_sampler_set_handoff
     test_automation_runtime_lifetime
+    test_source_transform_stamp_aba
     test_automation_plan_rebind
     test_timeline_read_lifetime
     test_distortion

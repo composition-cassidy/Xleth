@@ -318,6 +318,9 @@ public:
                                   void (*visit)(void* context, int nodeId,
                                                 XlethEffectBase* effect)) const;
 
+    // AudioGraph::graphSerial(); 0 when the chain has no graph. Message thread.
+    std::uint64_t graphSerial() const noexcept;
+
     // Borrow this block's per-target key audio for the chain's sidechain source
     // node. No-op when the chain has no sidechain source. MixEngine calls these
     // around processBlock — under the chains lock, same thread, same block.
