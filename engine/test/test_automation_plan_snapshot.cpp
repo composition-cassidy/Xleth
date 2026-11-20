@@ -28,8 +28,10 @@
 //   T5  Publish cost: ~5,000 clips, ~50,000 notes, with and without a full
 //       automation load (printed).
 //
-// T1-T3 are deterministic and failed on the unfixed code (the plan followed
-// the live timeline). T4 is the crash/hang net.
+// T1-T2 are deterministic and failed on the unfixed code (the plan followed
+// the live timeline). T3 passed there too (it reads the frozen copy only while
+// the copy is alive); it pins the export behaviour. T4 is the crash/hang net,
+// including a copy freed under a running build.
 //
 // Uses the same-size LIFO allocator, so memory freed under a reader is handed
 // straight to the next allocation of that size.
