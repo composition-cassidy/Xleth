@@ -543,6 +543,12 @@ target_compile_definitions(XlethEngineService PRIVATE
     XLETH_DEBUG
 )
 
+# One ~28k-line translation unit: the VS 2022 compiler runs out of COFF
+# sections on it (C1128). The VS 2026 one used by the bridge build does not.
+if(MSVC)
+    target_compile_options(XlethEngineService PRIVATE /bigobj)
+endif()
+
 target_link_libraries(XlethEngineService PUBLIC
     XlethEngineCore
     XlethEngineHeaders
