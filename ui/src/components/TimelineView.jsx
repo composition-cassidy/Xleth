@@ -3231,6 +3231,37 @@ export default function TimelineView({
     }
   }, [])
 
+  // Delete-tool sweep: every swept clip in one removeClipsBatch (one engine
+  // command) and the pattern blocks (no batch call) inside the same undo group,
+  // so one Ctrl+Z restores the whole sweep. Local state is updated first.
+  const handleDeleteSweep = useCallback(async (clipIds, blockIds) => {
+    const xl = window.xleth
+    if (clipIds.length > 0) {
+      const doomed = new Set(clipIds)
+      const remaining = clipsRef.current.filter(c => !doomed.has(c.id))
+      setClips(remaining)
+      clipsRef.current = remaining
+      setSelectedClipIds(prev => new Set([...prev].filter(id => !doomed.has(id))))
+    }
+    if (blockIds.length > 0) {
+      const doomed = new Set(blockIds)
+      setPatternBlocks(prev => prev.filter(b => !doomed.has(b.id)))
+      setSelectedBlockIds(prev => new Set([...prev].filter(id => !doomed.has(id))))
+    }
+    try {
+      await withUndoGroup('Delete sweep', () => Promise.all([
+        clipIds.length > 0 ? xl?.timeline?.removeClipsBatch(clipIds) : null,
+        ...blockIds.map(id => xl?.timeline?.removePatternBlock(id)),
+      ]))
+      if (clipIds.length > 0) applyClipDelta({ removed: clipIds })
+      if (blockIds.length > 0) timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
+    } catch (err) {
+      console.error('[DeleteTool] sweep delete failed:', err)
+      await fetchClips()
+      await fetchPatternBlocks()
+    }
+  }, [applyClipDelta, fetchClips, fetchPatternBlocks, withUndoGroup])
+
   const handleMakeUniquePatternBlock = useCallback(async (blockId) => {
     const block = patternBlocks.find(b => b.id === blockId)
     if (!block) return
@@ -4950,6 +4981,7 @@ export default function TimelineView({
                   snapGranularity={snapGranularity}
                   onCreateClip={handleCreateClip}
                   onDeleteClip={handleDeleteClip}
+                  onDeleteSweep={handleDeleteSweep}
                   onMoveClips={handleMoveClips}
                   onDuplicateClips={handleDuplicateClips}
                   onResizeClip={handleResizeClip}

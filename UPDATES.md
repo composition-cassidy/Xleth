@@ -114,6 +114,10 @@ Since the 1.3.0-beta build (last commit in it: `752aa00`, 2026-11-11). 34 commit
   pulled back to the loop start. Position, playing state and the loop latch are
   now one atomic value, and the audio thread only moves the playhead if
   nothing changed since it read it.
+- **Sweep-delete is one undo step.** Dragging the Delete tool over many clips
+  removed them one engine call at a time, so Ctrl+Z brought back a single clip.
+  The sweep now commits once on mouse-up (one `removeClipsBatch`, plus any swept
+  pattern blocks in the same undo group): one Ctrl+Z restores everything swept.
 - **Loading a project while playing no longer leaves the output silent.** The
   transport kept running but nothing was heard until Stop + Play. The load
   publishes the new timeline before it decodes the regions, so the first block

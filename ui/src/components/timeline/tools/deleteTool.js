@@ -11,7 +11,7 @@ export function createDeleteTool(deps) {
     clipsRef, tracksRef,
     pixelsPerBeatRef, scrollOffsetRef,
     trackIdToIndexRef,
-    onDeleteClip,
+    onDeleteClip, onDeleteSweep,
     redrawOverlay,
     // Pattern block deps
     patternBlocksRef, onDeletePatternBlock,
@@ -112,22 +112,17 @@ export function createDeleteTool(deps) {
     async onMouseUp() {
       if (!isDragging) return
 
-      // Delete all swept clips + blocks in parallel
-      const tasks = []
-      if (touchedClipIds.size > 0) {
-        console.log(`[DeleteTool] Sweep-deleting ${touchedClipIds.size} clip(s)`)
-        for (const id of touchedClipIds) tasks.push(onDeleteClip(id))
-      }
-      if (touchedBlockIds.size > 0) {
-        console.log(`[DeleteTool] Sweep-deleting ${touchedBlockIds.size} block(s)`)
-        for (const id of touchedBlockIds) tasks.push(onDeletePatternBlock?.(id))
-      }
-      if (tasks.length > 0) await Promise.all(tasks)
-
+      // One commit for the whole sweep: one batch call, one undo step.
+      const clipIds = [...touchedClipIds]
+      const blockIds = [...touchedBlockIds]
       isDragging = false
       touchedClipIds = new Set()
       touchedBlockIds = new Set()
       redrawOverlay()
+      if (clipIds.length > 0 || blockIds.length > 0) {
+        console.log(`[DeleteTool] Sweep-deleting ${clipIds.length} clip(s), ${blockIds.length} block(s)`)
+        await onDeleteSweep(clipIds, blockIds)
+      }
     },
 
     onContextMenu(localX, localY, e) {
