@@ -5446,10 +5446,13 @@ void MixEngine::refreshAutomationPlan()
     // move-assigns it on project load and swaps it for an export's frozen copy,
     // none of it under chainsMutex_. The plan copies what it needs, so nothing
     // in it points into the snapshot either.
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+    // Loaded under the lock that serialises builds, so each build sees a
+    // snapshot at least as new as the last one's. Loaded before it, an applier
+    // pass could build from an older snapshot after the bridge's newer build
+    // and publish it last, losing that edit until the next one.
     const auto timeline = timelineSnapshot_.load();
     if (!timeline) return;
-
-    std::lock_guard<std::mutex> lock(chainsMutex_);
     ChainSnapshotPublisher chainSnapshotPublisher{this};
 
     // The plan builder asks two questions this class is the only one able to
