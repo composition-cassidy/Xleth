@@ -1369,8 +1369,10 @@ JsonApi::Value Cache_GetWorldActiveJobIds(const JsonApi::CallbackInfo& info)
     // renders are in flight and 1 Hz otherwise. A poll with no chain/parameter
     // change is an allocation-free walk that publishes nothing.
     audioEngine->getMixEngine().pollSourceTransformTable();
-    // Same cadence: free samplers a rebuild replaced mid-block.
+    // Same cadence: free samplers a rebuild replaced mid-block, and sample-bank
+    // tables (with the buffers only they still held) an unload retired mid-block.
     audioEngine->getMixEngine().reclaimRetiredSamplers();
+    if (sampleBank) sampleBank->reclaim();
     // Same cadence: resubmit clips the audio thread reported as missing a
     // render (evicted, or a key that went stale), and flush a due Clip-mode
     // settle queue in case the settle timer has not fired yet.
@@ -6372,12 +6374,12 @@ static void triggerMipmapGeneration(int sampleBankId,
                                      bool saveXlpeak)
 {
     if (!g_mipmapCache || !sampleBank || sampleBankId < 0) return;
-    const auto* buf = sampleBank->getSample(sampleBankId);
+    auto buf = sampleBank->getSampleShared(sampleBankId);
     if (!buf || buf->getNumSamples() == 0) return;
 
     int sr = audioEngine ? static_cast<int>(audioEngine->getSampleRate()) : 44100;
     g_mipmapCache->generateFromBuffer(
-        std::to_string(sampleBankId), buf, sr,
+        std::to_string(sampleBankId), std::move(buf), sr,
         juce::File(juce::String(sourcePath)), saveXlpeak);
 }
 
@@ -6388,12 +6390,10 @@ static void triggerMipmapGeneration(int sampleBankId,
 // indices that mean nothing in the audio actually being played.
 //
 // The mipmap is keyed by the bake's CONTENT digest, never by slot: a new bake
-// therefore lands on a fresh key instead of mutating a live entry. That matters
-// because WaveformMipmapCache hands a raw source pointer to a detached
-// generation thread — removing an entry out from under it would be a
-// use-after-free. The cost is one retained mipmap per distinct bake per
-// session (peak data, not PCM), which is bounded by how many PREP settings the
-// user actually commits.
+// therefore lands on a fresh key instead of mutating a live entry, which a
+// detached generation thread may still be writing. The cost is one retained
+// mipmap per distinct bake per session (peak data, plus a share of the bake's
+// PCM for raw-sample zoom), bounded by how many PREP settings the user commits.
 //
 // Lifetime of the underlying audio is MixEngine's job: publishedSlotBakes_
 // holds a strong reference for exactly as long as the slot plays that bake.
@@ -6420,7 +6420,7 @@ static std::string ensurePreparedSlotMipmap(int regionId, int slotIndex)
         const int sr = audioEngine ? static_cast<int>(audioEngine->getSampleRate()) : 44100;
         // No source file and no .xlpeak: a bake is derived audio, so there is
         // nothing on disk whose peaks would match it.
-        g_mipmapCache->generateFromBuffer(key, prepared.buffer.get(), sr,
+        g_mipmapCache->generateFromBuffer(key, prepared.buffer, sr,
                                           juce::File(), /*saveXlpeak=*/false);
     }
     return key;
@@ -26969,7 +26969,7 @@ JsonApi::Value Diag_GetSamplerState(const JsonApi::CallbackInfo& info)
 // slots: SampleBank slots in storage; live: those holding audio; mipmapEntries:
 // waveform mipmaps held (ready or generating). Test-and-diagnostics only, like
 // diag_getSamplerState: how a contract test proves project load does not grow
-// the bank.
+// the bank. Storage holds live samples only, so slots == live.
 JsonApi::Value Diag_GetBankStats(const JsonApi::CallbackInfo& info)
 {
     JsonApi::Env env = info.Env();
@@ -26977,13 +26977,9 @@ JsonApi::Value Diag_GetBankStats(const JsonApi::CallbackInfo& info)
         JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
         return env.Undefined();
     }
-    const int slots = sampleBank->getNumSamples();
-    int live = 0;
-    for (int id = 0; id < slots; ++id)
-        if (sampleBank->getSample(id) != nullptr) ++live;
     JsonApi::Object out = JsonApi::Object::New(env);
-    out.Set("slots",         JsonApi::Number::New(env, slots));
-    out.Set("live",          JsonApi::Number::New(env, live));
+    out.Set("slots",         JsonApi::Number::New(env, sampleBank->getNumSamples()));
+    out.Set("live",          JsonApi::Number::New(env, static_cast<double>(sampleBank->liveIds().size())));
     out.Set("mipmapEntries", JsonApi::Number::New(env, g_mipmapCache ? static_cast<double>(g_mipmapCache->size()) : 0.0));
     return out;
 }

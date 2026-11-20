@@ -7195,6 +7195,12 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     // Find clips active in this buffer window
     findActiveClips(bufStart, bufEnd, bpm, sampleRate);
 
+    // The sample bank, pinned for the rest of the block: every buffer the clip
+    // render reads stays alive until it ends, whatever the bridge unloads. Taken
+    // AFTER the region map findActiveClips read: a swap publishes the new sample
+    // before remapping to it, so any id that map names is in this table.
+    const SampleBank::Pin bank = sampleBank_ != nullptr ? sampleBank_->pin() : nullptr;
+
     // Determine which tracks are in use. Solo/mute resolution now lives in the
     // per-block RoutePlan (route-aware closure, built below from this same track
     // list), so no separate anySolo scan is needed here.
@@ -7330,7 +7336,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
 
         auto& trackBuf = trackBuffers_[slot];
 
-        const auto* srcBuf = sampleBank_->getSample(ac.sampleBankId);
+        const auto* srcBuf = bank != nullptr ? bank->getSample(ac.sampleBankId) : nullptr;
         if (srcBuf == nullptr) continue;
 
         const int srcChannels = srcBuf->getNumChannels();
@@ -7343,7 +7349,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         // sharp/flat (the Sampler already does this via sourceSampleRate_/
         // engineSampleRate). At matched rate srFactor == 1.0 and every read
         // below keeps its original integer fast path (bit-identical).
-        const double bakeRate  = sampleBank_->getSampleBufferRate(ac.sampleBankId);
+        const double bakeRate  = bank->getSampleBufferRate(ac.sampleBankId);
         const double srFactor  = (bakeRate > 0.0 && preparedSampleRate_ > 0.0)
                                ? bakeRate / preparedSampleRate_ : 1.0;
         const bool   matchedRate = std::abs(srFactor - 1.0) < 1e-9;

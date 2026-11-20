@@ -78,7 +78,8 @@ public:
     bool     isReady()         const { return ready_.load(std::memory_order_acquire); }
     bool     hasFailed()      const { return generationFailed_.load(std::memory_order_acquire); }
 
-    void     setSourceBuffer(const juce::AudioBuffer<float>* buf) { sourceBuffer_ = buf; }
+    // Before the mipmap is published (ready): readers take no lock.
+    void     setSourceBuffer(std::shared_ptr<const juce::AudioBuffer<float>> buf) { sourceBuffer_ = std::move(buf); }
     void     setSourceHash(uint64_t hash) { sourceHash_ = hash; }
     uint64_t getSourceHash() const { return sourceHash_; }
 
@@ -95,9 +96,9 @@ private:
 
     LevelInfo levels_[kNumLevels];
 
-    // Mode 1: pointer to the source buffer for getRawSamples().
-    // SampleBank buffers are append-only and immutable — pointer is stable.
-    const juce::AudioBuffer<float>* sourceBuffer_ = nullptr;
+    // Mode 1: the source buffer for getRawSamples(). Shared: the SampleBank
+    // can unload the sample while this mipmap is still cached or generating.
+    std::shared_ptr<const juce::AudioBuffer<float>> sourceBuffer_;
 
     std::atomic<bool> ready_{ false };
     std::atomic<bool> generationFailed_{ false };
@@ -130,10 +131,11 @@ public:
     // hit the cache instead of decoding the same source again.
     void insert(const std::string& key, Ptr mipmap);
 
-    // Generate from an in-memory buffer on a background thread.
+    // Generate from an in-memory buffer on a background thread, which shares
+    // ownership of `buffer` (so does the mipmap, for getRawSamples).
     // If saveXlpeak is true, also save/load a .xlpeak file alongside sourceFile.
     void generateFromBuffer(const std::string& key,
-                            const juce::AudioBuffer<float>* buffer,
+                            std::shared_ptr<const juce::AudioBuffer<float>> buffer,
                             int sampleRate,
                             const juce::File& sourceFile,
                             bool saveXlpeak);

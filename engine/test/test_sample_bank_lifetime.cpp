@@ -307,7 +307,10 @@ void testChurn()
     quiet.reset();
 
     CHECK(bad == 0, bad << " of " << blocks << " blocks held garbage");
-    CHECK(audible > blocks / 2, "audio was rendered throughout the churn (" << audible << " of " << blocks << ")");
+    // A swap must not silence the clips for a block: the block's bank pin is
+    // taken after its region map, and a swap publishes the sample before it
+    // remaps (pinning first left a third of these blocks silent).
+    CHECK(audible * 20 >= blocks * 19, "audio was rendered throughout the churn (" << audible << " of " << blocks << ")");
     CHECK(blocks > 200, "the callback ran throughout the churn (" << blocks << " blocks)");
     CHECK(loads.load() > kPasses, "every pass loaded a sample (" << loads.load() << ")");
     std::cout << "  blocks=" << blocks << " audible=" << audible << " loads=" << loads.load()

@@ -109,12 +109,10 @@ int SampleBank::loadSample(const juce::File& file, double engineSampleRate)
         std::cout << " -> resampled to " << engineSampleRate << "Hz";
     std::cout << "\n" << std::flush;
 
-    const int id = static_cast<int>(samples_.size());
     auto entry   = std::make_unique<LoadedSample>();
     entry->buffer = std::move(finalBuf);
     entry->info   = std::move(info);
-    samples_.push_back(std::move(entry));
-    return id;
+    return commitSample(std::move(entry));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -421,8 +419,10 @@ decode_done:
 // ─────────────────────────────────────────────────────────────────────────────
 int SampleBank::commitSample(std::unique_ptr<LoadedSample> entry)
 {
-    const int id = static_cast<int>(samples_.size());
-    samples_.push_back(std::move(entry));
+    Table next = *table_.load();
+    const int id = nextId_++;
+    next.slots.push_back({ id, std::move(entry) });   // ids only grow: stays sorted
+    publish(std::move(next));
     return id;
 }
 
@@ -502,64 +502,102 @@ std::vector<int> SampleBank::loadSamplesFromSources(const std::vector<SourceRequ
 
     // Commit in request order: ids come out exactly as if loadSampleFromSource
     // had been called for each request in turn (a failed request takes no id).
+    // One publish for the whole batch.
     std::string out;
+    Table next = *table_.load();
     for (int i = 0; i < n; ++i)
     {
         auto& entry = decoded[static_cast<size_t>(i)];
         if (!entry || logEachSuccess) out += logs[static_cast<size_t>(i)];
-        if (entry) ids[static_cast<size_t>(i)] = commitSample(std::move(entry));
+        if (!entry) continue;
+        ids[static_cast<size_t>(i)] = nextId_;
+        next.slots.push_back({ nextId_++, std::move(entry) });
     }
+    publish(std::move(next));
     if (!out.empty()) std::cout << out << std::flush;
     return ids;
 }
 
 
 // ─────────────────────────────────────────────────────────────────────────────
+const SampleBank::Table::Slot* SampleBank::Table::find(int id) const noexcept
+{
+    const auto it = std::lower_bound(slots.begin(), slots.end(), id,
+                                     [](const Slot& s, int v) { return s.id < v; });
+    return (it != slots.end() && it->id == id) ? &*it : nullptr;
+}
+
+const juce::AudioBuffer<float>* SampleBank::Table::getSample(int id) const noexcept
+{
+    const Slot* s = find(id);
+    return s != nullptr ? &s->sample->buffer : nullptr;
+}
+
+double SampleBank::Table::getSampleBufferRate(int id) const noexcept
+{
+    const Slot* s = find(id);
+    return s != nullptr ? s->sample->info.bufferSampleRate : 0.0;
+}
+
+// The pointer outlives the temporary pin: the published table still owns it,
+// and only this (the main) thread can publish one without it.
+const SampleBank::LoadedSample* SampleBank::current(int id) const
+{
+    const Table::Slot* s = table_.load()->find(id);
+    return s != nullptr ? s->sample.get() : nullptr;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 const juce::AudioBuffer<float>* SampleBank::getSample(int sampleId) const
 {
-    if (sampleId < 0 || sampleId >= static_cast<int>(samples_.size()))
-        return nullptr;
-    if (samples_[sampleId] == nullptr)
-        return nullptr;
-    return &samples_[sampleId]->buffer;
+    const LoadedSample* s = current(sampleId);
+    return s != nullptr ? &s->buffer : nullptr;
+}
+
+std::shared_ptr<const juce::AudioBuffer<float>> SampleBank::getSampleShared(int sampleId) const
+{
+    const Table::Slot* s = table_.load()->find(sampleId);
+    if (s == nullptr) return nullptr;
+    return { s->sample, &s->sample->buffer };   // aliasing: owns the whole sample
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 int SampleBank::getNumSamples() const
 {
-    return static_cast<int>(samples_.size());
+    return static_cast<int>(table_.load()->slots.size());
+}
+
+std::vector<int> SampleBank::liveIds() const
+{
+    const Pin table = table_.load();
+    std::vector<int> ids;
+    ids.reserve(table->slots.size());
+    for (const auto& s : table->slots) ids.push_back(s.id);
+    return ids;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 SampleBank::SampleInfo SampleBank::getSampleInfo(int sampleId) const
 {
-    if (sampleId < 0 || sampleId >= static_cast<int>(samples_.size()))
-        return {};
-    if (samples_[sampleId] == nullptr)
-        return {};
-    return samples_[sampleId]->info;
+    const LoadedSample* s = current(sampleId);
+    return s != nullptr ? s->info : SampleInfo{};
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 double SampleBank::getSampleBufferRate(int sampleId) const noexcept
 {
-    if (sampleId < 0 || sampleId >= static_cast<int>(samples_.size()))
-        return 0.0;
-    if (samples_[sampleId] == nullptr)
-        return 0.0;
-    return samples_[sampleId]->info.bufferSampleRate;
+    return table_.load()->getSampleBufferRate(sampleId);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 int64_t SampleBank::countEdgeSilence(int sampleId, float thresholdDb,
                                      int64_t startSample, int64_t length, bool fromEnd) const
 {
-    if (sampleId < 0 || sampleId >= static_cast<int>(samples_.size()))
-        return -1;
-    if (samples_[sampleId] == nullptr)
+    const LoadedSample* s = current(sampleId);
+    if (s == nullptr)
         return -1;
 
-    const juce::AudioBuffer<float>& buf = samples_[sampleId]->buffer;
+    const juce::AudioBuffer<float>& buf = s->buffer;
     const int64_t numSamples  = buf.getNumSamples();
     const int     numChannels = buf.getNumChannels();
     if (numSamples <= 0 || numChannels <= 0) return 0;
@@ -597,30 +635,26 @@ int64_t SampleBank::countEdgeSilence(int sampleId, float thresholdDb,
 // ─────────────────────────────────────────────────────────────────────────────
 void SampleBank::unloadSample(int id)
 {
-    if (id < 0 || id >= static_cast<int>(samples_.size()))
-    {
-#ifdef XLETH_DEBUG
-        std::cout << "[SampleBank] unloadSample(id=" << id
-                  << ") — out of range, no-op (size="
-                  << samples_.size() << ")\n" << std::flush;
-#endif
-        return;
-    }
+    unloadSamples({ id });
+}
 
-    if (samples_[id] == nullptr)
-    {
-#ifdef XLETH_DEBUG
-        std::cout << "[SampleBank] unloadSample(id=" << id
-                  << ") — already tombstoned, no-op\n" << std::flush;
-#endif
-        return;
-    }
+void SampleBank::unloadSamples(const std::vector<int>& ids)
+{
+    std::vector<int> drop = ids;
+    std::sort(drop.begin(), drop.end());
 
-    samples_[id].reset();
+    const Pin cur = table_.load();
+    Table next;
+    next.slots.reserve(cur->slots.size());
+    for (const auto& s : cur->slots)
+        if (!std::binary_search(drop.begin(), drop.end(), s.id)) next.slots.push_back(s);
+    const size_t dropped = cur->slots.size() - next.slots.size();
+    // Nothing to drop (never handed out, or already unloaded): no publish.
+    if (dropped > 0) publish(std::move(next));
 
 #ifdef XLETH_DEBUG
-    std::cout << "[SampleBank] unloadSample(id=" << id
-              << ") — buffer freed, slot tombstoned\n" << std::flush;
+    std::cout << "[SampleBank] unloadSamples: " << dropped
+              << " of " << ids.size() << " id(s) unloaded\n" << std::flush;
 #endif
 }
 
@@ -629,10 +663,11 @@ juce::String SampleBank::uniqueSampleName(const juce::String& baseName) const
 {
     const juce::String base = baseName.isNotEmpty() ? baseName : "Baked Sample";
 
-    auto nameTaken = [this](const juce::String& candidate)
+    const Pin table = table_.load();
+    auto nameTaken = [&table](const juce::String& candidate)
     {
-        for (const auto& s : samples_)
-            if (s != nullptr && s->info.name == candidate) return true;
+        for (const auto& s : table->slots)
+            if (s.sample->info.name == candidate) return true;
         return false;
     };
 
@@ -643,7 +678,7 @@ juce::String SampleBank::uniqueSampleName(const juce::String& baseName) const
         if (!nameTaken(candidate)) return candidate;
     }
     // Astronomically unreachable in practice — fall back to something unique.
-    return base + " (" + juce::String(samples_.size()) + ")";
+    return base + " (" + juce::String(nextId_) + ")";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -661,7 +696,6 @@ int SampleBank::addSampleFromBuffer(const juce::AudioBuffer<float>& buffer,
     info.originalSampleRate = sampleRate;
     info.bufferSampleRate   = sampleRate;
 
-    const int id  = static_cast<int>(samples_.size());
     auto entry    = std::make_unique<LoadedSample>();
     entry->buffer = buffer;   // copy — caller's buffer is untouched
     entry->info   = std::move(info);
@@ -671,20 +705,23 @@ int SampleBank::addSampleFromBuffer(const juce::AudioBuffer<float>& buffer,
               << "  samples=" << entry->info.numSamples
               << "  rate=" << sampleRate << "Hz\n" << std::flush;
 
-    samples_.push_back(std::move(entry));
-    return id;
+    return commitSample(std::move(entry));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 bool SampleBank::restoreSample(int id, const juce::AudioBuffer<float>& buffer, const SampleInfo& info)
 {
-    if (id < 0 || id >= static_cast<int>(samples_.size())) return false;
-    if (samples_[id] != nullptr) return false;   // still live — not a replace primitive
+    if (id < 0 || id >= nextId_) return false;
+    Table next = *table_.load();
+    const auto at = std::lower_bound(next.slots.begin(), next.slots.end(), id,
+                                     [](const Table::Slot& s, int v) { return s.id < v; });
+    if (at != next.slots.end() && at->id == id) return false;   // still live — not a replace primitive
 
     auto entry    = std::make_unique<LoadedSample>();
     entry->buffer = buffer;
     entry->info   = info;
-    samples_[id]  = std::move(entry);
+    next.slots.insert(at, { id, std::move(entry) });
+    publish(std::move(next));
     return true;
 }
 

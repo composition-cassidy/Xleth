@@ -348,7 +348,6 @@ bool WaveformMipmap::generate(const juce::AudioBuffer<float>& buffer, int sample
     numChannels_  = nc;
     sampleRate_   = sampleRate;
     totalSamples_ = ns;
-    sourceBuffer_ = &buffer;
 
     for (int i = 0; i < kNumLevels; ++i)
         computeLevel(buffer, i);
@@ -418,9 +417,7 @@ bool WaveformMipmap::generateFromFile(const juce::File& audioFile)
         return false;
     }
 
-    // generate() sets sourceBuffer_ = &buf, but buf is stack-local and will
-    // be destroyed — null the pointer to prevent dangling access.
-    sourceBuffer_ = nullptr;
+    // No source buffer: buf is stack-local (mode 2 has no raw samples).
     sourceHash_   = computeSourceHash(audioFile);
 
 #ifdef XLETH_DEBUG
@@ -807,7 +804,7 @@ int WaveformMipmap::getRawSamples(int channel, int64_t startSample, int64_t endS
     if (startSample >= endSample) return 0;
 
     const int count = std::min(static_cast<int>(endSample - startSample), outBufferSize);
-    const float* src = sourceBuffer_->getReadPointer(channel);
+    const float* src = sourceBuffer_->getReadPointer(channel);   // shared: cannot be freed under us
     std::memcpy(outBuffer, src + startSample,
                 static_cast<size_t>(count) * sizeof(float));
     return count;
@@ -836,7 +833,7 @@ void WaveformMipmapCache::insert(const std::string& key, Ptr mipmap)
 
 void WaveformMipmapCache::generateFromBuffer(
     const std::string& key,
-    const juce::AudioBuffer<float>* buffer,
+    std::shared_ptr<const juce::AudioBuffer<float>> buffer,
     int sampleRate,
     const juce::File& sourceFile,
     bool saveXlpeak)
@@ -852,17 +849,19 @@ void WaveformMipmapCache::generateFromBuffer(
     }
 
     // Capture by value for the background thread. `mm` is a strong reference:
-    // the thread outlives any remove()/clear() of this key.
-    // `buffer` is a raw pointer to a stable SampleBank allocation.
+    // the thread outlives any remove()/clear() of this key. So is `buffer`:
+    // the SampleBank may unload the sample while this runs.
     juce::File srcCopy = sourceFile;
 
     std::thread([mm, buffer, sampleRate, srcCopy, saveXlpeak]() {
+        // Set before loadFromFile/generate publish the mipmap as ready.
+        mm->setSourceBuffer(buffer);
+
         // Try loading existing .xlpeak first (skip for time-slice loads)
         if (saveXlpeak && srcCopy.existsAsFile()) {
             juce::File pf(srcCopy.getFullPathName() + ".xlpeak");
             uint64_t h = WaveformMipmap::computeSourceHash(srcCopy);
             if (pf.existsAsFile() && mm->loadFromFile(pf, h)) {
-                mm->setSourceBuffer(buffer);
                 WFM_LOG("loaded from cache: %s", pf.getFileName().toRawUTF8());
                 return;
             }
