@@ -62,19 +62,22 @@ public:
     int samplesUntilLoopWrap(int numSamples) const;
 
 private:
-    std::atomic<int64_t> positionSamples_{ 0 };
-    std::atomic<bool>    playing_{ false };
+    // Position, playing flag and loop-trap arm latch share ONE atomic word, so
+    // every change to them is a single store or CAS. advance() (audio thread)
+    // CASes from the word it read, so a seek/stop/pause that lands mid-block
+    // fails that CAS and wins; it can never be written back over.
+    // Layout: bits 63..2 = position in samples (signed, +-2^61), bit 1 = playing,
+    // bit 0 = loop armed (the latch: the audio thread arms on natural entry, the
+    // message thread re-evaluates it on play/seek/stop/bounds events).
+    std::atomic<int64_t> state_{ 0 };
     std::atomic<double>  bpm_{ 140.0 };
     double               sampleRate_ = 44100.0;
 
-    // Loop trap state. Bounds/enabled are written from the message thread and
-    // read on the audio thread; loopArmed_ is the latch, mutated on both (audio
-    // thread arms on natural entry; message thread arms/disarms on play/seek/
-    // bounds events). All atomic → no locks on the audio path.
+    // Loop bounds/enabled: written from the message thread, read on the audio
+    // thread. All atomic → no locks on the audio path.
     std::atomic<bool>    loopEnabled_{ false };
     std::atomic<int64_t> loopStartSamples_{ 0 };
     std::atomic<int64_t> loopEndSamples_{ 0 };
-    std::atomic<bool>    loopArmed_{ false };
 
     double  samplesToSeconds(int64_t samples) const;
     double  samplesToBeats(int64_t samples)   const;
