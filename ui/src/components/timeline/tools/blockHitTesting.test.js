@@ -59,7 +59,7 @@ function makeDeps({ clips = [], blocks = [], selected = [], snap = '1/16', ...ov
     selectedAutomationClipIdsRef: { current: new Set() },
     automationEnvelopesByIdRef: { current: new Map() },
     automationPointDragRef: { current: null },
-    onCreateClip: vi.fn(), onDeleteClip: vi.fn(), onMoveClips: vi.fn(), onDuplicateClips: vi.fn(),
+    onCreateClip: vi.fn(), onDeleteClip: vi.fn(), onDeleteSweep: vi.fn(), onMoveClips: vi.fn(), onDuplicateClips: vi.fn(),
     onResizeClip: vi.fn(), onResizeClipLeft: vi.fn(), onStretchClip: vi.fn(), onStretchClipLeft: vi.fn(),
     onSplitClip: vi.fn(), onRequestClipContextMenu: vi.fn(),
     setSelectedClipIds: vi.fn(), setStickyNoteLength: vi.fn(),
@@ -201,8 +201,22 @@ describe('delete tool', () => {
     tool.onMouseDown(1.5 * PPB, rowY(0), mods()) // empty lane between a and b
     tool.onMouseMove(2.5 * PPB, rowY(1), mods())
     await tool.onMouseUp(2.5 * PPB, rowY(1), mods())
-    expect(deps.onDeleteClip.mock.calls.map((c) => c[0])).toEqual(['b'])
-    expect(deps.onDeletePatternBlock.mock.calls.map((c) => c[0])).toEqual(['p'])
+    expect(deps.onDeleteSweep).toHaveBeenCalledTimes(1)
+    expect(deps.onDeleteSweep).toHaveBeenCalledWith(['b'], ['p'])
+    expect(deps.onDeleteClip).not.toHaveBeenCalled()
+  })
+
+  it('sweeping N clips issues exactly one batch call, at mouseup', async () => {
+    const clips = Array.from({ length: 30 }, (_, i) => clip(`c${i}`, i * 2, 1))
+    const deps = makeDeps({ clips })
+    const tool = createDeleteTool(deps)
+    tool.onMouseDown(-5, rowY(0), mods()) // empty space left of the first clip
+    tool.onMouseMove(70 * PPB, rowY(0), mods())
+    expect(deps.onDeleteSweep).not.toHaveBeenCalled() // no commit during the drag
+    await tool.onMouseUp(70 * PPB, rowY(0), mods())
+    expect(deps.onDeleteSweep).toHaveBeenCalledTimes(1)
+    expect(deps.onDeleteSweep.mock.calls[0][0]).toHaveLength(30)
+    expect(deps.onDeleteClip).not.toHaveBeenCalled()
   })
 
   it('works without the shared track index (builds its own)', () => {

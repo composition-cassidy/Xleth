@@ -57,7 +57,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     onOpenPianoRoll,
     // Tool system props
     activeTool, stickyNoteLength, setStickyNoteLength, activeSampleId, snapGranularity,
-    onCreateClip, onDeleteClip, onMoveClips, onDuplicateClips, onResizeClip, onResizeClipLeft,
+    onCreateClip, onDeleteClip, onDeleteSweep, onMoveClips, onDuplicateClips, onResizeClip, onResizeClipLeft,
     onStretchClip, onStretchClipLeft,
     onSplitClip,
     onRequestClipContextMenu,
@@ -512,7 +512,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       ),
       activeSampleIdRef, stickyNoteLengthRef, pencilTemplateRef,
       snapGranularityRef, trackLayoutRef,
-      onCreateClip, onDeleteClip, onMoveClips, onDuplicateClips, onResizeClip, onResizeClipLeft,
+      onCreateClip, onDeleteClip, onDeleteSweep, onMoveClips, onDuplicateClips, onResizeClip, onResizeClipLeft,
       onStretchClip, onStretchClipLeft,
       onSplitClip,
       onRequestClipContextMenu,
