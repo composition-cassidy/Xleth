@@ -15479,7 +15479,10 @@ void Automation_RefreshPlan(const JsonApi::CallbackInfo& info)
 }
 
 // timeline_addPatternBlock({ trackId, patternId, positionTicks, durationTicks, offsetTicks? })
-//   → blockId
+//   → blockId, or -1 when the add was REFUSED and nothing was added: an unknown
+//   track or pattern, or an exact {trackId, patternId, positionTicks} duplicate
+//   of a block already on the timeline. Callers must check for -1 before using
+//   the id; it is never the id of some other, existing block.
 JsonApi::Value Timeline_AddPatternBlock(const JsonApi::CallbackInfo& info)
 {
     JsonApi::Env env = info.Env();
@@ -15509,7 +15512,21 @@ JsonApi::Value Timeline_AddPatternBlock(const JsonApi::CallbackInfo& info)
         return env.Undefined();
     }
 
-    g_undoManager->execute(std::make_unique<AddPatternBlockCommand>(b), *g_timeline);
+    auto cmd = std::make_unique<AddPatternBlockCommand>(b);
+    AddPatternBlockCommand* cmdPtr = cmd.get();   // stays alive after execute(), recorded or not
+    g_undoManager->execute(std::move(cmd), *g_timeline);
+
+    // A refused add is not applied (and not on the undo stack). Report it as -1:
+    // "the newest block" below would be some OTHER block's id.
+    if (!cmdPtr->shouldRecordInUndoHistory()) {
+        bool known = false;
+        for (const PatternBlock* e : g_timeline->getAllPatternBlocks())
+            if (e->trackId == b.trackId && e->patternId == b.patternId
+                && e->position.ticks == b.position.ticks) { known = true; break; }
+        log.done(known ? "refused: a block already exists at the same track/pattern/position"
+                       : "refused: track or pattern does not exist");
+        return JsonApi::Number::New(env, -1);
+    }
 
     auto blocks = g_timeline->getAllPatternBlocks();
     int newId = blocks.empty() ? -1 : blocks.back()->id;

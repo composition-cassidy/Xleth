@@ -3095,6 +3095,12 @@ export default function TimelineView({
       const blockId = await window.xleth?.timeline?.addPatternBlock({
         trackId, patternId, positionTicks, durationTicks, offsetTicks,
       })
+      // addPatternBlock answers -1 when it refused the add (a block is already at
+      // this track/pattern/position, or the track/pattern is gone): nothing changed.
+      if (blockId == null || blockId < 0) {
+        console.warn('[PencilTool] Pattern block not created: the engine refused the add (duplicate block at this position?)')
+        return
+      }
       console.log(`[PencilTool] Pattern block created: id=${blockId}`)
       timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
     } catch (err) {
@@ -3590,13 +3596,20 @@ export default function TimelineView({
         // Resize first half
         await window.xleth?.timeline?.resizePatternBlock(blockId, leftDur)
         // Create second half
-        await window.xleth?.timeline?.addPatternBlock({
+        const rightId = await window.xleth?.timeline?.addPatternBlock({
           trackId: block.trackId,
           patternId: block.patternId,
           positionTicks: splitPositionTicks,
           durationTicks: rightDur,
           offsetTicks: splitOffsetInPattern,
         })
+        // -1 = the engine refused the second half (a block for this pattern
+        // already starts at the split point). Put the first half back, or the
+        // split would silently trim the block.
+        if (rightId == null || rightId < 0) {
+          console.warn(`[SplitTool] Split of block ${blockId} refused: a block already starts at ${splitPositionTicks}t; restoring its length`)
+          await window.xleth?.timeline?.resizePatternBlock(blockId, block.durationTicks)
+        }
       })
       timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
     } catch (err) {
@@ -3742,6 +3755,12 @@ export default function TimelineView({
           durationTicks,
           offsetTicks: 0,
         })
+        // -1 = the engine refused the add (a block is already at this exact
+        // track/pattern/position): nothing was created, so there is nothing to refresh.
+        if (blockId == null || blockId < 0) {
+          console.warn(`[TimelineClips] PatternBlock drop refused: a block for pattern ${pd.patternId} already sits at pos=${positionTicks}t on track ${track.id}`)
+          return
+        }
         console.log(`[TimelineClips] PatternBlock created via drag: id=${blockId}, pattern=${pd.patternId}, pos=${positionTicks}t, dur=${durationTicks}t`)
         timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
       } catch (err) {
@@ -3846,6 +3865,12 @@ export default function TimelineView({
           durationTicks,
           offsetTicks: 0,
         })
+        // -1 = the engine refused the add (a block is already at this exact
+        // track/pattern/position): nothing was created, so there is nothing to refresh.
+        if (blockId == null || blockId < 0) {
+          console.warn(`[TimelineClips] PatternBlock drop refused: a block for pattern ${patternId} already sits at pos=${positionTicks}t on track ${track.id}`)
+          return
+        }
         console.log(`[TimelineClips] PatternBlock created: id=${blockId}, pattern=${patternId}, pos=${positionTicks}t, dur=${durationTicks}t`)
         timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
       } catch (err) {
