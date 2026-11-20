@@ -2852,6 +2852,39 @@ target_compile_definitions(test_timeline_read_lifetime PRIVATE
 
 target_link_options(test_timeline_read_lifetime PRIVATE /STACK:8388608)
 
+# SampleBank buffers on the audio thread: a second thread loads, remaps and
+# unloads samples (and replaces the whole bank, as project load does) while
+# blocks render audio clips, samplers and manual voices from them.
+add_executable(test_sample_bank_lifetime
+    test/test_sample_bank_lifetime.cpp
+)
+
+target_link_libraries(test_sample_bank_lifetime PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_sample_bank_lifetime PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+target_link_options(test_sample_bank_lifetime PRIVATE /STACK:8388608)
+
 add_executable(test_distortion
     test/test_distortion.cpp
 )
@@ -4275,6 +4308,7 @@ set(XLETH_ENGINE_TESTS
     test_automation_plan_rebind
     test_automation_plan_snapshot
     test_timeline_read_lifetime
+    test_sample_bank_lifetime
     test_distortion
     test_phanjer
     test_reverb
