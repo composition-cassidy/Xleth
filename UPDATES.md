@@ -107,6 +107,14 @@ Since the 1.3.0-beta build (last commit in it: `752aa00`, 2026-11-11). 34 commit
 
 ### Fixed
 
+- **Editing automation during playback no longer crashes.** After any effect
+  chain change, a background thread rebuilt the automation plan from the live
+  timeline while edits, undo/redo and project loads were freeing the lanes,
+  clips and envelope points it was reading (a crash or hang in most runs of a
+  stress test). It now builds from the timeline copy the audio already plays
+  from, which also carries the automation. Publishing that copy costs about
+  0.2 ms more (2.3 → 2.5 ms on a 5,000-clip, 50,000-note project with a full
+  automation load).
 - **Opening or reloading a project with automation clips no longer crashes.**
   For a few milliseconds after a load the audio callback could still run the
   old automation plan against the new effect chains, and when the new effect
