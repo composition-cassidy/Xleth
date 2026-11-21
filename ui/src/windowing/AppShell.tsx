@@ -1,21 +1,40 @@
 import React from 'react';
 import { useEffect, useRef } from 'react';
+import { DetailDock } from './components/DetailDock';
 import { DockRegion } from './components/DockRegion';
-import { PanelFrame } from './components/PanelFrame';
 import { SampleSelectorDrawer } from './components/SampleSelectorDrawer';
+import { PickerSheet } from './components/PickerSheet';
 import { SnapGhost } from './components/SnapGhost';
+import { TopRowStrip } from './layout/TopRowStrip';
+import { TOP_MIN_H } from './layout/shellLayout';
+import { useShellLayoutStore } from './layout/shellLayoutStore';
+import { useShellLayout } from './layout/useShellLayout';
 import { useDockRegionResizePreview } from './managers/DockRegionResizeManager';
-import { registerWorkAreaRect, type WorkAreaRect } from './managers/DragManager';
+import {
+  getRegisteredWorkAreaRect,
+  registerWorkAreaRect,
+  type WorkAreaRect,
+} from './managers/DragManager';
 import * as KeyboardManager from './managers/KeyboardManager';
 import {
+  isEdgeRegion,
   SAMPLE_SELECTOR_DOCK_HANDLE_WIDTH,
   usePanelRegistry,
 } from './registry/PanelRegistry';
 import type { PanelStateMap } from './registry/PanelRegistry';
-import { PANEL_CATALOG, type PanelId } from './registry/panelCatalog';
+import { useRegistryValue } from './registry/usePanelValue';
+import { detailDockKey } from './components/DetailDock';
+import { dockedPanelKey, parseDockedPanelKey } from './components/DockRegion';
+import {
+  DRAWER_PANEL_IDS,
+  WINDOW_PANEL_IDS,
+  type PanelId,
+} from './registry/panelCatalog';
 import EffectEditorHost from '../components/mixer/EffectEditorHost.jsx';
-import BackdropLayer from '../backdrop/BackdropLayer.jsx';
+import VideoDeviceWindow from '../components/devices/video/VideoDeviceWindow.jsx';
+import ClipFxEditorHost from '../components/timeline/ClipFxEditorHost.jsx';
 import './components/windowing.css';
+import styles from './AppShell.module.css';
 
 const TimelinePanel = React.lazy(() => import('./panels/TimelinePanel'));
 const MixerPanel = React.lazy(() => import('./panels/MixerPanel'));
@@ -27,93 +46,16 @@ const NodeEditorPanel = React.lazy(() => import('./panels/NodeEditorPanel'));
 const SamplerWindowPanel = React.lazy(() => import('./panels/SamplerWindowPanel'));
 const QuickNotationPanel = React.lazy(() => import('./panels/QuickNotationPanel'));
 const SplitSyllablesPanel = React.lazy(() => import('./panels/SplitSyllablesPanel'));
+const SampleSandboxPanel = React.lazy(() => import('./panels/SampleSandboxPanel'));
+const InspectorPanel = React.lazy(() => import('./panels/InspectorPanel'));
+const DevicesPanel = React.lazy(() => import('./panels/DevicesPanel'));
+const ColorGradeWindowPanel = React.lazy(() => import('./panels/ColorGradeWindowPanel'));
 
-type DevShellMode =
-  | 'single'
-  | 'focus-demo'
-  | 'phase-2-demo'
-  | 'phase-3-demo'
-  | 'phase-4-demo'
-  | 'phase-5-demo'
-  | 'phase-6b-demo';
-
-export type AppShellMode = DevShellMode | 'production';
-
-export interface WindowingAppShellProps {
-  mode?: AppShellMode;
-  backdropImageUrl?: string;
-}
-
-export function shouldRenderRealPanels(mode: AppShellMode): boolean {
-  return mode === 'phase-6b-demo' || mode === 'production';
-}
-
-function TestPanelBody({ label }: { label: string }) {
-  return (
-    <div className="xleth-windowing-test-panel">
-      <div className="xleth-windowing-test-panel__header">{label}</div>
-      <div className="xleth-windowing-test-panel__body">Windowing Wave 1 Phase 1</div>
-    </div>
-  );
-}
-
-function configurePanel(id: PanelId, x: number, y: number, width: number, height: number) {
-  const registry = usePanelRegistry.getState();
-  registry.openPanel(id);
-  registry.resizeFloatingPanel(id, x, y, width, height);
-}
-
-export function configurePhase2DemoPanels() {
-  configurePanel('timeline', 96, 72, 620, 340);
-  configurePanel('mixer', 420, 176, 540, 300);
-  configurePanel('pianoRoll', 256, 256, 680, 360);
-  usePanelRegistry.getState().focusPanel('timeline');
-}
-
-export function configurePhase3DemoPanels() {
-  const registry = usePanelRegistry.getState();
-  configurePanel('timeline', 96, 72, 620, 340);
-  configurePanel('pianoRoll', 256, 256, 680, 360);
-  registry.openPanel('sampleSelector');
-  registry.dockPanel('sampleSelector', 'left');
-  registry.openPanel('mixer');
-  registry.dockPanel('mixer', 'bottom');
-  registry.focusPanel('timeline');
-}
-
-export function configurePhase5DemoPanels() {
-  usePanelRegistry.getState().applyPreset('fl-compose');
-}
-
-export function configurePhase6bDemoPanels() {
-  // Same layout as phase-5-demo for parity, but rendered through
-  // the new wrappers.
-  usePanelRegistry.getState().applyPreset('fl-compose');
-}
-
-export function applyDemoShellMode(mode: AppShellMode): void {
-  if (mode === 'production') return;
-
-  configurePanel('timeline', 96, 72, 560, 320);
-
-  if (mode === 'phase-3-demo') {
-    configurePhase3DemoPanels();
-  } else if (mode === 'phase-2-demo') {
-    configurePhase2DemoPanels();
-  } else if (mode === 'focus-demo') {
-    configurePanel('mixer', 704, 136, 460, 280);
-    usePanelRegistry.getState().focusPanel('timeline');
-  } else if (mode === 'phase-5-demo') {
-    configurePhase5DemoPanels();
-  } else if (mode === 'phase-6b-demo') {
-    configurePhase6bDemoPanels();
-  } else {
-    usePanelRegistry.getState().closePanel('mixer');
-    usePanelRegistry.getState().closePanel('pianoRoll');
-  }
-}
-
-const PANEL_BODY_FOR_6B: Record<PanelId, React.LazyExoticComponent<React.FC>> = {
+// Exhaustive by construction: a panel added to the catalog without a body here
+// is a type error rather than a panel that toggles in the top bar and never
+// appears. Which of these actually render is decided by the catalog's
+// quarantined/presentation flags, not by a second hand-kept list.
+const PANEL_BODIES: Record<PanelId, React.LazyExoticComponent<React.FC>> = {
   timeline: TimelinePanel,
   mixer: MixerPanel,
   pianoRoll: PianoRollPanel,
@@ -124,47 +66,10 @@ const PANEL_BODY_FOR_6B: Record<PanelId, React.LazyExoticComponent<React.FC>> = 
   sampler: SamplerWindowPanel,
   quickNotation: QuickNotationPanel,
   splitSyllables: SplitSyllablesPanel,
-};
-
-const DRAWER_PANEL_IDS = new Set<PanelId>(['sampleSelector']);
-const DRAWER_PANEL_ID_LIST = Object.freeze(Array.from(DRAWER_PANEL_IDS));
-
-const SHELL_PANEL_IDS: Record<AppShellMode, PanelId[]> = {
-  single: ['timeline'],
-  'focus-demo': ['timeline', 'mixer'],
-  'phase-2-demo': ['timeline', 'mixer', 'pianoRoll'],
-  'phase-3-demo': ['timeline', 'mixer', 'pianoRoll', 'sampleSelector'],
-  'phase-4-demo': ['timeline', 'mixer', 'pianoRoll', 'sampleSelector'],
-  'phase-5-demo': [
-    'timeline',
-    'mixer',
-    'pianoRoll',
-    'sampleSelector',
-    'preview',
-    'fxGraph',
-    'sampler',
-  ],
-  'phase-6b-demo': [
-    'timeline',
-    'mixer',
-    'pianoRoll',
-    'sampleSelector',
-    'preview',
-    'fxGraph',
-    'sampler',
-    'quickNotation',
-  ],
-  production: [
-    'timeline',
-    'mixer',
-    'pianoRoll',
-    'sampleSelector',
-    'preview',
-    'fxGraph',
-    'sampler',
-    'quickNotation',
-    'splitSyllables',
-  ],
+  sampleSandbox: SampleSandboxPanel,
+  inspector: InspectorPanel,
+  devices: DevicesPanel,
+  colorGrade: ColorGradeWindowPanel,
 };
 
 function workAreaRectsEqual(a: WorkAreaRect | null, b: WorkAreaRect): boolean {
@@ -188,62 +93,79 @@ function plainWorkAreaRect(rect: DOMRectReadOnly): WorkAreaRect {
   };
 }
 
-function floatingPanelKeyForMode(mode: AppShellMode, panels: PanelStateMap): string {
-  return SHELL_PANEL_IDS[mode]
-    .filter((panelId) => (
-      !(shouldRenderRealPanels(mode) && DRAWER_PANEL_IDS.has(panelId))
-      && (
-        shouldRenderRealPanels(mode)
-          ? panels[panelId].mode !== 'docked' || panels[panelId].hidden
-          : panels[panelId].mode !== 'docked'
-      )
-    ))
+/**
+ * Ids of the panels the floating layer must mount, as a "|"-joined string.
+ *
+ * A string keeps the store subscription primitive; see usePanelValue for why
+ * an array or object selector would re-render this on every registry write.
+ */
+export function floatingPanelKey(panels: PanelStateMap): string {
+  return WINDOW_PANEL_IDS
+    .filter((panelId) => panels[panelId].mode !== 'docked' || panels[panelId].hidden)
     .join('|');
 }
 
-export function AppShell({ mode = 'single', backdropImageUrl = '' }: WindowingAppShellProps) {
+export function AppShell() {
+  const hasDom = typeof window !== 'undefined';
   const workAreaRef = useRef<HTMLDivElement>(null);
   const lastWorkAreaRectRef = useRef<WorkAreaRect | null>(null);
-  const reactiveFloatingPanelKey = usePanelRegistry((state) => floatingPanelKeyForMode(mode, state.panels));
-  const floatingPanelKey = typeof window === 'undefined'
-    ? floatingPanelKeyForMode(mode, usePanelRegistry.getState().panels)
-    : reactiveFloatingPanelKey;
-  const floatingPanelIds = floatingPanelKey === ''
+
+  const floatingPanelIds = useRegistryValue((state) => floatingPanelKey(state.panels));
+  const floatingPanelIdList = floatingPanelIds === ''
     ? []
-    : floatingPanelKey.split('|') as PanelId[];
-  const rendersRealPanels = shouldRenderRealPanels(mode);
-  const drawerPanelIds = rendersRealPanels ? DRAWER_PANEL_ID_LIST : undefined;
-  const reactiveSampleSelectorHidden = usePanelRegistry((state) => state.panels.sampleSelector.hidden);
-  const reactiveSampleDockRegionWidth = usePanelRegistry((state) => state.dockRegionSizes.left);
-  const sampleSelectorHidden = typeof window === 'undefined'
-    ? usePanelRegistry.getState().panels.sampleSelector.hidden
-    : reactiveSampleSelectorHidden;
-  const committedSampleDockRegionWidth = typeof window === 'undefined'
-    ? usePanelRegistry.getState().dockRegionSizes.left
-    : reactiveSampleDockRegionWidth;
-  const sampleDockResizePreview = useDockRegionResizePreview('left');
-  const sampleDockWidth = sampleDockResizePreview?.size ?? committedSampleDockRegionWidth;
-  const sampleDockEnabled = rendersRealPanels && SHELL_PANEL_IDS[mode].includes('sampleSelector');
-  const sampleDockExpanded = sampleDockEnabled && !sampleSelectorHidden;
+    : floatingPanelIds.split('|') as PanelId[];
+
+  const sampleSelectorHidden = useRegistryValue((state) => state.panels.sampleSelector.hidden);
+  const storedSampleDockSide = useRegistryValue((state) => state.panels.sampleSelector.docked.region);
+  const sampleDockSide = isEdgeRegion(storedSampleDockSide) ? storedSampleDockSide : 'left';
+  const committedSampleDockRegionSize = useRegistryValue((state) => state.dockRegionSizes[sampleDockSide]);
+  const sampleDockResizePreview = useDockRegionResizePreview(sampleDockSide);
+  const sampleDockSize = sampleDockResizePreview?.size ?? committedSampleDockRegionSize;
+  const sampleDockExpanded = !sampleSelectorHidden;
+  // The edge region on the Browser's own side shares the Browser's column instead of
+  // standing beside it as a second one: its panels stack above the drawer (DESIGN.md 8.1).
+  // Only left and right stack; a Browser docked top or bottom is a strip of cards.
+  const stackSide = sampleDockSide === 'left' || sampleDockSide === 'right' ? sampleDockSide : null;
+  const stackKey = useRegistryValue((state) => (
+    stackSide ? dockedPanelKey(stackSide, DRAWER_PANEL_IDS, state.panels) : ''
+  ));
+  const stackedSide = stackKey !== '' ? stackSide : null;
+
+  // How the centre column's height is shared between the top row, the
+  // arrangement and the detail dock (layout/shellLayout.ts).
+  const columnRef = useRef<HTMLDivElement>(null);
+  const layout = useShellLayout(columnRef);
+  const topFolded = layout?.topMode === 'strip';
+  const peek = useShellLayoutStore((s) => s.peek);
+  const focus = useShellLayoutStore((s) => s.focus);
+  const setFocus = useShellLayoutStore((s) => s.setFocus);
+  const dockOpen = useRegistryValue((state) => detailDockKey(state.panels).includes(':open'));
+  // Focus mode is the open dock; collapsing or popping out its last tab ends it.
+  useEffect(() => { if (focus && !dockOpen) setFocus(false); }, [focus, dockOpen, setFocus]);
+  const topKey = useRegistryValue((state) => dockedPanelKey('top', DRAWER_PANEL_IDS, state.panels));
+  const topPanelIds = parseDockedPanelKey(topKey).map((slot) => slot.activeId);
+  const topClassName = [
+    styles.top,
+    focus ? styles.regionHidden : (topFolded ? (peek ? styles.topSheet : styles.regionHidden) : ''),
+  ].filter(Boolean).join(' ');
+  const centerClassName = focus ? `${styles.center} ${styles.regionHidden}` : styles.center;
+
   const shellClassName = [
     'xleth-windowing-shell',
-    sampleDockEnabled
-      ? (sampleDockExpanded ? 'sample-dock-open' : 'sample-dock-collapsed')
-      : 'sample-dock-disabled',
-  ].join(' ');
+    sampleDockExpanded ? 'sample-dock-open' : 'sample-dock-collapsed',
+    stackedSide ? 'sample-dock-stacked' : '',
+  ].filter(Boolean).join(' ');
   const shellStyle = {
-    '--xleth-sample-dock-width': `${sampleDockWidth}px`,
+    '--xleth-sample-dock-width': `${sampleDockSize}px`,
+    '--xleth-sample-dock-height': `${sampleDockSize}px`,
     '--xleth-sample-dock-handle-width': `${SAMPLE_SELECTOR_DOCK_HANDLE_WIDTH}px`,
+    '--xleth-sample-dock-handle-height': `${SAMPLE_SELECTOR_DOCK_HANDLE_WIDTH}px`,
   } as React.CSSProperties;
 
   useEffect(() => {
     KeyboardManager.init();
     return KeyboardManager.destroy;
   }, []);
-
-  useEffect(() => {
-    applyDemoShellMode(mode);
-  }, [mode]);
 
   useEffect(() => {
     const workArea = workAreaRef.current;
@@ -269,8 +191,19 @@ export function AppShell({ mode = 'single', backdropImageUrl = '' }: WindowingAp
     };
   }, []);
 
-  const renderPhase6bPanel = (panelId: PanelId) => {
-    const PanelBody = PANEL_BODY_FOR_6B[panelId];
+  // The floating layer is for pop-outs only. Whatever opens a window (a preset,
+  // an F-key, a pop-out) gets its bounds clamped to the work area right away,
+  // not only on the next window resize.
+  useEffect(() => {
+    if (floatingPanelIds === '') return;
+    const rect = getRegisteredWorkAreaRect();
+    if (rect.width > 0 && rect.height > 0) {
+      usePanelRegistry.getState().clampFloatingPanelsToWorkArea(rect.width, rect.height);
+    }
+  }, [floatingPanelIds]);
+
+  const renderPanel = (panelId: PanelId) => {
+    const PanelBody = PANEL_BODIES[panelId];
     return (
       <React.Suspense key={panelId} fallback={null}>
         <PanelBody />
@@ -280,83 +213,76 @@ export function AppShell({ mode = 'single', backdropImageUrl = '' }: WindowingAp
 
   return (
     <div className="xleth-windowing-app">
-      <div className={shellClassName} data-testid="xleth-windowing-shell" style={shellStyle}>
-        {sampleDockEnabled ? (
-          <SampleSelectorDrawer />
-        ) : null}
+      <div
+        className={shellClassName}
+        data-testid="xleth-windowing-shell"
+        data-sample-dock-side={sampleDockSide}
+        style={shellStyle}
+      >
+        <SampleSelectorDrawer
+          stackedRegion={stackedSide ? (
+            <DockRegion side={stackedSide} stacked renderPanel={renderPanel} excludePanelIds={DRAWER_PANEL_IDS} />
+          ) : null}
+        />
         <div className="xleth-app-workarea" data-testid="xleth-app-workarea" ref={workAreaRef}>
-          <BackdropLayer workAreaRef={workAreaRef} backdropImageUrl={backdropImageUrl} />
-          <div className="xleth-docked-window-layer" data-testid="xleth-docked-window-layer">
-            <DockRegion
-              side="left"
-              renderPanel={rendersRealPanels ? renderPhase6bPanel : undefined}
-              excludePanelIds={drawerPanelIds}
-            />
-            <div className="xleth-center-column">
+          <div
+            className={`xleth-docked-window-layer ${styles.dockedLayer}`}
+            data-testid="xleth-docked-window-layer"
+          >
+            {stackedSide === 'left' ? null : <DockRegion side="left" renderPanel={renderPanel} excludePanelIds={DRAWER_PANEL_IDS} />}
+            <div className={`xleth-center-column ${styles.centerColumn}`} ref={columnRef}>
+              {/* The sample picker opens as a sheet over the top row; the
+                  arrangement and detail dock below it stay mounted and live. */}
+              <PickerSheet />
+              {topFolded && !focus ? <TopRowStrip panelIds={topPanelIds} /> : null}
               <DockRegion
                 side="top"
-                renderPanel={rendersRealPanels ? renderPhase6bPanel : undefined}
-                excludePanelIds={drawerPanelIds}
+                className={topClassName}
+                renderPanel={renderPanel}
+                excludePanelIds={DRAWER_PANEL_IDS}
+                sizeOverride={layout ? (topFolded ? TOP_MIN_H : layout.topH) : undefined}
+                lockSize={topFolded}
               />
-              <div className="xleth-floating-work-area" data-backdrop-empty-surface="true" />
+              {/* Mandatory: the registry never lets the center go empty. */}
               <DockRegion
-                side="bottom"
-                renderPanel={rendersRealPanels ? renderPhase6bPanel : undefined}
-                excludePanelIds={drawerPanelIds}
+                side="center"
+                className={centerClassName}
+                renderPanel={renderPanel}
+                excludePanelIds={DRAWER_PANEL_IDS}
               />
+              {/* The bottom region is the tabbed detail dock: one panel at a
+                  time under a tab strip that is always there. */}
+              <DetailDock renderPanel={renderPanel} sizeOverride={layout?.dockH} />
             </div>
-            <DockRegion
-              side="right"
-              renderPanel={rendersRealPanels ? renderPhase6bPanel : undefined}
-              excludePanelIds={drawerPanelIds}
-            />
+            {stackedSide === 'right' ? null : <DockRegion side="right" renderPanel={renderPanel} excludePanelIds={DRAWER_PANEL_IDS} />}
           </div>
           <div className="xleth-floating-window-layer" data-testid="xleth-floating-window-layer">
             <SnapGhost />
-            {floatingPanelIds.map((panelId) => {
-              if (rendersRealPanels) return renderPhase6bPanel(panelId);
-              return (
-                <PanelFrame key={panelId} id={panelId}>
-                  <TestPanelBody label={`${PANEL_CATALOG[panelId].title} Test Panel`} />
-                </PanelFrame>
-              );
-            })}
+            {floatingPanelIdList.map((panelId) => renderPanel(panelId))}
           </div>
         </div>
       </div>
+      {/* Both editor hosts are runtime-only overlays: they contribute nothing
+          to static markup and read window during render. Skipping them when
+          there is no DOM keeps renderToStaticMarkup usable as a markup
+          assertion. This used to fall out of the demo-mode flag by accident;
+          it is now stated for the reason it is actually true. */}
       {/* Global stock-effect editor host. Lives at the windowing root — a
           transform-free container — and OUTSIDE every PanelFrame subtree, so
           stock effect editors (Parametric EQ, Compressor, …) float over the
           full workspace and are never clipped/trapped by a floating panel's
           `transform`. The Mixer Chain and FX Graph only *request* editors via
           their effect stores; this host owns the editors' mounting. */}
-      {rendersRealPanels ? <EffectEditorHost /> : null}
+      {hasDom ? <EffectEditorHost /> : null}
+      {hasDom ? <VideoDeviceWindow /> : null}
+      {/* Global per-clip FX editor host. Same containment rule as
+          EffectEditorHost above: mounted at the transform-free windowing root and
+          OUTSIDE every PanelFrame subtree, so a floating Timeline's `transform`
+          can never trap or clip the per-clip Vibrato graph editor. The Timeline
+          clip dropdown only *requests* editors; this host owns their mounting. */}
+      {hasDom ? <ClipFxEditorHost /> : null}
     </div>
   );
-}
-
-export function WindowingFocusDemoShell() {
-  return <AppShell mode="focus-demo" />;
-}
-
-export function WindowingPhase2DemoShell() {
-  return <AppShell mode="phase-2-demo" />;
-}
-
-export function WindowingPhase3DemoShell() {
-  return <AppShell mode="phase-3-demo" />;
-}
-
-export function WindowingPhase4DemoShell() {
-  return <AppShell mode="phase-4-demo" />;
-}
-
-export function WindowingPhase5DemoShell() {
-  return <AppShell mode="phase-5-demo" />;
-}
-
-export function WindowingPhase6bDemoShell() {
-  return <AppShell mode="phase-6b-demo" />;
 }
 
 export default AppShell;

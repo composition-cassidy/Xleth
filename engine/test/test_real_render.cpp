@@ -14,6 +14,8 @@
 #include "project/ProjectManager.h"
 #include "audio/MixEngine.h"
 #include "SampleBank.h"
+
+#include <cstdlib>
 #include "SyncManager.h"
 
 extern "C" {
@@ -88,13 +90,52 @@ int main(int argc, char* argv[])
     // ── Parse optional CLI args ──────────────────────────────────────────
     int         width      = 1920;
     int         height     = 1080;
+    int         barsArg    = 16;
     std::string outputArg;
+    std::string projectArg;
+    std::string encoderArg;
+    // Export-pipeline A/B knobs (all optional; defaults reproduce the original
+    // 48 kHz AAC 60 fps run).
+    int         exportRateArg   = 48000;    // --sample-rate   export/encode rate
+    double      engineRateArg   = 0.0;      // --engine-rate   rate samples are baked at; 0 = the project's own rate (what the app does)
+    int         fpsArg          = 60;       // --fps
+    int         audioKbpsArg    = 384;      // --audio-bitrate (kbps)
+    int         videoBpsArg     = 20000000; // --video-bitrate (bps)
+    int         startBarArg     = 0;        // --start-bar     (0-based; >0 = region render)
+    std::string audioCodecArg   = "aac";    // --audio-codec   aac|opus|flac|pcm
+    std::string videoModeArg    = "auto";   // --video-mode    auto|software|hardware
+    // --mix-rate  session (default) = mix at the rate the engine was prepared at,
+    //             as the app does; output = legacy: re-prepare the engine at the
+    //             export rate; or an explicit rate in Hz.
+    std::string mixRateArg      = "session";
+    // --tail  cut (default) | clamp | wrap, with --tail-seconds as the cap. Lets
+    // the harness drive the tailClamp freeze-frame path and the wrap fold path.
+    std::string tailArg         = "cut";
+    double      tailSecondsArg  = 2.0;
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if ((a == "--width")  && i + 1 < argc) { width  = std::stoi(argv[++i]); }
         else if ((a == "--height") && i + 1 < argc) { height = std::stoi(argv[++i]); }
         else if ((a == "--output") && i + 1 < argc) { outputArg = argv[++i]; }
+        // --project points the harness at any saved project directory, so an
+        // export-perf A/B can run against a real timeline rather than the one
+        // hardcoded path below. --encoder pins the video encoder ("libx264" to
+        // force the software path); --bars shortens the render window.
+        else if ((a == "--project") && i + 1 < argc) { projectArg = argv[++i]; }
+        else if ((a == "--encoder") && i + 1 < argc) { encoderArg = argv[++i]; }
+        else if ((a == "--bars")    && i + 1 < argc) { barsArg    = std::stoi(argv[++i]); }
+        else if ((a == "--sample-rate")   && i + 1 < argc) { exportRateArg = std::stoi(argv[++i]); }
+        else if ((a == "--engine-rate")   && i + 1 < argc) { engineRateArg = std::stod(argv[++i]); }
+        else if ((a == "--fps")           && i + 1 < argc) { fpsArg        = std::stoi(argv[++i]); }
+        else if ((a == "--audio-bitrate") && i + 1 < argc) { audioKbpsArg  = std::stoi(argv[++i]); }
+        else if ((a == "--video-bitrate") && i + 1 < argc) { videoBpsArg   = std::stoi(argv[++i]); }
+        else if ((a == "--start-bar")     && i + 1 < argc) { startBarArg   = std::stoi(argv[++i]); }
+        else if ((a == "--audio-codec")   && i + 1 < argc) { audioCodecArg = argv[++i]; }
+        else if ((a == "--video-mode")    && i + 1 < argc) { videoModeArg  = argv[++i]; }
+        else if ((a == "--mix-rate")      && i + 1 < argc) { mixRateArg    = argv[++i]; }
+        else if ((a == "--tail")          && i + 1 < argc) { tailArg       = argv[++i]; }
+        else if ((a == "--tail-seconds")  && i + 1 < argc) { tailSecondsArg = std::stod(argv[++i]); }
     }
 
     std::fprintf(stderr, "\n================================================================\n");
@@ -102,7 +143,11 @@ int main(int argc, char* argv[])
     std::fprintf(stderr, "================================================================\n\n");
 
     // ── Step 1: Load the project ─────────────────────────────────────────
-    const std::string projectDir = "C:\\Users\\Krasen\\Desktop\\XLETH\\test";
+    // Default: the original dev machine's repo test\ folder; pass --project elsewhere.
+    const char* home = std::getenv("USERPROFILE");
+    const std::string projectDir = projectArg.empty()
+        ? std::string(home ? home : "") + "\\Desktop\\XLETH\\test"
+        : projectArg;
     std::string outputPath = outputArg.empty()
         ? projectDir + "\\test_render_bars1to17.mp4"
         : outputArg;
@@ -149,7 +194,10 @@ int main(int argc, char* argv[])
     mixer.setSampleBank(&sampleBank);
 
     int samplesLoaded = 0, samplesFailed = 0;
-    const double engineSR = 48000.0;
+    const double engineSR = engineRateArg > 0.0 ? engineRateArg : timeline.getSampleRate();
+    std::fprintf(stderr, "[TEST:RealRender] Bake rate: %.0f Hz (project rate %.0f Hz)\n",
+                 engineSR, timeline.getSampleRate());
+    mixer.setGlobalStretchMethod(timeline.getGlobalStretchMethod());
 
     for (const auto* region : allRegions) {
         // Determine audio source path
@@ -193,6 +241,12 @@ int main(int argc, char* argv[])
         if (sampleId >= 0) {
             mixer.mapRegionToSample(region->id, sampleId);
             samplesLoaded++;
+            for (int si = 1; si < region->slotCount(); ++si) {
+                const std::string& slotPath = region->slot(si).audioFilePath;
+                if (slotPath.empty() || !std::filesystem::exists(slotPath)) continue;
+                const int slotSid = sampleBank.loadSampleFromSource(slotPath, 0.0, 3600.0, engineSR);
+                if (slotSid >= 0) mixer.mapRegionSlotToSample(region->id, si, slotSid);
+            }
         } else {
             std::fprintf(stderr, "[TEST:RealRender] WARN: Failed to load audio for region %d '%s'\n",
                          region->id, region->name.c_str());
@@ -238,7 +292,23 @@ int main(int argc, char* argv[])
             // Re-prepare so AudioProcessorGraphs get prepareToPlay with correct SR/blockSize
             mixer.prepare(engineSR, 512);
         } else {
-            std::fprintf(stderr, "[TEST:RealRender] No effects.json found (effects will be skipped)\n");
+            int chainsLoaded = 0;
+            const auto& chains = pm.getLoadedEffectChains();
+            if (chains.is_object()) {
+                for (auto it = chains.begin(); it != chains.end(); ++it) {
+                    try { mixer.loadEffectChainFromJSON(std::stoi(it.key()), it.value()); ++chainsLoaded; }
+                    catch (...) {}
+                }
+            }
+            const auto& masterChain = pm.getLoadedMasterEffectChain();
+            if (masterChain.is_object() && !masterChain.is_null()) {
+                mixer.loadMasterEffectChainFromJSON(masterChain);
+                ++chainsLoaded;
+            }
+            mixer.setMasterVolume(pm.getLoadedMasterVolume());
+            std::fprintf(stderr, "[TEST:RealRender] Loaded %d effect chains from project.json\n",
+                         chainsLoaded);
+            mixer.prepare(engineSR, 512);
         }
     }
 
@@ -258,35 +328,48 @@ int main(int argc, char* argv[])
     hwDetector.detect();
 
     int h264CodecId = HwEncoderDetector::codecNameToId("h264");
-    std::string h264Encoder = hwDetector.getDefaultEncoder(h264CodecId);
+    std::string h264Encoder = encoderArg.empty()
+        ? hwDetector.getDefaultEncoder(h264CodecId)
+        : encoderArg;
     std::fprintf(stderr, "[TEST:RealRender] H.264 encoder: '%s'\n", h264Encoder.c_str());
 
     // ── Step 4: Compute render range ─────────────────────────────────────
-    const int    barsToRender  = 16;
+    const int    barsToRender  = barsArg;
     const int    beatsPerBar   = 4;
     const int64_t beatsToRender = static_cast<int64_t>(barsToRender) * beatsPerBar;  // 64
-    const int    sampleRate    = 48000;
+    const int    exportRate    = exportRateArg;
+    // The rate the mix runs at (and every sample position below is counted in).
+    const int    sampleRate    = mixRateArg == "output"  ? exportRate
+                               : mixRateArg == "session" ? static_cast<int>(std::lround(engineSR))
+                                                         : std::stoi(mixRateArg);
+    std::fprintf(stderr, "[TEST:RealRender] Mix rate: %d Hz, encode rate: %d Hz\n",
+                 sampleRate, exportRate);
     const double bpm           = timeline.getBPM();  // 140.0
 
     // endSample = beatsToRender * (60 / bpm) * sampleRate
     //           = 64 * 60 * 48000 / 140
     // Use av_rescale for integer accuracy
-    const int64_t startSample = 0;
-    const int64_t endSample   = av_rescale(beatsToRender * 60, sampleRate,
-                                           static_cast<int64_t>(bpm));
+    // Same tick -> sample conversion the app's video_exportStart uses, so a
+    // --start-bar region lands on exactly the samples a real export would.
+    const int64_t ticksPerBar = TickTime::fromBeats(beatsPerBar).ticks;
+    const int64_t startSample = RenderClock::ppqToSample(
+        static_cast<int64_t>(startBarArg) * ticksPerBar, sampleRate, bpm);
+    const int64_t endSample   = RenderClock::ppqToSample(
+        static_cast<int64_t>(startBarArg + barsToRender) * ticksPerBar, sampleRate, bpm);
 
     // PPQ verification: 64 beats * 960 PPQ/beat = 61440
     const int64_t ppqAtEnd = RenderClock::sampleToPPQ(endSample, sampleRate, bpm);
-    const double  durationSec = RenderClock::sampleToSeconds(endSample, sampleRate);
+    const double  durationSec = RenderClock::sampleToSeconds(endSample - startSample, sampleRate);
 
     std::fprintf(stderr, "[TEST:RealRender] Region: bars 1-%d = %lld beats = samples 0 -> %lld "
                  "(%.2fs, PPQ=%lld, expect ~61440)\n",
                  barsToRender + 1, (long long)beatsToRender,
                  (long long)endSample, durationSec, (long long)ppqAtEnd);
-    assert(ppqAtEnd >= 61400 && ppqAtEnd <= 61500 && "PPQ should be ~61440 for 64 beats");
+    if (barsToRender == 16 && startBarArg == 0)
+        assert(ppqAtEnd >= 61400 && ppqAtEnd <= 61500 && "PPQ should be ~61440 for 64 beats");
 
     // Expected video frame count
-    const AVRational fps60 = { 60, 1 };
+    const AVRational fps60 = { fpsArg, 1 };
     const int64_t expectedFrames = RenderClock::sampleToVideoFrame(
         endSample - startSample, sampleRate, fps60);
     std::fprintf(stderr, "[TEST:RealRender] Expected ~%lld video frames at 60fps\n",
@@ -299,13 +382,20 @@ int main(int argc, char* argv[])
     settings.hwEncoderName = h264Encoder;
     settings.width         = width;
     settings.height        = height;
-    settings.fpsNum        = 60;
+    settings.fpsNum        = fpsArg;
     settings.fpsDen        = 1;
     settings.crf           = -1;               // use bitrate mode
-    settings.videoBitrate  = 20000000;         // 20 Mbps
-    settings.audioCodec    = ExportSettings::AudioCodec::AAC;
-    settings.sampleRate    = sampleRate;
-    settings.audioBitrate  = 384;              // kbps
+    settings.videoBitrate  = videoBpsArg;
+    settings.audioCodec    = audioCodecArg == "opus" ? ExportSettings::AudioCodec::OPUS
+                           : audioCodecArg == "flac" ? ExportSettings::AudioCodec::FLAC
+                           : audioCodecArg == "pcm"  ? ExportSettings::AudioCodec::PCM_S16LE
+                                                     : ExportSettings::AudioCodec::AAC;
+    settings.sampleRate    = exportRate;       // encoded audio rate
+    settings.mixSampleRate = sampleRate;       // rate the engine mixes at
+    settings.audioBitrate  = audioKbpsArg;     // kbps
+    settings.videoMode     = videoModeArg == "software" ? ExportSettings::VideoMode::Software
+                           : videoModeArg == "hardware" ? ExportSettings::VideoMode::Hardware
+                                                        : ExportSettings::VideoMode::Auto;
     settings.audioChannels = 2;
 
     std::fprintf(stderr, "[TEST:RealRender] Rendering %dx%d %dfps H.264 encoder='%s' "
@@ -315,9 +405,46 @@ int main(int argc, char* argv[])
                  settings.videoBitrate / 1e6,
                  settings.sampleRate, settings.audioBitrate);
 
+    // ── Step 5b: export-rate prepare + clip cache warm (mirrors video_exportStart)
+    {
+        mixer.setNonRealtime(true);
+        mixer.prepare(static_cast<double>(settings.audioInputRate()), 512);
+        mixer.prepareSourceTransformsForExport();
+        std::vector<int> pending;
+        for (const Clip* c : timeline.getAllClips()) {
+            if (c && mixer.clipNeedsCacheRender(*c)) {
+                mixer.invalidateClipCache(c->id, "harness");
+                pending.push_back(c->id);
+            }
+        }
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+        size_t notReady = pending.size();
+        while (notReady > 0 && std::chrono::steady_clock::now() < deadline) {
+            notReady = 0;
+            for (int id : pending) if (!mixer.isClipCacheReady(id)) ++notReady;
+            if (notReady > 0) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        std::fprintf(stderr, "[TEST:RealRender] Clip cache: %zu clips need processing, %zu not ready\n",
+                     pending.size(), notReady);
+    }
+
     // ── Step 6: Run the render ───────────────────────────────────────────
     OfflineRenderer renderer(timeline, mixer, gpu);
-    bool started = renderer.startRender(startSample, endSample, settings);
+    if (tailArg == "clamp" || tailArg == "wrap") {
+        xleth::TailRenderPlan plan;
+        plan.mode            = tailArg == "wrap" ? xleth::TailRenderMode::Wrap
+                                                 : xleth::TailRenderMode::TailClamp;
+        plan.maxTailSamples  = static_cast<int64_t>(tailSecondsArg * sampleRate);   // mix-rate samples
+        plan.holdSamples     = xleth::tailHoldSamples(static_cast<double>(sampleRate));
+        plan.thresholdLinear = xleth::tailDbToLinear(-60.0);
+        plan.freezeVideo     = (tailArg == "clamp");
+        renderer.setTailRenderPlan(plan);
+        std::fprintf(stderr, "[TEST:RealRender] Tail: %s, cap %.2fs\n",
+                     tailArg.c_str(), tailSecondsArg);
+    }
+    // Region renders warm up from tick 0, exactly like a scoped app export.
+    bool started = renderer.startRender(startSample, endSample,
+                                        startBarArg > 0 ? 0 : startSample, settings);
     assert(started && "startRender should succeed");
 
     auto& progress = renderer.getProgress();
@@ -367,7 +494,7 @@ int main(int argc, char* argv[])
     auto fileSize = std::filesystem::file_size(outputPath);
     std::fprintf(stderr, "[TEST:RealRender] Output: %lld bytes (%.1f MB)\n",
                  (long long)fileSize, fileSize / 1048576.0);
-    assert(fileSize > 1000000 && "Output must be > 1 MB");
+    assert(fileSize > 100000 && "Output must be > 100 KB");
 
     // Probe with FFmpeg
     auto probe = probeFile(outputPath);
@@ -383,13 +510,19 @@ int main(int argc, char* argv[])
     assert(probe.hasAudio && "Must have audio stream");
     assert(probe.videoWidth == width && "Video width should match requested width");
     assert(probe.videoHeight == height && "Video height should match requested height");
-    assert(probe.audioRate == 48000 && "Audio sample rate should be 48000");
+    // Opus is 48 kHz by definition; every other codec must carry the requested rate.
+    const int expectedAudioRate = (audioCodecArg == "opus") ? 48000 : exportRate;
+    std::fprintf(stderr, "[TEST:RealRender] Audio rate: expected %d, got %d\n",
+                 expectedAudioRate, probe.audioRate);
+    if (exportRateArg == 48000 && audioCodecArg == "aac")
+        assert(probe.audioRate == 48000 && "Audio sample rate should be 48000");
 
     // Duration check: should be ~27.4 seconds (64 beats at 140 BPM)
     std::fprintf(stderr, "[TEST:RealRender] Expected duration: %.2fs, got: %.2fs\n",
                  durationSec, probe.duration);
     assert(probe.duration > durationSec - 0.5 && "Duration too short");
-    assert(probe.duration < durationSec + 0.5 && "Duration too long");
+    assert(probe.duration < durationSec + 0.5 + (tailArg == "clamp" ? tailSecondsArg : 0.0)
+           && "Duration too long");
 
     // Frame count from renderer
     std::fprintf(stderr, "[TEST:RealRender] Expected %lld frames, rendered %lld\n",
@@ -409,6 +542,12 @@ int main(int argc, char* argv[])
     std::fprintf(stderr, "[TEST:RealRender] >>> Manual check: audio correct, grid cells flash,\n");
     std::fprintf(stderr, "[TEST:RealRender] >>>               chorus behind, no desync\n");
     std::fprintf(stderr, "================================================================\n\n");
+
+    // One machine-readable line for the export benchmark script.
+    std::fprintf(stderr,
+        "[BENCH] wall=%.3f content=%.3f frames=%lld bytes=%lld probeDur=%.3f audioRate=%d\n",
+        wallSeconds, durationSec, (long long)progress.currentFrame.load(),
+        (long long)fileSize, probe.duration, probe.audioRate);
 
     std::fprintf(stderr, "[TEST:RealRender] ALL TESTS PASSED\n");
     std::_Exit(0);

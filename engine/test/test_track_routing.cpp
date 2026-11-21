@@ -502,6 +502,156 @@ static void buildPdc(const xleth::RoutePlanSlotInput* in, const int* lat, int co
     xleth::buildRoutePdcPlan(in, count, p, lat, d);
 }
 
+// ─── Sends (FL multi-wiring) ─────────────────────────────────────────────────
+
+static xleth::RoutePlanSlotInput withSends(xleth::RoutePlanSlotInput s,
+                                           std::initializer_list<int> targets,
+                                           float gain = 1.0f) {
+    for (int t : targets) {
+        s.sendTargetTrackId[s.sendCount] = t;
+        s.sendGain[s.sendCount] = gain;
+        ++s.sendCount;
+    }
+    return s;
+}
+
+static int slotPos(const int* order, int count, int slotIndex) {
+    for (int i = 0; i < count; ++i)
+        if (order[i] == slotIndex) return i;
+    return -1;
+}
+
+static void test_sendsPlanOrderAndResolution() {
+    std::cout << "\n[S1] RoutePlan: sends are edges (topo order, resolution)\n";
+    // Kick(10) → Master + sends to Rev(30) and Comp(40). Rev listed BEFORE Kick.
+    // Bad sends are dropped: self, missing, duplicate, same as primary.
+    xleth::RoutePlanSlotInput in[4] = {
+        slot(30), withSends(slot(10), { 30, 40, 10, 999, 30 }), slot(40), slot(20, 40)
+    };
+    in[3] = withSends(slot(20, 40), { 40 });   // send duplicating the primary → dropped
+    xleth::RoutePlan p;
+    xleth::buildRoutePlan(in, 4, p);
+    CHECK(p.sendCount[1] == 2, "kick keeps exactly the 2 valid sends");
+    CHECK(p.sendTargetSlot[1][0] == 0 && p.sendTargetSlot[1][1] == 2, "send targets resolved to slots");
+    CHECK(p.outputTargetSlot[1] == -1, "kick primary stays Master");
+    CHECK(p.sendCount[3] == 0, "send equal to the primary target dropped");
+    CHECK(slotPos(p.topoOrder, 4, 1) < slotPos(p.topoOrder, 4, 0), "kick before its send target Rev");
+    CHECK(slotPos(p.topoOrder, 4, 1) < slotPos(p.topoOrder, 4, 2), "kick before its send target Comp");
+    CHECK(!p.cycleDetected, "no cycle");
+}
+
+static void test_sendsSoloClosure() {
+    std::cout << "\n[S2] RoutePlan: solo closure follows sends\n";
+    // Kick(10) solo, sends to Rev(30); Snare(20) also sends to Rev; Rev → Master.
+    xleth::RoutePlanSlotInput in[3] = {
+        withSends(slot(10, -1, false, true), { 30 }), withSends(slot(20), { 30 }), slot(30)
+    };
+    xleth::RoutePlan p;
+    xleth::buildRoutePlan(in, 3, p);
+    CHECK(p.audible[0], "soloed kick audible");
+    CHECK(p.audible[2], "Rev downstream of the soloed kick via a send is audible");
+    CHECK(!p.audible[1], "snare (not upstream of a solo) silent");
+
+    // Solo the bus: every source that SENDS into it is upstream → audible.
+    xleth::RoutePlanSlotInput in2[3] = {
+        withSends(slot(10), { 30 }), slot(20), slot(30, -1, false, true)
+    };
+    xleth::RoutePlan p2;
+    xleth::buildRoutePlan(in2, 3, p2);
+    CHECK(p2.audible[0], "kick feeding the soloed bus via a send is audible");
+    CHECK(!p2.audible[1], "unrelated snare silent");
+}
+
+static void test_sendsPerEdgePdc() {
+    std::cout << "\n[S3] RoutePdcPlan: one source, two junctions, two delays\n";
+    // Kick(10) → Master AND send → Bus(20) → Master; Bus chain latency 512.
+    // Master junction = 512 (via the bus). Kick's direct edge needs 512; its
+    // send into the bus needs 0. A single per-slot delay could not do both.
+    xleth::RoutePlanSlotInput in[2] = { withSends(slot(10), { 20 }), slot(20) };
+    const int lat[2] = { 0, 512 };
+    xleth::RoutePlan p; xleth::RoutePdcPlan d;
+    buildPdc(in, lat, 2, p, d);
+    CHECK(d.maxPathLatencySamples == 512, "max path goes through the latent bus");
+    CHECK(d.branchCompensationSamples[0] == 512, "kick's direct edge aligned to 512");
+    CHECK(d.sendCompensationSamples[0][0] == 0, "kick's send into the bus needs no delay");
+    CHECK(d.branchCompensationSamples[1] == 0, "bus is the deepest path");
+
+    // Muted bus: the send is dead, kick still contributes via Master.
+    xleth::RoutePlanSlotInput in2[2] = { withSends(slot(10), { 20 }), slot(20, -1, true) };
+    xleth::RoutePlan p2; xleth::RoutePdcPlan d2;
+    buildPdc(in2, lat, 2, p2, d2);
+    CHECK(d2.contributesToMaster[0], "kick contributes via its direct edge");
+    CHECK(!d2.contributesToMaster[1], "muted bus contributes nothing");
+    CHECK(d2.maxPathLatencySamples == 0, "dead bus path does not inflate max path");
+    CHECK(d2.sendCompensationSamples[0][0] == 0, "send into a muted bus: no compensation");
+
+    // A source whose ONLY live path is a send still contributes.
+    xleth::RoutePlanSlotInput in3[3] = { withSends(slot(10, 30), { 20 }), slot(20), slot(30, -1, true) };
+    const int lat3[3] = { 0, 0, 0 };
+    xleth::RoutePlan p3; xleth::RoutePdcPlan d3;
+    buildPdc(in3, lat3, 3, p3, d3);
+    CHECK(d3.contributesToMaster[0], "primary into a muted bus, send live → contributes");
+}
+
+static void test_validateTrackRoutes() {
+    std::cout << "\n[S4] validateTrackRoutes + SetTrackRoutesCommand\n";
+    using R = xleth::RoutingValidationReason;
+    Timeline tl;
+    int kick = addTrack(tl, "Kick");
+    int bus  = addTrack(tl, "Bus");
+    int rev  = addTrack(tl, "Rev");
+    int vid  = addTrack(tl, "Vid", true);
+    auto send = [](int target, float gain = 1.0f) { TrackSend s; s.targetTrackId = target; s.gain = gain; return s; };
+
+    CHECK(xleth::validateTrackRoutes(tl, kick, -1, { send(bus), send(rev) }).ok(), "Master + 2 sends ok");
+    CHECK(xleth::validateTrackRoutes(tl, kick, bus, { send(bus) }).reason == R::duplicate_target, "send == primary");
+    CHECK(xleth::validateTrackRoutes(tl, kick, -1, { send(rev), send(rev) }).reason == R::duplicate_target, "send twice");
+    CHECK(xleth::validateTrackRoutes(tl, kick, -1, { send(-1) }).reason == R::invalid_target, "Master as a send");
+    CHECK(xleth::validateTrackRoutes(tl, kick, -1, { send(kick) }).reason == R::self_route, "self send");
+    CHECK(xleth::validateTrackRoutes(tl, kick, -1, { send(vid) }).reason == R::invalid_target, "visual-only send");
+    CHECK(xleth::validateTrackRoutes(tl, kick, -1, { send(424242) }).reason == R::unknown_track, "unknown send");
+    std::vector<TrackSend> nine;
+    for (int i = 0; i < 9; ++i) nine.push_back(send(bus));
+    CHECK(xleth::validateTrackRoutes(tl, kick, -1, nine).reason == R::too_many_sends, "too many sends");
+
+    // Cycles through sends: Bus sends to Kick; Kick may then not reach Bus.
+    CHECK(tl.setTrackRoutes(bus, -1, { send(kick) }).ok(), "bus → kick send");
+    CHECK(xleth::validateTrackRoutes(tl, kick, -1, { send(bus) }).reason == R::cycle, "send cycle rejected");
+    CHECK(xleth::validateTrackOutputRoute(tl, kick, bus).reason == R::cycle, "primary cycle through a send rejected");
+    CHECK(tl.setTrackRoutes(bus, -1, {}).ok(), "clear bus sends");
+
+    // Undo/redo restores primary + sends together; gain clamped.
+    UndoManager um;
+    um.execute(std::make_unique<SetTrackRoutesCommand>(kick, rev, std::vector<TrackSend>{ send(bus, 9.0f) }, tl), tl);
+    CHECK(tl.getTrack(kick)->outputRoute.targetTrackId == rev, "primary set");
+    CHECK(tl.getTrack(kick)->sends.size() == 1 && tl.getTrack(kick)->sends[0].gain == 2.0f, "send set, gain clamped");
+    CHECK(um.undo(tl), "undo");
+    CHECK(tl.getTrack(kick)->outputRoute.targetTrackId == -1 && tl.getTrack(kick)->sends.empty(), "undo restores both");
+    CHECK(um.redo(tl), "redo");
+    CHECK(tl.getTrack(kick)->sends.size() == 1, "redo re-applies sends");
+
+    // Live send gain (not undo-tracked).
+    CHECK(tl.setTrackSendGain(kick, bus, 0.5f).ok(), "set send gain");
+    CHECK(tl.getTrack(kick)->sends[0].gain == 0.5f, "gain applied");
+    CHECK(tl.setTrackSendGain(kick, rev, 0.5f).reason == R::unknown_route, "no send to the primary target");
+
+    // Persistence round trip + tolerant load.
+    nlohmann::json j;
+    to_json(j, *tl.getTrack(kick));
+    CHECK(j.contains("sends") && j["sends"].size() == 1, "sends serialized");
+    j["sends"].push_back({ {"targetTrackId", rev}, {"gain", 1.0f} });     // == primary → dropped
+    j["sends"].push_back({ {"targetTrackId", -1} });                      // Master → dropped
+    j["sends"].push_back({ {"targetTrackId", bus}, {"gain", 1.0f} });     // duplicate → dropped
+    TrackInfo loaded;
+    from_json(j, loaded);
+    CHECK(loaded.sends.size() == 1 && loaded.sends[0].targetTrackId == bus && loaded.sends[0].gain == 0.5f,
+          "sends load tolerant");
+
+    nlohmann::json plain;
+    to_json(plain, *tl.getTrack(rev));
+    CHECK(!plain.contains("sends"), "no sends key when empty");
+}
+
 // ─── P1: Unrouted reduces exactly to the flat model ──────────────────────────
 
 static void test_pdcUnroutedFlatEquivalence() {
@@ -709,6 +859,12 @@ int main() {
     test_pdcSoloClosure();
     test_pdcVisualOnlyExcluded();
     test_pdcRouteReset();
+
+    // Sends (FL multi-wiring).
+    test_sendsPlanOrderAndResolution();
+    test_sendsSoloClosure();
+    test_sendsPerEdgePdc();
+    test_validateTrackRoutes();
 
     std::cout << "\n=== Results: " << g_passed << " passed, " << g_failed << " failed ===\n";
     if (g_failed > 0) {

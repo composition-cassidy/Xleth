@@ -1,5 +1,4 @@
-import { useEffect } from 'react'
-import { createPortal } from 'react-dom'
+import { Button, Dialog, DialogText } from '../ui-kit'
 
 /**
  * Three-way "unsaved changes" prompt. Imperative promise wrapper lives below
@@ -8,30 +7,22 @@ import { createPortal } from 'react-dom'
  * Esc → cancel, Enter → save, backdrop click → cancel.
  */
 export default function UnsavedChangesDialog({ onSave, onDiscard, onCancel }) {
-  useEffect(() => {
-    const handler = (e) => {
-      if (e.key === 'Escape') onCancel?.()
-      if (e.key === 'Enter')  onSave?.()
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [onCancel, onSave])
-
-  return createPortal(
-    <div className="confirm-dialog-backdrop unsaved-dialog-backdrop" onClick={onCancel}>
-      <div className="confirm-dialog unsaved-dialog" onClick={(e) => e.stopPropagation()}>
-        <div className="confirm-dialog-header">Unsaved changes</div>
-        <div className="confirm-dialog-body">
-          You have unsaved changes. Save them before starting a new project?
-        </div>
-        <div className="confirm-dialog-footer unsaved-dialog-footer">
-          <button className="confirm-dialog-btn" onClick={onCancel}>Cancel</button>
-          <button className="confirm-dialog-btn danger" onClick={onDiscard}>Discard</button>
-          <button className="confirm-dialog-btn primary" onClick={onSave} autoFocus>Save</button>
-        </div>
-      </div>
-    </div>,
-    document.body
+  return (
+    <Dialog
+      title="Unsaved changes"
+      width="sm"
+      onClose={onCancel}
+      onEnter={onSave}
+      actions={
+        <>
+          <Button size="lg" onClick={onCancel}>Cancel</Button>
+          <Button size="lg" variant="danger" onClick={onDiscard}>Discard</Button>
+          <Button size="lg" variant="primary" onClick={onSave} data-autofocus>Save</Button>
+        </>
+      }
+    >
+      <DialogText>You have unsaved changes. Save them before starting a new project?</DialogText>
+    </Dialog>
   )
 }
 

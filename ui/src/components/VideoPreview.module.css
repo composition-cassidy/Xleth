@@ -1,0 +1,82 @@
+/* The Preview's own layout (ui/DESIGN.md section 8.1). The picture always scales
+ * to fit the panel (object-fit: contain on an absolutely positioned canvas), so
+ * the render resolution only changes how soft it is, never how big it is. The
+ * surround is the neutral ground g0 so picture colour is judged against grey. */
+@layer kit {
+  .root {
+    position: relative;
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-height: 0;
+    min-width: 0;
+    background: var(--ui-g1);
+  }
+
+  .stage {
+    position: relative;
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--ui-g0);
+    overflow: hidden;
+  }
+
+  .area {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  /* Edit Grid mode (ui/DESIGN.md 8.2): the track rail, the picture and the grid
+   * settings rail share one row. The picture takes the full height at the
+   * project's aspect (up to what is left after the two rails' minimum width), so
+   * a short, wide panel spends its width on controls, not on black gutters.
+   * `.stage` is a size container so the rails and the picture can read its
+   * width and height. */
+
+  .stage[data-grid-editing] {
+    --pv-rail-min: 176px;
+    flex-direction: row;
+    justify-content: center;
+    container: pv-stage / size;
+  }
+
+  .area[data-grid-editing] {
+    flex: 0 1 auto;
+    height: 100%;
+    min-width: 160px;
+    max-width: calc(100cqw - 2 * var(--pv-rail-min));
+    aspect-ratio: var(--xleth-canvas-aspect, 16 / 9);
+  }
+
+  /* A Preview narrower than 560px cannot hold the rails beside the picture:
+   * VideoPreview opens them in a flyout beside the panel (GridEditFlyout) and
+   * the picture keeps the whole stage, so there is no narrow stacking here. */
+
+  /* Out of flow: the canvas can never size its box from its bitmap. */
+  .canvas {
+    position: absolute;
+    inset: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: var(--ui-g0);
+  }
+
+  /* Only before the first frame has been drawn. Sentence case, 12px, ink-3 on g0. */
+  .placeholder {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--ui-ink-3);
+    font-size: var(--type-12);
+    pointer-events: none;
+  }
+}

@@ -3,6 +3,7 @@ import { usePluginUI } from '../PluginUIContext.js'
 import { resolveFormat } from '../formats.js'
 import { styleToCSS } from '../styleToCSS.js'
 
+import { useThemeEpoch } from '../../../theming/useThemeEpoch.js'
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value))
 }
@@ -75,6 +76,7 @@ function drawLookaheadPreview(canvas, value, min, max) {
 }
 
 export default function CompressorLookaheadNode({ node }) {
+  const dprEpoch = useThemeEpoch() // Phase 7: re-size and redraw at the new devicePixelRatio when the UI scale changes
   const { manifest, params, setParam } = usePluginUI()
   const { props = {}, style = {} } = node
   const paramId = props.param || 'lookahead'
@@ -92,7 +94,7 @@ export default function CompressorLookaheadNode({ node }) {
     const canvas = canvasRef.current
     if (!canvas) return
     drawLookaheadPreview(canvas, value, meta.min, meta.max)
-  }, [meta.min, meta.max, value])
+  }, [meta.min, meta.max, value, dprEpoch])
 
   const commitFromPointer = useCallback((event) => {
     const next = valueFromPointer(event, event.currentTarget, meta.min, meta.max)

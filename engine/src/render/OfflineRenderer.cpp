@@ -10,16 +10,19 @@
 #include "render/RenderScope.h"
 #include "render/FrameCache.h"
 #include "render/FrameCollector.h"
+#include "render/MixEngineDelayResolver.h"
 #include "render/RenderVideoDecoder.h"
 #include "render/GridCompositor.h"
 #include "render/SnapshotTransitionRenderer.h"  // snapshot transition export seam (Slice 3b)
+#include "render/LandingRenderer.h"             // landing carry, shared with the preview seam
 #include "render/VisualFrameDiagnostics.h"  // opt-in pixel-content instrumentation
+#include "XlethDebug.h"
 #include "render/CanvasFit.h"
 #include "render/AnimationManager.h"
 #include "export/FFmpegMuxer.h"
 #include "SyncManager.h"          // VideoEvent
 #include "render/ArpVideoExpander.h"
-#include "render/VideoFlipApplier.h"  // single resolver call site
+#include "render/VideoEventBuilder.h"  // the one timeline -> VideoEvent builder
 #include "ProxyTranscoder.h"          // resolution-aware render proxies
 
 extern "C" {
@@ -33,10 +36,12 @@ extern "C" {
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <limits>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // Buffer size: 512 samples = ~10.67ms at 48kHz. Fixed for consistent
@@ -127,19 +132,46 @@ float maxAnimationScale(const TrackInfo& trk) {
 // (decode the original once), so it stays on the original.
 constexpr int kReuseThreshold = 2;
 
+// Depth of the export encode queue (RENDER_PERF_AUDIT Finding 6a). The render
+// thread produces [decode + composite + readback]; the muxer's worker consumes
+// [convert + encode + mux]. 0 disables the split entirely and restores the
+// strictly serial path — the A/B lever for timing comparisons, and the escape
+// hatch if an encoder ever misbehaves under the split.
+//
+// 3 is enough to hide the encoder behind the producer without letting the
+// producer run far enough ahead to matter for memory: (depth+1) frames of BGRA
+// is ~33 MB at 1080p, ~133 MB at 4K.
+constexpr int kDefaultExportEncodeQueueDepth = 3;
+
+inline int exportEncodeQueueDepth() {
+    if (const char* env = std::getenv("XLETH_EXPORT_ENCODE_QUEUE")) {
+        char* end = nullptr;
+        const long v = std::strtol(env, &end, 10);
+        if (end != env && v >= 0 && v <= 8)
+            return static_cast<int>(v);
+    }
+    return kDefaultExportEncodeQueueDepth;
+}
+
+using SteadyClock = std::chrono::steady_clock;
+inline int64_t usSince(SteadyClock::time_point t0) {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+               SteadyClock::now() - t0).count();
+}
+
 // Opt-in (XLETH_VISUAL_DIAG_PIXELS=1) content fingerprint of a composed export
-// frame, taken immediately before it is handed to the encoder. `readback.pixels`
-// is BGRA with row stride `readback.stride`. No-op when the flag is off.
-// `encoderName`/dimensions are passed through only for the JSON sidecar context.
-inline void recordExportPreEncode(const ReadbackBuffer& readback, long long frameIndex) {
+// frame, taken immediately before it is handed to the encoder. `pixels` is BGRA
+// with row stride `stride`. No-op when the flag is off.
+inline void recordExportPreEncode(const uint8_t* pixels, int width, int height,
+                                  int stride, long long frameIndex) {
     if (!xleth::visualdiag::pixelsEnabled()) return;
     auto stats = xleth::visualdiag::computeFrameStats(
-        readback.pixels.data(), readback.width, readback.height, readback.stride,
+        pixels, width, height, stride,
         xleth::visualdiag::PixelFormat::BGRA, frameIndex);
     xleth::visualdiag::record("export-pre-encode", stats);
     xleth::visualdiag::maybeDumpFrame(
-        "export-pre-encode", readback.pixels.data(), readback.width,
-        readback.height, readback.stride, xleth::visualdiag::PixelFormat::BGRA, stats);
+        "export-pre-encode", pixels, width, height, stride,
+        xleth::visualdiag::PixelFormat::BGRA, stats);
 }
 
 // Resolve the project canvas (GridLayout) + requested export size + fit mode into
@@ -165,35 +197,536 @@ inline void applyCanvasFitToCompositor(GridCompositor& compositor,
         modeName, vp.x, vp.y, vp.w, vp.h);
 }
 
-struct PatternNoteRef {
-    const PatternNote* note = nullptr;
-    int sourceOrder = 0;
+// Decoded-frame cache budget for an export.
+//
+// The cache is what turns a RETRIGGER into a lookup. Without it, every time a
+// clip restarts the decoder must seek back to the previous keyframe and decode
+// forward to the clip's first frame again — on a long-GOP source that is dozens
+// of codec frames thrown away to produce one. This genre retriggers the same
+// few syllables hundreds of times, so how many of their frames stay resident
+// decides most of the decode cost.
+//
+// The preview's 512 MB default holds ~61 frames of 1080p BGRA. An export has
+// the GPU to itself (the preview is paused for its duration), so on a discrete
+// card it takes a quarter of the dedicated memory, between 512 MB and 2 GB.
+// Integrated adapters share system RAM and keep the conservative default.
+// XLETH_EXPORT_FRAME_CACHE_MB overrides (A/B lever).
+inline size_t exportFrameCacheBytes(const GpuDeviceManager& gpu)
+{
+    constexpr size_t kMB = 1024u * 1024u;
+    if (const char* env = std::getenv("XLETH_EXPORT_FRAME_CACHE_MB")) {
+        char* end = nullptr;
+        const long v = std::strtol(env, &end, 10);
+        if (end != env && v >= 64 && v <= 16384)
+            return static_cast<size_t>(v) * kMB;
+    }
+    size_t budgetMB = 512;
+    const auto& adapters = gpu.getAdapters();
+    const int   active   = gpu.getActiveAdapterIndex();
+    for (const auto& a : adapters) {
+        if (a.adapterIndex != active || !a.isDiscrete) continue;
+        budgetMB = std::clamp<size_t>(a.dedicatedVideoMemoryMB / 4, 512, 2048);
+        break;
+    }
+    return budgetMB * kMB;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ExportVideoStage — one output frame, from "the audio clock crossed a frame
+//  boundary" to "the frame is queued for encoding".
+//
+//  [advance animation → collect → decode misses → composite → readback → submit]
+//
+//  The tail-clamp render and the wrap render used to each carry their own copy
+//  of this (~150 lines apiece). They differed only by accident — one logged an
+//  invalid readback and the other did not, one cleaned up the temp file on a
+//  compositor failure and the other left it behind — which is exactly how two
+//  copies of a pipeline drift. Both now drive this one stage, so a fix or an
+//  optimisation lands in every export mode at once.
+// ═══════════════════════════════════════════════════════════════════════════
+class ExportVideoStage
+{
+public:
+    ExportVideoStage(const Timeline& timeline, MixEngine& mixer, GpuDeviceManager& gpu,
+                     FFmpegMuxer& muxer, const ExportSettings& settings,
+                     int sampleRate, int64_t startSample,
+                     const std::vector<VideoEvent>& events,
+                     const std::vector<SlideAnimationEvent>& slideEvents,
+                     const std::unordered_map<int, std::string>* proxyPlan)
+        : timeline_(timeline), muxer_(muxer), settings_(settings)
+        , sampleRate_(sampleRate)
+        , fps_{ settings.fpsNum, settings.fpsDen }
+        , bpm_(timeline.getBPM())
+        , startSample_(startSample)
+        , events_(events), slideEvents_(slideEvents), proxyPlan_(proxyPlan)
+        , device_(gpu.getDevice()), devCtx_(gpu.getContext())
+        , echoResolver_(mixer)
+    {
+        collector_.setAnimationManager(&animMgr_);
+        collector_.setCompanionFxEnabled(true);
+        // Lens/Roam, resolved ONCE from the timeline at export start (not per
+        // frame): every request copies its values from this snapshot, the same
+        // lookup the preview uses. See LensRoamSnapshot (model/LensRoam.h).
+        collector_.setLensRoamSnapshot(buildLensRoamSnapshot(timeline_));
+        // Color Grades, baked ONCE from the export's frozen timeline: the same
+        // snapshot type, the same collector lookup and the same shader the
+        // preview uses, which is the whole of preview/export grade parity.
+        // The export owns its LUT library, so it never touches the live one.
+        collector_.setColorGradeSnapshot(
+            xleth::grade::buildColorGradeSnapshot(timeline_, nullptr, &gradeLuts_));
+
+        // Visual Echo: the export renders its audio through THIS MixEngine, so
+        // the Delay instances the echo binds to are the same objects, running
+        // the same blocks, at the same positions the preview does. Installing a
+        // resolver over it is the whole of export/preview echo parity — not a
+        // second code path that has to be kept in agreement, but literally the
+        // same numbers out of the same effect. Without it the export would
+        // still composite every cell correctly and simply draw no taps.
+        collector_.setEchoDelayResolver(&echoResolver_);
+
+        cache_.setMemoryLimit(exportFrameCacheBytes(gpu));
+    }
+
+    /** Open the decoder (per the requested VideoMode) and the compositor.
+     *  Returns false with `error` set to a user-facing message on failure. */
+    bool init(std::string& error)
+    {
+        using VM = ExportSettings::VideoMode;
+        const char* modeStr = settings_.videoMode == VM::Hardware ? "hardware"
+                            : settings_.videoMode == VM::Software ? "software" : "auto";
+
+        if (settings_.videoMode == VM::Software) {
+            // Intentionally skip initHwDevice — software decode unconditionally.
+        } else if (settings_.videoMode == VM::Hardware) {
+            if (!device_ || !devCtx_ || !decoder_.initHwDevice(device_, devCtx_)) {
+                std::fprintf(stderr,
+                    "[VideoMode] requested=hardware decode=unavailable encode=%s "
+                    "reason=hardware_decode_init_failed\n", muxer_.videoEncoderName());
+                error = "Hardware video mode selected, but D3D11VA hardware decode could not be "
+                        "initialized. Switch Video mode to Auto or Software in Settings.";
+                return false;
+            }
+        } else if (device_ && devCtx_) {   // Auto
+            decoder_.initHwDevice(device_, devCtx_);
+        }
+
+        // [VideoMode] diagnostic log — resolved decode/encode path for this export
+        {
+            const char* reason = (settings_.videoMode == VM::Hardware) ? "forced_hardware"
+                               : (settings_.videoMode == VM::Software) ? "user_setting"
+                               : muxer_.isVideoEncoderFallback()       ? "auto_fallback_no_hw_encoder"
+                                                                       : "auto_detected";
+            std::fprintf(stderr, "[VideoMode] requested=%s decode=%s encode=%s reason=%s\n",
+                         modeStr, decoder_.hasHwAccel() ? "d3d11va" : "software",
+                         muxer_.videoEncoderName(), reason);
+        }
+
+        if (device_ && devCtx_) {
+            if (!compositor_.init(device_, devCtx_, settings_.width, settings_.height)) {
+                error = "Failed to initialize GPU compositor";
+                return false;
+            }
+            applyCanvasFitToCompositor(compositor_, timeline_.getGridLayout(), settings_);
+        }
+        return true;
+    }
+
+    /** Produce output frame `f` and hand it to the encoder. Returns false only
+     *  on a fatal error (`error` set); an unusable GPU readback is counted and
+     *  skipped unless every frame so far has failed. */
+    bool renderFrame(int64_t f, std::string& error)
+    {
+        const auto t0 = SteadyClock::now();
+
+        const int64_t localFrameSample   = RenderClock::videoFrameToSample(f, sampleRate_, fps_);
+        const int64_t projectFrameSample = startSample_ + localFrameSample;
+        const double  projectSeconds     = static_cast<double>(projectFrameSample)
+                                         / static_cast<double>(sampleRate_);
+
+        // Advance animation state before collecting, and before the slide
+        // dispatch below — advanceTo also sets the stamp any trigger fired for
+        // this frame will use. Absolute project time, derived from the frame's
+        // own sample position, so this matches the live preview frame-for-frame.
+        animMgr_.advanceTo(1000.0 * projectSeconds);
+
+        const int64_t projectFrameTick = RenderClock::sampleToPPQ(
+            projectFrameSample, sampleRate_, bpm_);
+        const GridLayout frameGrid = timeline_.gridLayoutAt(TickTime{ projectFrameTick });
+
+        dispatchSlideEvents(projectFrameTick);
+
+        // The decoder's stream pool reasons about recency; give it the output
+        // timeline's clock, not the wall clock (see setPresentationClock).
+        decoder_.setPresentationClock(projectSeconds);
+
+        // ── Transition + landing resolve ────────────────────────────────────
+        // Both for this frame's tick. The transition is resolved here (same
+        // call, same result as before) because a landing frame has to know
+        // whether a transition is active before it collects. The landing count
+        // stays 0 for a project without landings, and every landing branch
+        // below is gated on it.
+        Timeline::ResolvedTransition tx =
+            timeline_.transitionAt(TickTime{ projectFrameTick });
+        Timeline::ResolvedLandings landings;
+        if (projectHasLandings_)
+            landings = timeline_.landingsAt(TickTime{ projectFrameTick });
+        xleth::LandingRenderer::beginFrame(landings, collector_);
+
+        xleth::SnapshotTransitionFrameCtx frameCtx;
+        frameCtx.sampleRate          = sampleRate_;
+        frameCtx.bpm                 = bpm_;
+        frameCtx.fps                 = fps_;
+        frameCtx.outputFrameIndex    = f;
+        frameCtx.projectStartSample  = startSample_;
+        frameCtx.allowProxy          = !settings_.useSourceMedia;
+        frameCtx.posterMode          = false;
+        frameCtx.renderProxyBySource = proxyPlan_;
+
+        // Collect what each grid cell needs for this output frame. Export
+        // honors settings.useSourceMedia: full quality → originals (proxyPlan_
+        // null, allowProxy false); fast export → resolution-aware render proxies.
+        //
+        // On a landing frame without a transition the list comes from the
+        // shared LandingRenderer (the preview calls the same function): this
+        // frame's layout minus the landing tracks, plus those tracks carried on
+        // top at their in-flight rect.
+        std::vector<CellFrameRequest>* collectedRequests = nullptr;
+        if (landings.count > 0 && !tx.active) {
+            collectedRequests = &landingRenderer_.collectFrame(
+                landings, frameGrid, timeline_, events_, collector_, frameCtx);
+        } else {
+            collectedRequests = &collector_.collectRequests(
+                f, timeline_, sampleRate_, fps_, events_,
+                /*allowProxy=*/ !settings_.useSourceMedia,
+                /*projectStartSample=*/ startSample_,
+                /*posterMode=*/ false,
+                /*renderProxyBySource=*/ proxyPlan_);
+        }
+        auto& requests = *collectedRequests;
+        // Master Color Grade: applied by readback() to the finished frame.
+        compositor_.setMasterGrade(collector_.masterGrade());
+
+        // Deduplicate: multiple cells may reference the same source frame
+        auto deduplicated = FrameCollector::deduplicateRequests(requests);
+
+        // Size the decoder's open-context budget from this frame's distinct
+        // source paths (deduplicated is keyed by (sourcePath, frameIndex), so
+        // several keys can share a path; it is unordered, so distinct ids are
+        // counted via a set rather than assuming adjacent equal keys).
+        {
+            distinctPathIds_.clear();
+            for (const auto& [key, reqs] : deduplicated)
+                distinctPathIds_.insert(key.sourcePath.id());
+            decoder_.setActiveContextBudget(static_cast<int>(distinctPathIds_.size()));
+        }
+
+        // Check cache and find what needs decoding
+        auto misses = FrameCollector::resolveFrames(deduplicated, cache_);
+        const auto tCollected = SteadyClock::now();
+
+        // Decode cache misses. Sorted by (sourcePath, frameIndex) ascending so a
+        // source with several outstanding misses decodes forward through them,
+        // letting the sequential fast path engage instead of ping-ponging
+        // between cells reading the same file at different offsets. Reorders
+        // decode order only — output pixels unchanged.
+        std::sort(misses.begin(), misses.end());
+        decodeInto(misses);
+        const auto tDecoded = SteadyClock::now();
+
+        if (!compositor_.isInitialized()) {
+            timers_.collectUs += usBetween(t0, tCollected);
+            timers_.decodeUs  += usBetween(tCollected, tDecoded);
+            return true;    // no GPU: nothing to composite (audio-only output)
+        }
+
+        // ── Composite ───────────────────────────────────────────────────────
+        // Inside an enabled snapshot-cue window, blend outgoing and incoming
+        // snapshots through the ONE shared path preview also uses, so
+        // export == preview frame for frame. Outside a window this returns
+        // false and the single-composite path runs unchanged.
+        bool didTransition = false;
+        {
+            // The transition was resolved before the collect (above).
+            if (tx.active) {
+                const xleth::SnapshotTransitionFrameCtx& txCtx = frameCtx;
+                auto decodeMisses = [this](const std::vector<FrameCacheKey>& m) { decodeInto(m); };
+                // Landings: out of both snapshots, then drawn once over the
+                // blend (the preview runs this same sequence).
+                if (landings.count > 0) {
+                    xleth::LandingRenderer::stripLandingTracks(landings, tx.layoutA);
+                    xleth::LandingRenderer::stripLandingTracks(landings, tx.layoutB);
+                }
+                didTransition = xleth::renderSnapshotTransition(
+                    tx, timeline_, events_, compositor_, collector_,
+                    cache_, txCtx, decodeMisses);
+                if (didTransition && landings.count > 0) {
+                    landingRenderer_.renderCarryOverlay(
+                        landings, timeline_, events_, compositor_,
+                        collector_, cache_, txCtx, decodeMisses);
+                }
+            }
+        }
+        if (!didTransition) {
+            // Global shader time drives visual-state evaluation, so subrange
+            // exports must sample it in absolute project time even while
+            // encoded frame numbers stay local from zero.
+            compositor_.compositeFrame(requests, cache_,
+                                       frameGrid.columns, frameGrid.rows,
+                                       static_cast<float>(projectSeconds), frameGrid.gapScale);
+        }
+        const auto tComposited = SteadyClock::now();
+
+        // ── Readback straight into the encoder's own buffer ─────────────────
+        // The muxer hands out the pooled frame it will encode from, and the
+        // compositor's staging map is copied into it directly. There used to be
+        // a hop in between (GPU → compositor's vector → memcpy → pooled
+        // buffer): a second full-frame copy, 8 MB at 1080p, per frame.
+        // acquireVideoBuffer() blocks when the producer is a full queue ahead
+        // of the encoder, so its wait is back-pressure and is booked to submit.
+        uint8_t* dst = muxer_.acquireVideoBuffer();
+        if (!dst) {
+            error = "Video encoding failed at frame " + std::to_string(f);
+            return false;
+        }
+        const auto tAcquired = SteadyClock::now();
+
+        const auto& readback = compositor_.readback(
+            ReadbackMode::Immediate, dst, muxer_.videoBufferBytes());
+        const auto tRead = SteadyClock::now();
+
+        ++framesAttempted_;
+        ++timers_.frames;
+        timers_.collectUs   += usBetween(t0, tCollected);
+        timers_.decodeUs    += usBetween(tCollected, tDecoded);
+        timers_.compositeUs += usBetween(tDecoded, tComposited);
+        timers_.readbackUs  += usBetween(tAcquired, tRead);
+        timers_.submitUs    += usBetween(tComposited, tAcquired);
+
+        if (!readback.valid) {
+            muxer_.releaseVideoBuffer();
+            return onInvalidReadback(f, error);
+        }
+
+        havePicture_ = true;
+        bool videoOk = false;
+        if (readback.intoDestination) {
+            recordExportPreEncode(dst, readback.width, readback.height, readback.stride, f);
+            const auto tSubmit = SteadyClock::now();
+            videoOk = muxer_.submitVideoBuffer(f);
+            timers_.submitUs += usSince(tSubmit);
+        } else {
+            // The compositor could not use our buffer (its target is not a
+            // tightly packed BGRA frame of the export size) and filled its own.
+            // Take the copying path for this frame rather than lose it.
+            muxer_.releaseVideoBuffer();
+            recordExportPreEncode(readback.pixels.data(), readback.width, readback.height,
+                                  readback.stride, f);
+            const auto tSubmit = SteadyClock::now();
+            videoOk = muxer_.writeVideo(readback.pixels.data(), readback.stride, f);
+            timers_.submitUs += usSince(tSubmit);
+        }
+        if (!videoOk) {
+            error = "Video encoding failed at frame " + std::to_string(f);
+            return false;
+        }
+        return true;
+    }
+
+    /** True once at least one frame has been composited and read back. */
+    bool hasPicture() const { return havePicture_; }
+
+    /** tailClamp: submit the last composited picture again as frame `f`. The
+     *  compositor's render target still holds it, so it is read back ONCE on
+     *  the first call instead of being copied aside after every frame of the
+     *  whole render on the chance a tail would need it. */
+    bool repeatLastFrame(int64_t f, std::string& error)
+    {
+        if (!havePicture_) return true;
+        if (frozen_.empty()) {
+            const auto& rb = compositor_.readback();
+            if (!rb.valid || rb.pixels.empty()) {
+                havePicture_ = false;       // nothing to freeze; tail is audio-only
+                return true;
+            }
+            frozen_       = rb.pixels;
+            frozenStride_ = rb.stride;
+        }
+        if (!muxer_.writeVideo(frozen_.data(), frozenStride_, f)) {
+            error = "Video encoding failed (tail) at frame " + std::to_string(f);
+            return false;
+        }
+        return true;
+    }
+
+    void logSummary(int queueDepth) const
+    {
+        timers_.log(queueDepth);
+
+        const auto& ds = decoder_.decodeStats();
+        const auto& es = decoder_.extractStats();
+        std::fprintf(stderr,
+            "[Renderer] Decoder: calls=%llu opens=%llu (%.2fs) seeks=%llu "
+            "codecFrames=%llu decode=%.2fs extract=%.2fs | hwGpu=%llu hwTransfer=%llu sw=%llu\n",
+            (unsigned long long)ds.calls, (unsigned long long)ds.opens, ds.openUs / 1e6,
+            (unsigned long long)ds.seeks, (unsigned long long)ds.framesDecoded,
+            ds.decodeUs / 1e6, ds.extractUs / 1e6,
+            (unsigned long long)es.hwGpuFrames, (unsigned long long)es.hwTransferFrames,
+            (unsigned long long)es.swFrames);
+
+        const RenderCacheStats cs = cache_.getStats();
+        const uint64_t lookups = cs.hitCount + cs.missCount;
+        std::fprintf(stderr,
+            "[Renderer] Frame cache: %llu hits / %llu misses (%.1f%% hit), %llu evictions, "
+            "%.0f / %.0f MB\n",
+            (unsigned long long)cs.hitCount, (unsigned long long)cs.missCount,
+            lookups ? 100.0 * static_cast<double>(cs.hitCount) / static_cast<double>(lookups) : 0.0,
+            (unsigned long long)cs.evictionCount,
+            cs.currentBytes / (1024.0 * 1024.0), cs.limitBytes / (1024.0 * 1024.0));
+
+        if (framesAttempted_ > 0) {
+            std::fprintf(stderr,
+                "[Renderer] Video frames: attempted=%lld, invalid_readback=%lld (%.1f%%)\n",
+                (long long)framesAttempted_, (long long)invalidReadbacks_,
+                100.0 * static_cast<double>(invalidReadbacks_)
+                      / static_cast<double>(framesAttempted_));
+            if (invalidReadbacks_ > 0) {
+                std::fprintf(stderr,
+                    "[Renderer] WARN: export degraded — %lld of %lld frames had invalid GPU "
+                    "readback (compositor produced no pixels). Check earlier log for "
+                    "[GridCompositor] errors.\n",
+                    (long long)invalidReadbacks_, (long long)framesAttempted_);
+            }
+        }
+    }
+
+    void shutdown()
+    {
+        compositor_.shutdown();
+        decoder_.closeAll();
+        cache_.clear();
+    }
+
+private:
+    // Wall-clock split of the per-frame video work, so an A/B run shows WHERE
+    // the time went and not merely that the total moved.
+    struct Timers {
+        int64_t collectUs = 0, decodeUs = 0, compositeUs = 0, readbackUs = 0, submitUs = 0;
+        int64_t frames = 0;
+
+        void log(int queueDepth) const {
+            if (frames <= 0) return;
+            const double n = static_cast<double>(frames);
+            const int64_t produceUs = collectUs + decodeUs + compositeUs + readbackUs;
+            std::fprintf(stderr,
+                "[Renderer] Video stages over %lld frames: produce=%.2fs (%.2f ms/f) "
+                "[collect=%.2f decode=%.2f composite=%.2f readback=%.2f ms/f], "
+                "submit=%.2fs (%.2f ms/f), encodeQueue=%d (%s)\n",
+                (long long)frames,
+                produceUs / 1e6, produceUs / 1000.0 / n,
+                collectUs / 1000.0 / n, decodeUs / 1000.0 / n,
+                compositeUs / 1000.0 / n, readbackUs / 1000.0 / n,
+                submitUs / 1e6, submitUs / 1000.0 / n,
+                queueDepth, queueDepth > 0 ? "pipelined" : "serial");
+        }
+    };
+
+    static int64_t usBetween(SteadyClock::time_point a, SteadyClock::time_point b) {
+        return std::chrono::duration_cast<std::chrono::microseconds>(b - a).count();
+    }
+
+    void decodeInto(const std::vector<FrameCacheKey>& misses)
+    {
+        if (!device_ || !devCtx_) return;
+        for (const auto& key : misses) {
+            auto entry = decoder_.decode(key.sourcePath.str(), key.frameIndex, device_, devCtx_);
+            if (entry.texture) cache_.put(key, std::move(entry));
+        }
+    }
+
+    // Fire any SlideAnimationEvents whose startBeat falls in the
+    // (prevBeat, currentBeat] window ending at this frame.
+    void dispatchSlideEvents(int64_t projectFrameTick)
+    {
+        const double ticksPerBeat = static_cast<double>(TickTime::fromBeats(1).ticks);
+        const double currentBeat  = static_cast<double>(projectFrameTick) / ticksPerBeat;
+        if (prevBeat_ < 0.0 || currentBeat + 1e-6 < prevBeat_)
+            prevBeat_ = currentBeat - 1e-6;
+        for (const auto& se : slideEvents_) {
+            if (se.startBeat > prevBeat_ && se.startBeat <= currentBeat) {
+                const TrackInfo* tr = timeline_.getTrack(se.trackId);
+                if (!tr) continue;
+                const auto& cfg = tr->slideNoteEffect;
+                if (cfg.type == SlideNoteEffectSettings::EffectType::None) continue;
+                const double durationMs =
+                    (cfg.durationMode == SlideNoteEffectSettings::DurationMode::FollowSlide)
+                        ? se.durationBeats * (60000.0 / bpm_)
+                        : cfg.fixedDurationMs;
+                animMgr_.onSlideEvent(se.trackId, static_cast<float>(durationMs),
+                                      cfg, se.slideCurveCx, se.slideCurveCy);
+            }
+        }
+        prevBeat_ = currentBeat;
+    }
+
+    // readback.valid == false means the D3D11 staging Map() failed (a GPU/driver
+    // error), NOT empty/transparent content — an empty composite still reads
+    // back as valid black pixels. One bad frame is skipped and counted; if
+    // EVERY frame so far has failed, fail fast rather than write a video file
+    // with no frames in it.
+    bool onInvalidReadback(int64_t f, std::string& error)
+    {
+        ++invalidReadbacks_;
+        if (invalidReadbacks_ <= 5 || (invalidReadbacks_ % 100) == 0) {
+            std::fprintf(stderr,
+                         "[Renderer] Compositor readback invalid at frame %lld (total invalid=%lld)\n",
+                         (long long)f, (long long)invalidReadbacks_);
+        }
+        constexpr int64_t kEarlyAbortThreshold = 10;
+        if (framesAttempted_ >= kEarlyAbortThreshold && invalidReadbacks_ == framesAttempted_) {
+            error = "Compositor readback failed for the first "
+                  + std::to_string(kEarlyAbortThreshold)
+                  + " video frames (D3D11 staging Map failed). "
+                    "Check engine log for GPU/driver errors.";
+            return false;
+        }
+        return true;
+    }
+
+    const Timeline&        timeline_;
+    FFmpegMuxer&           muxer_;
+    const ExportSettings&  settings_;
+    const int              sampleRate_;      // rate of the timeline math (the mix rate)
+    const AVRational       fps_;
+    const double           bpm_;
+    const int64_t          startSample_;
+    const std::vector<VideoEvent>&          events_;
+    const std::vector<SlideAnimationEvent>& slideEvents_;
+    const std::unordered_map<int, std::string>* proxyPlan_;
+    ID3D11Device*          device_;
+    ID3D11DeviceContext*   devCtx_;
+
+    RenderFrameCache       cache_;
+    FrameCollector         collector_;
+    xleth::grade::Lut3DLibrary gradeLuts_;   // imported LUTs, loaded once at export start
+    AnimationManager       animMgr_;
+    // Landing carry (docs/XLETH_LANDING_SPEC.md): the same helper the live
+    // preview calls. timeline_ is the export's frozen copy, so whether any cue
+    // has landings is decided once; without any, no landing code runs.
+    xleth::LandingRenderer landingRenderer_;
+    const bool             projectHasLandings_ = timeline_.hasCueLandings();
+    const xleth::echo::MixEngineDelayResolver echoResolver_;
+    RenderVideoDecoder     decoder_;
+    GridCompositor         compositor_;
+
+    std::unordered_set<uint32_t> distinctPathIds_;   // reused per frame
+    double   prevBeat_ = -1.0;                       // slide-event beat-crossing dispatch
+    Timers   timers_;
+    int64_t  framesAttempted_  = 0;
+    int64_t  invalidReadbacks_ = 0;
+    bool     havePicture_      = false;
+    std::vector<uint8_t> frozen_;                    // tailClamp freeze frame (lazy)
+    int      frozenStride_     = 0;
 };
-
-bool patternNoteRefLess(const PatternNoteRef& a, const PatternNoteRef& b) {
-    if (a.note->position.ticks != b.note->position.ticks)
-        return a.note->position.ticks < b.note->position.ticks;
-
-    const int orderA = a.note->id > 0 ? a.note->id : a.sourceOrder;
-    const int orderB = b.note->id > 0 ? b.note->id : b.sourceOrder;
-    if (orderA != orderB) return orderA < orderB;
-
-    if (a.note->pitch != b.note->pitch) return a.note->pitch < b.note->pitch;
-    return a.sourceOrder < b.sourceOrder;
-}
-
-std::vector<PatternNoteRef> sortedPatternNoteRefs(const Pattern& pattern) {
-    std::vector<PatternNoteRef> refs;
-    refs.reserve(pattern.notes.size());
-    for (int i = 0; i < static_cast<int>(pattern.notes.size()); ++i)
-        refs.push_back({&pattern.notes[static_cast<std::size_t>(i)], i});
-    std::sort(refs.begin(), refs.end(), patternNoteRefLess);
-    return refs;
-}
-
-int sourceOrderFor(const PatternNote& note, int fallbackOrder) {
-    return note.id > 0 ? note.id : fallbackOrder;
-}
 
 } // namespace
 
@@ -284,262 +817,20 @@ std::vector<VideoEvent> OfflineRenderer::buildVideoEvents(
     std::vector<SlideAnimationEvent>* outSlideEvents,
     double eventSampleRate)
 {
-    std::vector<VideoEvent> events;
-    if (outSlideEvents) outSlideEvents->clear();
-    const double bpm = timeline.getBPM();
+    // The event list comes from the ONE shared builder the live preview also
+    // uses (render/VideoEventBuilder.h). This function used to carry its own
+    // copy of the clip and pattern loops, and the two copies had drifted: see
+    // that header for the ways export and preview disagreed.
     const double sampleRate = eventSampleRate > 0.0
         ? eventSampleRate
         : timeline.getSampleRate();
 
-    // ── Clip tracks: each clip → one VideoEvent ──────────────────────────
-    int noteCounterPerTrack_clip = 0;
-    int lastTrackId_clip = -1;
-
-    // Sort clips by track, then position, for stable globalNoteIndex
-    auto allClips = timeline.getAllClips();
-    std::sort(allClips.begin(), allClips.end(),
-        [](const Clip* a, const Clip* b) {
-            if (a->trackId != b->trackId) return a->trackId < b->trackId;
-            return a->position < b->position;
-        });
-
-    for (const Clip* clip : allClips) {
-        if (!clip) continue;
-
-        const TrackInfo* track = timeline.getTrack(clip->trackId);
-        if (!track) continue;
-
-        // Find the region to get sourceId
-        const SampleRegion* region = timeline.getRegion(clip->regionId);
-        if (!region) continue;
-
-        const SourceMedia* source = timeline.getSource(region->sourceId);
-        if (!source || !source->hasVideo) continue;
-
-        // Track-level note counter for flip mode cycling
-        if (clip->trackId != lastTrackId_clip) {
-            noteCounterPerTrack_clip = 0;
-            lastTrackId_clip = clip->trackId;
-        }
-
-        VideoEvent ev;
-        ev.startBeat      = clip->position.toBeats();
-        ev.durationBeats   = clip->duration.toBeats();
-        ev.sourceId        = region->sourceId;
-        ev.trackId         = clip->trackId;
-        ev.regionId        = clip->regionId;
-        // Source anchor = region start + syllable offset + clip trim, via the ONE
-        // shared helper (model/ClipSourceAnchor.h). Syllable times are
-        // REGION-RELATIVE seconds (0 == region->startTime), matching the audio
-        // readhead (MixEngine::findActiveClips / enqueueClipRender both do
-        // `syl.startTime + regionOffset`) and the realtime preview's event build
-        // (XlethEngineService rebuildVideoEvents). This expression used to be
-        // duplicated in both video builders; omitting the syllable term here
-        // pinned every syllable clip's video to the region head while its audio
-        // played the correct syllable — a render-only A/V desync that grew with
-        // the syllable's distance into the region. Sharing the helper is what
-        // stops the two builders drifting apart again.
-        const double syllableStart =
-            (clip->syllableIndex >= 0
-             && clip->syllableIndex < static_cast<int>(region->syllables.size()))
-                ? region->syllables[clip->syllableIndex].startTime
-                : 0.0;
-        ev.sourceStartTime = xleth::anchoring::clipSourceAnchorSeconds(
-            region->startTime, clip->regionOffset.ticks, bpm, syllableStart);
-        ev.sourceEndTime   = region->endTime;
-        ev.sourceClampStartTime = region->startTime;
-        ev.clipId          = clip->id;
-        ev.hasClipModulation = clip->modulation.enabled
-            && (clip->modulation.vibrato.enabled || clip->modulation.scratch.enabled);
-        ev.modulation = clip->modulation;
-        ev.clipReversed = clip->reversed;
-        ev.clipStretchRatio = clip->stretchRatio;
-        ev.clipFormantPreserve = clip->formantPreserve;
-        ev.clipPitchOffsetSemis = clip->pitchOffset;
-        ev.clipPitchOffsetCents = clip->pitchOffsetCents;
-        ev.clipStartTimelineSamples = static_cast<int64_t>(
-            std::llround(ev.startBeat * 60.0 / bpm * sampleRate));
-        ev.layerIndex      = 0;  // not used in grid compositor path
-        ev.x               = track->videoX;
-        ev.y               = track->videoY;
-        ev.width           = track->videoW;
-        ev.height          = track->videoH;
-        ev.opacity         = track->videoOpacity * clip->velocity;
-        ev.fadeInPercent   = clip->fadeInPercent;
-        ev.fadeOutPercent  = clip->fadeOutPercent;
-        normalizeClipFadePercents(ev.fadeInPercent, ev.fadeOutPercent);
-        ev.fadeInX1        = clip->fadeInX1;
-        ev.fadeInY1        = clip->fadeInY1;
-        ev.fadeInX2        = clip->fadeInX2;
-        ev.fadeInY2        = clip->fadeInY2;
-        ev.fadeOutX1       = clip->fadeOutX1;
-        ev.fadeOutY1       = clip->fadeOutY1;
-        ev.fadeOutX2       = clip->fadeOutX2;
-        ev.fadeOutY2       = clip->fadeOutY2;
-        const int clipEmissionOrder = noteCounterPerTrack_clip++;
-        ev.globalNoteIndex = clipEmissionOrder;
-        ev.hasSourceTriggerOrder = true;
-        ev.sourceTriggerOrder = clip->id > 0 ? clip->id : clipEmissionOrder;
-        ev.originalEmissionOrder = clipEmissionOrder;
-        // Flip-v2: pitch identifier consumed by the resolver. Spec §1: clip
-        // tracks use the clip's pitch-shift value (semitones from source).
-        ev.pitch = clip->pitchOffset;
-
-        events.push_back(ev);
-    }
-
-    // ── Pattern tracks: each note onset → one VideoEvent ─────────────────
-    auto allBlocks = timeline.getAllPatternBlocks();
-    std::sort(allBlocks.begin(), allBlocks.end(),
-        [](const PatternBlock* a, const PatternBlock* b) {
-            if (a->trackId != b->trackId) return a->trackId < b->trackId;
-            return a->position < b->position;
-        });
-
-    int lastTrackId_pat = -1;
-    int noteCounterPerTrack_pat = 0;
-
-    for (const PatternBlock* block : allBlocks) {
-        if (!block) continue;
-
-        const Pattern* pattern = timeline.getPattern(block->patternId);
-        if (!pattern) continue;
-
-        const SampleRegion* region = timeline.getRegion(pattern->regionId);
-        if (!region) continue;
-
-        const SourceMedia* source = timeline.getSource(region->sourceId);
-        if (!source || !source->hasVideo) continue;
-
-        const TrackInfo* track = timeline.getTrack(block->trackId);
-        if (!track) continue;
-
-        if (block->trackId != lastTrackId_pat) {
-            noteCounterPerTrack_pat = 0;
-            lastTrackId_pat = block->trackId;
-        }
-
-        const double blockStartBeats = block->position.toBeats();
-        const double blockDurBeats   = block->duration.toBeats();
-        const double patLenBeats     = pattern->length.toBeats();
-        if (patLenBeats <= 0.0) continue;
-
-        if (region->arpEnabled) {
-            // ── Arp expansion: simulate arpeggiator in beat-space ────────
-            const int64_t bpTicks = block->position.ticks;
-            const int64_t bdTicks = block->duration.ticks;
-            const int64_t boTicks = block->offset.ticks;
-            const int64_t wStart  = boTicks;
-            const int64_t wEnd    = boTicks + bdTicks;
-            const int64_t firstL  = wStart / pattern->length.ticks;
-            int64_t       lastL   = (wEnd - 1) / pattern->length.ticks;
-            if (!block->loopEnabled)
-                lastL = std::min<int64_t>(lastL, 0);
-
-            const auto noteRefs = sortedPatternNoteRefs(*pattern);
-            std::vector<const PatternNote*> notesPtrs;
-            notesPtrs.reserve(noteRefs.size());
-            for (const auto& ref : noteRefs) notesPtrs.push_back(ref.note);
-
-            auto arpEvts = ArpVideoExpander::expandArpVideoEvents(
-                notesPtrs, bpTicks, bdTicks,
-                pattern->length.ticks, block->loopEnabled,
-                firstL, lastL, wStart, wEnd,
-                region->arpTempoSync, region->arpDivision,
-                region->arpFreeTimeMs, region->arpGate,
-                region->arpRange, region->arpDirection,
-                bpm, region->sourceId, block->trackId,
-                pattern->regionId,
-                region->startTime, region->endTime,
-                noteCounterPerTrack_pat);
-
-            for (auto& aev : arpEvts) {
-                aev.x       = track->videoX;
-                aev.y       = track->videoY;
-                aev.width   = track->videoW;
-                aev.height  = track->videoH;
-                aev.opacity *= track->videoOpacity;
-            }
-            events.insert(events.end(), arpEvts.begin(), arpEvts.end());
-        } else {
-            // ── Standard per-note emission (unchanged) ───────────────────
-            const auto noteRefs = sortedPatternNoteRefs(*pattern);
-            for (const auto& noteRef : noteRefs) {
-                const PatternNote& note = *noteRef.note;
-                const double noteOffsetBeats = note.position.toBeats() - block->offset.toBeats();
-                const double noteDurBeats    = note.duration.toBeats();
-
-                // Handle looping: emit events for each loop iteration
-                double loopOffset = 0.0;
-                while (true) {
-                    double evStartInBlock = noteOffsetBeats + loopOffset;
-                    if (evStartInBlock >= blockDurBeats) break;
-                    if (evStartInBlock < 0.0) {
-                        loopOffset += patLenBeats;
-                        continue;
-                    }
-
-                    double evDur = std::min(noteDurBeats, blockDurBeats - evStartInBlock);
-                    if (evDur <= 0.0) { loopOffset += patLenBeats; continue; }
-
-                    // Slide notes don't emit a VideoEvent — they fire a
-                    // per-track visual effect on the existing cell.
-                    if (note.isSlide) {
-                        if (outSlideEvents) {
-                            SlideAnimationEvent se;
-                            se.startBeat     = blockStartBeats + evStartInBlock;
-                            se.durationBeats = evDur;
-                            se.trackId       = block->trackId;
-                            se.slideVelocity = note.velocity;
-                            se.slideCurveCx  = note.slideCurveCx;
-                            se.slideCurveCy  = note.slideCurveCy;
-                            outSlideEvents->push_back(se);
-                        }
-                        if (!block->loopEnabled) break;
-                        loopOffset += patLenBeats;
-                        continue;
-                    }
-
-                    VideoEvent ev;
-                    ev.startBeat       = blockStartBeats + evStartInBlock;
-                    ev.durationBeats   = evDur;
-                    ev.sourceId        = region->sourceId;
-                    ev.trackId         = block->trackId;
-                    ev.regionId        = pattern->regionId;
-                    ev.sourceStartTime = region->startTime;
-                    ev.sourceEndTime   = region->endTime;
-                    ev.sourceClampStartTime = region->startTime;
-                    ev.layerIndex      = 0;
-                    ev.x               = track->videoX;
-                    ev.y               = track->videoY;
-                    ev.width           = track->videoW;
-                    ev.height          = track->videoH;
-                    ev.opacity         = track->videoOpacity * note.velocity;
-                    const int noteEmissionOrder = noteCounterPerTrack_pat++;
-                    ev.globalNoteIndex = noteEmissionOrder;
-                    ev.hasSourceTriggerOrder = true;
-                    ev.sourceTriggerOrder = sourceOrderFor(note, noteRef.sourceOrder);
-                    ev.originalEmissionOrder = noteEmissionOrder;
-                    ev.pitch           = note.pitch;  // flip-v2 resolver input
-
-                    events.push_back(ev);
-
-                    if (!block->loopEnabled) break;
-                    loopOffset += patLenBeats;
-                }
-            }
-        }
-    }
-
-    // ── Flip-v2 resolution (single call site for all event-build paths) ──
-    // Per-track chord detection + pure resolver + write-back of
-    // monoOrdinal / stateIndex / orientation. No-op for tracks with
-    // VideoFlipConfig.enabled = false.
-    videoFlipApplier::applyAll(events, timeline);
+    auto built = xleth::videoevents::build(timeline, timeline.getBPM(), sampleRate);
+    if (outSlideEvents) *outSlideEvents = std::move(built.slideEvents);
 
     std::fprintf(stderr, "[Renderer] Built %d video events from timeline\n",
-                 static_cast<int>(events.size()));
-    return events;
+                 static_cast<int>(built.events.size()));
+    return std::move(built.events);
 }
 
 // ===========================================================================
@@ -619,19 +910,28 @@ std::unordered_map<int, std::string> OfflineRenderer::buildRenderProxyPlan(
 
         // Preserve 10-bit through the proxy for 10-bit sources (avoids banding).
         const bool highBitDepth = ProxyTranscoder::probeSourceBitDepth(src->filePath) > 8;
-        const std::string proxyPath = ProxyTranscoder::getSourcePreviewProxyPath(
-            src->filePath, proxiesDir_, bucket, highBitDepth);
 
         // Idempotent: reuse a valid proxy already on disk (this or a prior render/
-        // preview session) instead of regenerating.
-        if (ProxyTranscoder::sourcePreviewProxyExists(
-                src->filePath, proxiesDir_, bucket, highBitDepth)) {
+        // preview session, H.264 or legacy intra) instead of regenerating. Both
+        // decode frame-exactly through RenderVideoDecoder (BACKWARD seek, then
+        // decode forward to the target PTS), and the render reads mostly
+        // sequentially, where a GOP costs nothing.
+        if (const auto found = ProxyTranscoder::findSourcePreviewProxy(
+                src->filePath, proxiesDir_, bucket, highBitDepth);
+                found.found) {
             std::fprintf(stderr,
                 "[RenderProxy] source=%d peak=%.0fpx bucket=%dp refs=%d -> reuse %s\n",
-                sourceId, peakH, bucket, refs, proxyPath.c_str());
-            plan[sourceId] = proxyPath;
+                sourceId, peakH, bucket, refs, found.path.c_str());
+            plan[sourceId] = found.path;
             continue;
         }
+
+        // New proxies follow the proxy-codec setting (10-bit stays intra).
+        const ProxyCodec codec = ProxyTranscoder::codecForTargetSize(
+            static_cast<int>(std::lround(static_cast<double>(src->width) * bucket / src->height)),
+            bucket);
+        const std::string proxyPath = ProxyTranscoder::getSourcePreviewProxyPath(
+            src->filePath, proxiesDir_, bucket, highBitDepth, codec);
 
         std::fprintf(stderr,
             "[RenderProxy] source=%d peak=%.0fpx bucket=%dp refs=%d %s -> GENERATE %s\n",
@@ -639,7 +939,7 @@ std::unordered_map<int, std::string> OfflineRenderer::buildRenderProxyPlan(
             proxyPath.c_str());
 
         const bool ok = ProxyTranscoder::transcodeSourcePreview(
-            src->filePath, proxyPath, bucket, highBitDepth, /*progressCb=*/nullptr);
+            src->filePath, proxyPath, bucket, highBitDepth, /*progressCb=*/nullptr, codec);
         if (ok) {
             plan[sourceId] = proxyPath;
         } else {
@@ -684,33 +984,113 @@ void OfflineRenderer::render(int64_t startSample, int64_t endSample,
 // renderImpl — actual render logic (called from render() with try/catch)
 // ===========================================================================
 
+namespace {
+
+// Engine state every render borrows and must hand back on EVERY exit path —
+// error returns, cancel, exception unwind, or normal completion: the mixer's
+// non-realtime lock mode, the note-trigger ceiling (which must never leak into
+// realtime playback) and the progress phase.
+struct RenderSession {
+    MixEngine&      mixer;
+    RenderProgress& progress;
+    bool            ceilingArmed = false;
+
+    ~RenderSession() {
+        if (ceilingArmed) mixer.clearNoteTriggerCeiling();
+        mixer.setNonRealtime(false);
+        progress.phase.store(0);
+    }
+};
+
+// Speed / ETA shown by the export dialog, from samples of MIX audio written.
+void publishProgress(RenderProgress& progress, int64_t samplesWritten, int64_t totalSamples,
+                     int sampleRate, SteadyClock::time_point renderStartTime)
+{
+    progress.percentage.store(static_cast<float>(samplesWritten)
+                            / static_cast<float>(totalSamples) * 100.0f);
+
+    const double elapsedSec =
+        std::chrono::duration<double>(SteadyClock::now() - renderStartTime).count();
+    if (elapsedSec <= 0.01) return;
+    const double renderedSec = static_cast<double>(samplesWritten) / sampleRate;
+    const float  speed       = static_cast<float>(renderedSec / elapsedSec);
+    progress.speedMultiplier.store(speed);
+    if (speed > 0.0f) {
+        const double remainingSec =
+            static_cast<double>(totalSamples - samplesWritten) / sampleRate;
+        progress.etaSeconds.store(static_cast<float>(remainingSec / speed));
+    }
+}
+
+} // namespace
+
+// Flush the encoders, then turn the crash-safe fragmented file into the
+// standard faststart MP4 the user asked for. Returns false only when the muxer
+// itself could not finalize; a failed remux falls back to the fragmented file.
+bool OfflineRenderer::finishOutput(FFmpegMuxer& muxer, const std::string& fragPath,
+                                   const std::string& outputPath)
+{
+    std::error_code ec;
+    if (!muxer.finalize()) {
+        progress_.setError("Muxer finalization failed");
+        progress_.failed.store(true);
+        std::filesystem::remove(fragPath, ec);
+        return false;
+    }
+
+    if (progress_.cancelRequested.load()) {
+        // Cancelled during finalize — clean up
+        std::filesystem::remove(fragPath, ec);
+        return true;
+    }
+
+    std::fprintf(stderr, "[Renderer] Remuxing frag MP4 → standard MP4 with faststart...\n");
+    if (!remuxToFaststart(fragPath, outputPath)) {
+        // Remux failed — fall back: just rename frag file as output
+        std::fprintf(stderr, "[Renderer] Remux failed, using fragmented file directly\n");
+        std::filesystem::remove(outputPath, ec);
+        std::filesystem::rename(fragPath, outputPath, ec);
+    } else {
+        std::filesystem::remove(fragPath, ec);
+    }
+
+    const auto fileSize = std::filesystem::file_size(outputPath, ec);
+    if (!ec) {
+        std::fprintf(stderr, "[Renderer] Remux complete. File: '%s' size=%lld bytes\n",
+                     outputPath.c_str(), (long long)fileSize);
+    }
+    return true;
+}
+
 void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
                                   int64_t warmUpStartSample,
                                   const ExportSettings& settings)
 {
     // Phase 3B: wrap (seamless tail fold) is a distinct A/V pipeline (pre-rendered
     // folded audio + region-only video, no freeze). Branch before any Phase 3A
-    // setup so that path stays byte-for-byte unchanged.
+    // setup so that path stays separate.
     if (tailPlan_.mode == xleth::TailRenderMode::Wrap) {
         renderImplWrap(startSample, endSample, warmUpStartSample, settings);
         return;
     }
 
-    const int sampleRate = settings.sampleRate;
+    // THE MIX RATE. The engine renders at settings.audioInputRate() — the
+    // session rate — and every sample position in this function (startSample,
+    // endSample, the tail plan, the frame clock) is counted at that rate. The
+    // rate of the ENCODED audio is the muxer's business: it resamples the
+    // finished master. The mix therefore sounds the same at every output rate,
+    // which it did not while the whole engine was re-prepared at the export
+    // rate — pitch/stretch engines place their onsets differently at 44.1 kHz
+    // than at 48 kHz, so a 44.1 kHz export disagreed with playback by up to
+    // ~17 ms per note.
+    const int sampleRate = settings.audioInputRate();
     const AVRational fps = { settings.fpsNum, settings.fpsDen };
     const double bpm = timeline_.getBPM();
 
     // Phase 3A tail policy (set via setTailRenderPlan before startRender).
     const xleth::TailRenderPlan tailPlan = tailPlan_;
 
-    // RAII: the note-trigger ceiling (set just before the render loop) must be
-    // cleared on EVERY exit path — error returns, cancel, exception unwind, or
-    // normal completion — so it never leaks into realtime playback.
-    struct CeilingGuard {
-        MixEngine& m;
-        bool armed = false;
-        ~CeilingGuard() { if (armed) m.clearNoteTriggerCeiling(); }
-    } ceilingGuard{ mixer_ };
+    RenderSession session{ mixer_, progress_ };
 
     // Clamp warm-up into [0, startSample]; warming up past the capture start is
     // meaningless and a negative warm-up is undefined.
@@ -732,18 +1112,19 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
 #endif
 
     const int64_t totalSamples = endSample - startSample;
-    const int64_t totalVideoFrames = RenderClock::sampleToVideoFrame(
+    const int64_t totalVideoFrames = RenderClock::frameCountForSamples(
         totalSamples, sampleRate, fps);
     progress_.totalFrames.store(totalVideoFrames);
 
     // ── PHASE 1: PRE-ROLL ────────────────────────────────────────────────
     progress_.phase.store(1);
 
-    // Prepare MixEngine with the export sample rate
+    // Prepare MixEngine at the mix rate
     mixer_.setNonRealtime(true);
     mixer_.prepare(static_cast<double>(sampleRate), kBufferSize);
-    std::fprintf(stderr, "[Renderer] prepareToPlay(sampleRate=%d, bufferSize=%d) done, nonRealtime=1\n",
-                 sampleRate, kBufferSize);
+    std::fprintf(stderr, "[Renderer] prepareToPlay(sampleRate=%d, bufferSize=%d) done, "
+                 "nonRealtime=1, encodeRate=%d\n",
+                 sampleRate, kBufferSize, settings.sampleRate);
 
     // Pre-roll plan: warm up the engine from warmUpStartSample (tick 0 for a
     // scoped absolute window), discard that output, and flush plugin/insert
@@ -793,34 +1174,26 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
     // ── Initialize pipeline components ───────────────────────────────────
     // Use fragmented MP4 for crash safety — remux to standard at the end
     ExportSettings muxSettings = settings;
-    std::string fragPath = settings.outputPath + ".frag.mp4";
+    const std::string fragPath = settings.outputPath + ".frag.mp4";
     muxSettings.outputPath = fragPath;
     muxSettings.fragmentedMP4 = true;
 
-    // GPU device references are declared early so failure-path [VideoMode] logs can use them.
-    auto* device = gpu_.getDevice();
-    auto* devCtx = gpu_.getContext();
-
     using VM = ExportSettings::VideoMode;
-    auto videoModeStr = [&]() -> const char* {
-        switch (settings.videoMode) {
-            case VM::Hardware: return "hardware";
-            case VM::Software: return "software";
-            default:           return "auto";
-        }
-    };
 
     FFmpegMuxer muxer;
     if (!muxer.init(muxSettings)) {
         // At this point the decoder has not been attempted yet; report what decode
         // would have been based on GPU availability.
-        const char* wouldBeDec = (settings.videoMode != VM::Software && device && devCtx)
+        const char* modeStr = settings.videoMode == VM::Hardware ? "hardware"
+                            : settings.videoMode == VM::Software ? "software" : "auto";
+        const char* wouldBeDec = (settings.videoMode != VM::Software
+                                  && gpu_.getDevice() && gpu_.getContext())
                                  ? "d3d11va" : "software";
         const char* reason = (settings.videoMode == VM::Hardware)
                              ? "hardware_encoder_unavailable" : "encoder_init_failed";
         std::fprintf(stderr,
             "[VideoMode] requested=%s decode=%s encode=none reason=%s\n",
-            videoModeStr(), wouldBeDec, reason);
+            modeStr, wouldBeDec, reason);
 
         progress_.setError(
             settings.videoMode == VM::Hardware
@@ -828,80 +1201,36 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
               "opened. Switch Video mode to Auto or Software in Settings."
             : "Failed to initialize video encoder");
         progress_.failed.store(true);
-        mixer_.setNonRealtime(false);
-        progress_.phase.store(0);
         return;
     }
     // Surface encoder name and fallback flag to the UI
     progress_.setVideoEncoderName(muxer.videoEncoderName());
     progress_.videoEncoderFallback.store(muxer.isVideoEncoderFallback());
 
-    // Frame cache + collector (no GPU thread binding needed for offline)
-    RenderFrameCache cache;
-    FrameCollector collector;
-    AnimationManager animMgr;
-    collector.setAnimationManager(&animMgr);
-    collector.setCompanionFxEnabled(true);
+    // Finding 6a — hand [convert + encode + mux] to the muxer's own thread so
+    // this thread's [decode + composite + readback] overlaps it instead of
+    // waiting for it. The worker consumes the bounded queue strictly FIFO and
+    // the frame index is carried explicitly, so the encoder sees exactly the
+    // frame sequence the serial path fed it.
+    const int encodeQueueDepth = exportEncodeQueueDepth();
+    muxer.enableAsyncVideo(encodeQueueDepth);
 
-    // Diagnostic counters for AMD/NVIDIA divergence: track frames where the GL
-    // compositor produced no readback. A non-zero count means the export is
-    // degraded — typically a sign of a GL upload/composite failure.
-    int64_t videoFramesAttempted = 0;
-    int64_t invalidReadbackCount = 0;
+    // Every abandon path: stop the encoder and remove the partial temp file.
+    auto abandon = [&]() {
+        muxer.finalize();
+        std::error_code ec;
+        std::filesystem::remove(fragPath, ec);
+    };
+    auto fail = [&](const std::string& message) {
+        progress_.setError(message);
+        progress_.failed.store(true);
+        abandon();
+    };
 
-    // Video decoder — init path depends on VideoMode preference
-    RenderVideoDecoder decoder;
-
-    if (settings.videoMode == VM::Software) {
-        // Intentionally skip initHwDevice — software decode/encode unconditionally.
-        // Display compositing still uses OpenGL; this disables only HW video codecs.
-    } else if (settings.videoMode == VM::Hardware) {
-        if (!device || !devCtx || !decoder.initHwDevice(device, devCtx)) {
-            // Encoder succeeded (muxer passed), but D3D11VA decode is unavailable.
-            std::fprintf(stderr,
-                "[VideoMode] requested=hardware decode=unavailable encode=%s reason=hardware_decode_init_failed\n",
-                muxer.videoEncoderName());
-            progress_.setError(
-                "Hardware video mode selected, but D3D11VA hardware decode could not be "
-                "initialized. Switch Video mode to Auto or Software in Settings.");
-            progress_.failed.store(true);
-            muxer.finalize();
-            std::filesystem::remove(fragPath);
-            mixer_.setNonRealtime(false);
-            progress_.phase.store(0);
-            return;
-        }
-    } else {  // Auto
-        if (device && devCtx) {
-            decoder.initHwDevice(device, devCtx);
-        }
-    }
-
-    // [VideoMode] diagnostic log — resolved decode/encode path for this export
-    {
-        const char* decMode = decoder.hasHwAccel() ? "d3d11va" : "software";
-        const char* encMode = muxer.videoEncoderName();
-        const char* reason  = (settings.videoMode == VM::Hardware) ? "forced_hardware"
-                            : (settings.videoMode == VM::Software) ? "user_setting"
-                            : muxer.isVideoEncoderFallback()       ? "auto_fallback_no_hw_encoder"
-                                                                    : "auto_detected";
-        std::fprintf(stderr, "[VideoMode] requested=%s decode=%s encode=%s reason=%s\n",
-                     videoModeStr(), decMode, encMode, reason);
-    }
-
-    // GPU compositor
-    GridCompositor compositor;
-    if (device && devCtx) {
-        if (!compositor.init(device, devCtx, settings.width, settings.height)) {
-            progress_.setError("Failed to initialize GPU compositor");
-            progress_.failed.store(true);
-            muxer.finalize();
-            mixer_.setNonRealtime(false);
-            progress_.phase.store(0);
-            return;
-        }
-        applyCanvasFitToCompositor(compositor, timeline_.getGridLayout(), settings);
-    }
+    ExportVideoStage video(timeline_, mixer_, gpu_, muxer, settings, sampleRate,
+                           startSample, videoEvents, slideEvents, planPtr);
+    std::string stageError;
+    if (!video.init(stageError)) { fail(stageError); return; }
 
     std::fprintf(stderr, "[Renderer] START: samples %lld → %lld (%.2fs), renderStart=%lld discard=%lld renderEnd=%lld\n",
                  (long long)startSample, (long long)endSample,
@@ -915,9 +1244,9 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
 
     // tailClamp: no NEW notes/clips trigger at/after capture end (absolute
     // sample). Sustaining voices + insert effect tails are unaffected. Cleared by
-    // ceilingGuard on every exit path.
+    // the session guard on every exit path.
     mixer_.setNoteTriggerCeilingSample(endSample);
-    ceilingGuard.armed = true;
+    session.ceilingArmed = true;
 
     const bool tailEnabled = (tailPlan.mode == xleth::TailRenderMode::TailClamp)
                           && (tailPlan.maxTailSamples > 0);
@@ -931,12 +1260,6 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
         tailPlan.freezeVideo ? "yes" : "no");
 #endif
 
-    // Last successfully-composited frame, retained so the tail can freeze it
-    // (BGRA pixels + stride). Never samples new timeline video past endTick.
-    std::vector<uint8_t> lastFramePixels;
-    int  lastFrameStride = 0;
-    bool haveLastFrame   = false;
-
     // Local transport for offline rendering (independent of realtime AudioEngine)
     Transport transport;
     transport.setSampleRate(static_cast<double>(sampleRate));
@@ -946,28 +1269,21 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
 
     // Allocate audio buffer ONCE — reuse across iterations
     juce::AudioBuffer<float> audioBuffer(2, kBufferSize);
-    juce::MidiBuffer emptyMidi;
 
     int64_t currentSample = renderStart;
     int64_t audioSamplesWritten = 0;
     int64_t samplesRemainingToDiscard = totalDiscard;
-    int64_t lastVideoFrame = -1;
     int     iterationCount = 0;
-    double  prevBeat = -1.0;  // for slide-event beat-crossing dispatch
 
-    const auto renderStartTime = std::chrono::steady_clock::now();
+    const auto renderStartTime = SteadyClock::now();
 
     while (currentSample < renderEnd && audioSamplesWritten < totalSamples) {
         // ── Check cancel every buffer ────────────────────────────────────
         if (progress_.cancelRequested.load()) {
             std::fprintf(stderr, "[Renderer] CANCELLED at %.1f%% (sample %lld). "
-                         "Finalizing partial file...\n",
+                         "Discarding partial file...\n",
                          progress_.percentage.load(), (long long)currentSample);
-            muxer.finalize();
-            // Clean up frag file
-            std::filesystem::remove(fragPath);
-            mixer_.setNonRealtime(false);
-            progress_.phase.store(0);
+            abandon();
             return;
         }
 
@@ -987,238 +1303,32 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
             std::min<int64_t>(samplesRemainingToDiscard, thisBufferSize));
         samplesRemainingToDiscard -= discardThisBlock;
 
-        int keepOffset = discardThisBlock;
+        const int keepOffset = discardThisBlock;
         int keepSamples = thisBufferSize - discardThisBlock;
-        if (keepSamples > 0)
-        {
-            const int64_t samplesRemainingToWrite = totalSamples - audioSamplesWritten;
+        if (keepSamples > 0) {
             keepSamples = static_cast<int>(
-                std::min<int64_t>(keepSamples, samplesRemainingToWrite));
+                std::min<int64_t>(keepSamples, totalSamples - audioSamplesWritten));
         }
 
-        const float* audioChannels[2] = {
-            audioBuffer.getReadPointer(0) + keepOffset,
-            audioBuffer.getReadPointer(1) + keepOffset
-        };
-        if (keepSamples > 0
-            && !muxer.writeAudio(audioChannels, keepSamples, audioSamplesWritten)) {
-            progress_.setError("Audio encoding failed");
-            progress_.failed.store(true);
-            muxer.finalize();
-            std::filesystem::remove(fragPath);
-            mixer_.setNonRealtime(false);
-            progress_.phase.store(0);
-            return;
-        }
+        if (keepSamples > 0) {
+            const float* audioChannels[2] = {
+                audioBuffer.getReadPointer(0) + keepOffset,
+                audioBuffer.getReadPointer(1) + keepOffset
+            };
+            if (!muxer.writeAudio(audioChannels, keepSamples, audioSamplesWritten)) {
+                fail("Audio encoding failed");
+                return;
+            }
 
-        // ── Emit video frames at audio-derived boundaries ────────────────
-        // Use audioSamplesWritten (0-based relative to export start) for
-        // video frame calculation, so frame 0 aligns with sample 0 of output.
-        int64_t firstFrame = 1;
-        int64_t lastFrame = 0;
-        if (keepSamples > 0)
-        {
+            // ── Emit video frames at audio-derived boundaries ────────────
+            // audioSamplesWritten is 0-based relative to export start, so
+            // frame 0 aligns with sample 0 of the output.
             const auto frameBounds = RenderClock::frameBoundsForBuffer(
                 audioSamplesWritten, keepSamples, sampleRate, fps);
-            firstFrame = frameBounds.first;
-            lastFrame = frameBounds.second;
-        }
-
-        if (keepSamples > 0 && firstFrame <= lastFrame) {
-            // Log every 30th frame
-            if (iterationCount % 30 == 0) {
-                std::fprintf(stderr, "[Renderer] Emit video frames %lld–%lld "
-                             "for audio buffer at sample %lld\n",
-                             (long long)firstFrame, (long long)lastFrame,
-                             (long long)audioSamplesWritten);
+            for (int64_t f = frameBounds.first; f <= frameBounds.second; ++f) {
+                if (!video.renderFrame(f, stageError)) { fail(stageError); return; }
+                progress_.currentFrame.store(f + 1);
             }
-
-            for (int64_t f = firstFrame; f <= lastFrame; ++f) {
-                const int64_t localFrameSample = RenderClock::videoFrameToSample(
-                    f, sampleRate, fps);
-                const int64_t projectFrameSample = startSample + localFrameSample;
-                // Advance animation state before collecting, and before the
-                // slide dispatch below — advanceTo also sets the stamp any
-                // trigger fired for this frame will use. Absolute project time,
-                // derived from the frame's own sample position, so this matches
-                // the live preview frame-for-frame.
-                animMgr.advanceTo(1000.0 * static_cast<double>(projectFrameSample)
-                                         / static_cast<double>(sampleRate));
-                const int64_t projectFrameTick = RenderClock::sampleToPPQ(
-                    projectFrameSample, sampleRate, bpm);
-                const GridLayout frameGrid = timeline_.gridLayoutAt(
-                    TickTime{ projectFrameTick });
-
-                // ── Slide-note beat-crossing dispatch ───────────────────
-                // Compute current beat from the absolute project frame sample and fire
-                // any SlideAnimationEvents whose startBeat falls in the
-                // (prevBeat, currentBeat] window. Reset on first iteration.
-                {
-                    const int64_t currentPpq = RenderClock::sampleToPPQ(
-                        projectFrameSample, sampleRate, bpm);
-                    const double ticksPerBeat = static_cast<double>(TickTime::fromBeats(1).ticks);
-                    const double currentBeat = static_cast<double>(currentPpq) / ticksPerBeat;
-                    if (prevBeat < 0.0 || currentBeat + 1e-6 < prevBeat)
-                        prevBeat = currentBeat - 1e-6;
-                    for (const auto& se : slideEvents) {
-                        if (se.startBeat > prevBeat && se.startBeat <= currentBeat) {
-                            const TrackInfo* tr = timeline_.getTrack(se.trackId);
-                            if (!tr) continue;
-                            const auto& cfg = tr->slideNoteEffect;
-                            if (cfg.type == SlideNoteEffectSettings::EffectType::None)
-                                continue;
-                            double durationMs;
-                            if (cfg.durationMode
-                                == SlideNoteEffectSettings::DurationMode::FollowSlide) {
-                                durationMs = se.durationBeats * (60000.0 / bpm);
-                            } else {
-                                durationMs = cfg.fixedDurationMs;
-                            }
-                            animMgr.onSlideEvent(
-                                se.trackId,
-                                static_cast<float>(durationMs),
-                                cfg,
-                                se.slideCurveCx, se.slideCurveCy);
-                        }
-                    }
-                    prevBeat = currentBeat;
-                }
-
-                // Collect what each grid cell needs for this output frame.
-                // Export honors settings.useSourceMedia: full quality → originals
-                // (planPtr null, allowProxy false); fast export → resolution-aware
-                // render proxies via planPtr.
-                auto requests = collector.collectRequests(
-                    f, timeline_, sampleRate, fps, videoEvents,
-                    /*allowProxy=*/ !settings.useSourceMedia,
-                    /*projectStartSample=*/ startSample,
-                    /*posterMode=*/ false,
-                    /*renderProxyBySource=*/ planPtr);
-
-                // Deduplicate: multiple cells may reference the same source frame
-                auto deduplicated = FrameCollector::deduplicateRequests(requests);
-
-                // Check cache and find what needs decoding
-                auto misses = FrameCollector::resolveFrames(deduplicated, cache);
-
-                // Decode cache misses
-                if (device && devCtx) {
-                    for (const auto& key : misses) {
-                        auto entry = decoder.decode(key.sourcePath, key.frameIndex,
-                                                    device, devCtx);
-                        if (entry.texture) {
-                            cache.put(key, std::move(entry));
-                        }
-                    }
-                }
-
-                // Composite
-                if (compositor.isInitialized()) {
-                    // ── Snapshot transition (Slice 3b) ──────────────────────
-                    // Inside an enabled cue window, blend outgoing (layoutA) and
-                    // incoming (layoutB) snapshots through the ONE shared path
-                    // preview also uses, so export==preview frame for frame.
-                    // Outside a window this returns false and the single-composite
-                    // path below runs unchanged.
-                    bool didTransition = false;
-                    {
-                        const Timeline::ResolvedTransition tx =
-                            timeline_.transitionAt(TickTime{ projectFrameTick });
-                        if (tx.active) {
-                            xleth::SnapshotTransitionFrameCtx txCtx;
-                            txCtx.sampleRate          = sampleRate;
-                            txCtx.bpm                 = bpm;
-                            txCtx.fps                 = fps;
-                            txCtx.outputFrameIndex    = f;
-                            txCtx.projectStartSample  = startSample;
-                            txCtx.allowProxy          = !settings.useSourceMedia;
-                            txCtx.posterMode          = false;
-                            txCtx.renderProxyBySource = planPtr;
-                            auto decodeMisses = [&](const std::vector<FrameCacheKey>& misses) {
-                                if (!device || !devCtx) return;
-                                for (const auto& key : misses) {
-                                    auto entry = decoder.decode(
-                                        key.sourcePath, key.frameIndex, device, devCtx);
-                                    if (entry.texture) cache.put(key, std::move(entry));
-                                }
-                            };
-                            didTransition = xleth::renderSnapshotTransition(
-                                tx, timeline_, videoEvents, compositor, collector,
-                                cache, txCtx, decodeMisses);
-                        }
-                    }
-                    if (!didTransition) {
-                        // Global shader time drives visual-state evaluation, so
-                        // subrange exports must sample it in absolute project time
-                        // even while encoded frame numbers stay local from zero.
-                        const float currentTime = static_cast<float>(
-                            RenderClock::sampleToSeconds(projectFrameSample, sampleRate));
-                        compositor.compositeFrame(requests, cache,
-                                                  frameGrid.columns, frameGrid.rows,
-                                                  currentTime, frameGrid.gapScale);
-                    }
-
-                    // Readback composited pixels from GPU
-                    auto readback = compositor.readback();
-                    ++videoFramesAttempted;
-                    if (readback.valid) {
-                        // Retain for tailClamp freeze-frame (true copy — readback
-                        // is reused next iteration). Only when a tail is planned.
-                        if (tailEnabled && tailPlan.freezeVideo) {
-                            lastFramePixels = readback.pixels;
-                            lastFrameStride = readback.stride;
-                            haveLastFrame   = true;
-                        }
-                        recordExportPreEncode(readback, (long long)f);
-                        if (!muxer.writeVideo(readback.pixels.data(),
-                                              readback.stride, f)) {
-                            progress_.setError("Video encoding failed at frame "
-                                             + std::to_string(f));
-                            progress_.failed.store(true);
-                            muxer.finalize();
-                            std::filesystem::remove(fragPath);
-                            mixer_.setNonRealtime(false);
-                            progress_.phase.store(0);
-                            return;
-                        }
-                    } else {
-                        ++invalidReadbackCount;
-                        if (invalidReadbackCount <= 5 || (invalidReadbackCount % 100) == 0) {
-                            std::fprintf(stderr,
-                                         "[Renderer] Compositor readback invalid at frame %lld "
-                                         "(total invalid=%lld)\n",
-                                         (long long)f, (long long)invalidReadbackCount);
-                        }
-                        // Early abort: if every readback so far has been invalid, the D3D11
-                        // compositor is failing at the GPU/staging-texture level — fail fast
-                        // rather than silently write a video file with zero frames.
-                        //
-                        // readback.valid==false means D3D11 staging texture Map() failed
-                        // (a GPU/driver error), NOT empty/transparent content. An empty or
-                        // transparent composite still produces valid black BGRA pixels, so
-                        // this check cannot false-fire on empty-timeline exports.
-                        constexpr int64_t kEarlyAbortThreshold = 10;
-                        if (videoFramesAttempted >= kEarlyAbortThreshold &&
-                            invalidReadbackCount == videoFramesAttempted) {
-                            progress_.setError(
-                                "Compositor readback failed for the first "
-                                + std::to_string(kEarlyAbortThreshold)
-                                + " video frames (D3D11 staging Map failed). "
-                                "Check engine log for GPU/driver errors.");
-                            progress_.failed.store(true);
-                            muxer.finalize();
-                            std::filesystem::remove(fragPath);
-                            mixer_.setNonRealtime(false);
-                            progress_.phase.store(0);
-                            return;
-                        }
-                    }
-                }
-
-                progress_.currentFrame.store(f);
-            }
-
-            lastVideoFrame = lastFrame;
         }
 
         // ── Advance ──────────────────────────────────────────────────────
@@ -1227,32 +1337,18 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
         currentSample += thisBufferSize;
         ++iterationCount;
 
-        // ── Update progress ──────────────────────────────────────────────
-        const float pct = static_cast<float>(audioSamplesWritten)
-                        / static_cast<float>(totalSamples) * 100.0f;
-        progress_.percentage.store(pct);
-
-        const auto elapsed = std::chrono::steady_clock::now() - renderStartTime;
-        const double elapsedSec = std::chrono::duration<double>(elapsed).count();
-        if (elapsedSec > 0.01) {
-            const double renderedSec = static_cast<double>(audioSamplesWritten) / sampleRate;
-            const float speed = static_cast<float>(renderedSec / elapsedSec);
-            progress_.speedMultiplier.store(speed);
-            if (speed > 0.0f) {
-                const double remainingSec = static_cast<double>(totalSamples - audioSamplesWritten) / sampleRate;
-                progress_.etaSeconds.store(static_cast<float>(remainingSec / speed));
-            }
-        }
+        publishProgress(progress_, audioSamplesWritten, totalSamples, sampleRate, renderStartTime);
 
         // Log every 100 buffers
         if (iterationCount % 100 == 0) {
-            std::fprintf(stderr, "[Renderer] PROGRESS: %.1f%% | frame %lld/%lld | "
+            XLETH_RENDER_LOG(std::fprintf(stderr,
+                         "[Renderer] PROGRESS: %.1f%% | frame %lld/%lld | "
                          "%.1fx realtime | ETA %.0fs\n",
-                         pct,
+                         progress_.percentage.load(),
                          (long long)progress_.currentFrame.load(),
                          (long long)totalVideoFrames,
                          progress_.speedMultiplier.load(),
-                         progress_.etaSeconds.load());
+                         progress_.etaSeconds.load()));
         }
     }
 
@@ -1266,6 +1362,7 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
         xleth::TailDetectorState tailState;
         int64_t tailRendered = 0;
         const int64_t maxTail = tailPlan.maxTailSamples;
+        const bool freezeVideo = tailPlan.freezeVideo && video.hasPicture();
 
         while (!tailState.done && tailRendered < maxTail) {
             if (progress_.cancelRequested.load()) break;
@@ -1287,32 +1384,18 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
                 audioBuffer.getReadPointer(1)
             };
             if (!muxer.writeAudio(audioChannels, thisBufferSize, audioSamplesWritten)) {
-                progress_.setError("Audio encoding failed (tail)");
-                progress_.failed.store(true);
-                muxer.finalize();
-                std::filesystem::remove(fragPath);
-                mixer_.setNonRealtime(false);
-                progress_.phase.store(0);
+                fail("Audio encoding failed (tail)");
                 return;
             }
 
             // Frozen video frames at audio-derived boundaries. Reuses the last
-            // composited pixels — NEVER samples new timeline video past endTick.
-            if (haveLastFrame) {
+            // composited picture — NEVER samples new timeline video past endTick.
+            if (freezeVideo) {
                 const auto frameBounds = RenderClock::frameBoundsForBuffer(
                     audioSamplesWritten, thisBufferSize, sampleRate, fps);
                 for (int64_t f = frameBounds.first; f <= frameBounds.second; ++f) {
-                    if (!muxer.writeVideo(lastFramePixels.data(), lastFrameStride, f)) {
-                        progress_.setError("Video encoding failed (tail) at frame "
-                                         + std::to_string(f));
-                        progress_.failed.store(true);
-                        muxer.finalize();
-                        std::filesystem::remove(fragPath);
-                        mixer_.setNonRealtime(false);
-                        progress_.phase.store(0);
-                        return;
-                    }
-                    progress_.currentFrame.store(f);
+                    if (!video.repeatLastFrame(f, stageError)) { fail(stageError); return; }
+                    progress_.currentFrame.store(f + 1);
                 }
             }
 
@@ -1327,68 +1410,21 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
             (long long)tailState.tailSamples,
             static_cast<double>(tailState.tailSamples) / sampleRate,
             tailState.endedByCap ? "cap" : "threshold",
-            haveLastFrame ? "yes" : "no");
+            freezeVideo ? "yes" : "no");
     }
 
     // ── PHASE 3: FINALIZE ────────────────────────────────────────────────
     progress_.phase.store(3);
     std::fprintf(stderr, "[Renderer] FINALIZING: flushing encoders...\n");
 
-    if (videoFramesAttempted > 0) {
-        const double invalidPct = 100.0 * static_cast<double>(invalidReadbackCount)
-                                        / static_cast<double>(videoFramesAttempted);
-        std::fprintf(stderr,
-                     "[Renderer] Video frames: attempted=%lld, invalid_readback=%lld (%.1f%%)\n",
-                     (long long)videoFramesAttempted,
-                     (long long)invalidReadbackCount,
-                     invalidPct);
-        if (invalidReadbackCount > 0) {
-            std::fprintf(stderr,
-                         "[Renderer] WARN: export degraded — %lld of %lld frames had invalid GPU readback "
-                         "(compositor produced no pixels). Check earlier log for [VideoCompositor] errors.\n",
-                         (long long)invalidReadbackCount,
-                         (long long)videoFramesAttempted);
-        }
-    }
+    video.logSummary(encodeQueueDepth);
 
-    if (!muxer.finalize()) {
-        progress_.setError("Muxer finalization failed");
-        progress_.failed.store(true);
-        std::filesystem::remove(fragPath);
-        mixer_.setNonRealtime(false);
-        progress_.phase.store(0);
+    if (!finishOutput(muxer, fragPath, settings.outputPath))
         return;
-    }
-
-    // ── Remux fragmented MP4 → standard MP4 with faststart ───────────────
-    if (!progress_.cancelRequested.load()) {
-        std::fprintf(stderr, "[Renderer] Remuxing frag MP4 → standard MP4 with faststart...\n");
-
-        if (!remuxToFaststart(fragPath, settings.outputPath)) {
-            // Remux failed — fall back: just rename frag file as output
-            std::fprintf(stderr, "[Renderer] Remux failed, using fragmented file directly\n");
-            std::error_code ec;
-            std::filesystem::rename(fragPath, settings.outputPath, ec);
-        } else {
-            // Remove the temporary fragmented file
-            std::filesystem::remove(fragPath);
-        }
-
-        // Report final file info
-        std::error_code ec;
-        auto fileSize = std::filesystem::file_size(settings.outputPath, ec);
-        if (!ec) {
-            std::fprintf(stderr, "[Renderer] Remux complete. File: '%s' size=%lld bytes\n",
-                         settings.outputPath.c_str(), (long long)fileSize);
-        }
-    } else {
-        // Cancelled during finalize — clean up
-        std::filesystem::remove(fragPath);
-    }
 
     // ── Complete ─────────────────────────────────────────────────────────
-    const auto totalElapsed = std::chrono::steady_clock::now() - renderStartTime;
-    const double totalSec = std::chrono::duration<double>(totalElapsed).count();
+    const double totalSec = std::chrono::duration<double>(
+        SteadyClock::now() - renderStartTime).count();
     const double renderedSec = static_cast<double>(totalSamples) / sampleRate;
 
     std::fprintf(stderr, "[Renderer] COMPLETE: %lld frames, %.2fs rendered in %.2fs (%.1fx realtime)\n",
@@ -1398,22 +1434,17 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
 
     progress_.percentage.store(100.0f);
     progress_.complete.store(true);
-    progress_.phase.store(0);
 
-    // Restore realtime lock mode for the audio thread
-    mixer_.setNonRealtime(false);
-
-    // Shutdown video pipeline resources
-    compositor.shutdown();
-    decoder.closeAll();
-    cache.clear();
+    // Shutdown video pipeline resources (the session guard restores the mixer)
+    video.shutdown();
 }
 
 // ===========================================================================
 // renderImplWrap — Phase 3B wrap (seamless loop tail-fold) A/V pipeline
 // ===========================================================================
 //
-// Distinct from renderImpl so the Phase 3A path is untouched. Two stages:
+// Distinct from renderImpl because its AUDIO is produced differently; the video
+// goes through the same ExportVideoStage. Two stages:
 //   STAGE A (audio, no mux): strictly sequential via xleth::renderWrapCore — NO
 //     looped-region pre-roll, NO backward seek. Warm up from tick 0 (RETAINED:
 //     recreates in-flight timeline context, discarded), capture the region, render
@@ -1429,10 +1460,13 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
                                       int64_t warmUpStartSample,
                                       const ExportSettings& settings)
 {
-    const int sampleRate = settings.sampleRate;
+    // Mix rate — see renderImpl. All sample positions here are at this rate.
+    const int sampleRate = settings.audioInputRate();
     const AVRational fps  = { settings.fpsNum, settings.fpsDen };
     const double bpm      = timeline_.getBPM();
     const xleth::TailRenderPlan tailPlan = tailPlan_;
+
+    RenderSession session{ mixer_, progress_ };
 
     if (warmUpStartSample < 0)          warmUpStartSample = 0;
     if (warmUpStartSample > startSample) warmUpStartSample = startSample;
@@ -1441,16 +1475,9 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
     if (regionLen <= 0) {
         progress_.setError("Wrap render: empty region");
         progress_.failed.store(true);
-        progress_.phase.store(0);
         return;
     }
     const int64_t maxTail = std::max<int64_t>(0, tailPlan.maxTailSamples);
-
-    // RAII: the note-trigger ceiling must be cleared on every exit path.
-    struct CeilingGuard {
-        MixEngine& m; bool armed = false;
-        ~CeilingGuard() { if (armed) m.clearNoteTriggerCeiling(); }
-    } ceilingGuard{ mixer_ };
 
     std::fprintf(stderr,
         "[Renderer] WRAP mode: region=[%lld,%lld) regionLen=%d\n",
@@ -1525,10 +1552,10 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
         auto setCeiling = [&](int64_t s) {
             if (s == (std::numeric_limits<int64_t>::max)()) {
                 mixer_.clearNoteTriggerCeiling();
-                ceilingGuard.armed = false;
+                session.ceilingArmed = false;
             } else {
                 mixer_.setNoteTriggerCeilingSample(s);
-                ceilingGuard.armed = true;
+                session.ceilingArmed = true;
             }
         };
         auto shouldCancel = [&]() { return progress_.cancelRequested.load(); };
@@ -1543,9 +1570,7 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
 
         transport.pause();
 
-        if (res.cancelled) {
-            mixer_.setNonRealtime(false); progress_.phase.store(0); return;
-        }
+        if (res.cancelled) return;
 
         std::fprintf(stderr,
             "[TailFold] capture=[%lld,%lld) regionLen=%d detectedTail=%lld endedBy=%s "
@@ -1560,101 +1585,63 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
     progress_.phase.store(2);
 
     const int64_t totalSamples = regionLen;
-    const int64_t totalVideoFrames = RenderClock::sampleToVideoFrame(totalSamples, sampleRate, fps);
+    const int64_t totalVideoFrames = RenderClock::frameCountForSamples(
+        totalSamples, sampleRate, fps);
     progress_.totalFrames.store(totalVideoFrames);
 
     std::vector<SlideAnimationEvent> slideEvents;
     auto videoEvents = buildVideoEvents(timeline_, &slideEvents, sampleRate);
 
-    // Resolution-aware render proxy plan (see renderImpl for the rationale). Wrap
-    // renders go through the same FrameCollector proxy path.
+    // Resolution-aware render proxy plan (see renderImpl for the rationale).
     std::unordered_map<int, std::string> renderProxyPlan;
     const bool useProxyMode = !settings.useSourceMedia;
     if (useProxyMode) {
         progress_.phase.store(1);   // preroll (proxy generation)
         renderProxyPlan = buildRenderProxyPlan(videoEvents, settings);
+        progress_.phase.store(2);
     }
     const std::unordered_map<int, std::string>* planPtr =
         useProxyMode ? &renderProxyPlan : nullptr;
 
     ExportSettings muxSettings = settings;
-    std::string fragPath = settings.outputPath + ".frag.mp4";
+    const std::string fragPath = settings.outputPath + ".frag.mp4";
     muxSettings.outputPath = fragPath;
     muxSettings.fragmentedMP4 = true;
-
-    auto* device = gpu_.getDevice();
-    auto* devCtx = gpu_.getContext();
 
     FFmpegMuxer muxer;
     if (!muxer.init(muxSettings)) {
         progress_.setError("Failed to initialize video encoder");
         progress_.failed.store(true);
-        mixer_.setNonRealtime(false);
-        progress_.phase.store(0);
         return;
     }
     progress_.setVideoEncoderName(muxer.videoEncoderName());
     progress_.videoEncoderFallback.store(muxer.isVideoEncoderFallback());
 
-    RenderFrameCache cache;
-    FrameCollector collector;
-    AnimationManager animMgr;
-    collector.setAnimationManager(&animMgr);
-    collector.setCompanionFxEnabled(true);
+    // Finding 6a — see renderImpl.
+    const int encodeQueueDepth = exportEncodeQueueDepth();
+    muxer.enableAsyncVideo(encodeQueueDepth);
 
-    int64_t videoFramesAttempted = 0;
-    int64_t invalidReadbackCount = 0;
+    auto abandon = [&]() {
+        muxer.finalize();
+        std::error_code ec;
+        std::filesystem::remove(fragPath, ec);
+    };
+    auto fail = [&](const std::string& message) {
+        progress_.setError(message);
+        progress_.failed.store(true);
+        abandon();
+    };
 
-    RenderVideoDecoder decoder;
-    using VM = ExportSettings::VideoMode;
-    if (settings.videoMode == VM::Software) {
-        // software decode only
-    } else if (settings.videoMode == VM::Hardware) {
-        if (!device || !devCtx || !decoder.initHwDevice(device, devCtx)) {
-            progress_.setError(
-                "Hardware video mode selected, but D3D11VA hardware decode could not be "
-                "initialized. Switch Video mode to Auto or Software in Settings.");
-            progress_.failed.store(true);
-            muxer.finalize();
-            std::filesystem::remove(fragPath);
-            mixer_.setNonRealtime(false);
-            progress_.phase.store(0);
-            return;
-        }
-    } else {
-        if (device && devCtx) decoder.initHwDevice(device, devCtx);
-    }
+    ExportVideoStage video(timeline_, mixer_, gpu_, muxer, settings, sampleRate,
+                           startSample, videoEvents, slideEvents, planPtr);
+    std::string stageError;
+    if (!video.init(stageError)) { fail(stageError); return; }
 
-    GridCompositor compositor;
-    if (device && devCtx) {
-        if (!compositor.init(device, devCtx, settings.width, settings.height)) {
-            progress_.setError("Failed to initialize GPU compositor");
-            progress_.failed.store(true);
-            muxer.finalize();
-            std::filesystem::remove(fragPath);
-            mixer_.setNonRealtime(false);
-            progress_.phase.store(0);
-            return;
-        }
-    }
-
-    const GridLayout& grid = timeline_.getGridLayout();
-    if (compositor.isInitialized())
-        applyCanvasFitToCompositor(compositor, grid, settings);
-    const auto renderStartTime = std::chrono::steady_clock::now();
-
+    const auto renderStartTime = SteadyClock::now();
     int64_t audioSamplesWritten = 0;
-    int     iterationCount = 0;
-    double  prevBeat = -1.0;
 
     while (audioSamplesWritten < totalSamples) {
-        if (progress_.cancelRequested.load()) {
-            muxer.finalize();
-            std::filesystem::remove(fragPath);
-            mixer_.setNonRealtime(false);
-            progress_.phase.store(0);
-            return;
-        }
+        if (progress_.cancelRequested.load()) { abandon(); return; }
 
         const int thisBufferSize = static_cast<int>(
             std::min<int64_t>(kBufferSize, totalSamples - audioSamplesWritten));
@@ -1665,159 +1652,19 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
             regionAudio.getReadPointer(1) + audioSamplesWritten
         };
         if (!muxer.writeAudio(audioChannels, thisBufferSize, audioSamplesWritten)) {
-            progress_.setError("Audio encoding failed");
-            progress_.failed.store(true);
-            muxer.finalize();
-            std::filesystem::remove(fragPath);
-            mixer_.setNonRealtime(false);
-            progress_.phase.store(0);
+            fail("Audio encoding failed");
             return;
         }
 
         const auto frameBounds = RenderClock::frameBoundsForBuffer(
             audioSamplesWritten, thisBufferSize, sampleRate, fps);
-        const int64_t firstFrame = frameBounds.first;
-        const int64_t lastFrame  = frameBounds.second;
-
-        if (firstFrame <= lastFrame) {
-            for (int64_t f = firstFrame; f <= lastFrame; ++f) {
-                const int64_t localFrameSample = RenderClock::videoFrameToSample(f, sampleRate, fps);
-                const int64_t projectFrameSample = startSample + localFrameSample;
-                // See the matching call in the tail-render loop above: absolute
-                // project time, so live and offline agree frame-for-frame.
-                animMgr.advanceTo(1000.0 * static_cast<double>(projectFrameSample)
-                                         / static_cast<double>(sampleRate));
-                const int64_t projectFrameTick = RenderClock::sampleToPPQ(
-                    projectFrameSample, sampleRate, bpm);
-                const GridLayout frameGrid = timeline_.gridLayoutAt(
-                    TickTime{ projectFrameTick });
-
-                {
-                    const int64_t currentPpq = RenderClock::sampleToPPQ(
-                        projectFrameSample, sampleRate, bpm);
-                    const double ticksPerBeat = static_cast<double>(TickTime::fromBeats(1).ticks);
-                    const double currentBeat = static_cast<double>(currentPpq) / ticksPerBeat;
-                    if (prevBeat < 0.0 || currentBeat + 1e-6 < prevBeat)
-                        prevBeat = currentBeat - 1e-6;
-                    for (const auto& se : slideEvents) {
-                        if (se.startBeat > prevBeat && se.startBeat <= currentBeat) {
-                            const TrackInfo* tr = timeline_.getTrack(se.trackId);
-                            if (!tr) continue;
-                            const auto& cfg = tr->slideNoteEffect;
-                            if (cfg.type == SlideNoteEffectSettings::EffectType::None) continue;
-                            double durationMs;
-                            if (cfg.durationMode == SlideNoteEffectSettings::DurationMode::FollowSlide)
-                                durationMs = se.durationBeats * (60000.0 / bpm);
-                            else
-                                durationMs = cfg.fixedDurationMs;
-                            animMgr.onSlideEvent(se.trackId, static_cast<float>(durationMs),
-                                                 cfg, se.slideCurveCx, se.slideCurveCy);
-                        }
-                    }
-                    prevBeat = currentBeat;
-                }
-
-                auto requests = collector.collectRequests(
-                    f, timeline_, sampleRate, fps, videoEvents,
-                    /*allowProxy=*/ !settings.useSourceMedia,
-                    /*projectStartSample=*/ startSample,
-                    /*posterMode=*/ false,
-                    /*renderProxyBySource=*/ planPtr);
-                auto deduplicated = FrameCollector::deduplicateRequests(requests);
-                auto misses = FrameCollector::resolveFrames(deduplicated, cache);
-
-                if (device && devCtx) {
-                    for (const auto& key : misses) {
-                        auto entry = decoder.decode(key.sourcePath, key.frameIndex, device, devCtx);
-                        if (entry.texture) cache.put(key, std::move(entry));
-                    }
-                }
-
-                if (compositor.isInitialized()) {
-                    // ── Snapshot transition (Slice 3b) ──────────────────────
-                    // Same shared path as renderImpl / preview (export==preview).
-                    bool didTransition = false;
-                    {
-                        const Timeline::ResolvedTransition tx =
-                            timeline_.transitionAt(TickTime{ projectFrameTick });
-                        if (tx.active) {
-                            xleth::SnapshotTransitionFrameCtx txCtx;
-                            txCtx.sampleRate          = sampleRate;
-                            txCtx.bpm                 = bpm;
-                            txCtx.fps                 = fps;
-                            txCtx.outputFrameIndex    = f;
-                            txCtx.projectStartSample  = startSample;
-                            txCtx.allowProxy          = !settings.useSourceMedia;
-                            txCtx.posterMode          = false;
-                            txCtx.renderProxyBySource = planPtr;
-                            auto decodeMisses = [&](const std::vector<FrameCacheKey>& misses) {
-                                if (!device || !devCtx) return;
-                                for (const auto& key : misses) {
-                                    auto entry = decoder.decode(
-                                        key.sourcePath, key.frameIndex, device, devCtx);
-                                    if (entry.texture) cache.put(key, std::move(entry));
-                                }
-                            };
-                            didTransition = xleth::renderSnapshotTransition(
-                                tx, timeline_, videoEvents, compositor, collector,
-                                cache, txCtx, decodeMisses);
-                        }
-                    }
-                    if (!didTransition) {
-                        const float currentTime = static_cast<float>(
-                            RenderClock::sampleToSeconds(projectFrameSample, sampleRate));
-                        compositor.compositeFrame(requests, cache,
-                                                  frameGrid.columns, frameGrid.rows,
-                                                  currentTime, frameGrid.gapScale);
-                    }
-                    auto readback = compositor.readback();
-                    ++videoFramesAttempted;
-                    if (readback.valid) {
-                        recordExportPreEncode(readback, (long long)f);
-                        if (!muxer.writeVideo(readback.pixels.data(), readback.stride, f)) {
-                            progress_.setError("Video encoding failed at frame " + std::to_string(f));
-                            progress_.failed.store(true);
-                            muxer.finalize();
-                            std::filesystem::remove(fragPath);
-                            mixer_.setNonRealtime(false);
-                            progress_.phase.store(0);
-                            return;
-                        }
-                    } else {
-                        ++invalidReadbackCount;
-                        constexpr int64_t kEarlyAbortThreshold = 10;
-                        if (videoFramesAttempted >= kEarlyAbortThreshold &&
-                            invalidReadbackCount == videoFramesAttempted) {
-                            progress_.setError(
-                                "Compositor readback failed for the first "
-                                + std::to_string(kEarlyAbortThreshold)
-                                + " video frames (D3D11 staging Map failed).");
-                            progress_.failed.store(true);
-                            muxer.finalize();
-                            std::filesystem::remove(fragPath);
-                            mixer_.setNonRealtime(false);
-                            progress_.phase.store(0);
-                            return;
-                        }
-                    }
-                }
-                progress_.currentFrame.store(f);
-            }
+        for (int64_t f = frameBounds.first; f <= frameBounds.second; ++f) {
+            if (!video.renderFrame(f, stageError)) { fail(stageError); return; }
+            progress_.currentFrame.store(f + 1);
         }
 
         audioSamplesWritten += thisBufferSize;
-        ++iterationCount;
-
-        const float pct = static_cast<float>(audioSamplesWritten)
-                        / static_cast<float>(totalSamples) * 100.0f;
-        progress_.percentage.store(pct);
-        const auto elapsed = std::chrono::steady_clock::now() - renderStartTime;
-        const double elapsedSec = std::chrono::duration<double>(elapsed).count();
-        if (elapsedSec > 0.01) {
-            const double renderedSec = static_cast<double>(audioSamplesWritten) / sampleRate;
-            const float speed = static_cast<float>(renderedSec / elapsedSec);
-            progress_.speedMultiplier.store(speed);
-        }
+        publishProgress(progress_, audioSamplesWritten, totalSamples, sampleRate, renderStartTime);
     }
 
     // ── PHASE 3: FINALIZE ────────────────────────────────────────────────────
@@ -1827,34 +1674,15 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
         "no tail extension, no video freeze\n",
         regionLen, (long long)progress_.currentFrame.load());
 
-    if (!muxer.finalize()) {
-        progress_.setError("Muxer finalization failed");
-        progress_.failed.store(true);
-        std::filesystem::remove(fragPath);
-        mixer_.setNonRealtime(false);
-        progress_.phase.store(0);
-        return;
-    }
+    video.logSummary(encodeQueueDepth);
 
-    if (!progress_.cancelRequested.load()) {
-        if (!remuxToFaststart(fragPath, settings.outputPath)) {
-            std::error_code ec;
-            std::filesystem::rename(fragPath, settings.outputPath, ec);
-        } else {
-            std::filesystem::remove(fragPath);
-        }
-    } else {
-        std::filesystem::remove(fragPath);
-    }
+    if (!finishOutput(muxer, fragPath, settings.outputPath))
+        return;
 
     progress_.percentage.store(100.0f);
     progress_.complete.store(true);
-    progress_.phase.store(0);
-    mixer_.setNonRealtime(false);
 
-    compositor.shutdown();
-    decoder.closeAll();
-    cache.clear();
+    video.shutdown();
 }
 
 // ===========================================================================

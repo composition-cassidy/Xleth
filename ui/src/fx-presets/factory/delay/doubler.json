@@ -1,0 +1,25 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "delay",
+  "name": "Doubler",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "time_l": 25,
+      "time_r": 25,
+      "sync": 0,
+      "sync_div_l": 3,
+      "sync_div_r": 3,
+      "stereo_mode": 0,
+      "feedback": 0,
+      "filter_lo": 80,
+      "filter_hi": 12000,
+      "mod_rate": 0.6,
+      "mod_depth": 40,
+      "stereo_width": 10,
+      "duck_amount": 0,
+      "mix": 35
+    }
+  }
+}

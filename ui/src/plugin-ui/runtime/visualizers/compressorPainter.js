@@ -102,6 +102,15 @@ export function compressorLevelToY(db, h) {
   return dbToY(db, minDb, maxDb, Math.max(1, h | 0))
 }
 
+// Inverse of compressorLevelToY: a y on the level axis back to dB (used to
+// drag the threshold line in the activity view).
+export function compressorLevelDbForY(y, h) {
+  const { minDb, maxDb } = COMPRESSOR_DISPLAY.level
+  const height = Math.max(2, h | 0)
+  const t = 1 - clamp(y, 0, height - 1) / (height - 1)
+  return minDb + t * (maxDb - minDb)
+}
+
 export function compressorGrToY(grDb, h) {
   return grToY(grDb, COMPRESSOR_DISPLAY.gr.maxGrDb, Math.max(1, h | 0))
 }
@@ -578,12 +587,12 @@ function drawActivityGrid(ctx, w, h, theme) {
   ctx.restore()
 }
 
-export function drawGainReductionActivity(ctx, x, y, w, h, columns, theme) {
+export function drawGainReductionActivity(ctx, x, y, w, h, columns, theme, options = {}) {
   if (!ctx || w < 4 || h < 4) return
   ctx.save()
   ctx.translate(x, y)
 
-  drawActivityGrid(ctx, w, h, theme)
+  if (options.grid !== false) drawActivityGrid(ctx, w, h, theme)
 
   if (!columns || columns.length === 0) {
     ctx.restore()
@@ -951,6 +960,40 @@ export function drawCompressorGainReductionActivity(ctx, w, h, ring, theme) {
   drawGainReductionActivity(ctx, 0, 0, w, h, columns, theme)
 }
 
+// ── Activity view (the Compressor device's hero) ─────────────────────────────
+//
+// The scrolling input/output level history with the gain-reduction trace
+// hanging from the top edge and the threshold drawn across the level axis.
+// Composed from the existing sections; the threshold line is the only new
+// stroke. The GR grid is left out because the level grid already rules the
+// display; the device's GR meter carries the dB scale for reduction.
+
+function drawThresholdLine(ctx, w, h, params, theme) {
+  const threshold = params?.threshold
+  if (!Number.isFinite(threshold)) return
+  const yy = compressorLevelToY(threshold, h) + 0.5
+  ctx.save()
+  ctx.strokeStyle = theme.accent || COLORS.curve
+  ctx.globalAlpha = 0.9
+  ctx.lineWidth = 1
+  ctx.setLineDash([4, 3])
+  ctx.beginPath()
+  ctx.moveTo(0, yy)
+  ctx.lineTo(w, yy)
+  ctx.stroke()
+  ctx.setLineDash([])
+  ctx.restore()
+}
+
+export function drawCompressorActivity(ctx, w, h, ring, theme, params) {
+  if (!ctx || w < 4 || h < 4) return
+  drawCompressorBackground(ctx, 0, 0, w, h, theme)
+  const columns = buildCompressorDisplayHistory(ring, w)
+  drawEnvelopeHistory(ctx, 0, 0, w, h, columns, theme)
+  drawGainReductionActivity(ctx, 0, 0, w, h, columns, theme, { grid: false })
+  drawThresholdLine(ctx, w, h, params, theme)
+}
+
 // ── Preset registry ─────────────────────────────────────────────────────────
 //
 // `compressorCombined` aliases to the v2 painter so previously-saved layouts
@@ -966,6 +1009,7 @@ export const COMPRESSOR_PRESETS = Object.freeze({
   gainReductionActivity:      drawCompressorGainReductionActivity,
   compressorCombined:         drawCompressorCombinedV2,
   compressorCombinedV2:       drawCompressorCombinedV2,
+  compressorActivity:         drawCompressorActivity,
 })
 
 export const COMPRESSOR_VISUALIZER_PRESETS = Object.freeze({
@@ -1003,6 +1047,10 @@ export const COMPRESSOR_VISUALIZER_PRESETS = Object.freeze({
   }),
   compressorCombinedV2: Object.freeze({
     label: 'Compressor Combined v2',
+    sources: ['compressor.combined'],
+  }),
+  compressorActivity: Object.freeze({
+    label: 'Compressor Activity',
     sources: ['compressor.combined'],
   }),
 })

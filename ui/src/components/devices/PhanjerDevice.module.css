@@ -1,0 +1,43 @@
+@layer kit {
+  /* One side of the Phanjer (Flanger or Phaser): its own band hue is set on this
+   * container as --ui-value, so every control inside wears it. */
+  .side {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .knobs {
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 2px;
+  }
+
+  .boxes {
+    display: flex;
+    gap: var(--space-1);
+  }
+
+  /* Tempo sync: the note toggle, the division and the feel. */
+  .sync {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .global {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .heroRow {
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 2px;
+  }
+}

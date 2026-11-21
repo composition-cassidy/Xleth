@@ -1,0 +1,178 @@
+/* The XLETH file picker (round 2, step 20): a kit Dialog (flush, tall, above everything) around a path bar, a
+ * places sidebar and a dense 24px-row list. Paths are code-like, so the path field is mono. Type: 12, 11. */
+@layer kit {
+  .pathbar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .pathField { flex: 1 1 auto; }
+
+  .newFolder {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .newFolder > :first-child { flex: 1 1 200px; }
+
+  .body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: 200px minmax(0, 1fr);
+    border: 1px solid var(--ui-g4);
+    border-radius: var(--ui-radius-1);
+    overflow: hidden;
+  }
+
+  .sidebar {
+    min-height: 0;
+    overflow-y: auto;
+    padding: var(--space-2);
+    background: var(--ui-g1);
+    border-right: 1px solid var(--ui-g4);
+  }
+
+  .sideSection { margin-bottom: var(--space-2); }
+
+  .sideTitle {
+    padding: 0 var(--space-1);
+    font-size: var(--type-11);
+    font-weight: var(--weight-semibold);
+    color: var(--ui-ink-2);
+  }
+
+  .sideEmpty {
+    padding: var(--space-1);
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+  }
+
+  .sideItem {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    width: 100%;
+    min-height: var(--row-h);
+    padding: 0 var(--space-1);
+    border: 0;
+    border-radius: var(--ui-radius-1);
+    background: transparent;
+    color: var(--ui-ink-2);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .sideItem span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sideItem:hover { background: var(--ui-g3); color: var(--ui-ink); }
+  .sideItem[aria-current="true"] { background: color-mix(in srgb, var(--ui-value) 24%, var(--ui-g3)); color: var(--ui-ink); font-weight: var(--weight-semibold); }
+
+  .sideItem:focus-visible,
+  .row:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  .main {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    background: var(--ui-g0);
+  }
+
+  .head,
+  .row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 96px;
+    align-items: center;
+    gap: var(--space-2);
+    padding: 0 var(--space-2);
+  }
+
+  .head {
+    flex: 0 0 auto;
+    height: var(--row-h);
+    background: var(--ui-g2);
+    border-bottom: 1px solid var(--ui-g4);
+    font-size: var(--type-11);
+    font-weight: var(--weight-medium);
+    color: var(--ui-ink-2);
+  }
+
+  .list {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .row {
+    box-sizing: border-box;
+    width: 100%;
+    height: var(--row-h);
+    border: 0;
+    background: transparent;
+    color: var(--ui-ink);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .row:hover { background: var(--ui-g1); }
+  .row[aria-selected="true"] { background: color-mix(in srgb, var(--ui-value) 24%, var(--ui-g3)); font-weight: var(--weight-semibold); }
+
+  .rowName {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+  }
+
+  .rowName span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .rowLength {
+    text-align: right;
+    color: var(--ui-ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .empty {
+    padding: var(--space-3);
+    color: var(--ui-ink-2);
+  }
+
+  .error {
+    color: var(--theme-semantic-danger-text, var(--ui-rec-text));
+    font-size: var(--type-12);
+  }
+
+  .selection {
+    min-height: 16px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+  }
+
+  @media (max-width: 720px) {
+    .body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+    .sidebar { max-height: 120px; border-right: 0; border-bottom: 1px solid var(--ui-g4); }
+  }
+}

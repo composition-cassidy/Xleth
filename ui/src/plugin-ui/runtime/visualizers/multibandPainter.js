@@ -30,15 +30,17 @@ export const MULTIBAND_DISPLAY = Object.freeze({
   gr: Object.freeze({
     maxGrDb: 30,
   }),
+  // Fallbacks only: painters take the band palette from the theme
+  // (theme.bands, ui/DESIGN.md 3.3.1). These are its Default values.
   bandColors: Object.freeze({
-    low:  '#f97316',  // amber/orange — bass weight
-    mid:  '#a3e635',  // lime — mid presence
-    high: '#38bdf8',  // sky — high air
+    low:  '#ED9659',  // --ui-band-1
+    mid:  '#B6C963',  // --ui-band-2
+    high: '#C494E2',  // --ui-band-4
   }),
   bandLabels: Object.freeze({
-    low:  'LOW',
-    mid:  'MID',
-    high: 'HIGH',
+    low:  'Low',
+    mid:  'Mid',
+    high: 'High',
   }),
   bandKeys: Object.freeze(['low', 'mid', 'high']),
   historyMaxBuckets: 720,
@@ -387,7 +389,7 @@ function fillGrRibbon(ctx, columns, h, bandKey, color) {
 
 function drawBandLane(ctx, x, y, w, h, columns, theme, bandKey, label, grReadoutDb) {
   if (h < 12 || w < 8) return
-  const color = MULTIBAND_DISPLAY.bandColors[bandKey]
+  const color = theme.bands?.[bandKey] || MULTIBAND_DISPLAY.bandColors[bandKey]
 
   ctx.save()
   ctx.translate(x, y)
@@ -441,8 +443,8 @@ function drawBandLane(ctx, x, y, w, h, columns, theme, bandKey, label, grReadout
     ctx.textAlign = 'left'
     ctx.fillText(label, 6, 4)
 
-    const grText = grReadoutDb >= 0.1 ? `-${grReadoutDb.toFixed(1)} dB` : '0.0 dB'
-    ctx.font = '10px ui-monospace, "SF Mono", Menlo, Consolas, monospace'
+    const grText = grReadoutDb >= 0.1 ? `−${grReadoutDb.toFixed(1)} dB` : '0.0 dB'
+    ctx.font = uiCanvasFont('10px')
     ctx.textAlign = 'right'
     ctx.globalAlpha = grReadoutDb >= 0.4 ? 0.95 : 0.55
     ctx.fillText(grText, w - 6, 4)
@@ -471,7 +473,7 @@ function drawFooter(ctx, x, y, w, h, ring, theme) {
   ctx.stroke()
   ctx.globalAlpha = 1
 
-  ctx.font = '10px ui-monospace, "SF Mono", Menlo, Consolas, monospace'
+  ctx.font = uiCanvasFont('10px')
   ctx.textBaseline = 'middle'
   ctx.fillStyle = theme.textMuted || COLORS.textMuted
 
@@ -563,7 +565,7 @@ export function drawOverdoneGainReduction(ctx, w, h, ring, theme) {
     const lh = heightByBand[k]
     const ly = yByBand[k]
     const grDb = meter[k]
-    const color = MULTIBAND_DISPLAY.bandColors[k]
+    const color = theme.bands?.[k] || MULTIBAND_DISPLAY.bandColors[k]
     const t = clamp(grDb / MULTIBAND_DISPLAY.gr.maxGrDb, 0, 1)
     const fillW = Math.round((w - 12) * t)
 
@@ -595,10 +597,10 @@ export function drawOverdoneGainReduction(ctx, w, h, ring, theme) {
       ctx.globalAlpha = 0.95
       ctx.fillText(MULTIBAND_DISPLAY.bandLabels[k], 6, 10)
 
-      ctx.font = '10px ui-monospace, "SF Mono", Menlo, Consolas, monospace'
+      ctx.font = uiCanvasFont('10px')
       ctx.textAlign = 'right'
       ctx.globalAlpha = grDb >= 0.4 ? 0.95 : 0.55
-      ctx.fillText(grDb >= 0.1 ? `-${grDb.toFixed(1)} dB` : '0.0 dB', w - 6, 10)
+      ctx.fillText(grDb >= 0.1 ? `−${grDb.toFixed(1)} dB` : '0.0 dB', w - 6, 10)
     }
 
     ctx.restore()

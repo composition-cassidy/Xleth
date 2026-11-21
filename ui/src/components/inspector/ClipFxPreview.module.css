@@ -1,0 +1,37 @@
+/* Static swirl / wave preview beside the clip's video-companion controls. */
+@layer kit {
+  .panes {
+    display: flex;
+    gap: var(--space-2);
+    align-items: flex-start;
+  }
+
+  .pane {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    margin: 0;
+  }
+
+  .label {
+    color: var(--ui-ink-3);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+  }
+
+  .canvas {
+    width: 128px;
+    height: 72px;
+    border: 1px solid var(--ui-g4);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g0);
+    image-rendering: pixelated;
+  }
+
+  .note {
+    margin: 0;
+    color: var(--ui-ink-3);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+  }
+}

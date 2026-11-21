@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import XlethSelect from '../../common/XlethSelect.jsx'
+import {
+  DeviceSection, DisplayWell, NumberBox, Select, Toggle, Button, THIN_SPACE, formatValue, logScale, parseValue,
+} from '../../../ui-kit'
 import ContextMenu from '../../ContextMenu.jsx'
-import EffectPresetBar from '../../../fx-presets/EffectPresetBar.jsx'
-import DragNumberField from './DragNumberField.jsx'
 import BezierSegmentEditor from './BezierSegmentEditor.jsx'
 import ZprKeyframeCanvas from './ZprKeyframeCanvas.jsx'
 import ZprViewport from './ZprViewport.jsx'
 import {
   exp2, log2, evaluateTrack, insertKeyframe, removeKeyframe, moveKeyframe,
-  setKeyframeValue, setKeyframeCurve, resolveLengthMs, formatMs,
+  setKeyframeValue, setKeyframeCurve, resolveLengthMs,
   MUSICAL_DIVISIONS, IDENTITY_CURVE, clamp01, rdpSimplifyNormalized,
 } from './zprCurveMath.js'
 import {
@@ -19,11 +19,18 @@ import {
 import { resolveTrackSourceFrame, cellAspectFor } from './zprSourceFrame.js'
 import { subscribe as subscribeTransport, getTransportState } from '../../../transportStore.js'
 import { playheadClock } from '../../../services/PlayheadClock.js'
-import { PPQ } from '../../../constants/timeline.js'
+import { beatsToTicks } from '../../../constants/timeline.js'
+import styles from './zprTimeline.module.css'
+import { iconComponent } from '../../../ui-kit/icons'
+
+const IcWarning = iconComponent('warning')
 
 const DEFAULT_RECORD_TOLERANCE = 0.03  // fraction of each channel's own recorded range
 
-// Zoom/Pan/Rot editor for the track-level card in VisualFXSection.
+// Zoom/Pan/Rot keyframe editor: the Zoom/pan/rot device's body (layout
+// 'device', inside the 256px DeviceFrame of the Devices tab's Video view) and
+// its popped-out window (layout 'window', the full editor). Also the Slide note
+// effect's Zoom/pan/rot (variant 'slide').
 //
 // P1 shipped the numeric inspector + keyframe timeline + bezier editor. P2 adds
 // the spatial viewport on the left: Vegas Pan/Crop direct manipulation writing
@@ -61,25 +68,42 @@ const DEFAULT_RECORD_TOLERANCE = 0.03  // fraction of each channel's own recorde
 //    zprRectMath.js opFlipHorizontal.
 
 const LENGTH_MODE_OPTIONS = [
-  { value: 0, label: 'Fixed' },
-  { value: 1, label: 'Musical' },
-  { value: 2, label: 'Note' },
+  { value: 0, label: 'Fixed', hint: 'A fixed time in milliseconds' },
+  { value: 1, label: 'Musical', hint: 'A note value at the project tempo' },
+  { value: 2, label: 'Note', hint: 'A percentage of the triggering note’s length' },
 ]
 
 const MUSICAL_DIVISION_OPTIONS = MUSICAL_DIVISIONS.map((d, i) => ({ value: i, label: d.label }))
 
 const ON_END_OPTIONS = [
-  { value: 0, label: 'Hold' },
-  { value: 1, label: 'Reset' },
-  { value: 2, label: 'Loop' },
-  { value: 3, label: 'Ping-pong' },
+  { value: 0, label: 'Hold', hint: 'Stay on the last keyframe' },
+  { value: 1, label: 'Reset', hint: 'Jump back to the first keyframe' },
+  { value: 2, label: 'Loop', hint: 'Start again from the first keyframe' },
+  { value: 3, label: 'Ping-pong', hint: 'Play back and forth' },
 ]
 
 const RETRIGGER_OPTIONS = [
-  { value: 0, label: 'Restart' },
-  { value: 1, label: 'Ignore' },
-  { value: 2, label: 'Crossfade' },
+  { value: 0, label: 'Restart', hint: 'A new note starts the animation again' },
+  { value: 1, label: 'Ignore', hint: 'A new note does not interrupt a running animation' },
+  { value: 2, label: 'Crossfade', hint: 'A new note blends from where the animation is' },
 ]
+
+const signed2 = (v) => formatValue(v, 'dB', { unitless: true, decimals: 2 })
+const PAN_FMT = { format: signed2, parse: (t) => parseValue(t, 'dB') }
+const ZOOM_FMT = {
+  format: (v) => `${formatValue(v, 'dB', { unitless: true, decimals: 2 })}${THIN_SPACE}×`,
+  parse: (t) => parseValue(String(t).replace(/[×x]/gi, ''), 'dB'),
+}
+const DEG_FMT = {
+  format: (v) => `${formatValue(v, 'dB', { unitless: true, decimals: 1 })}°`,
+  parse: (t) => parseValue(String(t).replace(/°/g, ''), 'dB'),
+}
+const PCT_FMT = { format: (v) => formatValue(v, '%', { decimals: 1 }), parse: (t) => parseValue(t, '%') }
+const SHUTTER_FMT = {
+  format: (v) => `${Math.round(v)}°`,
+  parse: (t) => parseValue(String(t).replace(/°/g, ''), 'dB'),
+}
+const ZOOM_SCALE = logScale(0.01, 64)
 
 const CHANNELS_ALL = ['panX', 'panY', 'zoomLog2', 'rotationDeg']
 const KEY_EPS = 1e-3
@@ -164,8 +188,8 @@ function writeCanonicalAtT(tracks, t, next) {
 //             slideLengthMs is that resolved window, or null for "Follow
 //             Slide", where the length isn't known until a note fires.
 export default function ZprTimelineCard({
-  trackId, zpr, onApplyScalar, onApplyTracks, onPresetApplied,
-  variant = 'track', slideLengthMs = null,
+  trackId, zpr, onApplyScalar, onApplyTracks,
+  variant = 'track', slideLengthMs = null, layout = 'window',
 }) {
   const isSlide = variant === 'slide'
   const [bpm, setBpm] = useState(() => getTransportState()?.bpm ?? 120)
@@ -174,7 +198,7 @@ export default function ZprTimelineCard({
   useEffect(() => subscribeTransport((s) => {
     if (Number.isFinite(s?.bpm)) setBpm(s.bpm)
     const beats = s?.rawPositionBeats ?? s?.positionBeats
-    if (Number.isFinite(beats)) setPlayheadTick(Math.max(0, Math.round(beats * PPQ)))
+    if (Number.isFinite(beats)) setPlayheadTick(Math.max(0, beatsToTicks(beats)))
     if (typeof s?.isPlaying === 'boolean') setIsPlaying(s.isPlaying)
   }), [])
 
@@ -229,6 +253,10 @@ export default function ZprTimelineCard({
   const onEndMode = zpr?.onEndMode ?? 0
   const retriggerMode = zpr?.retriggerMode ?? 0
   const retriggerCrossfadeMs = zpr?.retriggerCrossfadeMs ?? 50
+  // This track's own ZPR motion blur. Independent of the project's Lens/Roam
+  // motion blur (Settings > Project), which never switches this on or off.
+  const motionBlurOn = !!zpr?.motionBlur?.enabled
+  const shutterAngle = zpr?.motionBlur?.shutterAngle ?? 180
 
   // In slide mode the window is the slide's, not this config's — and under
   // "Follow Slide" its length is a property of the note that fires, unknown
@@ -238,7 +266,7 @@ export default function ZprTimelineCard({
   const timeLabels = useMemo(() => (
     [0, 0.25, 0.5, 0.75, 1].map(frac => ({
       frac,
-      label: showPercentRuler ? `${Math.round(frac * 100)}%` : formatMs(frac * lengthMs),
+      label: showPercentRuler ? formatValue(frac * 100, '%') : formatValue(frac * lengthMs, 'ms'),
     }))
   ), [lengthMs, showPercentRuler])
 
@@ -489,258 +517,285 @@ export default function ZprTimelineCard({
   // ── header scalar config ────────────────────────────────────────────
   const applyScalar = useCallback((patch) => onApplyScalar?.(patch), [onApplyScalar])
 
-  // target.zpr is read directly by the 'xform' preset adapter (captureState)
-  // instead of a round-trip through the audio bridge — zoomPanRot already
-  // lives client-side in this same prop, see effectPresetAdapters.js.
-  const presetTarget = useMemo(() => ({
-    trackId, zpr, nodeId: trackId, storeKey: 'xform',
-  }), [trackId, zpr])
 
-  return (
-    <div className={`zpr-timeline-card${isSlide ? ' is-slide' : ''}`}>
-      <div className="zpr-timeline-header">
-        {isSlide && (
-          <div className="zpr-timeline-header-row zpr-slide-note">
-            Delta layer — 0.00, 0.00, 1.00x, 0.0° adds nothing. Pan and rotation
-            add to the track&apos;s own animation; zoom multiplies it.
+  const loopPops = onEndMode === 2 && hasLoopDiscontinuity(localTracks)
+
+  // ── controls shared by both layouts ─────────────────────────────────────
+  const lengthControls = (
+    <div className={styles.fieldStack}>
+      <Select
+        size="sm"
+        ariaLabel="Length"
+        hint="How the animation window is measured"
+        value={lengthMode}
+        options={LENGTH_MODE_OPTIONS}
+        onChange={(v) => applyScalar({ lengthMode: v })}
+      />
+      {lengthMode === 0 && (
+        <NumberBox
+          label="Duration" hideLabel width={100}
+          value={durationMs} min={20} max={20000} step={2} defaultValue={300} unit="ms"
+          quantize={(v) => Math.round(v)}
+          onCommit={(v) => applyScalar({ durationMs: Math.round(v) })}
+          hint="Length of the animation"
+        />
+      )}
+      {lengthMode === 1 && (
+        <>
+          <Select
+            size="sm"
+            ariaLabel="Musical division"
+            value={musicalDivision}
+            options={MUSICAL_DIVISION_OPTIONS}
+            onChange={(v) => applyScalar({ musicalDivision: v })}
+          />
+          <span className={styles.caption}>{`${Math.round(bpm)} BPM: ${formatValue(lengthMs, 'ms')}`}</span>
+        </>
+      )}
+      {lengthMode === 2 && (
+        <NumberBox
+          label="Note length" hideLabel width={100}
+          value={notePercentage} min={1} max={400} step={0.5} defaultValue={100}
+          format={PCT_FMT.format} parse={PCT_FMT.parse}
+          quantize={(v) => Math.round(v * 2) / 2}
+          onCommit={(v) => applyScalar({ notePercentage: v })}
+          hint="Percentage of the triggering note’s length"
+        />
+      )}
+    </div>
+  )
+
+  const endControls = (
+    <div className={styles.fieldStack}>
+      <span className={styles.caption}>On end</span>
+      <Select
+        size="sm"
+        ariaLabel="On end"
+        value={onEndMode}
+        options={ON_END_OPTIONS}
+        onChange={(v) => applyScalar({ onEndMode: v })}
+      />
+      {loopPops ? (
+        <span
+          className={styles.warn}
+          data-hint="The last keyframe differs from the first, so Loop jumps back at the seam without smoothing"
+        >
+          <IcWarning aria-hidden="true" />
+          Seam jumps
+        </span>
+      ) : null}
+      <span className={styles.caption}>Retrigger</span>
+      <Select
+        size="sm"
+        ariaLabel="Retrigger"
+        value={retriggerMode}
+        options={RETRIGGER_OPTIONS}
+        onChange={(v) => applyScalar({ retriggerMode: v })}
+      />
+      {retriggerMode === 2 && (
+        <NumberBox
+          label="Retrigger crossfade" hideLabel width={100}
+          value={retriggerCrossfadeMs} min={1} max={2000} step={1} defaultValue={50} unit="ms"
+          quantize={(v) => Math.round(v)}
+          onCommit={(v) => applyScalar({ retriggerCrossfadeMs: Math.round(v) })}
+        />
+      )}
+    </div>
+  )
+
+  // Whole-object write, so the other field is carried along unchanged.
+  const applyMotionBlur = (patch) => applyScalar({
+    motionBlur: { enabled: motionBlurOn, shutterAngle, ...patch },
+  })
+  const blurControls = (
+    <div className={styles.fieldStack}>
+      <Toggle
+        size="sm"
+        on={motionBlurOn}
+        onChange={(next) => applyMotionBlur({ enabled: next })}
+        hint="Smear the picture along this track’s zoom, pan and rotation moves. Set here per track; the project’s Lens and Roam motion blur does not affect it."
+      >
+        Motion blur
+      </Toggle>
+      <NumberBox
+        label="Shutter" hideLabel width={100}
+        value={shutterAngle} min={1} max={360} step={1} defaultValue={180}
+        format={SHUTTER_FMT.format} parse={SHUTTER_FMT.parse}
+        quantize={(v) => Math.round(v)}
+        disabled={!motionBlurOn}
+        onCommit={(v) => applyMotionBlur({ shutterAngle: Math.round(v) })}
+        hint="Shutter angle: how much of each frame the blur spans. 180° is the film look, 360° a whole frame."
+      />
+    </div>
+  )
+
+  // Live = local state only (no IPC); commit = one setTrackZprTracks.
+  const field = (channel, toInternal) => ({
+    onChange: (v) => fieldLiveChange(channel, toInternal, v),
+    onCommit: (v) => fieldCommit(channel, toInternal, v),
+  })
+  const toLog2 = (x) => log2(Math.max(1e-4, x))
+  const playheadFields = (
+    <div className={styles.fieldGrid}>
+      <NumberBox
+        label="Pan X" width={84} bipolar value={panX} min={-4} max={4} step={0.004} defaultValue={0}
+        format={PAN_FMT.format} parse={PAN_FMT.parse} pxPerRange={2000}
+        hint="Horizontal pan at the playhead (a UV offset of the cell)" {...field('panX', (x) => x)}
+      />
+      <NumberBox
+        label="Pan Y" width={84} bipolar value={panY} min={-4} max={4} step={0.004} defaultValue={0}
+        format={PAN_FMT.format} parse={PAN_FMT.parse} pxPerRange={2000}
+        hint="Vertical pan at the playhead" {...field('panY', (x) => x)}
+      />
+      <NumberBox
+        label="Zoom" width={84} value={zoomLinear} scale={ZOOM_SCALE} step={0.01} defaultValue={1}
+        format={ZOOM_FMT.format} parse={ZOOM_FMT.parse}
+        hint="Zoom at the playhead" {...field('zoomLog2', toLog2)}
+      />
+      <NumberBox
+        label="Rotation" width={84} bipolar value={rotationDeg} min={-3600} max={3600} step={0.5} defaultValue={0}
+        format={DEG_FMT.format} parse={DEG_FMT.parse} pxPerRange={14400}
+        hint="Rotation at the playhead, unwrapped: 370° is a full turn plus 10°" {...field('rotationDeg', (x) => x)}
+      />
+    </div>
+  )
+
+  const viewport = (
+    <ZprViewport
+      rect={rect}
+      onRectLive={handleRectLive}
+      onRectCommit={handleRectCommit}
+      onContextMenu={(x, y) => setMenu({ x, y })}
+      cellAspect={cellAspect}
+      frameUrl={frameUrl}
+      aspectLocked={aspectLocked}
+      pivot={pivot}
+      onPivotChange={setPivot}
+      motionPath={motionPath}
+      motionKeys={motionKeys}
+      scrubT={scrubT}
+    />
+  )
+
+  const timeline = (rowHeight) => (
+    <ZprKeyframeCanvas
+      tracks={localTracks}
+      scrubT={scrubT}
+      onScrub={setScrubT}
+      selectedKey={selectedKey}
+      onSelectKey={setSelectedKey}
+      selectedSegment={selectedSegment}
+      onSelectSegment={setSelectedSegment}
+      onKeyframeAdd={handleKeyframeAdd}
+      onKeyframeMove={handleKeyframeMove}
+      onKeyframeMoveCommit={handleKeyframeMoveCommit}
+      onKeyframeDelete={handleKeyframeDelete}
+      positionExpanded={positionExpanded}
+      onTogglePositionExpanded={() => setPositionExpanded(v => !v)}
+      timeLabels={timeLabels}
+      rowHeight={rowHeight}
+    />
+  )
+
+  const contextMenu = menu ? (
+    <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} />
+  ) : null
+
+  // ── device: the 256px DeviceFrame body (display well, then sections) ───
+  if (layout === 'device') {
+    return (
+      <>
+        <DisplayWell label="Zoom, pan and rotation" width={isSlide ? 300 : 470}>
+          <div className={styles.deviceWell}>
+            {isSlide ? null : <div className={styles.deviceViewport}>{viewport}</div>}
+            <div className={styles.deviceTimeline}>{timeline(34)}</div>
           </div>
-        )}
-        {!isSlide && (
-        <div className="zpr-timeline-header-row">
-          <label>Preset</label>
-          <EffectPresetBar
-            className="zpr-preset-bar"
-            effectType="xform"
-            target={presetTarget}
-            onApplied={onPresetApplied}
-          />
+        </DisplayWell>
+        {isSlide ? null : <DeviceSection title="Length" width={116}>{lengthControls}</DeviceSection>}
+        {isSlide ? null : <DeviceSection title="Ends" width={124}>{endControls}</DeviceSection>}
+        {isSlide ? null : <DeviceSection title="Blur" width={116}>{blurControls}</DeviceSection>}
+        <DeviceSection title="At playhead" width={184}>
+          {playheadFields}
+          <p className={styles.note}>
+            {isSlide ? 'A delta over the track’s animation. ' : ''}
+            Curve shapes, framing options and recording are in the window.
+          </p>
+        </DeviceSection>
+        {contextMenu}
+      </>
+    )
+  }
 
-          <label>Length</label>
-          <XlethSelect
-            className="zpr-header-select"
-            value={lengthMode}
-            options={LENGTH_MODE_OPTIONS}
-            onChange={(v) => applyScalar({ lengthMode: v })}
-            ariaLabel="Length mode"
-          />
-          {lengthMode === 0 && (
-            <DragNumberField
-              value={durationMs}
-              precision={0}
-              step={2}
-              min={20}
-              max={20000}
-              suffix=" ms"
-              onLiveChange={() => {}}
-              onCommit={(v) => applyScalar({ durationMs: v })}
-            />
-          )}
-          {lengthMode === 1 && (
-            <>
-              <XlethSelect
-                className="zpr-header-select"
-                value={musicalDivision}
-                options={MUSICAL_DIVISION_OPTIONS}
-                onChange={(v) => applyScalar({ musicalDivision: v })}
-                ariaLabel="Musical division"
-              />
-              <span className="zpr-length-resolved">
-                {MUSICAL_DIVISIONS[musicalDivision]?.label ?? '1/8'} @ {Math.round(bpm)} BPM = {formatMs(lengthMs)}
-              </span>
-            </>
-          )}
-          {lengthMode === 2 && (
-            <DragNumberField
-              value={notePercentage}
-              precision={0}
-              step={0.5}
-              min={1}
-              max={400}
-              suffix=" %"
-              onLiveChange={() => {}}
-              onCommit={(v) => applyScalar({ notePercentage: v })}
-            />
-          )}
+  // ── window: the full editor ────────────────────────────────────────────
+  return (
+    <div className={styles.window} data-testid="zpr-editor">
+      {isSlide ? (
+        <p className={styles.note}>
+          A delta over the track’s own animation: 0.00, 0.00, 1.00 ×, 0.0° adds nothing. Pan and rotation add; zoom multiplies.
+        </p>
+      ) : (
+        <div className={styles.windowHeader}>
+          <DeviceSection title="Length" width={150}>{lengthControls}</DeviceSection>
+          <DeviceSection title="Ends" width={160}>{endControls}</DeviceSection>
+          <DeviceSection title="Motion blur" width={150}>{blurControls}</DeviceSection>
         </div>
-        )}
+      )}
 
-        {!isSlide && (
-        <div className="zpr-timeline-header-row">
-          <label>On end</label>
-          <XlethSelect
-            className="zpr-header-select"
-            value={onEndMode}
-            options={ON_END_OPTIONS}
-            onChange={(v) => applyScalar({ onEndMode: v })}
-            ariaLabel="On end behaviour"
-          />
-          {onEndMode === 2 && hasLoopDiscontinuity(localTracks) && (
-            <span
-              className="zpr-loop-warning"
-              title="Last keyframe value differs from the first — Loop restarts at t=0 every window without smoothing the seam, so this will pop."
+      <div className={styles.editorRow}>
+        <div className={styles.viewportCol}>
+          {viewport}
+          <div className={styles.tools}>
+            <Toggle
+              size="sm"
+              on={aspectLocked}
+              onChange={(next) => setAspectLocked(next)}
+              hint={aspectLocked
+                ? 'Aspect locked: corner drags only. Turn off to use the edge handles.'
+                : 'Aspect free: edge handles pin the opposite edge and scale uniformly.'}
             >
-              ⚠
-            </span>
-          )}
-
-          <label>Retrigger</label>
-          <XlethSelect
-            className="zpr-header-select"
-            value={retriggerMode}
-            options={RETRIGGER_OPTIONS}
-            onChange={(v) => applyScalar({ retriggerMode: v })}
-            ariaLabel="Retrigger behaviour"
-          />
-          {retriggerMode === 2 && (
-            <DragNumberField
-              value={retriggerCrossfadeMs}
-              precision={0}
-              step={1}
-              min={1}
-              max={2000}
-              suffix=" ms"
-              onLiveChange={() => {}}
-              onCommit={(v) => applyScalar({ retriggerCrossfadeMs: v })}
-            />
-          )}
-        </div>
-        )}
-      </div>
-
-      {/* viewport left · numeric inspector right */}
-      <div className="zpr-editor-row">
-        <div className="zpr-viewport-col">
-          <ZprViewport
-            rect={rect}
-            onRectLive={handleRectLive}
-            onRectCommit={handleRectCommit}
-            onContextMenu={(x, y) => setMenu({ x, y })}
-            cellAspect={cellAspect}
-            frameUrl={frameUrl}
-            aspectLocked={aspectLocked}
-            pivot={pivot}
-            onPivotChange={setPivot}
-            motionPath={motionPath}
-            motionKeys={motionKeys}
-            scrubT={scrubT}
-          />
-          <div className="zpr-viewport-toolbar">
-            <button
-              type="button"
-              className={`zpr-viewport-toggle${aspectLocked ? ' is-active' : ''}`}
-              onClick={() => setAspectLocked(v => !v)}
-              title={aspectLocked
-                ? 'Aspect locked — corner drags only. Unlock to enable edge handles.'
-                : 'Aspect unlocked — edge handles pin the opposite edge and scale uniformly.'}
-            >
-              {aspectLocked ? 'Aspect: locked' : 'Aspect: free'}
-            </button>
-            <button
-              type="button"
-              className="zpr-viewport-toggle"
-              onClick={() => setPivot({ x: rect.cx, y: rect.cy })}
-              title="Move the rotation centre back to the window centre"
-            >
+              Lock aspect
+            </Toggle>
+            <Button size="sm" onClick={() => setPivot({ x: rect.cx, y: rect.cy })} hint="Move the rotation centre back to the window centre">
               Reset pin
-            </button>
-            <button
-              type="button"
-              className={`zpr-viewport-toggle zpr-record-toggle${armed ? ' is-recording' : ''}`}
-              onClick={toggleArmed}
-              title={
-                armed
-                  ? (isPlaying
-                      ? 'Recording armed — drag the viewport to write keyframes at the live playhead'
-                      : 'Recording armed — waiting for playback to start')
-                  : 'Arm real-time keyframe recording (drag while playing to record)'
-              }
+            </Button>
+            <Toggle
+              size="sm"
+              on={armed}
+              onChange={() => toggleArmed()}
+              glyph={<span className={styles.recGlyph} aria-hidden="true" />}
+              hint={armed
+                ? (isPlaying
+                    ? 'Recording: drag the picture to write keyframes at the live playhead'
+                    : 'Armed: recording starts when playback starts')
+                : 'Arm real-time keyframe recording (drag while playing to record)'}
             >
-              {armed ? '● Rec Armed' : 'Arm Rec'}
-            </button>
+              {armed ? 'Armed' : 'Record'}
+            </Toggle>
             {armed && (
-              <DragNumberField
-                value={recordTolerance * 100}
-                precision={1}
-                step={0.5}
-                min={0.5}
-                max={20}
-                suffix="% tol"
-                onLiveChange={() => {}}
+              <NumberBox
+                label="Tolerance" width={110} value={recordTolerance * 100} min={0.5} max={20} step={0.5} defaultValue={3}
+                format={PCT_FMT.format} parse={PCT_FMT.parse}
+                hint="How much detail the recording keeps (a share of each channel’s recorded range)"
                 onCommit={(v) => setRecordTolerance(clamp01(v / 100))}
               />
             )}
-            <span className="zpr-viewport-hint">
-              {frameUrl ? 'right-click for framing options' : 'no source frame — placeholder'}
-            </span>
           </div>
+          <p className={styles.caption}>
+            {frameUrl ? 'Right-click the picture for framing options' : 'No source frame at the playhead'}
+          </p>
         </div>
-
-        <div className="zpr-inspector-col">
-          <div className="zpr-numeric-inspector">
-            <DragNumberField
-              label="Pan X"
-              value={panX}
-              step={0.004}
-              precision={2}
-              min={-4}
-              max={4}
-              onLiveChange={(v) => fieldLiveChange('panX', x => x, v)}
-              onCommit={(v) => fieldCommit('panX', x => x, v)}
-            />
-            <DragNumberField
-              label="Pan Y"
-              value={panY}
-              step={0.004}
-              precision={2}
-              min={-4}
-              max={4}
-              onLiveChange={(v) => fieldLiveChange('panY', x => x, v)}
-              onCommit={(v) => fieldCommit('panY', x => x, v)}
-            />
-            <DragNumberField
-              label="Zoom"
-              value={zoomLinear}
-              suffix="x"
-              step={0.01}
-              precision={2}
-              min={0.01}
-              max={64}
-              onLiveChange={(v) => fieldLiveChange('zoomLog2', x => log2(Math.max(1e-4, x)), v)}
-              onCommit={(v) => fieldCommit('zoomLog2', x => log2(Math.max(1e-4, x)), v)}
-            />
-            <DragNumberField
-              label="Rotation"
-              value={rotationDeg}
-              suffix="°"
-              step={0.5}
-              precision={1}
-              onLiveChange={(v) => fieldLiveChange('rotationDeg', x => x, v)}
-              onCommit={(v) => fieldCommit('rotationDeg', x => x, v)}
-            />
-          </div>
-          <div className="zpr-inspector-derived">
-            <span>Window {(rect.w * 100).toFixed(1)}% of cell</span>
-            <span>Centre {rect.cx.toFixed(3)}, {rect.cy.toFixed(3)}</span>
-          </div>
-        </div>
+        <DeviceSection title="At playhead" width={196}>
+          {playheadFields}
+          <p className={styles.readout}>
+            {`Window ${formatValue(rect.w * 100, '%', { decimals: 1 })} of cell`}
+          </p>
+          <p className={styles.readout}>
+            {`Centre ${formatValue(rect.cx, 'dB', { unitless: true, decimals: 3 })}, ${formatValue(rect.cy, 'dB', { unitless: true, decimals: 3 })}`}
+          </p>
+        </DeviceSection>
       </div>
 
-      <ZprKeyframeCanvas
-        tracks={localTracks}
-        scrubT={scrubT}
-        onScrub={setScrubT}
-        selectedKey={selectedKey}
-        onSelectKey={setSelectedKey}
-        selectedSegment={selectedSegment}
-        onSelectSegment={setSelectedSegment}
-        onKeyframeAdd={handleKeyframeAdd}
-        onKeyframeMove={handleKeyframeMove}
-        onKeyframeMoveCommit={handleKeyframeMoveCommit}
-        onKeyframeDelete={handleKeyframeDelete}
-        positionExpanded={positionExpanded}
-        onTogglePositionExpanded={() => setPositionExpanded(v => !v)}
-        timeLabels={timeLabels}
-      />
+      {timeline(40)}
 
       {selectedSegment && segmentCurve && (
         <BezierSegmentEditor
@@ -750,9 +805,7 @@ export default function ZprTimelineCard({
         />
       )}
 
-      {menu && (
-        <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} />
-      )}
+      {contextMenu}
     </div>
   )
 }

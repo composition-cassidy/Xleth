@@ -79,6 +79,11 @@ export const SUBSYSTEMS: ReadonlyArray<SubsystemMeta> = [
   { key: 'text',       section: '3.2', displayName: 'Text',         category: 'Foundations' },
   { key: 'borders',    section: '3.2', displayName: 'Borders',      category: 'Foundations' },
   { key: 'depth',      section: '3.2', displayName: 'Depth & elevation', category: 'Foundations' },
+  // UI kit (ui/DESIGN.md): neutral ramp, semantic colours, signal-type hues.
+  { key: 'ui-neutral',  section: 'ui-kit', displayName: 'UI kit: neutral ramp',      category: 'Foundations' },
+  { key: 'ui-semantic', section: 'ui-kit', displayName: 'UI kit: semantic colours',  category: 'Foundations' },
+  { key: 'ui-signal',   section: 'ui-kit', displayName: 'UI kit: signal types',      category: 'Foundations' },
+  { key: 'ui-band',     section: 'ui-kit', displayName: 'UI kit: multiband bands',   category: 'Foundations' },
 
   // Window system
   { key: 'panel-chrome', section: '3.3', displayName: 'Panel chrome',        category: 'Window system', aliases: ['chrome-layout'] },
@@ -177,7 +182,8 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   // panels (piano-roll body, mixer SmartBalance canvas). Sits below
   // bg-primary on the depth scale; not a derived formula because the
   // offset from bg-primary is not consistent across themes.
-  explicit('--theme-bg-inset', '#0d0d14', 'any', 'Foundations', 'base'),
+  // The recessed well is the ramp's ground (g0) unless a theme sets it (Appearance does).
+  ref('--theme-bg-inset', '--theme-ui-g0', 'any', 'Foundations', 'base'),
   // Modal/overlay backdrop tints - stepped opacity scale for dark overlays
   explicit('--theme-overlay-subtle', 'rgba(0, 0, 0, 0.25)', 'solid', 'Foundations', 'base'),
   explicit('--theme-overlay-medium', 'rgba(0, 0, 0, 0.60)', 'solid', 'Foundations', 'base'),
@@ -200,7 +206,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   // "contrast text color on colored bg", not "inset panel surface".
   // Future convergence with --theme-text-inverse (derived) is a candidate —
   // see theming-catalog-gaps.md "Future cleanup".
-  explicit('--theme-text-on-accent', '#0d0d14', 'solid', 'Foundations', 'text'),
+  explicit('--theme-text-on-accent', '#141414', 'solid', 'Foundations', 'text'),
 
   // ─── Foundations: Border family (§3.2) ────────────────────────────────
   derivedFormula('--theme-border-subtle', 'solid', 'Foundations', 'borders'),
@@ -516,12 +522,12 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   explicit('--theme-mixer-panel-height', '400px', 'solid', 'Workspace panels', 'mixer', 'dimension'),
 
   // ─── Workspace: Piano roll (§3.4.14) ──────────────────────────────────
-  explicit('--theme-pianoroll-grid-bg', '#111118', 'any', 'Workspace panels', 'piano-roll'),
-  explicit('--theme-pianoroll-bar-line',         'rgba(255, 255, 255, 0.14)', 'solid', 'Workspace panels', 'piano-roll'),
+  ref('--theme-pianoroll-grid-bg', '--theme-ui-g0', 'any', 'Workspace panels', 'piano-roll'),
+  explicit('--theme-pianoroll-bar-line',         'rgba(255, 255, 255, 0.34)', 'solid', 'Workspace panels', 'piano-roll'),
   explicit('--theme-pianoroll-beat-line',        'rgba(255, 255, 255, 0.06)', 'solid', 'Workspace panels', 'piano-roll'),
   explicit('--theme-pianoroll-subdivision-line', 'rgba(255, 255, 255, 0.04)', 'solid', 'Workspace panels', 'piano-roll'),
-  explicit('--theme-pianoroll-key-black-bg', '#0A0A10', 'any', 'Workspace panels', 'piano-roll'),
-  explicit('--theme-pianoroll-key-white-bg', '#15151C', 'any', 'Workspace panels', 'piano-roll'),
+  ref('--theme-pianoroll-key-black-bg', '--theme-ui-g0', 'any', 'Workspace panels', 'piano-roll'),
+  ref('--theme-pianoroll-key-white-bg', '--theme-ui-g1', 'any', 'Workspace panels', 'piano-roll'),
   // Highlighted (hover/preview) key states — match the literals previously
   // hardcoded in PianoRollKeyboard.jsx; light theme overrides for contrast.
   explicit('--theme-pianoroll-key-black-highlight', '#4a3a58', 'any', 'Workspace panels', 'piano-roll'),
@@ -563,7 +569,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   explicit('--theme-pianoroll-resize-handle-stripe', 'rgba(255, 255, 255, 0.25)', 'solid', 'Workspace panels', 'piano-roll'),
   // Velocity lane background — semantically distinct from key-black-bg so the
   // lane surface can be independently tuned per theme.
-  explicit('--theme-pianoroll-velocity-bg',           '#090912',                  'any',   'Workspace panels', 'piano-roll'),
+  ref('--theme-pianoroll-velocity-bg', '--theme-ui-g0', 'any',   'Workspace panels', 'piano-roll'),
   // Dashed guide lines at 25 / 50 / 75 % velocity — internal lane structure.
   explicit('--theme-pianoroll-velocity-level-line',   'rgba(255, 255, 255, 0.05)','solid', 'Workspace panels', 'piano-roll'),
   // Canvas-drawn top-edge shadow at the grid boundary — theme-controlled so
@@ -607,7 +613,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   ref('--theme-sampler-arp-cell-inactive', '--theme-bg-surface',   'any',   'Workspace panels', 'sampler'),
   ref('--theme-sampler-mono-poly-toggle',  '--theme-accent',       'solid', 'Workspace panels', 'sampler'),
   explicit('--theme-sampler-declick-region','rgba(255, 255, 255, 0.06)','any','Workspace panels','sampler'),
-  explicit('--theme-sampler-key-border', '#2A2A38', 'solid', 'Workspace panels', 'sampler'),
+  ref('--theme-sampler-key-border', '--theme-ui-g4', 'solid', 'Workspace panels', 'sampler'),
   explicit('--theme-sampler-key-black',  '#000000', 'solid', 'Workspace panels', 'sampler'),
 
   // ─── Workspace: Timeline (§3.4.16) ────────────────────────────────────
@@ -630,7 +636,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   explicit('--theme-timeline-fade-curve-fill','rgba(0, 0, 0, 0.45)','any','Workspace panels','timeline'),
   ref('--theme-timeline-empty-region-bg', '--theme-bg-primary',   'any',   'Workspace panels', 'timeline'),
   ref('--theme-timeline-pattern-clip-bg', '--theme-accent',       'any',   'Workspace panels', 'timeline'),
-  explicit('--theme-timeline-bar-line',        'rgba(255, 255, 255, 0.26)', 'solid', 'Workspace panels', 'timeline'),
+  explicit('--theme-timeline-bar-line',        'rgba(255, 255, 255, 0.34)', 'solid', 'Workspace panels', 'timeline'),
   explicit('--theme-timeline-beat-line',       'rgba(255, 255, 255, 0.11)', 'solid', 'Workspace panels', 'timeline'),
   explicit('--theme-timeline-subdivision-line','rgba(255, 255, 255, 0.05)', 'solid', 'Workspace panels', 'timeline'),
   ref('--theme-timeline-playhead-line',   '--theme-accent',       'solid', 'Workspace panels', 'timeline'),
@@ -644,7 +650,9 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   explicit('--theme-timeline-hold-zone-fill', 'rgba(255, 255, 255, 0.06)', 'any', 'Workspace panels', 'timeline'),
   explicit('--theme-timeline-hold-zone-edge', 'rgba(255, 255, 255, 0.28)', 'any', 'Workspace panels', 'timeline'),
   derivedFormula('--theme-timeline-selection-rect', 'any', 'Workspace panels', 'timeline'),
-  explicit('--theme-timeline-pattern-lane-tint','rgba(106, 169, 255, 0.07)','any','Workspace panels', 'timeline'),
+  // Neutral since round 3 (it was rgba(106, 169, 255, 0.07): a blue cast on the lanes of every
+  // pattern track). The track header's dashed stripe is what marks a pattern track.
+  explicit('--theme-timeline-pattern-lane-tint','rgba(255, 255, 255, 0.03)','any','Workspace panels', 'timeline'),
   ref('--theme-timeline-section-marker',  '--theme-accent',       'solid', 'Workspace panels', 'timeline'),
   // Bezier control-point handle colors — must remain visually distinguishable
   // from each other in any theme (data encoding for bezier control points).
@@ -656,7 +664,10 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   // Dedicated arrangement lane/work-bed background. Isolated from --theme-bg-inset
   // so the Timeline canvas bed contrast can be tuned independently of shared inset
   // surfaces (Piano Roll, SmartBalance). Not consumed until Pass 5E.3.
-  explicit('--theme-timeline-lane-bg', '#07070B', 'any', 'Workspace panels', 'timeline'),
+  ref('--theme-timeline-lane-bg', '--theme-ui-g0', 'any', 'Workspace panels', 'timeline'),
+  // Alternate bar groups on the lane ground: a step from g0, set per ramp (neutralRamp.ts
+  // `steps.barGroup`) and derived, so it is neutral in every theme and follows a custom ground.
+  derivedFormula('--theme-timeline-bar-group-shade', 'any', 'Workspace panels', 'timeline'),
 
   // ─── Workspace: Grid editor (§3.4.17) ─────────────────────────────────
   ref('--theme-grid-canvas-bg',          '--theme-bg-primary',   'any',   'Workspace panels', 'grid-editor'),
@@ -700,7 +711,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   ref('--theme-nodeeditor-node-selected','--theme-accent',     'solid', 'Workspace panels', 'node-editor'),
   ref('--theme-nodeeditor-node-titlebar-bg','--theme-bg-elevated','any','Workspace panels', 'node-editor'),
   ref('--theme-nodeeditor-node-titlebar-fg','--theme-text',    'solid', 'Workspace panels', 'node-editor'),
-  explicit('--theme-nodeeditor-port-default', '#555566', 'solid', 'Workspace panels', 'node-editor'),
+  ref('--theme-nodeeditor-port-default', '--theme-ui-boundary', 'solid', 'Workspace panels', 'node-editor'),
   ref('--theme-nodeeditor-port-hover',        '--theme-accent-hover','solid','Workspace panels','node-editor'),
   explicit('--theme-nodeeditor-port-connected','#FFAA33', 'solid', 'Workspace panels', 'node-editor'),
   ref('--theme-nodeeditor-connection',        '--theme-text-muted',   'solid', 'Workspace panels', 'node-editor'),
@@ -714,7 +725,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   ref('--theme-nodeeditor-zoom-fg', '--theme-text',       'solid', 'Workspace panels', 'node-editor'),
 
   // ─── Workspace: Preview player (§3.4.22) ──────────────────────────────
-  explicit('--theme-preview-loaded-bg', '#111118', 'any', 'Workspace panels', 'preview-player'),
+  ref('--theme-preview-loaded-bg', '--theme-ui-g0', 'any', 'Workspace panels', 'preview-player'),
   ref('--theme-preview-empty-bg',   '--theme-bg-primary',   'any',   'Workspace panels', 'preview-player'),
   ref('--theme-preview-fps-fg',     '--theme-text-muted',   'solid', 'Workspace panels', 'preview-player'),
   ref('--theme-preview-resolution-fg','--theme-text-muted', 'solid', 'Workspace panels', 'preview-player'),
@@ -759,7 +770,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   ref('--theme-patternlist-color-5', '--theme-panel-grid',   'solid', 'Workspace panels', 'pattern-list'),
   ref('--theme-patternlist-color-6', '--theme-panel-node',   'solid', 'Workspace panels', 'pattern-list'),
   ref('--theme-patternlist-color-7', '--theme-warning',      'solid', 'Workspace panels', 'pattern-list'),
-  explicit('--theme-pattern-list-item-hover-bg', '#1d1f28', 'any', 'Workspace panels', 'pattern-list'),
+  ref('--theme-pattern-list-item-hover-bg', '--theme-ui-g2', 'any', 'Workspace panels', 'pattern-list'),
 
   // ─── Stock effects: Shared primitives (§3.4.7) ────────────────────────
   ref('--theme-fx-plugin-bg',              '--theme-bg-surface',   'any',   'Stock effects', 'stock-effects.shared'),
@@ -778,8 +789,8 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   ref('--theme-fx-knob-lg-indicator',  '--theme-text',             'solid',  'Stock effects', 'stock-effects.shared'),
   ref('--theme-fx-knob-lg-label',      '--theme-text-muted',       'solid',  'Stock effects', 'stock-effects.shared'),
   ref('--theme-fx-knob-lg-value',      '--theme-text',             'solid',  'Stock effects', 'stock-effects.shared'),
-  explicit('--theme-fx-knob-lg-bg',    '#1A1A24',                  'any',    'Stock effects', 'stock-effects.shared'),
-  explicit('--theme-fx-knob-lg-border','#2A2A38',                  'solid',  'Stock effects', 'stock-effects.shared'),
+  ref('--theme-fx-knob-lg-bg', '--theme-ui-g1', 'any',    'Stock effects', 'stock-effects.shared'),
+  ref('--theme-fx-knob-lg-border', '--theme-ui-g4', 'solid',  'Stock effects', 'stock-effects.shared'),
   // Small knob
   explicit('--theme-fx-knob-sm-track', 'rgba(255, 255, 255, 0.08)', 'linear', 'Stock effects', 'stock-effects.shared'),
   ref('--theme-fx-knob-sm-fill',       '--theme-accent',           'linear', 'Stock effects', 'stock-effects.shared'),
@@ -934,11 +945,11 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   ref('--theme-syllable-save-button',    '--theme-accent',        'solid', 'Specialized editors', 'syllable-splitter'),
   derivedFormula('--theme-syllable-accent-light', 'solid', 'Specialized editors', 'syllable-splitter'),
   // dimmed canvas waveform color for inactive regions
-  explicit('--theme-syllable-splitter-wave-dim',  '#3a3a4a', 'solid', 'Specialized editors', 'syllable-splitter'),
+  ref('--theme-syllable-splitter-wave-dim', '--theme-ui-g4', 'solid', 'Specialized editors', 'syllable-splitter'),
   // canvas-painted label text; intentionally dimmer than --theme-text because canvas text lacks subpixel anti-aliasing and reads brighter at the same value
   explicit('--theme-syllable-splitter-label-fg',  '#d0d0d8', 'solid', 'Specialized editors', 'syllable-splitter'),
   // canvas background constant — darker than --theme-bg-primary (SyllableSplitter.jsx:10).
-  explicit('--theme-syllable-splitter-bg', '#1b1b24', 'any', 'Specialized editors', 'syllable-splitter'),
+  ref('--theme-syllable-splitter-bg', '--theme-ui-g1', 'any', 'Specialized editors', 'syllable-splitter'),
   // alternating section tint for the syllable timeline (SyllableSplitter.jsx:15).
   derivedFormula('--theme-syllable-section-alt', 'any', 'Specialized editors', 'syllable-splitter'),
 
@@ -997,22 +1008,62 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   // Consumed by Timeline/Mixer/Grid in future passes; not consumed here.
   // Values must remain solid hex — Theme Editor ColorPicker and canvas
   // hexToRgba() helpers both require valid #RRGGBB.
-  explicit('--theme-track-palette-1',  '#4CC9F0', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-2',  '#7BD88F', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-3',  '#FF9F5A', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-4',  '#9B7BFF', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-5',  '#F472B6', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-6',  '#FFD166', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-7',  '#5B8DEF', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-8',  '#2DD4BF', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-9',  '#FF6B6B', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-10', '#A3D65C', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-11', '#C084FC', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-12', '#38BDF8', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-13', '#FBBF24', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-14', '#8EA4D2', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-15', '#6EE7B7', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-16', '#FB7185', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-1',  '#58B2CE', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-2',  '#77BE87', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-3',  '#DD925D', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-4',  '#8A6FE0', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-5',  '#D56DA3', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-6',  '#DEB963', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-7',  '#6186CF', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-8',  '#4AB7A9', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-9',  '#DF6666', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-10', '#97BB65', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-11', '#A974DE', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-12', '#4CA9D3', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-13', '#D3AA41', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-14', '#8496BA', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-15', '#6DCAA5', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-16', '#DB6A7B', 'solid', 'Labels', 'track-palette'),
+
+  // ─── UI kit: neutral ramp (ui/DESIGN.md §3.1) ─────────────────────────
+  // Derived from the base tokens (bg-primary -> g0, bg-surface -> g1, text ->
+  // ink) so Simple mode drives the kit. The kit reads them through the
+  // `--ui-*` aliases in ui-kit/tokens.css, never by these names.
+  derivedFormula('--theme-ui-g0',       'solid', 'Foundations', 'ui-neutral'),
+  derivedFormula('--theme-ui-g1',       'solid', 'Foundations', 'ui-neutral'),
+  derivedFormula('--theme-ui-g2',       'solid', 'Foundations', 'ui-neutral'),
+  derivedFormula('--theme-ui-g3',       'solid', 'Foundations', 'ui-neutral'),
+  derivedFormula('--theme-ui-g4',       'solid', 'Foundations', 'ui-neutral'),
+  derivedFormula('--theme-ui-boundary', 'solid', 'Foundations', 'ui-neutral'),
+  derivedFormula('--theme-ui-ink',      'solid', 'Foundations', 'ui-neutral'),
+  derivedFormula('--theme-ui-ink-2',    'solid', 'Foundations', 'ui-neutral'),
+  derivedFormula('--theme-ui-ink-3',    'solid', 'Foundations', 'ui-neutral'),
+
+  // ─── UI kit: semantic colours (ui/DESIGN.md §3.2) ─────────────────────
+  alias('--theme-ui-value',  '--theme-accent',  'ui-semantic', 'Foundations'),
+  alias('--theme-ui-select', '--theme-accent',  'ui-semantic', 'Foundations'),
+  alias('--theme-ui-clip',   '--theme-danger',  'ui-semantic', 'Foundations'),
+  alias('--theme-ui-on-bg',  '--theme-ui-ink',  'ui-semantic', 'Foundations'),
+  alias('--theme-ui-on-fg',  '--theme-ui-g1',   'ui-semantic', 'Foundations'),
+  // Record/arm: FILLS AND GLYPHS ONLY (4.40:1 on g1 in dark); text uses rec-text.
+  // rec, rec-text, solo and the signal hues come from the active ramp (neutralRamp.ts).
+  derivedFormula('--theme-ui-rec', 'solid', 'Foundations', 'ui-semantic'),
+  derivedFormula('--theme-ui-rec-text', 'solid', 'Foundations', 'ui-semantic'),
+  derivedFormula('--theme-ui-solo', 'solid', 'Foundations', 'ui-semantic'),
+  // Track output pearl (lit = heard). The ramp's own green, so every theme gets a matching pearl.
+  alias('--theme-ui-pearl', '--theme-ui-signal-events', 'ui-semantic', 'Foundations'),
+
+  // ─── UI kit: signal-type hues (ui/DESIGN.md §3.3) ─────────────────────
+  derivedFormula('--theme-ui-signal-audio', 'solid', 'Foundations', 'ui-signal'),
+  derivedFormula('--theme-ui-signal-events', 'solid', 'Foundations', 'ui-signal'),
+  derivedFormula('--theme-ui-signal-parameter', 'solid', 'Foundations', 'ui-signal'),
+  derivedFormula('--theme-ui-signal-video', 'solid', 'Foundations', 'ui-signal'),
+
+  // ─── UI kit: multiband band palette, low to high (ui/DESIGN.md §3.5) ──
+  derivedFormula('--theme-ui-band-1', 'solid', 'Foundations', 'ui-band'),
+  derivedFormula('--theme-ui-band-2', 'solid', 'Foundations', 'ui-band'),
+  derivedFormula('--theme-ui-band-3', 'solid', 'Foundations', 'ui-band'),
+  derivedFormula('--theme-ui-band-4', 'solid', 'Foundations', 'ui-band'),
 ];
 
 // ──────────────────────────────────────────────────────────────────────────

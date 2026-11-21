@@ -1,0 +1,21 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "phaser",
+  "name": "Deep Six Notch",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "rate": 0.2,
+      "depth": 90,
+      "stages": 6,
+      "feedback": 30,
+      "resonance": 1,
+      "width": 30,
+      "mix": 100,
+      "freq_low": 100,
+      "freq_high": 5000,
+      "spread": 20
+    }
+  }
+}

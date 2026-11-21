@@ -165,36 +165,36 @@ describe('XlethFilePickerModal', () => {
       )
     })
 
-    await waitFor(() => expect(container.textContent).toContain('Pitch 1.wav'))
-    expect(container.querySelector('.xleth-file-picker__path-input').value).toBe(DESKTOP)
-    expect(container.textContent).toContain('0:01 sec')
+    await waitFor(() => expect(document.body.textContent).toContain('Pitch 1.wav'))
+    expect(document.body.querySelector('[data-picker-path]').value).toBe(DESKTOP)
+    expect(document.body.textContent).toContain('0:01 sec')
 
     await act(async () => {
-      container.querySelector('[title="Favorite current folder"]').dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      document.body.querySelector('[aria-label="Favorite current folder"]').dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(window.xleth.filePicker.setFavorites).toHaveBeenCalledWith(['C:\\Favorites', DESKTOP])
 
     await act(async () => {
-      container.querySelector('[title="Add new folder"]').dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      document.body.querySelector('[aria-label="Add new folder"]').dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     await act(async () => {
-      Array.from(container.querySelectorAll('button'))
-        .find(button => button.textContent === 'Create')
+      Array.from(document.body.querySelectorAll('button'))
+        .find(button => button.textContent === 'Create folder')
         .dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(window.xleth.filePicker.createFolder).toHaveBeenCalledWith(DESKTOP, 'New Folder')
     await act(async () => {
-      container.querySelector('[title="Go back"]').dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      document.body.querySelector('[aria-label="Go back"]').dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    await waitFor(() => expect(container.textContent).toContain('Pitch 1.wav'))
+    await waitFor(() => expect(document.body.textContent).toContain('Pitch 1.wav'))
 
     await act(async () => {
-      Array.from(container.querySelectorAll('.xleth-file-picker__row'))
+      Array.from(document.body.querySelectorAll('[data-picker-row]'))
         .find(row => row.textContent.includes('Pitch 1.wav'))
         .dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     await act(async () => {
-      container.querySelector('.xleth-file-picker__primary').dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      document.body.querySelector('[data-picker-primary]').dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
     expect(accepted).toHaveBeenCalledWith({ canceled: false, path: WAVE, paths: [WAVE] })
@@ -219,9 +219,9 @@ describe('XlethFilePickerModal', () => {
       )
     })
 
-    await waitFor(() => expect(container.querySelector('.xleth-file-picker__path-input').value).toBe(EXPORT_WAVE))
+    await waitFor(() => expect(document.body.querySelector('[data-picker-path]').value).toBe(EXPORT_WAVE))
     await act(async () => {
-      container.querySelector('.xleth-file-picker__primary').dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      document.body.querySelector('[data-picker-primary]').dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
     expect(accepted).toHaveBeenCalledWith({ canceled: false, path: EXPORT_WAVE, paths: [EXPORT_WAVE] })

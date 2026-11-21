@@ -1,5 +1,6 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from 'react'
-import { Play, Square, Trash2 } from 'lucide-react'
+import { Button, IconButton, TextField } from '../../ui-kit'
+import styles from './SyllableSplitter.module.css'
 import { downsamplePeaks3, drawEnvelope } from '../../utils/waveformRenderer.js'
 import { uiCanvasFont } from '../../styles/typography.js'
 import {
@@ -14,6 +15,12 @@ import {
   MIP_LEVELS,
 } from './splitSyllablesMipmap.js'
 
+import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcPlay = iconComponent('play')
+const IcStopFill = iconComponent('stop', 'fill')
+const IcTrash = iconComponent('trash')
 // ── Constants ────────────────────────────────────────────────────────────────
 const CANVAS_H   = 138   // waveform canvas height
 const HANDLE_HIT = 8     // hit-test radius around marker (px)
@@ -112,6 +119,7 @@ export default function SyllableSplitter({
   onSave,
   compact = false,
 }) {
+  const dprEpoch = useThemeEpoch() // Phase 7: re-size and redraw at the new devicePixelRatio when the UI scale changes
   const canvasRef          = useRef(null)
   const containerRef       = useRef(null)
   const waveformWrapRef    = useRef(null)
@@ -216,14 +224,22 @@ export default function SyllableSplitter({
       // then file-based which works for any FFmpeg-decodable format).
       let raw = null
       try {
+        // getRegionPeaks reads the region's MAPPED sample, which is always a
+        // zero-based sub-clip buffer (swapped or not) — never region.startTime.
         if (region?.id != null) {
           raw = await window.xleth?.waveform?.getRegionPeaks?.(
-            region.id, region.startTime, region.endTime, MASTER_COLS, -1)
+            region.id, 0, regionDur, MASTER_COLS, -1)
         }
+        const swapped = !!(region?.hasSwappedAudio && region?.swappedAudioPath)
         const fp = sourceFilePath || region?.audioFilePath
         if ((!raw || !raw.peaks?.length) && fp) {
+          // getFilePeaks reads the file directly: a swap file's own timeline
+          // starts at 0, while the original source file needs the absolute
+          // region offset.
+          const fileStart = swapped ? 0 : (region?.startTime ?? 0)
+          const fileEnd   = swapped ? regionDur : (region?.endTime ?? 0)
           raw = await window.xleth?.waveform?.getFilePeaks?.(
-            fp, region.startTime, region.endTime, MASTER_COLS, -1)
+            fp, fileStart, fileEnd, MASTER_COLS, -1)
         }
       } catch { /* fall back to whatever the parent already provided */ }
 
@@ -373,7 +389,7 @@ export default function SyllableSplitter({
       ctx.fillText(`${z.toFixed(1)}×`, w - 4, 4)
       ctx.textAlign = 'left'
     }
-  }, [markers, regionDur, mip, regionPeaks, sections, zoomLevel, scrollOffsetMs])
+  }, [markers, regionDur, mip, regionPeaks, sections, zoomLevel, scrollOffsetMs, dprEpoch])
 
   useEffect(() => { draw() }, [draw])
   useEffect(() => {
@@ -648,8 +664,12 @@ export default function SyllableSplitter({
     if (!sec) return
     const dur = Math.max(0, sec.end - sec.start)
     if (dur <= 0.01 || !sourceReady) return
-    // Source startTime (absolute seconds) = region.startTime + syllable-relative start
-    const absStart = (region.startTime ?? 0) + sec.start
+    // Source startTime (absolute seconds into the loaded sourceFilePath) =
+    // region.startTime + syllable-relative start — UNLESS the audio was
+    // swapped, in which case sourceFilePath is the swap file itself, whose
+    // own timeline starts at 0 (see Audio_SwapRegionAudio in the engine).
+    const swapped = !!(region?.hasSwappedAudio && region?.swappedAudioPath)
+    const absStart = (swapped ? 0 : (region.startTime ?? 0)) + sec.start
     const absEnd = absStart + dur
     const token = ++previewTokenRef.current
     if (previewTimerRef.current) {
@@ -682,7 +702,7 @@ export default function SyllableSplitter({
       console.warn('[SyllableSplitter] play preview failed:', e?.message)
       if (previewTokenRef.current === token) setPlayingIdx(null)
     }
-  }, [sections, region.startTime, playingIdx, sourceReady, stopPreview])
+  }, [sections, region.startTime, region?.hasSwappedAudio, region?.swappedAudioPath, playingIdx, sourceReady, stopPreview])
 
   // Stop any preview when component unmounts
   useEffect(() => () => stopPreview(), [stopPreview])
@@ -720,28 +740,29 @@ export default function SyllableSplitter({
 
   return (
     <div
-      className="syllable-splitter"
+      className={styles.root}
+      data-syllable-splitter=""
       ref={containerRef}
       tabIndex={0}
       onKeyDown={onPanelKeyDown}
     >
-      <div className="syllable-splitter-waveform" ref={waveformWrapRef}>
+      <div className={styles.waveform} ref={waveformWrapRef}>
         <canvas
           ref={canvasRef}
-          className="syllable-splitter-canvas"
-          style={{ width: '100%', height: canvasStyleH, display: 'block', cursor: drag ? 'grabbing' : 'crosshair' }}
+          className={styles.canvas}
+          style={{ height: canvasStyleH, cursor: drag ? 'grabbing' : 'crosshair' }}
           onMouseDown={onCanvasMouseDown}
           onContextMenu={(e) => e.preventDefault()}
         />
         {isZoomed && (
           <div
             ref={scrollTrackRef}
-            className="syllable-splitter-scrollbar"
+            className={styles.scrollbar}
             onMouseDown={onTrackDown}
             title="Drag to scroll"
           >
             <div
-              className="syllable-splitter-scrollbar-thumb"
+              className={styles.thumb}
               style={{ left: `${thumbLeft}%`, width: `${thumbWidth}%` }}
               onMouseDown={onThumbDown}
             />
@@ -749,29 +770,35 @@ export default function SyllableSplitter({
         )}
       </div>
 
-      <div className="syllable-splitter-sections">
+      <div className={styles.sections}>
         {sections.map((s, i) => (
           <div
             key={i}
-            className={`syllable-section-card${playingIdx === i ? ' playing' : ''}${selectedMarkerIndex === i ? ' selected' : ''}`}
+            className={styles.card}
+            data-section-card=""
+            data-playing={playingIdx === i || undefined}
+            data-selected={selectedMarkerIndex === i || undefined}
             onClick={() => setSelectedMarkerIndex(i)}
           >
-            <span className={`syllable-section-num${s.label === '~' ? ' is-leading' : ''}`}>{s.label}</span>
-            <button
-              className="syllable-section-play"
+            <span className={styles.num} data-leading={s.label === '~' || undefined}>{s.label}</span>
+            <IconButton
+              size="sm"
+              label={playingIdx === i ? `Stop syllable ${s.label}` : `Play syllable ${s.label}`}
+              pressed={playingIdx === i}
+              data-section-play=""
               onClick={() => playSection(i)}
               disabled={!sourceReady || Math.max(0, s.end - s.start) <= 0.01}
-              title={!sourceReady ? 'Loading preview audio...' : (playingIdx === i ? 'Stop' : 'Play syllable')}
+              hint={!sourceReady ? 'Loading preview audio…' : (playingIdx === i ? 'Stop' : 'Play syllable')}
             >
-              {playingIdx === i ? <Square size={9} /> : <Play size={9} />}
-            </button>
-            <input
-              type="text"
-              className="syllable-section-text"
+              {playingIdx === i ? <IcStopFill /> : <IcPlay />}
+            </IconButton>
+            <TextField
+              className={styles.text}
+              size="sm"
+              label={`Syllable ${s.label} text`}
               value={s.text}
               placeholder="(text)"
-              onChange={(e) => {
-                const v = e.target.value
+              onChange={(v) => {
                 setTexts(prev => {
                   const next = [...prev]
                   next[i] = v
@@ -784,13 +811,11 @@ export default function SyllableSplitter({
         ))}
       </div>
 
-      <div className="syllable-splitter-footer">
-        <button className="syllable-splitter-btn syllable-splitter-btn--clear" onClick={handleClearAll} disabled={markers.length === 0 && texts.every(t => !t)}>
-          <Trash2 size={12} /> Clear All
-        </button>
-        <button className="syllable-splitter-btn syllable-splitter-btn--save primary" onClick={handleSave} disabled={!dirty}>
-          Save
-        </button>
+      <div className={styles.footer}>
+        <Button glyph={<IcTrash />} onClick={handleClearAll} disabled={markers.length === 0 && texts.every(t => !t)}>
+          Clear all
+        </Button>
+        <Button variant="primary" onClick={handleSave} disabled={!dirty}>Save syllables</Button>
       </div>
     </div>
   )

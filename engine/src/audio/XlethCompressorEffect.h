@@ -315,7 +315,7 @@ public:
         auto* vizCol = vizActive_.load(std::memory_order_acquire);
 
 #ifdef XLETH_DEBUG
-        static int blockCount_ = 0;
+        static std::atomic<int> blockCount_{0};   // shared by every instance; chains may run on helper threads
         ++blockCount_;
         const bool doLog = (blockCount_ % 1000 == 0);
 #endif

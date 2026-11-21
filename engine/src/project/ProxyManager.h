@@ -2,6 +2,8 @@
 
 #include <juce_core/juce_core.h>
 
+#include "ProxyTranscoder.h"   // ProxyCodec
+
 #include <memory>
 #include <mutex>
 #include <string>
@@ -15,8 +17,9 @@
 // A caller (XlethAddon bridge) enqueues a Request when a SampleRegion lands on
 // a non-Chorus/non-Crash grid cell. ProxyManager runs at most kWorkers worker
 // transcodes concurrently (juce::ThreadPool). Each worker calls
-// ProxyTranscoder::transcodeRange() to produce a DNxHR LB .mxf covering
-// exactly [startTime, endTime) of the source, scaled to targetW × targetH.
+// ProxyTranscoder::transcodeRange() to produce a proxy (H.264 <id>.h264.mov or
+// legacy intra <id>.mxf, per Request::codec) covering exactly
+// [startTime, endTime) of the source, scaled to targetW × targetH.
 //
 // On completion, the worker pushes a Result onto an internal queue. The
 // caller drains the queue on the video thread (or any non-audio thread) via
@@ -29,16 +32,30 @@ public:
     struct Request {
         int         regionId   = 0;
         std::string inputPath;     // original source file
-        std::string outputPath;    // target path (<proxiesDir>/<regionId>.mxf)
+        std::string outputPath;    // ProxyTranscoder::getRegionProxyPath(dir, id, codec)
         double      startTime  = 0.0;
         double      endTime    = 0.0;
         int         targetW    = 0;
         int         targetH    = 0;
+        ProxyCodec  codec      = ProxyCodec::Intra;
         // Skip the "output already on disk → synthetic success" short-circuit.
         // Set by callers re-transcoding a region whose INPUT changed (a video
         // swap/revert), where an existing file at outputPath holds the old
         // video's pixels rather than a usable result from a prior session.
         bool        force      = false;
+        // On-open migration of an existing intra proxy to H.264. The region keeps
+        // its current proxy while this runs; a FAILED migration must leave that
+        // proxy engaged rather than drop the region to live decode. Counted in
+        // getMigrationStatus().
+        bool        migration  = false;
+        // The file is being (re)built because it was MISSING when the project was
+        // opened — purged earlier, never generated, or deleted while the app was
+        // closed. Counted in getRebuildStatus() so the UI can show progress.
+        // The tag belongs to the REGION, not to this request: if a job for the
+        // region is already running (the video thread's lazy path can enqueue one
+        // a moment before the open pass does) the region is still counted, and the
+        // running job's result completes it. See rebuildingRegions_.
+        bool        rebuild    = false;
     };
 
     struct Result {
@@ -47,6 +64,7 @@ public:
         std::string outputPath;
         double      startTime  = 0.0;
         double      endTime    = 0.0;
+        bool        migration  = false;   // echoed from the request
     };
 
     // ── Poster (single representative frame) jobs ────────────────────────────
@@ -86,16 +104,46 @@ public:
     struct SourcePreviewRequest {
         int         sourceId    = 0;
         std::string inputPath;     // original source file
-        std::string outputPath;    // <proxiesDir>/<stem>.preview.<height>p.mov
+        std::string outputPath;    // getSourcePreviewProxyPath(src, dir, h, false, codec)
         int         proxyHeight  = 720;
+        ProxyCodec  codec        = ProxyCodec::Intra;
+        // On-open migration: re-encode an existing intra proxy (still engaged
+        // for preview meanwhile) to H.264. See Request::migration.
+        bool        migration    = false;
+        // Missing-on-open rebuild — see Request::rebuild.
+        bool        rebuild      = false;
     };
 
     struct SourcePreviewResult {
         int         sourceId    = 0;
         bool        ok          = false;
         std::string outputPath;
-        int         proxyHeight = 0;   // echoed from the request
+        int         proxyHeight = 0;       // echoed from the request
+        bool        migration   = false;   // echoed from the request
     };
+
+    // ── Codec migration progress (whole-session aggregate) ────────────────────
+    // On-open re-encodes of legacy intra proxies to H.264 (region + whole-source
+    // jobs flagged `migration`). For the UI's non-blocking progress badge.
+    //   total      — migration jobs scheduled this session
+    //   completed  — migration jobs that published a result (ok or failed)
+    //   failed     — of those, how many failed (the old proxy stays in use)
+    //   progress   — 0..1 over the whole batch: finished jobs count 1, the
+    //                in-flight whole-source job(s) count their live progress
+    struct MigrationStatus {
+        int   total     = 0;
+        int   completed = 0;
+        int   failed    = 0;
+        float progress  = 0.0f;
+        bool  active() const { return completed < total; }
+    };
+
+    // ── Missing-file rebuild progress (whole-session aggregate) ───────────────
+    // On-open rebuilds of proxies that were missing (jobs flagged `rebuild`).
+    // Same shape and semantics as MigrationStatus: `progress` blends finished jobs
+    // with the live progress of in-flight whole-source jobs. Drives the video
+    // panel's "Rebuilding previews" badge.
+    using RebuildStatus = MigrationStatus;
 
     // Live build state for one source's preview proxy (status/progress polling).
     struct SourcePreviewStatus {
@@ -166,6 +214,27 @@ public:
     // reader). Returns {false, 0} when nothing is in flight for the source.
     SourcePreviewStatus sourcePreviewStatus(int sourceId);
 
+    // Snapshot of this session's codec-migration batch (see MigrationStatus).
+    MigrationStatus getMigrationStatus() const;
+
+    // Snapshot of this session's missing-file rebuild batch (see RebuildStatus).
+    RebuildStatus getRebuildStatus() const;
+
+    // True while any region / poster / source-preview job is queued or running.
+    // A running job owns a <target>.tmp, so "Clean up project" must not treat
+    // .tmp files as leftovers while this is true.
+    bool hasActiveJobs() const;
+
+    // Abandon every queued and running job and forget all results/counters,
+    // keeping this ProxyManager (and its pool) alive for the next project.
+    // Running transcodes observe their cancel flag within one frame, delete
+    // their partial .tmp and return, so this does not wait out a multi-minute
+    // encode. Called on project load so a job started for the PREVIOUS project
+    // can never publish a result keyed by an id the new project reuses. Keeps
+    // object identity (unlike shutdown()+reset) because the video thread drains
+    // through the same g_proxyManager pointer without a lock.
+    void cancelAll();
+
     // Join all worker jobs and tear down the pool.
     // Idempotent — calling after shutdown is a no-op.
     void shutdown();
@@ -179,12 +248,14 @@ private:
     friend class SourcePreviewJob;
 
     // Called by Job::runJob() on a worker thread once a transcode finishes.
-    void publishResult(Result&& r);
+    // `epoch` is the epoch_ the job was scheduled in; a mismatch (cancelAll ran
+    // since) drops the result.
+    void publishResult(Result&& r, int epoch);
     // Called by PosterJob::runJob() on a worker thread once extraction finishes.
     void publishPosterResult(PosterResult&& r);
     // Called by SourcePreviewJob on a worker thread (progress + completion).
-    void publishSourcePreviewProgress(int sourceId, float progress);
-    void publishSourcePreviewResult(SourcePreviewResult&& r);
+    void publishSourcePreviewProgress(int sourceId, float progress, int epoch);
+    void publishSourcePreviewResult(SourcePreviewResult&& r, int epoch);
 
     std::unique_ptr<juce::ThreadPool> pool_;
     bool                              shutdown_ = false;
@@ -217,6 +288,33 @@ private:
     std::vector<SourcePreviewResult>  finishedSourcePreview_;             // guarded
     std::unordered_set<int>           inFlightSourcePreview_;             // guarded
     std::unordered_map<int, float>    sourcePreviewProgress_;             // guarded
+
+    // Codec-migration batch counters (guarded by resultMtx_). Source ids of
+    // in-flight whole-source migrations feed the live-progress term.
+    int                               migrationTotal_     = 0;   // guarded
+    int                               migrationCompleted_ = 0;   // guarded
+    int                               migrationFailed_    = 0;   // guarded
+    std::unordered_set<int>           migratingSources_;         // guarded
+
+    // Missing-file rebuild batch counters — same scheme as the migration ones.
+    int                               rebuildTotal_     = 0;     // guarded
+    int                               rebuildCompleted_ = 0;     // guarded
+    int                               rebuildFailed_    = 0;     // guarded
+    // Regions / sources tagged as part of the rebuild batch and not yet finished.
+    // Membership — not the flag on whichever request happened to win an enqueue
+    // race — decides whether a finished job counts as a rebuild. rebuildingSources_
+    // doubles as the live-progress term for whole-source jobs.
+    std::unordered_set<int>           rebuildingRegions_;        // guarded
+    std::unordered_set<int>           rebuildingSources_;        // guarded
+
+    // Bumped by cancelAll(). A job captures the epoch it was scheduled in and
+    // drops its result if the epoch has moved on (it belongs to a previous
+    // project). Guarded by resultMtx_.
+    int                               epoch_ = 0;
+
+    // Shared by getMigrationStatus / getRebuildStatus (caller holds resultMtx_).
+    MigrationStatus batchStatusLocked(int total, int completed, int failed,
+                                      const std::unordered_set<int>& liveSources) const;
 
     static long long posterKey(int sourceId, int frameBucket) {
         // +1 so the base poster (bucket -1) maps to 0 and never collides.

@@ -19,20 +19,77 @@
 #include <cstdint>
 #include <cstdio>
 #include <list>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 // GpuDeviceManager.h already guards NOMINMAX before <d3d11_4.h>
 #include "GpuDeviceManager.h"
 
 // ---------------------------------------------------------------------------
+// PathInterner / InternedPath — process-lifetime source-path <-> id table
+// ---------------------------------------------------------------------------
+// A frame's dedup key used to carry the resolved source path as a raw
+// std::string: every FrameCacheKey comparison/hash walked the full path, and
+// every CellFrameRequest allocated one on any path longer than SSO. The
+// render pipeline only ever resolves a bounded number of DISTINCT paths per
+// session (each source plus its proxy/poster variants), so interning them
+// once turns every later copy/compare into a uint32_t operation. The actual
+// string is still one (locked, O(1)) lookup away via str()/c_str() for the
+// few places — decoding, logging — that need to touch the filesystem or a
+// human. id 0 is reserved for the default-constructed/empty path.
+class PathInterner {
+public:
+    static PathInterner& instance();
+
+    uint32_t intern(const std::string& path);
+    const std::string& path(uint32_t id) const;
+
+private:
+    PathInterner();
+    mutable std::mutex mutex_;
+    std::unordered_map<std::string, uint32_t> idByPath_;
+    std::vector<std::string> pathById_;
+};
+
+class InternedPath {
+public:
+    InternedPath() = default;
+    InternedPath(const std::string& s) : id_(PathInterner::instance().intern(s)) {}
+    InternedPath(const char* s) : id_(PathInterner::instance().intern(s ? s : "")) {}
+
+    uint32_t id() const { return id_; }
+    const std::string& str() const { return PathInterner::instance().path(id_); }
+    const char* c_str() const { return str().c_str(); }
+    bool empty() const { return id_ == 0; }
+
+    bool operator==(const InternedPath& o) const { return id_ == o.id_; }
+    bool operator!=(const InternedPath& o) const { return id_ != o.id_; }
+    bool operator<(const InternedPath& o)  const { return id_ < o.id_; }
+
+    // Comparisons against raw strings exist only for call sites (mostly
+    // tests) that compare a resolved path against a std::string/literal
+    // directly. A const char* overload keeps `x.sourcePath == "a.mp4"` from
+    // being ambiguous between converting the literal to InternedPath or to
+    // std::string.
+    bool operator==(const std::string& o) const { return str() == o; }
+    bool operator!=(const std::string& o) const { return str() != o; }
+    bool operator==(const char* o) const { return str() == o; }
+    bool operator!=(const char* o) const { return str() != o; }
+
+private:
+    uint32_t id_ = 0;
+};
+
+// ---------------------------------------------------------------------------
 // FrameCacheKey — composite key: (sourcePath, frameIndex)
 // ---------------------------------------------------------------------------
 struct FrameCacheKey {
-    std::string sourcePath;
-    int64_t     frameIndex = 0;
+    InternedPath sourcePath;
+    int64_t      frameIndex = 0;
 
     bool operator==(const FrameCacheKey& o) const {
         return frameIndex == o.frameIndex && sourcePath == o.sourcePath;
@@ -45,8 +102,8 @@ struct FrameCacheKey {
 
 struct FrameCacheKeyHash {
     size_t operator()(const FrameCacheKey& k) const {
-        // Combine string hash and int64 hash with a bit mix
-        size_t h1 = std::hash<std::string>{}(k.sourcePath);
+        // Both halves are now trivially hashable PODs — no string hashing.
+        size_t h1 = std::hash<uint32_t>{}(k.sourcePath.id());
         size_t h2 = std::hash<int64_t>{}(k.frameIndex);
         return h1 ^ (h2 * 0x9e3779b97f4a7c15ULL + 0x517cc1b727220a95ULL + (h1 << 6) + (h1 >> 2));
     }
@@ -55,12 +112,24 @@ struct FrameCacheKeyHash {
 // ---------------------------------------------------------------------------
 // FrameCacheEntry — a decoded frame living on the GPU
 // ---------------------------------------------------------------------------
+// How a cached frame's BGRA texture came to be. Diagnostics only — every
+// origin yields the same kind of entry (one BGRA texture + SRV), so no
+// consumer needs to care; tests and the preview diagnostic read it to prove
+// which decode path produced a frame.
+enum class FrameOrigin : uint8_t {
+    Unknown = 0,
+    Software,            // CPU decode → sws_scale → upload
+    HardwareGpu,         // D3D11VA decode → GPU copy + NV12→BGRA shader (never left the GPU)
+    HardwareTransfer,    // D3D11VA decode → av_hwframe_transfer_data → sws_scale → upload
+};
+
 struct FrameCacheEntry {
     Microsoft::WRL::ComPtr<ID3D11Texture2D>          texture;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
     int    width           = 0;
     int    height          = 0;
     size_t memorySizeBytes = 0;   // width * height * 4 for BGRA
+    FrameOrigin origin     = FrameOrigin::Unknown;
 };
 
 // ---------------------------------------------------------------------------
@@ -100,6 +169,10 @@ public:
 
     /** Returns pointer to entry on hit (promoted to MRU), nullptr on miss. */
     FrameCacheEntry* get(const FrameCacheKey& key);
+
+    /** Presence check with no side effects: no MRU promotion, no hit/miss
+     *  accounting, no logging. */
+    bool contains(const FrameCacheKey& key) const { return map_.count(key) > 0; }
 
     /** Insert or replace an entry. Evicts LRU entries if over capacity. */
     void put(const FrameCacheKey& key, FrameCacheEntry entry);

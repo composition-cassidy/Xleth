@@ -3,9 +3,11 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <nlohmann/json.hpp>
 
+#include "audio/LatencyChangeSignal.h"
 #include "audio/SidechainCapability.h"
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <set>
@@ -20,6 +22,7 @@ class WireGainProcessor;
 class DelayCompensationProcessor;
 class SidechainSourceProcessor;
 class PluginRegistry;
+class PluginLoadBreadcrumb;
 
 // ─── AudioGraph ─────────────────────────────────────────────────────────────
 // Owns a juce::AudioProcessorGraph and a topology data model (nodes,
@@ -34,12 +37,91 @@ class PluginRegistry;
 //   - Chain-mode compatibility (addEffect/removeEffect/moveEffect)
 //
 // Threading:
-//   Main thread  — all public methods except processBlock
-//   Audio thread — processBlock only (APG handles atomic RenderSequence swap)
+//   Main thread  — all public methods except processBlock and the RealtimeView
+//                  accessors below
+//   Audio thread — processBlock (APG handles atomic RenderSequence swap) plus
+//                  anything reached through realtimeView()
+//
+// ── RealtimeView (Finding 9) ────────────────────────────────────────────────
+// nodes_/connections_/adjacency are ordinary STL containers mutated on the
+// message thread. Reading them from the audio thread is a data race, which is
+// why MixEngine used to hold chainsMutex_ across the whole per-track/master
+// chain region — and why a missed try_lock dropped a whole block of effects.
+//
+// RealtimeView is the lock-free replacement: an IMMUTABLE snapshot of exactly
+// what the audio thread needs, republished by the message thread through
+// std::atomic<std::shared_ptr<const RealtimeView>>. Immutable is the operative
+// word — a published view is never written again, so the audio thread may walk
+// its maps freely. Each entry holds a strong Node::Ptr, so a processor the
+// message thread has since removed from the graph stays alive for as long as
+// any view still names it: an audio-thread read can never see a dangling
+// processor, and the final release happens on whichever thread drops the last
+// view (see MixEngine's retire list, which keeps that off the audio thread).
+
+namespace xleth::audio {
+
+// Immutable per-node record. `node` is the strong reference that keeps
+// `processor`/`effect` alive for the lifetime of the view.
+struct GraphRealtimeNode
+{
+    int                                  nodeId    = -1;
+    juce::AudioProcessorGraph::Node::Ptr node;
+    juce::AudioProcessor*                processor = nullptr;
+    XlethEffectBase*                     effect    = nullptr;  // null for VST3/placeholder
+};
+
+// Published as a whole; never mutated after publication.
+//
+// Declared at namespace scope rather than nested in AudioGraph so MixEngine.h
+// can forward-declare it and keep holding it by shared_ptr WITHOUT pulling in
+// juce_audio_processors (see the note above MixEngine's own forward decls).
+struct GraphRealtimeView
+{
+    bool initialized = false;
+
+    // Identifies the juce::AudioProcessorGraph this view describes; never reused,
+    // 0 when there is none. Node uids restart at 1 in every new graph, so a
+    // nodeId alone cannot tell one chain's effect from another's.
+    std::uint64_t graphSerial = 0;
+
+    // Effect nodes (excludes I/O and the gain/delay helper nodes).
+    std::vector<GraphRealtimeNode> effects;
+    // nodeId -> index into `effects`.
+    std::unordered_map<int, std::size_t> byNodeId;
+    // stable effectInstanceId -> nodeId (chain-mode and graph-owned alike).
+    std::unordered_map<std::string, int> byInstanceId;
+
+    // Helper (wire gain / PDC delay) processors, kept only so a transport jump
+    // can reset the whole graph without walking connections_.
+    std::vector<GraphRealtimeNode> helpers;
+
+    const GraphRealtimeNode* find(int nodeId) const noexcept
+    {
+        auto it = byNodeId.find(nodeId);
+        return it == byNodeId.end() ? nullptr : &effects[it->second];
+    }
+};
+
+} // namespace xleth::audio
 
 class AudioGraph : private juce::Timer
 {
 public:
+    using RealtimeNode = xleth::audio::GraphRealtimeNode;
+    using RealtimeView = xleth::audio::GraphRealtimeView;
+
+    // Audio thread: one atomic load, no mutex. Never null after init(); may be
+    // an empty view after destroy().
+    std::shared_ptr<const RealtimeView> realtimeView() const noexcept
+    {
+        return realtimeView_.load(std::memory_order_acquire);
+    }
+
+    // Message thread: rebuild and publish the view from the current topology.
+    // Cheap enough to call after every mutation; that is exactly what the
+    // MixEngine chain-snapshot publish does.
+    void publishRealtimeView();
+
     AudioGraph();
     ~AudioGraph() override;
 
@@ -181,6 +263,23 @@ public:
     // Allocates; used by the filter-envelope gate scan.
     std::vector<XlethEffectBase*> collectEffects() const;
 
+    // Message thread: visit every stock effect (XlethEffectBase) node in a
+    // DETERMINISTIC chain order, without allocating. `visit` receives the node
+    // uid and the effect; non-stock nodes (VST3, missing-plugin placeholders)
+    // are skipped.
+    //
+    // Order: when the graph is a single linear path covering every node (every
+    // Mixer Chain, and any FX Graph that happens to be linear), that path's
+    // order, input to output. Otherwise — a parallel or partially disconnected
+    // FX Graph, where "chain order" is not defined — ascending node uid, which
+    // is creation order because uids are monotonic and never reused.
+    using EffectVisitor = void (*)(void* context, int nodeId, XlethEffectBase* effect);
+    void visitEffectsInChainOrder(void* context, EffectVisitor visit) const;
+
+    // Never reused, 0 once released. Node uids restart at 1 in every graph, so
+    // (nodeId, effect*) alone cannot tell this graph's effect from a later one's.
+    std::uint64_t graphSerial() const noexcept { return graphSerial_; }
+
     // Returns the raw AudioProcessor for any node (stock XlethEffectBase OR
     // VST3 AudioPluginInstance).  Returns nullptr if nodeId is not found.
     juce::AudioProcessor* getProcessor(int nodeId);
@@ -188,6 +287,11 @@ public:
     // Returns the plugin file path (PluginDescription::fileOrIdentifier) for a
     // VST node.  Returns empty string for stock effects or missing nodeId.
     juce::String getPluginFilePath(int nodeId) const;
+
+    // Copies the full PluginDescription of a VST node (live or missing) into
+    // `out`. False for stock effects or an unknown nodeId. Used by the editor
+    // host INIT v2 so the exact plugin (not descriptions[0]) is opened.
+    bool getPluginDescription(int nodeId, juce::PluginDescription& out) const;
 
     // Returns JSON param descriptor array ("[]" if nodeId invalid).
     std::string getEffectParameters(int nodeId) const;
@@ -250,12 +354,44 @@ public:
     // Reset all processors and helper nodes. Intended for transport jumps.
     void resetProcessors();
 
+    // ── Audio-thread reads through an immutable RealtimeView ────────────
+    // Same semantics as the message-thread methods above, but sourced from a
+    // published view instead of the live containers, so they take no lock and
+    // race with nothing.
+    static void resetProcessors(const RealtimeView& view) noexcept;
+    // Audio thread, under the chain's realtime claim: the seek / loop-wrap
+    // reset, in the same block as the PDC delay lines. Resets every effect
+    // whose XlethEffectBase::resetOnAudioThread() accepts, and the helper
+    // nodes (none of which override reset()). VST3 nodes, and effects that
+    // decline, are left for resetDeferredProcessors. Returns false when
+    // anything was left.
+    static bool resetProcessorsOnAudioThread(const RealtimeView& view) noexcept;
+    // Worker, under the claim: exactly the nodes resetProcessorsOnAudioThread
+    // left - every VST3 node, and each effect that declined.
+    static void resetDeferredProcessors(const RealtimeView& view) noexcept;
+    // Off-claim half of a two-phase reset: XlethEffectBase::primeDeferredReset
+    // on every effect in the view. NOT audio-thread safe (it primes spares);
+    // safe to run while the audio thread processes the same view.
+    static void primeDeferredResets(const RealtimeView& view);
+    static void deliverModulationGate(const RealtimeView& view,
+                                      bool valid,
+                                      std::int64_t gateStartSample,
+                                      std::int64_t gateEndSample) noexcept;
+    static XlethEffectBase* effectFor(const RealtimeView& view, int nodeId) noexcept;
+    static int nodeIdForEffectInstance(const RealtimeView& view,
+                                       const std::string& effectInstanceId) noexcept;
+
     // Returns the maximum getTailLengthSeconds() across all effect nodes.
     // Lightweight (iterates effect nodes only, no alloc). Safe from audio thread.
     double getMaxTailLengthSeconds() const;
 
     // Returns the cumulative latency at the graph output in samples.
-    int getOutputLatencySamples() const { return outputLatencySamples_; }
+    // Atomic: the audio thread reads this every block without the chains lock
+    // (Finding 9), while PDC recomputes it on the message thread.
+    int getOutputLatencySamples() const
+    {
+        return outputLatencySamples_.load(std::memory_order_acquire);
+    }
     std::uint64_t getLatencyEpoch() const
     {
         return latencyEpoch_.load(std::memory_order_acquire);
@@ -264,6 +400,29 @@ public:
     // Main-thread diagnostic refresh for latency-sensitive tests/tools.
     // This recomputes cached latency accounting without changing audio routing.
     void refreshLatencyDiagnostics();
+
+    // ── [PDCNotify] deferred latency-change service ─────────────────────────
+    // True while a node published a latency change that no computePDC() has
+    // accounted for yet (the change bypassed every owner path that recomputes
+    // inline, e.g. XlethParametricEQ::setBandParam called from an RPC).
+    bool hasPendingLatencyChange() const noexcept
+    {
+        return latencyChangeSignal_->isPending();
+    }
+
+    // Non-realtime only; the caller holds whatever lock serialises it against
+    // other graph edits (MixEngine: chainsMutex_). If a change is pending,
+    // recompute PDC - the same computePDC() every owner path ends with - and
+    // return true. A latency-only change needs no APG re-wiring: that is
+    // topology work, and off the JUCE message thread JUCE would only defer it
+    // to an async update the addon worker never pumps.
+    bool servicePendingLatencyChange();
+
+    // Diagnostics/tests: number of raise() calls the graph's signal has seen.
+    std::uint64_t getLatencyChangeRaiseCount() const noexcept
+    {
+        return latencyChangeSignal_->getRaisedCount();
+    }
 
     // Test hook for fake third-party processors. Production plugin loading
     // still goes through createEffect()/PluginRegistry.
@@ -310,6 +469,11 @@ public:
     // bus layout actually changes.
     bool applySidechainTargetInstances(const std::set<std::string>& enabledInstanceIds,
                                        bool includeWrappedPlugins = false);
+
+    // Wildcard member of `enabledInstanceIds`: a TRACK-LEVEL sidechain route
+    // (FL "Sidechain to this track") targets the track, not one effect, so every
+    // sidechain-capable node on it gets its key bus. Never a real instance id.
+    static constexpr const char* kAllSidechainTargets = "*";
 
 private:
     // ── Node data ───────────────────────────────────────────────────────
@@ -380,6 +544,7 @@ private:
     // ── Storage ─────────────────────────────────────────────────────────
 
     std::unique_ptr<juce::AudioProcessorGraph> graph_;
+    std::uint64_t graphSerial_ = 0;   // see GraphRealtimeView::graphSerial
     juce::AudioProcessorGraph::NodeID inputNode_{};
     juce::AudioProcessorGraph::NodeID outputNode_{};
 
@@ -417,8 +582,27 @@ private:
     double sampleRate_ = 44100.0;
     int    blockSize_  = 512;
     juce::MidiBuffer emptyMidi_;
-    int outputLatencySamples_ = 0;
+    std::atomic<int> outputLatencySamples_{0};
     std::atomic<std::uint64_t> latencyEpoch_{0};
+
+    // [PDCNotify] Raised by any subscribed node's setLatencySamples; cleared at
+    // the start of every computePDC(). Never reassigned after construction.
+    const std::shared_ptr<xleth::audio::LatencyChangeSignal> latencyChangeSignal_ =
+        std::make_shared<xleth::audio::LatencyChangeSignal>();
+
+    // Immutable snapshot published for the audio thread. See the RealtimeView
+    // note at the top of this header. Retirement is the caller's job: MixEngine
+    // holds the previous views alive on the message thread so the audio thread
+    // never runs a processor destructor.
+    std::atomic<std::shared_ptr<const RealtimeView>> realtimeView_{
+        std::make_shared<const RealtimeView>()};
+
+    // Superseded views, held on the message thread so the audio thread can
+    // never drop the last reference to a processor and run its destructor on
+    // the realtime thread. Pruned on the next publish, and only when
+    // use_count()==1 — proof that no audio block still holds a copy, and none
+    // can appear because the view is no longer reachable through realtimeView_.
+    std::vector<std::shared_ptr<const RealtimeView>> retiredViews_;
 
     // When true, rebuildAPGConnections does NOT auto-wire the empty-graph
     // input -> output passthrough; Track Output is left unconnected (silence).
@@ -484,7 +668,10 @@ private:
 
     // Returns a stock XlethEffectBase or a VST3 AudioPluginInstance.
     // Falls back to VST registry when pluginId is not a known stock effect.
-    std::unique_ptr<juce::AudioProcessor> createEffect(const std::string& pluginId);
+    // A third-party load is wrapped in `crumb` (P2 load breadcrumb, context
+    // "insert"); the caller keeps the scope open through prepare and finishes it.
+    std::unique_ptr<juce::AudioProcessor> createEffect(const std::string& pluginId,
+                                                       PluginLoadBreadcrumb* crumb = nullptr);
 
     // Add a pre-created processor to the APG and node tables.
     // Does NOT store vstDescriptions_ — caller must do that if needed.

@@ -1,0 +1,152 @@
+/* Landings in the cue editor, and the lead-in tails' canvas in the cue lane
+ * (docs/XLETH_LANDING_SPEC.md 8; ui/DESIGN.md 22). Neutral like the lane it lives
+ * in: rows are ramp greys, text is ink, and the only value colour is the easing
+ * curve the shared editor draws. Tokens only. No transitions: this is the edit loop. */
+@layer kit {
+  .section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding-top: var(--space-1);
+    border-top: 1px solid var(--ui-g4);
+  }
+
+  .head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    min-height: var(--hit-min);
+  }
+
+  .title {
+    color: var(--ui-ink);
+    font-size: var(--type-12);
+    font-weight: var(--weight-semibold);
+  }
+
+  .count {
+    flex: 1 1 auto;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .empty {
+    margin: 0;
+    padding: 0 var(--space-1) var(--space-1);
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    line-height: 1.35;
+  }
+
+  /* Master and detail. The list holds eight rows and scrolls past that (a cue
+   * can carry sixteen); only its flexible text gives way to the scrollbar. The
+   * open landing's controls sit in the detail pane below, at full width. */
+  .list {
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+    gap: 1px;
+    max-height: 215px;
+    margin: 0;
+    padding: 0;
+    overflow-y: auto;
+    list-style: none;
+  }
+
+  .row {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    min-width: 0;
+    border: 1px solid var(--ui-g4);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g1);
+  }
+
+  /* Selected is an outline, and never colour alone: the caret turns too. */
+  .row:global(.is-open) {
+    border-color: var(--ui-select);
+  }
+
+  /* The whole strip is the 24px-tall button; the name gets the room, the
+   * summary gives way first. */
+  .rowToggle {
+    box-sizing: border-box;
+    display: flex;
+    flex: 1 1 auto;
+    align-items: center;
+    gap: var(--space-1);
+    min-width: 0;
+    min-height: var(--hit-min);
+    padding: 0 var(--space-1);
+    border: 0;
+    background: transparent;
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .rowToggle:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  .name {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .summary {
+    flex: 1 10 auto;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .detail {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-1);
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g1);
+  }
+
+  .field {
+    display: grid;
+    grid-template-columns: 56px minmax(0, 1fr);
+    align-items: center;
+    gap: var(--space-1);
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    white-space: nowrap;
+  }
+
+  .customGrid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 2px;
+  }
+
+  /* Lead-in tails: one canvas under the transition band, the grips and the
+   * pins. It never takes the pointer; the lane hit-tests the tail ends itself. */
+  .tails {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 2;
+    pointer-events: none;
+  }
+}

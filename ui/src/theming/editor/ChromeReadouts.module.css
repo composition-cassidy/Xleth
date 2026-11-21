@@ -1,0 +1,74 @@
+/* Readouts and warnings for the theme being edited (Phase 7). Kit layer; tokens only. */
+@layer kit {
+  .root {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .warning {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2);
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g2);
+    color: var(--ui-ink);
+    font-size: var(--type-12);
+  }
+
+  .warningText {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--type-12);
+    color: var(--ui-ink);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .table th,
+  .table td {
+    padding: 0 var(--space-2);
+    height: var(--row-h);
+    text-align: left;
+    font-weight: var(--weight-regular);
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .table thead th {
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+  }
+
+  .table tbody th {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .table tbody tr[data-pass="false"] td {
+    color: var(--ui-rec-text);
+  }
+
+  .num {
+    text-align: right;
+  }
+
+  .swatch {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-0);
+  }
+
+  .note {
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+  }
+}

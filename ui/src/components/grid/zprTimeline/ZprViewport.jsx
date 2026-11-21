@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { tokenValue } from '../../../theming/tokenValue.ts'
+import styles from './zprTimeline.module.css'
 import {
   HANDLES, handlePoint, rectCorners, rotationHandlePoint,
   moveRect, resizeFromCorner, resizeFromEdge, rotateRectAboutPivot,
   createAngleAccumulator, pointerAngle,
 } from './zprRectMath.js'
 
+import { useThemeEpoch } from '../../../theming/useThemeEpoch.js'
 // ZprViewport — Vegas Pan/Crop-style spatial editor for the ZPR transform.
 //
 // Everything inside the frame is drawn on ONE canvas: the backdrop, the camera
@@ -36,15 +38,15 @@ const MAX_H = 340
 
 function resolvePalette() {
   return {
-    bg:       tokenValue('--xleth-flat-panel') || '#15151C',
-    checkerA: tokenValue('--xleth-flat-panel-alt') || '#1B1B24',
-    checkerB: tokenValue('--xleth-flat-border') || '#23232F',
-    border:   tokenValue('--xleth-flat-border') || '#2A2A38',
-    text:     tokenValue('--xleth-flat-text-subtle') || '#5A5F6B',
-    accent:   tokenValue('--theme-accent') || '#33CED6',
-    path:     tokenValue('--theme-warning') || '#E6A23C',
-    pivot:    tokenValue('--theme-danger') || '#E6607C',
-    rect:     '#FFFFFF',
+    bg:       tokenValue('--ui-g0') || '#101010',
+    checkerA: tokenValue('--ui-g1') || '#161616',
+    checkerB: tokenValue('--ui-g2') || '#1c1c1c',
+    border:   tokenValue('--ui-g4') || '#3a3a3a',
+    text:     tokenValue('--ui-ink-3') || '#7a7a7a',
+    accent:   tokenValue('--ui-value') || '#33CED6',
+    path:     tokenValue('--ui-band-1') || '#4f9bd9',
+    pivot:    tokenValue('--ui-band-4') || '#c56fb1',
+    rect:     tokenValue('--ui-ink') || '#f0f0f0',
   }
 }
 
@@ -62,6 +64,7 @@ export default function ZprViewport({
   motionKeys = [],
   scrubT = 0,
 }) {
+  const dprEpoch = useThemeEpoch() // Phase 7: re-size and redraw at the new devicePixelRatio when the UI scale changes
   const wrapRef = useRef(null)
   const canvasRef = useRef(null)
   const dragRef = useRef(null)
@@ -272,7 +275,7 @@ export default function ZprViewport({
     ctx.moveTo(pv.x, pv.y - PIVOT_PX - 3); ctx.lineTo(pv.x, pv.y + PIVOT_PX + 3)
     ctx.stroke()
   }, [rect, width, height, stage, uvToPx, image, aspectLocked, hoverId,
-      motionPath, motionKeys, scrubT, stemUv, livePivot.x, livePivot.y])
+      motionPath, motionKeys, scrubT, stemUv, livePivot.x, livePivot.y, dprEpoch])
 
   // ── hit testing ─────────────────────────────────────────────────────────
   const hitTest = useCallback((px, py) => {
@@ -396,10 +399,12 @@ export default function ZprViewport({
     : 'default'
 
   return (
-    <div ref={wrapRef} className="zpr-viewport-wrap">
+    <div ref={wrapRef} className={styles.viewportWrap}>
       <canvas
         ref={canvasRef}
-        className="zpr-viewport-canvas"
+        className={styles.viewport}
+        data-testid="zpr-viewport"
+        aria-label="Framing window over the source. Drag inside to pan, a corner to zoom, the grip above to rotate; right-click for framing options. The At playhead fields type the same values."
         style={{ width, height, cursor }}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}

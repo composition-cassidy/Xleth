@@ -1,0 +1,22 @@
+/* Toggle builds on Button's neutral outline; "on" (aria-pressed) is the inverted
+ * ink chip defined there. Off-state glyphs are outlined, on-state glyphs bold. */
+@layer kit {
+  .toggle {
+    gap: var(--space-1);
+  }
+
+  .glyph {
+    display: inline-flex;
+    font-weight: var(--weight-regular);
+  }
+
+  /* Icon glyphs (an SVG) sit at text size, like a letter glyph would. */
+  .glyph svg {
+    width: var(--icon-sm);
+    height: var(--icon-sm);
+  }
+
+  .toggle[data-on="true"] .glyph {
+    font-weight: var(--weight-semibold);
+  }
+}

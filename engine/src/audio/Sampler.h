@@ -7,6 +7,7 @@
 #include "SamplerModulation.h"
 #include "../model/TimelineTypes.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -17,7 +18,7 @@
 // ─── Sampler ─────────────────────────────────────────────────────────────────
 // Polyphonic pitched sample player with ADSR envelope and optional loop.
 // NOT a JUCE AudioProcessor — plain C++ class, similar to MixEngine.
-// One instance per {trackId, regionId}: MixEngine owns the samplers_ map.
+// One instance per {trackId, regionId}: MixEngine owns them (its SamplerSet).
 //
 // ── Layered slots ────────────────────────────────────────────────────────────
 // A sampler holds up to MAX_SAMPLE_SLOTS (8) sample slots. Every note-on
@@ -53,7 +54,9 @@
 class Sampler
 {
 public:
-    Sampler() = default;
+    // The mono held-note stack is pushed on the audio thread (noteOn); reserve
+    // its whole bound up front so it never grows there.
+    Sampler() { monoHeldNotes_.reserve(16); }
 
     // ── Slot configuration (main thread) ─────────────────────────────────────
     // Slot count is clamped to [1, MAX_SAMPLE_SLOTS]. Shrinking clears the
@@ -66,7 +69,6 @@ public:
     void loadSlotSample(int slotIndex,
                         const juce::AudioBuffer<float>& audioData,
                         double sourceSampleRate, int rootNote);
-    void clearSlotSample(int slotIndex);
 
     // Combined tuning. Stored pre-summed as semitones (fine is in cents) —
     // mirrors SampleSlot::tuningSemitones() so engine and model agree.
@@ -142,12 +144,7 @@ public:
     // existing single-sample call sites keep compiling and behaving identically.
     void setLoopPoints(bool enabled, int64_t loopStart, int64_t loopEnd);
     void setRootNote(int note);
-    void setSmpStart(int64_t start);          // playback start offset (source samples)
-    void setSmpLength(int64_t length);        // 0 = full remaining from smpStart
     void setDeclickMs(float ms);              // Hann fade width at trim edges (ms, default 1.5)
-    void setFadeIn(float ms);                 // linear fade-in duration (user-controlled)
-    void setFadeOut(float ms);                // linear fade-out duration (user-controlled)
-    void setCrossfadeSamples(int64_t samples);// FL-style loop crossfade width (0 = off)
 
     // ── Playback modes ──────────────────────────────────────────────────────
     void setMonoMode(bool enabled);
@@ -210,6 +207,35 @@ public:
     void setCurrentSample(int64_t absSample) noexcept { currentAbsSample_ = absSample; }
     void setVisualOnly(bool v) noexcept { visualOnly_.store(v, std::memory_order_relaxed); }
 
+    // ── Pitch Shifter Clip mode (mode 4) on pattern tracks ───────────────────
+    // A voice-spawn transpose on top of the slot tuning sum:
+    //   sounding = (midiNote - rootNote) + slotTuning + transposeOffset
+    // Stored as fractional semitones (semis + cents/100, clamped to ±48 like the
+    // clip lane) and COPIED into a voice only when the voice truly (re)spawns —
+    // fireNoteOn and a mono hard retrigger. A voice already sounding when the
+    // offset changes keeps the offset it spawned with and rings out at that
+    // pitch; legato retunes, portamento and group slides are NOT respawns and
+    // keep the voice's copy too. Event pitches are never touched, so
+    // noteOn/noteOff/slide pairing is exactly what it is without a transform.
+    //
+    // AUDIO THREAD. MixEngine writes it from the per-block transform table
+    // (already published lock-free as one atomic shared_ptr) immediately
+    // before triggering this sampler's pattern notes; every reader is on the
+    // same thread. Two scalar writes, no allocation, no lock.
+    //
+    // Known limitation: only the pitch (semis+cents) crosses over from the
+    // table. Mix, clip_method (the stretch engine choice), and clip_formant
+    // are all inert here — a pattern track always gets this one wet-only
+    // transpose, no blend, no engine choice, no formant option. Those three
+    // params only mean anything on the ClipRenderCache fx lane (audio
+    // clips); see the CacheKey fx-field comment in ClipRenderCache.h.
+    void setTransposeOffset(int semis, int cents) noexcept
+    {
+        transposeSemis_ = std::clamp(static_cast<double>(semis)
+                                     + static_cast<double>(cents) / 100.0, -48.0, 48.0);
+    }
+    double transposeOffsetSemis() const noexcept { return transposeSemis_; }
+
     // ── Audio-thread triggering ──────────────────────────────────────────────
     void noteOn(int midiNote, float velocity, int sampleOffset = 0);
     void noteOff(int midiNote, int sampleOffset = 0, bool force = false);
@@ -230,10 +256,29 @@ public:
     void processBlock(juce::AudioBuffer<float>& outputBuffer,
                       int numSamples, double engineSampleRate);
 
+    // ── Playhead publication (audio thread -> main thread) ───────────────────
+    // Where each slot's read head currently is, in SOURCE samples — the same
+    // domain the editor's trim and loop indices live in, so the sampler panel
+    // can draw a playhead straight onto its waveform.
+    //
+    // Published ONCE PER BLOCK from processBlock, never from the per-sample
+    // loop: a poll cannot use finer than block granularity, and the inner loop
+    // is the hot path. -1 means "nothing sounding on this slot", which is a
+    // distinct answer from "sounding at sample 0" and is what lets the panel
+    // hide the playhead rather than park it at the left edge.
+    //
+    // Relaxed ordering on both sides: this is advisory telemetry for a UI, each
+    // slot is one independent scalar, and a reader that sees last block's value
+    // is off by at most a few milliseconds. Nothing in the engine reads it.
+    int64_t playPositionForSlot(int slotIndex) const noexcept
+    {
+        if (slotIndex < 0 || slotIndex >= MAX_SAMPLE_SLOTS) return -1;
+        return slotPlayPos_[static_cast<size_t>(slotIndex)].v.load(std::memory_order_relaxed);
+    }
+
     // ── Introspection (main-thread) ──────────────────────────────────────────
     int  activeVoiceCount() const;
-    int  countActiveVoices() const;      // audio-thread-safe read-only scan; same as activeVoiceCount
-    int  countHeldVoices() const;        // voices where active && noteHeld
+    int  countHeldVoices() const;       // voices where active && noteHeld
     int  countReleasingVoices() const;   // voices where active && !noteHeld
 
     // ── Test-only introspection ──────────────────────────────────────────────
@@ -241,6 +286,8 @@ public:
     // verify slide-note pitch behavior without resorting to FFT analysis on
     // multi-voice chord renders. Not for production use.
     double debugVoicePitch(int voiceIdx) const;
+    // Transpose (semitones) the voice captured at spawn; see setTransposeOffset.
+    double debugVoiceTranspose(int voiceIdx) const;
     bool   debugVoiceSlideActive(int voiceIdx) const;
     int    debugFirstActiveVoiceIndex() const;
     // Streams currently sounding on one voice (0 when the voice is inactive).
@@ -260,13 +307,6 @@ public:
     // Resolved modulated value the render loop is currently using.
     float  debugModVoiceSlotSemis(int voiceIdx, int slotIdx) const;
     float  debugModVoiceSlotVolume(int voiceIdx, int slotIdx) const;
-    float  debugModVoiceSlotPan(int voiceIdx, int slotIdx) const;
-    float  debugModVoiceMasterVolume(int voiceIdx) const;
-    // Compiled-graph shape.
-    int    debugModEvalPosition(int sourceIdx) const;
-    bool   debugModRouteDeferred(int routeIdx) const;
-    bool   debugModHasCycle() const;
-    int    debugModEnvStage(int voiceIdx, int envIdx) const;
 
 private:
     // ── Slot ─────────────────────────────────────────────────────────────────
@@ -434,6 +474,14 @@ private:
 
     std::atomic<bool> visualOnly_ { false };
 
+    // Per-slot read-head position for the editor playhead; see
+    // playPositionForSlot(). Wrapped in a struct so the array's default
+    // construction seeds every entry to the "not sounding" sentinel — a bare
+    // std::array<std::atomic<int64_t>, N> would zero-initialise, and 0 is a
+    // legal playhead position.
+    struct AtomicPlayPos { std::atomic<int64_t> v { -1 }; };
+    std::array<AtomicPlayPos, MAX_SAMPLE_SLOTS> slotPlayPos_;
+
     // Mono held-note stack (most recent at back, max 16)
     std::vector<int> monoHeldNotes_;
 
@@ -480,6 +528,10 @@ private:
         int    midiNote     = 60;
         float  velocity     = 1.0f;
         double pitchRatio   = 1.0;         // 2^((midiNote - rootNote) / 12)
+        // Clip-mode transpose captured at (re)spawn, in semitones. Added to the
+        // sounding pitch only; currentPitchF / targetPitch / slide pitches all
+        // stay in the drawn-note domain. See Sampler::setTransposeOffset.
+        double transposeSemis = 0.0;
 
         // Portamento state. `source` and `total` are captured at glide start so
         // the CURVE can be applied as a shaped interpolation across the whole
@@ -552,6 +604,7 @@ private:
 
     uint64_t nextSpawnCounter_ = 1;   // 0 reserved as "never spawned" sentinel
     int64_t  currentAbsSample_ = 0;   // buffer-start absolute sample; 0 = preview/pre-transport
+    double   transposeSemis_   = 0.0; // Clip-mode transpose for NEW voices (audio thread)
 
     // ── Modulation: published graph + global (FREE / MONO) half ──────────────
     // The graph is swapped in whole. shared_ptr publication mirrors Slot::data:

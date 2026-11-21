@@ -17,14 +17,18 @@ describe('eqInspectorConfig — field sets', () => {
     expect(getInspectorFields(2)).toBe(SPEC_FIELDS)
   })
 
-  it('DYN_FIELDS contains exactly dyn_thresh, dyn_ratio, dyn_attack, dyn_release', () => {
+  it('DYN_FIELDS contains exactly dyn_thresh, dyn_ratio, dyn_attack, dyn_release, dyn_range', () => {
     const keys = DYN_FIELDS.map(f => f.key)
-    expect(keys).toEqual(['dyn_thresh', 'dyn_ratio', 'dyn_attack', 'dyn_release'])
+    expect(keys).toEqual(['dyn_thresh', 'dyn_ratio', 'dyn_attack', 'dyn_release', 'dyn_range'])
   })
 
-  it('SPEC_FIELDS contains exactly spec_sens, spec_depth, spec_sel, spec_attack, spec_release', () => {
+  it('SPEC_FIELDS contains exactly spec_sens, spec_sel, spec_attack, spec_release', () => {
     const keys = SPEC_FIELDS.map(f => f.key)
-    expect(keys).toEqual(['spec_sens', 'spec_depth', 'spec_sel', 'spec_attack', 'spec_release'])
+    expect(keys).toEqual(['spec_sens', 'spec_sel', 'spec_attack', 'spec_release'])
+  })
+
+  it('SPEC_FIELDS has no depth field — the band gain knob is the spectral depth', () => {
+    expect(SPEC_FIELDS.some(f => f.key === 'spec_depth')).toBe(false)
   })
 
   it('every DYN field has label, min, max, step, def, decimals', () => {
@@ -74,7 +78,7 @@ describe('eqInspectorConfig — GR flag', () => {
     expect(inspectorHasGR(0)).toBe(false)
   })
 
-  it('inspectorHasGR(2) is false (spectral bands have no GR meter in inspector)', () => {
-    expect(inspectorHasGR(2)).toBe(false)
+  it('inspectorHasGR(2) is true (spectral bands report per-bin GR)', () => {
+    expect(inspectorHasGR(2)).toBe(true)
   })
 })

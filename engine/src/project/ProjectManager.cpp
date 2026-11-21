@@ -1,4 +1,5 @@
 #include "project/ProjectManager.h"
+#include "model/LensRoam.h"
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -134,13 +135,19 @@ std::string ProjectManager::getAudioCacheDir() const {
 // ─── createProject ────────────────────────────────────────────────────────────
 
 bool ProjectManager::createProject(const std::string& projectDir,
-                                   const std::string& projectName) {
+                                   const std::string& projectName,
+                                   int videoWidth, int videoHeight,
+                                   double videoFps, const std::string& aspectRatio) {
     std::cout << "[Project] Creating project '" << projectName
               << "' at: " << projectDir << "\n";
 
     projectDir_  = projectDir;
     projectName_ = projectName;
     createdAt_   = currentTimestamp();
+    videoWidth_  = videoWidth;
+    videoHeight_ = videoHeight;
+    videoFps_    = videoFps;
+    aspectRatio_ = aspectRatio;
 
     try {
         ensureDirectories();
@@ -164,7 +171,9 @@ bool ProjectManager::createProject(const std::string& projectDir,
 bool ProjectManager::saveProject(const Timeline& timeline,
                                   const nlohmann::json& effectChains,
                                   const nlohmann::json& masterEffectChain,
-                                  float masterVolume) {
+                                  float masterVolume,
+                                  const nlohmann::json& sandboxWorkspace,
+                                  const nlohmann::json& motionViewState) {
     // NOTE (Prompt 11): Preview performance settings (previewResolutionScale,
     // previewEffectsBypass) are workstation-local by design and persisted via
     // the Electron settings store (xleth-settings.json), NOT in project.json.
@@ -215,11 +224,21 @@ bool ProjectManager::saveProject(const Timeline& timeline,
     j["trackLayout"]    = tl.value("trackLayout", json::object());
     j["declickMs"]      = tl.value("declickMs", 0.0);
     j["globalStretchMethod"] = tl.value("globalStretchMethod", 1);
+    // Project-wide motion blur. Whitelisted here AND below: ProjectManager
+    // hand-copies keys, so a key missing from either list is silently lost.
+    j["motionBlur"]     = tl.value("motionBlur", json::object());
+    // Master Color Grade. Same rule: whitelisted here AND below. Written only
+    // when the timeline wrote one (it omits a default grade).
+    if (tl.contains("masterColorGrade")) j["masterColorGrade"] = tl.at("masterColorGrade");
     j["custom_labels"]  = customLabels;
     // Master fader gain. Always written (unlike the master effect chain, which is
     // omitted when empty) so loading a project always restores a definite value
     // instead of inheriting the previously-open project's master level.
     j["masterVolume"]   = masterVolume;
+    j["video_width"]    = videoWidth_;
+    j["video_height"]   = videoHeight_;
+    j["video_fps"]      = videoFps_;
+    j["aspect_ratio"]   = aspectRatio_;
 
     // Effect chains — only written when non-empty (keeps project files clean)
     if (effectChains.is_object() && !effectChains.empty())
@@ -228,6 +247,21 @@ bool ProjectManager::saveProject(const Timeline& timeline,
             && masterEffectChain.contains("nodes")
             && !masterEffectChain["nodes"].empty())
         j["masterEffectChain"] = masterEffectChain;
+
+    // Sample Sandbox workspace (schema v7). Same "only when non-empty" rule as
+    // the effect chains: a project that never opened the Sandbox gets no key,
+    // so its file does not grow an empty object it will never read back.
+    if (sandboxWorkspace.is_object()
+            && sandboxWorkspace.contains("layers")
+            && sandboxWorkspace["layers"].is_array()
+            && !sandboxWorkspace["layers"].empty())
+        j["sandboxWorkspace"] = sandboxWorkspace;
+
+    // Motion view UI state (schema v9). Whitelisted here AND in loadProject.
+    // Opaque to the engine; written only when it is a non-empty object, so a
+    // project that never opened Motion view gets no key.
+    if (motionViewState.is_object() && !motionViewState.empty())
+        j["motionView"] = motionViewState;
 
     const std::string path = projectFilePath();
     try {
@@ -258,7 +292,9 @@ bool ProjectManager::saveProjectAs(const std::string& newProjectDir,
                                    const Timeline& timeline,
                                    const nlohmann::json& effectChains,
                                    const nlohmann::json& masterEffectChain,
-                                   float masterVolume) {
+                                   float masterVolume,
+                                   const nlohmann::json& sandboxWorkspace,
+                                   const nlohmann::json& motionViewState) {
     if (newProjectDir.empty()) {
         std::cerr << "[Project] ERROR saveProjectAs: empty directory\n";
         return false;
@@ -280,7 +316,8 @@ bool ProjectManager::saveProjectAs(const std::string& newProjectDir,
         return false;
     }
 
-    return saveProject(timeline, effectChains, masterEffectChain, masterVolume);
+    return saveProject(timeline, effectChains, masterEffectChain, masterVolume, sandboxWorkspace,
+                       motionViewState);
 }
 
 bool ProjectManager::hasProjectDir() const {
@@ -296,6 +333,12 @@ void ProjectManager::resetToBlank() {
     loadedEffectChains_      = nlohmann::json::object();
     loadedMasterEffectChain_ = nlohmann::json();
     loadedMasterVolume_      = 1.0f;
+    loadedSandboxWorkspace_  = nlohmann::json::object();
+    loadedMotionViewState_   = nlohmann::json();
+    videoWidth_  = 1920;
+    videoHeight_ = 1080;
+    videoFps_    = 30.0;
+    aspectRatio_ = "16:9";
 }
 
 // ─── loadProject ──────────────────────────────────────────────────────────────
@@ -307,9 +350,39 @@ std::optional<Timeline> ProjectManager::loadProject(const std::string& projectDi
     loadedEffectChains_      = nlohmann::json::object();
     loadedMasterEffectChain_ = nlohmann::json();
     loadedMasterVolume_      = 1.0f;
+    loadedMotionViewState_   = nlohmann::json();
 
-    projectDir_ = projectDir;
-    ensureDirectories();
+    // A load that fails must leave this ProjectManager describing the project that
+    // is STILL OPEN. It used to overwrite projectDir_ first and only then check
+    // that project.json existed, so a failed open left the manager pointing at the
+    // bad folder while the timeline was still the old project's — later saves,
+    // Clean up and purge-on-close would then act on the wrong folder. It also
+    // created the whole folder tree for a path that was never a project.
+    struct Identity {
+        std::string dir, name, createdAt, aspect;
+        int         width, height, schema;
+        double      fps;
+    };
+    const Identity before{ projectDir_, projectName_, createdAt_, aspectRatio_,
+                           videoWidth_, videoHeight_, loadedSchemaVersion_, videoFps_ };
+    struct Rollback {
+        ProjectManager*  self;
+        const Identity&  id;
+        bool             committed = false;
+        ~Rollback() {
+            if (committed) return;
+            self->projectDir_          = id.dir;
+            self->projectName_         = id.name;
+            self->createdAt_           = id.createdAt;
+            self->aspectRatio_         = id.aspect;
+            self->videoWidth_          = id.width;
+            self->videoHeight_         = id.height;
+            self->videoFps_            = id.fps;
+            self->loadedSchemaVersion_ = id.schema;
+        }
+    } rollback{ this, before };
+
+    projectDir_ = projectDir;                    // projectFilePath() reads it
     const std::string path = projectFilePath();
 
     if (!fs::exists(path)) {
@@ -317,6 +390,8 @@ std::optional<Timeline> ProjectManager::loadProject(const std::string& projectDi
                   << path << "\n";
         return std::nullopt;
     }
+    // Only a folder that really holds a project gets its (possibly newer) subfolders.
+    ensureDirectories();
 
     json j;
     try {
@@ -334,6 +409,10 @@ std::optional<Timeline> ProjectManager::loadProject(const std::string& projectDi
 
     projectName_ = j.value("project_name", "Untitled");
     createdAt_   = j.value("created_at", "");
+    videoWidth_  = j.value("video_width", 1920);
+    videoHeight_ = j.value("video_height", 1080);
+    videoFps_    = j.value("video_fps", 30.0);
+    aspectRatio_ = j.value("aspect_ratio", std::string("16:9"));
 
     // Schema version. Absent ⇒ 1 (pre-slot, single-sample sampler): every
     // region's per-sample state is migrated into slot 0 by
@@ -378,6 +457,8 @@ std::optional<Timeline> ProjectManager::loadProject(const std::string& projectDi
     if (j.contains("trackLayout")) tl["trackLayout"] = j["trackLayout"];
     tl["declickMs"] = j.value("declickMs", 0.0);
     tl["globalStretchMethod"] = j.value("globalStretchMethod", 1);
+    if (j.contains("motionBlur")) tl["motionBlur"] = j["motionBlur"];
+    if (j.contains("masterColorGrade")) tl["masterColorGrade"] = j.at("masterColorGrade");
 
     // Compute nextId = max(all entity ids) + 1 so the timeline counter is correct
     int maxId = 0;
@@ -401,6 +482,17 @@ std::optional<Timeline> ProjectManager::loadProject(const std::string& projectDi
         return std::nullopt;
     }
 
+    // v7 -> v8: Lens + Roam. Old projects keep today's stretched framing; see
+    // the v8 entry in ProjectManager.h.
+    if (loadedSchemaVersion_ < 8) {
+        const lensroam::MigrationStats m = lensroam::migratePreLensProject(timeline);
+        std::cout << "[Lens] schema v" << loadedSchemaVersion_ << " project: "
+                  << m.clips << " clip lens(es) and " << m.patternSources
+                  << " pattern source lens(es) loaded as fit=Stretch (identity)\n";
+        std::cout << "[Roam] schema v" << loadedSchemaVersion_ << " project: "
+                  << m.tracks << " track(s) loaded with identity Roam\n";
+    }
+
     // Stash effect chain JSON for the caller (bridge) to apply after track routing
     // is fully set up. Graceful no-op for older projects that lack these keys.
     if (j.contains("effectChains") && j["effectChains"].is_object())
@@ -410,12 +502,25 @@ std::optional<Timeline> ProjectManager::loadProject(const std::string& projectDi
     // Absent in projects saved before master volume was persisted → 1.0 (0 dB).
     if (j.contains("masterVolume") && j["masterVolume"].is_number())
         loadedMasterVolume_ = j["masterVolume"].get<float>();
+    // Sample Sandbox workspace (v7+). Reset first: a project WITHOUT the key
+    // must not inherit the previously-open project's sandbox — the same trap
+    // the master effect chain hit before it was always-written.
+    loadedSandboxWorkspace_ = nlohmann::json::object();
+    if (j.contains("sandboxWorkspace") && j["sandboxWorkspace"].is_object())
+        loadedSandboxWorkspace_ = j["sandboxWorkspace"];
+    // Motion view UI state (v9). Same rule: a project without the key gets
+    // null, never the previous project's state. (Also reset at the top of
+    // every load, so a FAILED load leaves none either.)
+    loadedMotionViewState_ = nlohmann::json();
+    if (j.contains("motionView") && j["motionView"].is_object() && !j["motionView"].empty())
+        loadedMotionViewState_ = j["motionView"];
 
     // Heal in-project asset paths (swapped/exports/media/proxies) that broke
     // because the project moved. External sources that can't be found here stay
     // missing and surface to the relink UI via validateMedia().
     resolveMediaPaths(timeline);
 
+    rollback.committed = true;                   // the load succeeded: keep the new identity
     std::cout << "[Project] Loaded '" << projectName_
               << "': BPM=" << timeline.getBPM()
               << ", SR=" << timeline.getSampleRate()
@@ -430,6 +535,14 @@ std::optional<Timeline> ProjectManager::loadProject(const std::string& projectDi
 
 const nlohmann::json& ProjectManager::getLoadedEffectChains() const {
     return loadedEffectChains_;
+}
+
+const nlohmann::json& ProjectManager::getLoadedSandboxWorkspace() const {
+    return loadedSandboxWorkspace_;
+}
+
+const nlohmann::json& ProjectManager::getLoadedMotionViewState() const {
+    return loadedMotionViewState_;
 }
 
 const nlohmann::json& ProjectManager::getLoadedMasterEffectChain() const {
@@ -544,11 +657,17 @@ void ProjectManager::resolveMediaPaths(Timeline& timeline) {
             // JSON may say previewProxyReady=false. Re-detect it here against the
             // height the JSON recorded; if the file is gone, clear the stale flag
             // so the preview self-heal regenerates it.
+            //
+            // The path is RE-DERIVED from disk, never trusted from the JSON: it
+            // resolves to the H.264 proxy when one exists, else the legacy intra
+            // one. So a project.json saved while a codec migration was still
+            // running (naming the legacy file, since deleted) opens onto the H.264
+            // file, and a reference to a missing file is never engaged.
             if (src->hasVideo && src->previewProxyHeight > 0) {
-                if (ProxyTranscoder::sourcePreviewProxyExists(
-                        src->filePath, proxiesDir, src->previewProxyHeight)) {
-                    const std::string proxy = ProxyTranscoder::getSourcePreviewProxyPath(
+                if (const auto found = ProxyTranscoder::findSourcePreviewProxy(
                         src->filePath, proxiesDir, src->previewProxyHeight);
+                        found.found) {
+                    const std::string& proxy = found.path;
                     if (!src->previewProxyReady || src->previewProxyPath != proxy) {
                         std::cout << "[Project] Preview proxy re-validated on disk for "
                                      "source id=" << src->id << " -> " << proxy << "\n";

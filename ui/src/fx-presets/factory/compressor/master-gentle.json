@@ -1,0 +1,21 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "compressor",
+  "name": "Master Gentle",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "threshold": -14,
+      "ratio": 1.5,
+      "attack": 30,
+      "release": 200,
+      "knee": 12,
+      "makeup": 1,
+      "mix": 100,
+      "mix_linked": 1,
+      "detect_mode": 1,
+      "lookahead": 0
+    }
+  }
+}

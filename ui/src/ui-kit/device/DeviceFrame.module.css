@@ -1,0 +1,149 @@
+/* DeviceFrame (ui/DESIGN.md "Device system"). Every stock device is exactly
+ * --device-h tall, docked or floating; only the width varies. Flat g1 panel,
+ * g2 title bar, one recessed g0 display well in the body. The hard offset
+ * shadow appears only on a popped-out (floating) device. */
+@layer kit {
+  .device {
+    position: relative;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    flex: 0 0 auto;
+    width: var(--device-w, auto);
+    height: var(--device-h);
+    /* A full outline (not the decorative g4 divider) so each device reads as its own
+     * object against the g0 well it sits in. */
+    border: 1px solid var(--ui-boundary);
+    background: var(--ui-g1);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+  }
+
+  .device[data-folded="true"] {
+    width: var(--device-fold-w);
+  }
+
+  .device[data-presentation="floating"] {
+    border-color: var(--ui-boundary);
+    box-shadow: var(--ui-shadow-float);
+  }
+
+  /* ── Title bar: the same on every device ─────────────────────────────── */
+  .title {
+    position: relative;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    flex: 0 0 var(--device-title-h);
+    gap: 2px;
+    height: var(--device-title-h);
+    min-width: 0;
+    background: var(--ui-g2);
+  }
+
+  /* The identity stripe: the owning track's colour, the thread from the grid
+   * cell to the lane, the strip and now the device. */
+  .title::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto;
+    z-index: 1;
+    height: 2px;
+    background: var(--device-id, var(--ui-g4));
+    pointer-events: none;
+  }
+
+  .title .activator {
+    width: var(--ctl-h-sm);
+    padding: 0;
+  }
+
+  .name {
+    display: flex;
+    align-items: center;
+    flex: 1 1 auto;
+    gap: var(--space-1);
+    min-width: 0;
+    height: 100%;
+    padding: 0 var(--space-1);
+    user-select: none;
+  }
+
+  .name[data-draggable="true"] {
+    cursor: grab;
+  }
+
+  .nameText {
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--type-12);
+    font-weight: var(--weight-semibold);
+    line-height: 1;
+  }
+
+  /* "Off" is printed, not just implied by the dimmed body. */
+  .off {
+    flex: 0 0 auto;
+    padding: 1px var(--space-1);
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-2);
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    line-height: 1.2;
+  }
+
+  .tools {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+    gap: 2px;
+  }
+
+  .preset {
+    display: flex;
+    align-items: center;
+    width: 148px;
+  }
+
+  /* ── Body: sections in signal order, one display well ─────────────────── */
+  .body {
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    border-top: 1px solid var(--ui-g4);
+    transition: opacity var(--mo-state) var(--mo-ease-out);
+  }
+
+  .device[data-bypassed="true"] .body {
+    opacity: var(--ui-mute-opacity);
+  }
+
+  /* ── Folded / popped out: a vertical title strip ─────────────────────── */
+  .device[data-folded="true"] .title {
+    flex: 1 1 auto;
+    flex-direction: column;
+    height: 100%;
+    padding: 2px 0;
+  }
+
+  /* Vertical writing mode makes the flex ROW run top to bottom; rotated 180deg
+   * the name reads bottom to top, so flex-end lands it at the top of the
+   * strip, under the activator. */
+  .device[data-folded="true"] .name {
+    flex-direction: row;
+    justify-content: flex-end;
+    height: auto;
+    padding: var(--space-2) 0;
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+  }
+
+  .device[data-folded="true"] .off {
+    padding: var(--space-1) 1px;
+  }
+}

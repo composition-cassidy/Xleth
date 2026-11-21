@@ -22,12 +22,15 @@
 
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <memory>
 #include <string>
 #include <utility>
+#include <algorithm>
 #include <vector>
 
 // ─── Test harness ────────────────────────────────────────────────────────────
@@ -1312,13 +1315,20 @@ static void testDistortionModesDiffer()
     constexpr int    kSkip = 128;
     constexpr float  kPi2 = 2.0f * juce::MathConstants<float>::pi;
 
-    std::array<std::array<float, kBS>, 4> rendered {};
+    std::array<std::array<float, kBS>, 7> rendered {};
 
-    for (int mode = 0; mode < 4; ++mode)
+    for (int mode = 0; mode < 7; ++mode)
     {
         XlethDistortionEffect fx;
         CHECK(fx.setParameterValue("mode", static_cast<float>(mode)),
               "distortion mode param should be settable");
+        // Crush-only params: pushed off their transparent defaults so mode 4 is
+        // compared as the crusher it is, not as the clipper it degenerates to
+        // at 16 bits / 1x.
+        CHECK(fx.setParameterValue("bits", 6.0f),
+              "distortion bits param should be settable");
+        CHECK(fx.setParameterValue("downsample", 4.0f),
+              "distortion downsample param should be settable");
         CHECK(fx.setParameterValue("drive", 12.0f),
               "distortion drive param should be settable");
         CHECK(fx.setParameterValue("tone", 20000.0f),
@@ -1349,9 +1359,9 @@ static void testDistortionModesDiffer()
     }
 
     float minRmsDiff = 999.0f;
-    for (int a = 0; a < 4; ++a)
+    for (int a = 0; a < 7; ++a)
     {
-        for (int b = a + 1; b < 4; ++b)
+        for (int b = a + 1; b < 7; ++b)
         {
             double sumSq = 0.0;
             for (int s = kSkip; s < kBS; ++s)
@@ -1368,6 +1378,417 @@ static void testDistortionModesDiffer()
     std::cout << "    min pairwise RMS diff: " << minRmsDiff << "\n";
     CHECK(minRmsDiff > 0.025f,
           "distortion modes should produce measurably different output for the same input");
+}
+
+// ─── Distortion legacy-render regression guard ───────────────────────────────
+// Renders the four PRE-EXISTING distortion modes (0–3) with every other
+// parameter left at its APVTS default and fingerprints the result. The golden
+// numbers below were captured from the build immediately BEFORE the 7-mode
+// expansion landed, so any change to the legacy shaping path — including a
+// non-transparent default for the new symmetry / bits / downsample params —
+// breaks this test. Exact float equality is intentional: "bit-identical" is the
+// contract, not "close enough".
+// APVTS is protected on XlethEffectBase, so reach parameters the way the engine
+// itself does for stock effects — through the AudioProcessor parameter list.
+static juce::RangedAudioParameter* findRangedParam(juce::AudioProcessor& proc,
+                                                   const juce::String& paramId)
+{
+    for (auto* p : proc.getParameters())
+        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*>(p))
+            if (rp->paramID == paramId)
+                return rp;
+    return nullptr;
+}
+
+struct DistortionFingerprint
+{
+    float  peak    = 0.0f;
+    double sumAbs  = 0.0;
+    double weighted = 0.0;
+};
+
+static DistortionFingerprint renderDistortionDefaults(int mode)
+{
+    constexpr double kSR = 44100.0;
+    constexpr int    kBS = 2048;
+    constexpr float  kPi2 = 2.0f * juce::MathConstants<float>::pi;
+
+    XlethDistortionEffect fx;
+    // ONLY the mode is set — every other parameter must stay at its default so
+    // this doubles as a default-value guard for the newly added params.
+    CHECK(fx.setParameterValue("mode", static_cast<float>(mode)),
+          "regression render: mode param should be settable");
+
+    fx.prepareToPlay(kSR, kBS);
+
+    juce::AudioBuffer<float> buf(2, kBS);
+    for (int s = 0; s < kBS; ++s)
+    {
+        const float t = static_cast<float>(s) / static_cast<float>(kBS - 1);
+        const float sweep = -0.85f + 1.70f * t;
+        const float sine = std::sin(kPi2 * 7.0f * static_cast<float>(s) / static_cast<float>(kBS));
+        const float v = juce::jlimit(-0.95f, 0.95f, 0.62f * sine + 0.22f * sweep);
+        buf.setSample(0, s, v);
+        buf.setSample(1, s, v);
+    }
+
+    juce::MidiBuffer midi;
+    fx.processBlock(buf, midi);
+
+    DistortionFingerprint fp;
+    for (int s = 0; s < kBS; ++s)
+    {
+        const float x = buf.getSample(0, s);
+        fp.peak     = std::max(fp.peak, std::abs(x));
+        fp.sumAbs  += std::abs(static_cast<double>(x));
+        fp.weighted += static_cast<double>(x) * static_cast<double>(s % 97);
+    }
+    return fp;
+}
+
+static void testDistortionDefaultRenderUnchanged()
+{
+    std::cout << "  [distortion default-render regression]\n";
+
+    // Golden fingerprints captured pre-expansion (see comment above).
+    struct Golden { float peak; double sumAbs; double weighted; };
+    static const Golden kGolden[4] = {
+        { 0.9928135871887207f, 1260.4362006411293, 2713.0245958208216 }, // Tube
+        { 1.1929118633270264f, 1722.3966890491010, 3797.8096109480311 }, // Soft Clip
+        { 1.0747795104980469f, 1612.4634629828097, 4000.2805844426439 }, // Hard Clip
+        { 1.0915191173553467f, 1517.3326005375500, 3806.9994734264010 }, // Analog
+    };
+
+    for (int mode = 0; mode < 4; ++mode)
+    {
+        const auto fp = renderDistortionDefaults(mode);
+        std::cout.precision(17);
+        std::cout << "    mode " << mode
+                  << " peak=" << fp.peak
+                  << " sumAbs=" << fp.sumAbs
+                  << " weighted=" << fp.weighted << "\n";
+        std::cout.precision(6);
+
+        const auto& g = kGolden[mode];
+        CHECK(fp.peak == g.peak,
+              "legacy distortion mode peak must be bit-identical to the pre-expansion build");
+        CHECK(fp.sumAbs == g.sumAbs,
+              "legacy distortion mode sumAbs must be bit-identical to the pre-expansion build");
+        CHECK(fp.weighted == g.weighted,
+              "legacy distortion mode weighted sum must be bit-identical to the pre-expansion build");
+    }
+
+    // The guard above only means anything while the new params really do default
+    // to their transparent values, so pin the defaults themselves.
+    {
+        XlethDistortionEffect fx;
+        auto defaultOf = [&fx](const char* id) -> float
+        {
+            auto* p = findRangedParam(fx, id);
+            return p ? p->convertFrom0to1(p->getDefaultValue()) : -1.0f;
+        };
+
+        CHECK(defaultOf("symmetry") == 100.0f,
+              "symmetry must default to 100 % (the historical fixed Analog bias)");
+        CHECK(defaultOf("bits") == 16.0f,
+              "bits must default to 16 (transparent quantization)");
+        CHECK(defaultOf("downsample") == 1.0f,
+              "downsample must default to 1x (no sample-and-hold)");
+    }
+}
+
+// ─── Distortion: new modes are bounded and finite ────────────────────────────
+static void testDistortionNewModesSafety()
+{
+    std::cout << "  [distortion new-mode safety]\n";
+    constexpr double kSR = 48000.0;
+    constexpr int    kBS = 1024;
+
+    // Four hostile inputs: silence, full-scale DC, a full-scale impulse train,
+    // and a loud low-frequency sine (the case that drives a sample-and-hold
+    // hardest). All seven modes are run so the bound on the new ones can be
+    // calibrated against what the shipped ones already do on the same input —
+    // an absolute "must stay under 1.0" would be wrong here: the oversampler's
+    // FIR rings on an impulse and the 10 Hz DC blocker overshoots on a step, so
+    // even Hard Clip leaves this stress test well above unity.
+    std::array<float, 7> worstPeak {};
+    for (int mode = 0; mode <= 6; ++mode)
+    {
+        for (int shape = 0; shape < 4; ++shape)
+        {
+            XlethDistortionEffect fx;
+            CHECK(fx.setParameterValue("mode", static_cast<float>(mode)), "mode settable");
+            CHECK(fx.setParameterValue("drive", 48.0f), "drive settable");       // max
+            CHECK(fx.setParameterValue("tone", 20000.0f), "tone settable");
+            CHECK(fx.setParameterValue("mix", 100.0f), "mix settable");
+            CHECK(fx.setParameterValue("bits", 2.0f), "bits settable");          // min
+            CHECK(fx.setParameterValue("downsample", 40.0f), "downsample settable"); // max
+
+            fx.prepareToPlay(kSR, kBS);
+
+            juce::AudioBuffer<float> buf(2, kBS);
+            for (int s = 0; s < kBS; ++s)
+            {
+                float v = 0.0f;
+                switch (shape)
+                {
+                    case 0: v = 0.0f; break;
+                    case 1: v = 1.0f; break;
+                    case 2: v = (s % 64 == 0) ? 1.0f : 0.0f; break;
+                    default:
+                        v = std::sin(2.0f * juce::MathConstants<float>::pi
+                                     * 55.0f * static_cast<float>(s)
+                                     / static_cast<float>(kSR));
+                        break;
+                }
+                buf.setSample(0, s, v);
+                buf.setSample(1, s, -v);
+            }
+
+            juce::MidiBuffer midi;
+            // Two blocks: the second one exercises state carried across blocks
+            // (Crush's hold register, Fuzz's lowpass pole).
+            fx.processBlock(buf, midi);
+            fx.processBlock(buf, midi);
+
+            float peak = 0.0f;
+            bool  finite = true;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int s = 0; s < kBS; ++s)
+                {
+                    const float v = buf.getSample(ch, s);
+                    if (!std::isfinite(v)) finite = false;
+                    peak = std::max(peak, std::abs(v));
+                }
+
+            CHECK(finite, "distortion modes must never emit NaN or Inf");
+            worstPeak[static_cast<size_t>(mode)] =
+                std::max(worstPeak[static_cast<size_t>(mode)], peak);
+        }
+    }
+
+    float legacyWorst = 0.0f;
+    for (int mode = 0; mode < 4; ++mode)
+        legacyWorst = std::max(legacyWorst, worstPeak[static_cast<size_t>(mode)]);
+
+    std::cout << "    worst peak per mode:";
+    for (int mode = 0; mode <= 6; ++mode)
+        std::cout << " " << mode << ":" << worstPeak[static_cast<size_t>(mode)];
+    std::cout << "  (legacy worst " << legacyWorst << ")\n";
+
+    for (int mode = 4; mode <= 6; ++mode)
+        CHECK(worstPeak[static_cast<size_t>(mode)] <= legacyWorst,
+              "new distortion modes must stay at or below the shipped modes' worst-case peak");
+}
+
+// ─── Distortion: Crush params actually do something ──────────────────────────
+static void testDistortionCrushParams()
+{
+    std::cout << "  [distortion crush params]\n";
+    constexpr double kSR = 44100.0;
+    constexpr int    kBS = 2048;
+
+    auto renderCrush = [](float bits, float downsample)
+    {
+        XlethDistortionEffect fx;
+        fx.setParameterValue("mode", 4.0f);
+        fx.setParameterValue("drive", 6.0f);
+        fx.setParameterValue("tone", 20000.0f);
+        fx.setParameterValue("bits", bits);
+        fx.setParameterValue("downsample", downsample);
+        fx.prepareToPlay(kSR, kBS);
+
+        juce::AudioBuffer<float> buf(2, kBS);
+        for (int s = 0; s < kBS; ++s)
+        {
+            const float v = 0.5f * std::sin(2.0f * juce::MathConstants<float>::pi
+                                            * 220.0f * static_cast<float>(s)
+                                            / static_cast<float>(kSR));
+            buf.setSample(0, s, v);
+            buf.setSample(1, s, v);
+        }
+        juce::MidiBuffer midi;
+        fx.processBlock(buf, midi);
+        return buf;
+    };
+
+    auto rmsDiff = [](const juce::AudioBuffer<float>& a, const juce::AudioBuffer<float>& b)
+    {
+        double sumSq = 0.0;
+        for (int s = 128; s < kBS; ++s)
+        {
+            const double d = static_cast<double>(a.getSample(0, s))
+                           - static_cast<double>(b.getSample(0, s));
+            sumSq += d * d;
+        }
+        return std::sqrt(sumSq / static_cast<double>(kBS - 128));
+    };
+
+    const auto transparent = renderCrush(16.0f, 1.0f);   // both params neutral
+    const auto fewBits     = renderCrush(4.0f,  1.0f);   // quantizer only
+    const auto decimated   = renderCrush(16.0f, 12.0f);  // sample-and-hold only
+
+    const double bitsDelta = rmsDiff(transparent, fewBits);
+    const double dsDelta   = rmsDiff(transparent, decimated);
+    std::cout << "    bits delta RMS: " << bitsDelta
+              << "   downsample delta RMS: " << dsDelta << "\n";
+
+    // Each param is checked on its own so a param that is read but never used
+    // cannot hide behind the other one.
+    CHECK(bitsDelta > 0.01, "lowering bits must audibly change the Crush output");
+    CHECK(dsDelta   > 0.01, "raising downsample must audibly change the Crush output");
+}
+
+// ─── Distortion: symmetry morph ──────────────────────────────────────────────
+static void testDistortionSymmetry()
+{
+    std::cout << "  [distortion symmetry]\n";
+    constexpr double kSR = 44100.0;
+    constexpr int    kBS = 2048;
+
+    // symmetry = 0 must collapse Analog to a symmetric (odd) shaper: feeding
+    // -x must produce exactly -f(x). At symmetry = 100 the diode bias is back
+    // and that identity must NOT hold.
+    auto asymmetryOf = [](float symmetry) -> float
+    {
+        std::array<juce::AudioBuffer<float>, 2> outs {
+            juce::AudioBuffer<float>(2, kBS), juce::AudioBuffer<float>(2, kBS) };
+
+        for (int polarity = 0; polarity < 2; ++polarity)
+        {
+            XlethDistortionEffect fx;
+            fx.setParameterValue("mode", 3.0f);
+            fx.setParameterValue("symmetry", symmetry);
+            fx.setParameterValue("tone", 20000.0f);
+            fx.prepareToPlay(kSR, kBS);
+
+            const float sign = polarity == 0 ? 1.0f : -1.0f;
+            for (int s = 0; s < kBS; ++s)
+            {
+                const float v = sign * 0.8f
+                    * std::sin(2.0f * juce::MathConstants<float>::pi * 9.0f
+                               * static_cast<float>(s) / static_cast<float>(kBS));
+                outs[static_cast<size_t>(polarity)].setSample(0, s, v);
+                outs[static_cast<size_t>(polarity)].setSample(1, s, v);
+            }
+
+            juce::MidiBuffer midi;
+            fx.processBlock(outs[static_cast<size_t>(polarity)], midi);
+        }
+
+        double sumSq = 0.0;
+        for (int s = 0; s < kBS; ++s)
+        {
+            const double d = static_cast<double>(outs[0].getSample(0, s))
+                           + static_cast<double>(outs[1].getSample(0, s));
+            sumSq += d * d;
+        }
+        return static_cast<float>(std::sqrt(sumSq / static_cast<double>(kBS)));
+    };
+
+    const float asymAt0   = asymmetryOf(0.0f);
+    const float asymAt100 = asymmetryOf(100.0f);
+    std::cout << "    odd-symmetry residual: symmetry=0 -> " << asymAt0
+              << ", symmetry=100 -> " << asymAt100 << "\n";
+
+    CHECK(asymAt0 < 1.0e-4f,
+          "symmetry=0 must make Analog an odd (symmetric) shaper");
+    CHECK(asymAt100 > 20.0f * std::max(asymAt0, 1.0e-6f),
+          "symmetry=100 must retain the asymmetric diode bias");
+}
+
+// ─── Distortion: loudness honesty across all 7 modes ─────────────────────────
+static void testDistortionModeLoudness()
+{
+    std::cout << "  [distortion mode loudness]\n";
+    constexpr double kSR = 44100.0;
+    constexpr int    kBS = 4096;
+
+    for (const float driveDb : { 6.0f, 12.0f, 24.0f })
+    {
+        std::array<double, 7> rms {};
+        for (int mode = 0; mode < 7; ++mode)
+        {
+            XlethDistortionEffect fx;
+            fx.setParameterValue("mode", static_cast<float>(mode));
+            fx.setParameterValue("drive", driveDb);
+            fx.setParameterValue("tone", 20000.0f);
+            fx.setParameterValue("bits", 8.0f);
+            fx.setParameterValue("downsample", 4.0f);
+            fx.prepareToPlay(kSR, kBS);
+
+            juce::AudioBuffer<float> buf(2, kBS);
+            for (int s = 0; s < kBS; ++s)
+            {
+                const float ph = 2.0f * juce::MathConstants<float>::pi
+                               * static_cast<float>(s) / static_cast<float>(kSR);
+                const float v = 0.35f * (std::sin(110.0f * ph)
+                                       + 0.6f * std::sin(277.0f * ph)
+                                       + 0.3f * std::sin(660.0f * ph));
+                buf.setSample(0, s, v);
+                buf.setSample(1, s, v);
+            }
+
+            juce::MidiBuffer midi;
+            fx.processBlock(buf, midi);
+
+            double sumSq = 0.0;
+            for (int s = 256; s < kBS; ++s)
+            {
+                const double v = buf.getSample(0, s);
+                sumSq += v * v;
+            }
+            rms[static_cast<size_t>(mode)] = std::sqrt(sumSq / static_cast<double>(kBS - 256));
+        }
+
+        // Reference = mean RMS of the four shipped modes.
+        const double ref = (rms[0] + rms[1] + rms[2] + rms[3]) / 4.0;
+        std::cout << "    drive " << driveDb << " dB  ref=" << ref << "  ";
+        for (int mode = 0; mode < 7; ++mode)
+            std::cout << mode << ":" << (20.0 * std::log10(rms[static_cast<size_t>(mode)] / ref)) << "dB ";
+        std::cout << "\n";
+
+        for (int mode = 4; mode < 7; ++mode)
+        {
+            const double deltaDb = 20.0 * std::log10(rms[static_cast<size_t>(mode)] / ref);
+            CHECK(std::abs(deltaDb) <= 2.5,
+                  "new distortion modes must sit within 2.5 dB of the legacy modes' loudness");
+        }
+    }
+}
+
+// ─── Distortion: new params reach the graph/automation parameter surface ─────
+static void testDistortionParameterSurface()
+{
+    std::cout << "  [distortion parameter surface]\n";
+    XlethDistortionEffect fx;
+
+    // Stock effects expose their parameters to the mixer graph and to automation
+    // straight from the APVTS (buildGraphEffectParameterDescriptors walks
+    // getParameters(); getParametersAsJSON mirrors it). Being in createLayout IS
+    // the registration — so assert both surfaces actually see the new params.
+    const std::string json = fx.getParametersAsJSON();
+    for (const char* id : { "mode", "drive", "tone", "filter_pos", "mix",
+                            "symmetry", "bits", "downsample" })
+    {
+        CHECK(json.find(std::string("\"id\":\"") + id + "\"") != std::string::npos,
+              "distortion parameter JSON should expose every APVTS param");
+
+        std::atomic<float>* raw = nullptr;
+        juce::RangedAudioParameter* param = nullptr;
+        CHECK(fx.resolveAutomationParameter(id, raw, param) && raw && param,
+              "every distortion param should be automation-resolvable");
+    }
+
+    auto* modeParam = findRangedParam(fx, "mode");
+    CHECK(modeParam != nullptr, "mode param should exist");
+    if (modeParam)
+    {
+        CHECK(modeParam->getNormalisableRange().end == 6.0f,
+              "mode range should be 0-6 after the append-only expansion");
+        CHECK(modeParam->getNormalisableRange().start == 0.0f,
+              "mode range should still start at 0");
+    }
 }
 
 static void testTransientAttackShaping()
@@ -1629,6 +2050,162 @@ static void testTransientMidiAttackMode()
           "positive sustain should raise the post-attack tail level in MIDI mode");
     CHECK(cutTailRms < zeroTailRms * 0.92,
           "negative sustain should duck the post-attack tail level in MIDI mode");
+}
+
+// Real drums oscillate. The older transient tests feed a one-sided exponential
+// "body" with no zero crossings, which is why they passed while envelope mode
+// was a flat gain on actual audio: the gate read the raw sample, closed at
+// every zero crossing and re-armed the attack window forever.
+static constexpr int kKickLoopHits = 8;
+static constexpr int kKickLoopSpacing = 11025;   // quarter second at 44.1 kHz
+
+static void fillKickLoop(juce::AudioBuffer<float>& buf, double sr, float bassAmp)
+{
+    buf.clear();
+    for (int h = 0; h < kKickLoopHits; ++h)
+    {
+        const int onset = h * kKickLoopSpacing;
+        double phase = 0.0;
+        for (int i = 0; onset + i < buf.getNumSamples() && i < kKickLoopSpacing; ++i)
+        {
+            const double t = i / sr;
+            const double hz = 50.0 + 100.0 * std::exp(-t / 0.03);   // 150 -> 50 Hz pitch drop
+            phase += 2.0 * juce::MathConstants<double>::pi * hz / sr;
+            const float v = static_cast<float>(0.5 * std::exp(-t / 0.12) * std::sin(phase));
+            for (int ch = 0; ch < buf.getNumChannels(); ++ch)
+                buf.addSample(ch, onset + i, v);
+        }
+    }
+    if (bassAmp > 0.0f)
+    {
+        for (int s = 0; s < buf.getNumSamples(); ++s)
+        {
+            const float v = bassAmp * static_cast<float>(
+                std::sin(2.0 * juce::MathConstants<double>::pi * 55.0 * s / sr));
+            for (int ch = 0; ch < buf.getNumChannels(); ++ch)
+                buf.addSample(ch, s, v);
+        }
+    }
+}
+
+static TransientRenderResult renderEnvelopeTransient(const juce::AudioBuffer<float>& input,
+                                                     float attack, float sustain,
+                                                     float thresholdDb, float attackSpeedMs = 5.0f)
+{
+    const std::vector<int> schedule = {128, 256, 512};
+    XlethTransientProcEffect fx;
+    fx.setParameterValue("attack", attack);
+    fx.setParameterValue("sustain", sustain);
+    fx.setParameterValue("attack_speed", attackSpeedMs);
+    fx.setParameterValue("threshold", thresholdDb);
+    fx.setParameterValue("mix", 100.0f);
+    fx.setParameterValue("midi_detect", 0.0f);
+    fx.prepareToPlay(44100.0, maxBlockSizeOf(schedule));
+    return renderTransientEffectInBlocks(fx, input, schedule);
+}
+
+static double windowGainDb(const juce::AudioBuffer<float>& wet, const juce::AudioBuffer<float>& dry,
+                           int start, int end)
+{
+    return 20.0 * std::log10(windowRms(wet, 0, start, end)
+                             / std::max(windowRms(dry, 0, start, end), 1.0e-12));
+}
+
+static void testTransientEnvelopeModeOnOscillatingHits()
+{
+    std::cout << "  [transient envelope mode on oscillating hits]\n";
+    constexpr double kSR = 44100.0;
+    juce::AudioBuffer<float> dry(2, kKickLoopHits * kKickLoopSpacing);
+    fillKickLoop(dry, kSR, 0.0f);
+
+    // attack_speed 5 ms -> 221-sample attack window. Onset = first 3 ms of
+    // each hit; body = 40..200 ms in, well past the window.
+    constexpr int kOnsetEnd = 132;
+    constexpr int kBodyStart = 1764;
+    constexpr int kBodyEnd = 8820;
+
+    const auto attackUp = renderEnvelopeTransient(dry, 100.0f, 0.0f, -24.0f);
+    const auto sustainDown = renderEnvelopeTransient(dry, 0.0f, -100.0f, -24.0f);
+
+    for (int h = 0; h < kKickLoopHits; ++h)
+    {
+        const int on = h * kKickLoopSpacing;
+        const double onsetBoost = windowGainDb(attackUp.output, dry, on, on + kOnsetEnd);
+        const double bodyBoost = windowGainDb(attackUp.output, dry, on + kBodyStart, on + kBodyEnd);
+        const double bodyCut = windowGainDb(sustainDown.output, dry, on + kBodyStart, on + kBodyEnd);
+        const double onsetCut = windowGainDb(sustainDown.output, dry, on, on + kOnsetEnd);
+
+        CHECK(onsetBoost > 6.0,
+              "attack +100 should lift every hit's onset by more than 6 dB");
+        CHECK(std::abs(bodyBoost) < 0.5,
+              "attack must leave the body of the hit alone (was a flat gain on oscillating audio)");
+        CHECK(bodyCut < -8.0,
+              "sustain -100 should cut the body of every hit (sustain never engaged before)");
+        CHECK(onsetCut > -1.5,
+              "sustain must not touch the onset while the attack window owns it");
+    }
+}
+
+static void testTransientEnvelopeModeBusyBus()
+{
+    std::cout << "  [transient envelope mode on a busy bus]\n";
+    constexpr double kSR = 44100.0;
+
+    // Kicks over a running bass line with a low threshold: the gate never
+    // closes between hits, so each hit must be found by the envelope rising,
+    // not by the gate re-opening.
+    juce::AudioBuffer<float> dry(2, kKickLoopHits * kKickLoopSpacing);
+    fillKickLoop(dry, kSR, 0.1f);
+    const auto attackUp = renderEnvelopeTransient(dry, 100.0f, 0.0f, -50.0f);
+    for (int h = 0; h < kKickLoopHits; ++h)
+    {
+        const int on = h * kKickLoopSpacing;
+        CHECK(windowGainDb(attackUp.output, dry, on, on + 132) > 4.0,
+              "every hit on a bus whose gate stays open should still get its attack boost");
+        CHECK(std::abs(windowGainDb(attackUp.output, dry, on + 1764, on + 8820)) < 0.5,
+              "the bass between hits must not pick up attack gain");
+    }
+
+    // A hit that lands right as a tone stops, at a slow attack_speed: the slow
+    // follower is still high from the tone, and a detector whose rise scaled
+    // with attack_speed found these hits up to 9 ms late, so the front of the
+    // hit was left in the sustain stage.
+    {
+        juce::AudioBuffer<float> toneThenHit(2, kKickLoopHits * kKickLoopSpacing);
+        fillKickLoop(toneThenHit, kSR, 0.0f);
+        for (int h = 0; h < kKickLoopHits; ++h)
+        {
+            const int on = h * kKickLoopSpacing;
+            for (int s = std::max(0, on - 4410); s < on; ++s)   // 100 ms of 220 Hz before each hit
+            {
+                const float v = 0.15f * static_cast<float>(
+                    std::sin(2.0 * juce::MathConstants<double>::pi * 220.0 * s / kSR));
+                toneThenHit.addSample(0, s, v);
+                toneThenHit.addSample(1, s, v);
+            }
+        }
+        const auto shaped = renderEnvelopeTransient(toneThenHit, 100.0f, -100.0f, -50.0f, 20.0f);
+        for (int h = 1; h < kKickLoopHits; ++h)
+        {
+            const int on = h * kKickLoopSpacing;
+            CHECK(windowGainDb(shaped.output, toneThenHit, on, on + 132) > 4.0,
+                  "a hit right after a tone stops should be found at once, even at attack_speed 20 ms");
+        }
+    }
+
+    // A steady low tone has no onsets after the first: attack must not keep
+    // re-firing on the ripple of a 55 Hz sine.
+    for (const float hz : {30.0f, 55.0f, 110.0f})
+    {
+        juce::AudioBuffer<float> tone(2, 44100);
+        fillSineBuffer(tone, kSR, 0.3f, hz);
+        for (const float speed : {0.5f, 5.0f, 20.0f})
+        {
+            const auto shaped = renderEnvelopeTransient(tone, 100.0f, 0.0f, -50.0f, speed);
+            CHECK(std::abs(windowGainDb(shaped.output, tone, 4410, 44100)) < 0.25,
+                  "a steady tone must not re-trigger the attack window");
+        }
+    }
 }
 
 static void testResonanceSuppressorWolaIdentity()
@@ -3664,6 +4241,702 @@ static void testResonanceSuppressorVisualization()
           "RS disabled visualization should emit no new frames after drain");
 }
 
+// ─── Resonance Suppressor: New High Quality engine (ResonanceCore) ──────────
+//
+// [RSCore] The opt-in hq_engine = New path: latency (reported == measured ==
+// Core::latencyFor, constant through bypass / mix 0), quality changes as live
+// tier requests, Mid / Side through the core's aux channel, structural
+// transitions (fade-out, reset, fade-in: bounded steps, no comb), state round
+// trips for both engines, old states restoring as Classic, the viz tap.
+
+namespace rsnew
+{
+using Core = xleth::dsp::resonance::Core;
+
+static void configureNew(XlethResonanceSuppressorEffect& fx, int quality, float depth)
+{
+    fx.setCoreInstanceIndex(0);
+    fx.setParameterValue("processing_mode", 1.0f);
+    fx.setParameterValue("hq_engine", 1.0f);
+    fx.setParameterValue("quality", static_cast<float>(quality));
+    fx.setParameterValue("depth", depth);
+    fx.setParameterValue("mode", 1.0f);
+}
+
+// Stereo pink noise (Kellet) through an RBJ +12 dB / Q 8 bell at bellHz.
+static void fillPinkBell(juce::AudioBuffer<float>& buf, double sr, float bellHz, float gain, std::uint32_t seed)
+{
+    for (int ch = 0; ch < buf.getNumChannels(); ++ch)
+    {
+        std::uint32_t lcg = seed ^ static_cast<std::uint32_t>(ch * 7919 + 1);
+        float b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
+        juce::dsp::IIR::Filter<float> peak;
+        peak.coefficients = juce::dsp::IIR::Coefficients<float>::makePeakFilter(
+            sr, bellHz, 8.0f, juce::Decibels::decibelsToGain(12.0f));
+        float* d = buf.getWritePointer(ch);
+        for (int s = 0; s < buf.getNumSamples(); ++s)
+        {
+            lcg = lcg * 1664525u + 1013904223u;
+            const float white = static_cast<float>((lcg >> 8) & 0x00ffffffu) / 8388608.0f - 1.0f;
+            b0 = 0.99886f * b0 + white * 0.0555179f;
+            b1 = 0.99332f * b1 + white * 0.0750759f;
+            b2 = 0.96900f * b2 + white * 0.1538520f;
+            b3 = 0.86650f * b3 + white * 0.3104856f;
+            b4 = 0.55000f * b4 + white * 0.5329522f;
+            b5 = -0.7616f * b5 - white * 0.0168980f;
+            const float pink = b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362f;
+            b6 = white * 0.115926f;
+            d[s] = peak.processSample(pink * gain);
+        }
+    }
+}
+
+static void fillWhite(juce::AudioBuffer<float>& buf, float amp, std::uint32_t seed)
+{
+    for (int ch = 0; ch < buf.getNumChannels(); ++ch)
+    {
+        std::uint32_t lcg = seed ^ static_cast<std::uint32_t>(ch * 104729 + 7);
+        float* d = buf.getWritePointer(ch);
+        for (int s = 0; s < buf.getNumSamples(); ++s)
+        {
+            lcg = lcg * 1664525u + 1013904223u;
+            d[s] = amp * (static_cast<float>((lcg >> 8) & 0x00ffffffu) / 8388608.0f - 1.0f);
+        }
+    }
+}
+
+// Renders `input` in fixed blocks; before(pos) runs before each block (the
+// "message thread" in a single-threaded test).
+static juce::AudioBuffer<float> render(XlethResonanceSuppressorEffect& fx,
+                                       const juce::AudioBuffer<float>& input,
+                                       int block,
+                                       const std::function<void(int)>& before = {})
+{
+    juce::AudioBuffer<float> out(input.getNumChannels(), input.getNumSamples());
+    juce::MidiBuffer midi;
+    for (int pos = 0; pos < input.getNumSamples(); pos += block)
+    {
+        if (before) before(pos);
+        const int n = std::min(block, input.getNumSamples() - pos);
+        juce::AudioBuffer<float> b(input.getNumChannels(), n);
+        for (int ch = 0; ch < input.getNumChannels(); ++ch)
+            b.copyFrom(ch, 0, input, ch, pos, n);
+        fx.processBlock(b, midi);
+        for (int ch = 0; ch < input.getNumChannels(); ++ch)
+            out.copyFrom(ch, pos, b, ch, 0, n);
+    }
+    return out;
+}
+
+static int peakIndex(const juce::AudioBuffer<float>& b, int ch, float* peakOut = nullptr)
+{
+    int idx = -1;
+    float peak = 0.0f;
+    for (int s = 0; s < b.getNumSamples(); ++s)
+        if (std::abs(b.getSample(ch, s)) > peak) { peak = std::abs(b.getSample(ch, s)); idx = s; }
+    if (peakOut) *peakOut = peak;
+    return idx;
+}
+
+static bool bitIdentical(const juce::AudioBuffer<float>& a, const juce::AudioBuffer<float>& b, int from = 0)
+{
+    if (a.getNumChannels() != b.getNumChannels() || a.getNumSamples() != b.getNumSamples())
+        return false;
+    for (int ch = 0; ch < a.getNumChannels(); ++ch)
+        if (std::memcmp(a.getReadPointer(ch) + from, b.getReadPointer(ch) + from,
+                        sizeof(float) * static_cast<std::size_t>(a.getNumSamples() - from)) != 0)
+            return false;
+    return true;
+}
+
+static std::string stateWithoutParam(XlethResonanceSuppressorEffect& fx, const char* id, juce::MemoryBlock& out)
+{
+    juce::MemoryBlock state;
+    fx.getStateInformation(state);
+    auto xml = juce::AudioProcessor::getXmlFromBinary(state.getData(), static_cast<int>(state.getSize()));
+    if (xml == nullptr) return "no xml";
+    for (auto* child = xml->getFirstChildElement(); child != nullptr; child = child->getNextElement())
+    {
+        if (child->hasTagName("PARAM") && child->getStringAttribute("id") == id)
+        {
+            xml->removeChildElement(child, true);
+            break;
+        }
+    }
+    juce::AudioProcessor::copyXmlToBinary(*xml, out);
+    return {};
+}
+} // namespace rsnew
+
+static void testResonanceSuppressorNewEngineLatency()
+{
+    using namespace rsnew;
+    std::cout << "  [RSCore] new engine latency, bypass / mix 0, quality changes\n";
+
+    // Reported == Core::latencyFor == measured impulse delay, every tier, two rates.
+    for (double sr : { 48000.0, 96000.0 })
+    {
+        for (int q = 0; q < 3; ++q)
+        {
+            XlethResonanceSuppressorEffect fx;
+            configureNew(fx, q, 0.0f);
+            fx.prepareToPlay(sr, 256);
+            const int expected = Core::latencyFor(sr, static_cast<Core::FrameTier>(q));
+            juce::AudioBuffer<float> in(2, expected * 3 + 8192);
+            in.clear();
+            in.setSample(0, 4096, 1.0f);
+            in.setSample(1, 4096, -0.75f);
+            const auto out = render(fx, in, 256);
+            float peak = 0.0f;
+            const int idx = peakIndex(out, 0, &peak);
+            std::cout << "    [RSCore] sr " << sr << " quality " << q << ": reported " << fx.getLatencySamples()
+                      << ", latencyFor " << expected << ", measured " << (idx - 4096) << " (peak " << peak << ")\n";
+            CHECK(fx.getLatencySamples() == expected, "[RSCore] reported latency == Core::latencyFor");
+            CHECK(idx - 4096 == expected && peak > 0.99f, "[RSCore] measured impulse latency == Core::latencyFor");
+        }
+    }
+
+    // Bypass and mix 0 keep the latency constant, and the output stays on it.
+    {
+        constexpr double kSR = 48000.0;
+        XlethResonanceSuppressorEffect fx;
+        configureNew(fx, 1, 100.0f);
+        fx.prepareToPlay(kSR, 128);
+        const int lat = fx.getLatencySamples();
+        const auto notify0 = fx.getLatencyChangeNotifyCount();
+        fx.setBypassed(true);
+        const int latBypassed = fx.getLatencySamples();
+        fx.setBypassed(false);
+        fx.setParameterValue("mix", 0.0f);
+        const int latMix0 = fx.getLatencySamples();
+        fx.setParameterValue("delta", 1.0f);
+        fx.setParameterValue("delta", 0.0f);
+        fx.setParameterValue("mix", 100.0f);
+        std::cout << "    [RSCore] latency active / bypassed / mix 0: " << lat << " / " << latBypassed << " / " << latMix0
+                  << ", latency notifications " << (fx.getLatencyChangeNotifyCount() - notify0) << "\n";
+        CHECK(lat == 1024 && latBypassed == lat && latMix0 == lat, "[RSCore] bypass and mix 0 keep the New engine latency");
+        CHECK(fx.getLatencyChangeNotifyCount() == notify0, "[RSCore] bypass / mix toggles never retarget PDC");
+
+        // Bypassed and mix-0 outputs are the ALIGNED dry: an impulse lands at +latency.
+        for (int variant = 0; variant < 2; ++variant)
+        {
+            XlethResonanceSuppressorEffect f;
+            configureNew(f, 1, 100.0f);
+            if (variant == 1) f.setParameterValue("mix", 0.0f);
+            f.prepareToPlay(kSR, 128);
+            if (variant == 0) f.setBypassed(true);
+            juce::AudioBuffer<float> in(2, 16384);
+            in.clear();
+            in.setSample(0, 8192, 0.9f);
+            in.setSample(1, 8192, -0.9f);
+            const auto out = render(f, in, 128);
+            float peak = 0.0f;
+            const int idx = peakIndex(out, 0, &peak);
+            int above = 0;
+            for (int s = 0; s < out.getNumSamples(); ++s)
+                if (std::abs(out.getSample(0, s)) > 1.0e-4f) ++above;
+            std::cout << "    [RSCore] " << (variant == 0 ? "bypassed" : "mix 0") << " impulse at +" << (idx - 8192)
+                      << " peak " << peak << ", samples above 1e-4: " << above << "\n";
+            CHECK(idx - 8192 == 1024 && std::abs(peak - 0.9f) < 1.0e-5f && above == 1,
+                  "[RSCore] bypassed / mix 0 New output is the dry aligned to the constant latency");
+        }
+    }
+
+    // Quality change: latency published at the request (message thread), the
+    // core reaches it within its hold + crossfade, no reprepare, no allocation.
+    {
+        constexpr double kSR = 48000.0;
+        XlethResonanceSuppressorEffect fx;
+        configureNew(fx, 1, 0.0f);
+        fx.prepareToPlay(kSR, 64);
+        juce::AudioBuffer<float> sil(2, 64);
+        juce::MidiBuffer midi;
+        for (int i = 0; i < 100; ++i) { sil.clear(); fx.processBlock(sil, midi); }
+
+        const std::array<int, 4> seq { 2, 0, 1, 2 };
+        for (int q : seq)
+        {
+            fx.setParameterValue("quality", static_cast<float>(q));
+            const int published = fx.getLatencySamples();
+            const int expected = Core::latencyFor(kSR, static_cast<Core::FrameTier>(q));
+            int samples = 0;
+            while (fx.getCoreForTest().currentLatency() != expected && samples < 48000)
+            {
+                sil.clear();
+                fx.processBlock(sil, midi);
+                samples += 64;
+            }
+            std::cout << "    [RSCore] quality -> " << q << ": published " << published << " at the request, core on it after "
+                      << samples << " samples (" << (1000.0 * samples / kSR) << " ms)\n";
+            CHECK(published == expected, "[RSCore] quality change publishes Core::latencyFor at the request");
+            const int hop = expected / 4;
+            CHECK(samples <= 3 * hop + 240 + 64 + 64, "[RSCore] core reaches the published latency within hold + crossfade");
+        }
+        CHECK(fx.getCoreForTest().tierSwitchCount() == 4, "[RSCore] quality changes are live tier requests (4 adopted)");
+        CHECK(fx.getStructureSwitchCount() == 0, "[RSCore] a New-engine quality change is not a structural transition");
+
+        juce::AudioBuffer<float> in(2, 8192);
+        in.clear();
+        in.setSample(0, 1000, 1.0f);
+        const auto out = render(fx, in, 64);
+        float peak = 0.0f;
+        const int idx = peakIndex(out, 0, &peak);
+        CHECK(idx - 1000 == 2048 && peak > 0.99f, "[RSCore] impulse after quality changes lands at the new latency");
+    }
+}
+
+static void testResonanceSuppressorNewEngineMidSide()
+{
+    using namespace rsnew;
+    std::cout << "  [RSCore] new engine Mid / Side: untouched component\n";
+    constexpr double kSR = 48000.0;
+    constexpr int kN = 48000;
+
+    juce::AudioBuffer<float> base(1, kN);
+    fillPinkBell(base, kSR, 2500.0f, 0.05f, 0x1234u);
+
+    for (int mode = 1; mode <= 2; ++mode)
+    {
+        for (float depth : { 0.0f, 100.0f })
+        {
+            // Mid mode gets pure side content, Side mode pure mid content: the
+            // processed component is exactly zero, the other one passes through
+            // the core's aux channel delay-only.
+            juce::AudioBuffer<float> in(2, kN);
+            for (int s = 0; s < kN; ++s)
+            {
+                const float v = base.getSample(0, s);
+                in.setSample(0, s, v);
+                in.setSample(1, s, mode == 1 ? -v : v);
+            }
+            XlethResonanceSuppressorEffect fx;
+            configureNew(fx, 1, depth);
+            fx.setParameterValue("stereo_mode", static_cast<float>(mode));
+            fx.prepareToPlay(kSR, 100);
+            const auto out = render(fx, in, 100);
+            const int lat = fx.getLatencySamples();
+            bool exact = true;
+            for (int ch = 0; ch < 2 && exact; ++ch)
+                for (int s = lat; s < kN; ++s)
+                    if (std::memcmp(out.getReadPointer(ch) + s, in.getReadPointer(ch) + (s - lat), sizeof(float)) != 0)
+                    { exact = false; break; }
+            std::cout << "    [RSCore] " << (mode == 1 ? "Mid" : "Side") << " mode, depth " << depth
+                      << ": untouched component bit-identical: " << exact << "\n";
+            CHECK(exact, "[RSCore] Mid / Side leave the untouched component bit-identical (delayed)");
+        }
+    }
+
+    // General material at depth 0: the untouched component of the output vs the
+    // delayed input's (rounding of the M +- S recombination only).
+    for (int mode = 1; mode <= 2; ++mode)
+    {
+        juce::AudioBuffer<float> in(2, kN);
+        fillPinkBell(in, kSR, 1800.0f, 0.06f, 0x777u);
+        XlethResonanceSuppressorEffect fx;
+        configureNew(fx, 1, 0.0f);
+        fx.setParameterValue("stereo_mode", static_cast<float>(mode));
+        fx.prepareToPlay(kSR, 100);
+        const auto out = render(fx, in, 100);
+        const int lat = fx.getLatencySamples();
+        double maxDiff = 0.0;
+        for (int s = lat; s < kN; ++s)
+        {
+            const float l = out.getSample(0, s), r = out.getSample(1, s);
+            const float li = in.getSample(0, s - lat), ri = in.getSample(1, s - lat);
+            const float outComp = mode == 1 ? 0.5f * (l - r) : 0.5f * (l + r);
+            const float inComp  = mode == 1 ? 0.5f * (li - ri) : 0.5f * (li + ri);
+            maxDiff = std::max(maxDiff, static_cast<double>(std::abs(outComp - inComp)));
+        }
+        std::cout << "    [RSCore] " << (mode == 1 ? "Mid" : "Side") << " mode, general input, depth 0: max |untouched diff| "
+                  << maxDiff << "\n";
+        CHECK(maxDiff < 1.0e-6, "[RSCore] untouched component within float rounding on general input");
+    }
+}
+
+// Steps, dip and comb checks of structural transitions (engine, processing
+// mode, stereo mode) and of a New-engine tier change.
+static void testResonanceSuppressorNewEngineTransitions()
+{
+    using namespace rsnew;
+    std::cout << "  [RSCore] structural transitions\n";
+    constexpr double kSR = 48000.0;
+    constexpr int kBlock = 100;
+    constexpr int kN = 48000 * 3;
+    constexpr int kChange = 48000;
+
+    struct Case { const char* name; std::function<void(XlethResonanceSuppressorEffect&)> from, to; };
+    auto setStruct = [](int mode, int engine, int stereo) {
+        return [=](XlethResonanceSuppressorEffect& fx) {
+            fx.setParameterValue("processing_mode", static_cast<float>(mode));
+            fx.setParameterValue("hq_engine", static_cast<float>(engine));
+            fx.setParameterValue("stereo_mode", static_cast<float>(stereo));
+        };
+    };
+    const std::vector<Case> cases {
+        { "Classic -> New",      setStruct(1, 0, 0), setStruct(1, 1, 0) },
+        { "New -> Classic",      setStruct(1, 1, 0), setStruct(1, 0, 0) },
+        { "New -> Low Latency",  setStruct(1, 1, 0), setStruct(0, 1, 0) },
+        { "Low Latency -> New",  setStruct(0, 1, 0), setStruct(1, 1, 0) },
+        { "New Stereo -> Mid",   setStruct(1, 1, 0), setStruct(1, 1, 1) },
+        { "New Mid -> Side",     setStruct(1, 1, 1), setStruct(1, 1, 2) },
+        { "New Side -> Stereo",  setStruct(1, 1, 2), setStruct(1, 1, 0) },
+        { "New quality N -> H",  setStruct(1, 1, 0), [](XlethResonanceSuppressorEffect& fx) { fx.setParameterValue("quality", 2.0f); } },
+    };
+
+    juce::AudioBuffer<float> pink(2, kN);
+    fillPinkBell(pink, kSR, 2500.0f, 0.06f, 0xBEEFu);
+    juce::AudioBuffer<float> sine(2, kN);
+    for (int s = 0; s < kN; ++s)
+    {
+        const float v = 0.3f * std::sin(2.0f * juce::MathConstants<float>::pi * 1000.0f * static_cast<float>(s) / static_cast<float>(kSR));
+        sine.setSample(0, s, v);
+        sine.setSample(1, s, 0.8f * v);
+    }
+
+    for (const auto& c : cases)
+    {
+        for (int sig = 0; sig < 2; ++sig)
+        {
+            const auto& in = sig == 0 ? pink : sine;
+            auto run = [&](bool change) {
+                XlethResonanceSuppressorEffect fx;
+                fx.setCoreInstanceIndex(0);
+                fx.setParameterValue("depth", 100.0f);
+                fx.setParameterValue("mode", 1.0f);
+                c.from(fx);
+                fx.prepareToPlay(kSR, kBlock);
+                bool done = false;
+                return render(fx, in, kBlock, [&](int pos) { if (change && !done && pos >= kChange) { c.to(fx); done = true; } });
+            };
+            const auto steady = run(false);
+            const auto changed = run(true);
+            // Steady reference: the largest step of the UNCHANGED run over the same
+            // window and of a run of the target structure (after its warm-up).
+            const float stepSteady = maxAdjacentStepInRange(steady, kChange - 4800, kChange + 9600);
+            const float stepChanged = maxAdjacentStepInRange(changed, kChange - 4800, kChange + 9600);
+            const float stepTargetLate = maxAdjacentStepInRange(changed, kChange + 24000, kChange + 48000);
+            // The target engine starts from reset state, so a held resonance passes
+            // unsuppressed until its detector engages again (tens of ms): the output
+            // may rise to the INPUT's level, never step beyond it. A click is a step
+            // larger than the larger of the input's own steps and the steady outputs'.
+            const float stepInput = maxAdjacentStepInRange(in, kChange - 4800, kChange + 9600);
+            const float stepOut = std::max(stepSteady, stepTargetLate);
+            const float ref = std::max(stepOut, stepInput);
+            const float ratio = ref > 0.0f ? stepChanged / ref : 0.0f;
+            std::cout << "    [RSCore] " << c.name << " (" << (sig == 0 ? "pink+bell" : "1 kHz sine")
+                      << "): max step " << stepChanged << " | steady out " << stepOut
+                      << " (x" << (stepOut > 0.0f ? stepChanged / stepOut : 0.0f) << ") | input " << stepInput
+                      << " | bound ratio " << ratio << "\n";
+            CHECK(allSamplesFinite(changed), "[RSCore] transition output finite");
+            CHECK(ratio <= 1.25f, std::string("[RSCore] transition step bounded: ") + c.name);
+        }
+    }
+
+    // Dip duration: DC 0.5 at depth 0 (every engine passes it at unit gain).
+    {
+        juce::AudioBuffer<float> dc(2, kN);
+        for (int ch = 0; ch < 2; ++ch)
+            for (int s = 0; s < kN; ++s)
+                dc.setSample(ch, s, 0.5f);
+        for (const auto& c : cases)
+        {
+            XlethResonanceSuppressorEffect fx;
+            fx.setCoreInstanceIndex(0);
+            fx.setParameterValue("depth", 0.0f);
+            c.from(fx);
+            fx.prepareToPlay(kSR, kBlock);
+            bool done = false;
+            const auto out = render(fx, dc, kBlock, [&](int pos) { if (!done && pos >= kChange) { c.to(fx); done = true; } });
+            int first = -1, last = -1, silent = 0;
+            for (int s = kChange; s < kN; ++s)
+            {
+                const float v = out.getSample(0, s);
+                if (std::abs(v - 0.5f) > 1.0e-3f) { if (first < 0) first = s; last = s; }
+                if (std::abs(v) < 1.0e-6f) ++silent;
+            }
+            const double dipMs = first >= 0 ? 1000.0 * (last - first + 1) / kSR : 0.0;
+            std::cout << "    [RSCore] dip " << c.name << ": " << dipMs << " ms (starts " << (first >= 0 ? first - kChange : -1)
+                      << " samples after the request, silent " << (1000.0 * silent / kSR) << " ms), latency now "
+                      << fx.getLatencySamples() << "\n";
+            CHECK(allSamplesFinite(out), "[RSCore] dip run finite");
+            CHECK(dipMs < 60.0, "[RSCore] structural dip shorter than fade + latency + fade");
+        }
+    }
+
+    // No comb: depth 0, mix 50 % on white noise across Low Latency -> New (0 ->
+    // 1024 samples). In every 64-sample window the output is explained by ONE
+    // delay of the input (least squares on x[n] and x[n - 1024]): the dip
+    // never mixes the two timelines.
+    {
+        juce::AudioBuffer<float> wn(2, kN);
+        fillWhite(wn, 0.25f, 0x5151u);
+
+        // Joint least squares y ~ a x[n] + b x[n - 1024] per 128-sample window;
+        // the score is the share of the window's output energy carried by the
+        // WEAKER delay. One delay (even with a gain ramp inside the window): a
+        // few %. Both delays at once (a comb): about 50 %.
+        struct CombScore { double worst = 0.0; int at = 0; double rms = 0.0; };
+        auto combScore = [](const juce::AudioBuffer<float>& y, const juce::AudioBuffer<float>& x, int from, int to)
+        {
+            CombScore r;
+            for (int w = from; w + 128 < to; w += 128)
+            {
+                double s00 = 0, s11 = 0, s01 = 0, r0 = 0, r1 = 0, yy = 0;
+                for (int s = w; s < w + 128; ++s)
+                {
+                    const double v = y.getSample(0, s), x0 = x.getSample(0, s), x1 = x.getSample(0, s - 1024);
+                    s00 += x0 * x0; s11 += x1 * x1; s01 += x0 * x1; r0 += x0 * v; r1 += x1 * v; yy += v * v;
+                }
+                if (yy < 1.0e-4) continue;   // silent part of the dip
+                const double det = s00 * s11 - s01 * s01;
+                const double a = (r0 * s11 - r1 * s01) / det;
+                const double b = (r1 * s00 - r0 * s01) / det;
+                const double share = std::min(a * a * s00, b * b * s11) / yy;
+                if (share > r.worst) { r.worst = share; r.at = w; r.rms = std::sqrt(yy / 128.0); }
+            }
+            return r;
+        };
+
+        // Negative control: an actual comb (the two timelines summed) must score high.
+        juce::AudioBuffer<float> comb(2, kN);
+        comb.clear();
+        for (int s = 1024; s < kN; ++s)
+            comb.setSample(0, s, 0.5f * (wn.getSample(0, s) + wn.getSample(0, s - 1024)));
+        const double combControl = combScore(comb, wn, kChange - 4096, kChange + 8192).worst;
+        std::cout << "    [RSCore] comb check negative control (x[n] + x[n-1024]) / 2: " << combControl << "\n";
+        CHECK(combControl > 0.3, "[RSCore] comb metric detects a real two-delay mix");
+        for (int dir = 0; dir < 2; ++dir)
+        {
+            XlethResonanceSuppressorEffect fx;
+            fx.setCoreInstanceIndex(0);
+            fx.setParameterValue("depth", 0.0f);
+            fx.setParameterValue("mix", 50.0f);
+            setStruct(dir == 0 ? 0 : 1, 1, 0)(fx);
+            fx.prepareToPlay(kSR, kBlock);
+            bool done = false;
+            const auto out = render(fx, wn, kBlock, [&](int pos) {
+                if (!done && pos >= kChange) { setStruct(dir == 0 ? 1 : 0, 1, 0)(fx); done = true; } });
+            const auto score = combScore(out, wn, kChange - 4096, kChange + 8192);
+            std::cout << "    [RSCore] comb check " << (dir == 0 ? "LL -> New" : "New -> LL")
+                      << ": worst share of the weaker delay in a 128-sample window " << score.worst
+                      << " (at " << (score.at - kChange) << " samples, output rms " << score.rms << ")\n";
+            CHECK(score.worst < 0.1, "[RSCore] transition never mixes the two latencies (no comb)");
+        }
+    }
+}
+
+static void testResonanceSuppressorNewEngineState()
+{
+    using namespace rsnew;
+    std::cout << "  [RSCore] state round trip and legacy restore\n";
+    constexpr double kSR = 48000.0;
+    juce::AudioBuffer<float> in(2, 48000);
+    fillPinkBell(in, kSR, 2500.0f, 0.06f, 0x4242u);
+
+    auto configureRich = [](XlethResonanceSuppressorEffect& fx, int engine) {
+        fx.setCoreInstanceIndex(0);
+        fx.setParameterValue("processing_mode", 1.0f);
+        fx.setParameterValue("hq_engine", static_cast<float>(engine));
+        fx.setParameterValue("quality", 2.0f);
+        fx.setParameterValue("depth", 73.0f);
+        fx.setParameterValue("selectivity", 41.0f);
+        fx.setParameterValue("sharpness", 62.0f);
+        fx.setParameterValue("attack", 22.0f);
+        fx.setParameterValue("release", 333.0f);
+        fx.setParameterValue("stereo_link", 55.0f);
+        fx.setParameterValue("mode", 1.0f);
+        fx.setParameterValue("wc_b2_gain", 5.0f);
+        fx.setParameterValue("wc_hp", 120.0f);
+        fx.setParameterValue("mix", 80.0f);
+    };
+
+    for (int engine = 0; engine < 2; ++engine)
+    {
+        XlethResonanceSuppressorEffect a;
+        configureRich(a, engine);
+        juce::MemoryBlock state;
+        a.getStateInformation(state);
+
+        XlethResonanceSuppressorEffect b;
+        b.setCoreInstanceIndex(0);
+        b.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+        bool paramsEqual = true;
+        for (auto* p : a.getParameters())
+        {
+            auto* rp = dynamic_cast<juce::RangedAudioParameter*>(p);
+            if (rp == nullptr) continue;
+            const auto id = rp->paramID.toStdString();
+            if (std::abs(a.getParameterValue(id) - b.getParameterValue(id)) > 1.0e-6f) paramsEqual = false;
+        }
+        a.prepareToPlay(kSR, 256);
+        b.prepareToPlay(kSR, 256);
+        const auto outA = render(a, in, 256);
+        const auto outB = render(b, in, 256);
+        std::cout << "    [RSCore] " << (engine == 0 ? "Classic" : "New") << " round trip: params equal " << paramsEqual
+                  << ", output bit-identical " << bitIdentical(outA, outB) << ", hq_engine " << b.getParameterValue("hq_engine") << "\n";
+        CHECK(paramsEqual, "[RSCore] state round trip restores every parameter");
+        CHECK(std::abs(b.getParameterValue("hq_engine") - static_cast<float>(engine)) < 1.0e-6f, "[RSCore] hq_engine round-trips");
+        CHECK(bitIdentical(outA, outB), "[RSCore] state round trip output bit-identical");
+    }
+
+    // An old state (no hq_engine element) restores as Classic, even into an
+    // instance currently set to New, and sounds identical to the legacy output.
+    {
+        XlethResonanceSuppressorEffect legacy;
+        configureRich(legacy, 0);
+        juce::MemoryBlock oldState;
+        const auto err = stateWithoutParam(legacy, "hq_engine", oldState);
+        CHECK(err.empty(), "[RSCore] old-state blob built");
+
+        XlethResonanceSuppressorEffect restored;
+        restored.setCoreInstanceIndex(0);
+        restored.setParameterValue("hq_engine", 1.0f);
+        restored.setStateInformation(oldState.getData(), static_cast<int>(oldState.getSize()));
+        CHECK(restored.getParameterValue("hq_engine") == 0.0f, "[RSCore] a state without hq_engine restores as Classic");
+
+        legacy.prepareToPlay(kSR, 256);
+        restored.prepareToPlay(kSR, 256);
+        const auto outLegacy = render(legacy, in, 256);
+        const auto outRestored = render(restored, in, 256);
+        std::cout << "    [RSCore] old state into a New instance: hq_engine " << restored.getParameterValue("hq_engine")
+                  << ", output bit-identical to the legacy instance " << bitIdentical(outLegacy, outRestored) << "\n";
+        CHECK(bitIdentical(outLegacy, outRestored), "[RSCore] old-state restore sounds identical to the legacy output");
+
+        // The same restore while running on the New engine: adopted at the next
+        // block without a fade, from cleared state (as the old reprepare did).
+        XlethResonanceSuppressorEffect live;
+        configureRich(live, 1);
+        live.prepareToPlay(kSR, 256);
+        (void) render(live, in, 256);
+        live.setStateInformation(oldState.getData(), static_cast<int>(oldState.getSize()));
+        XlethResonanceSuppressorEffect fresh;
+        configureRich(fresh, 0);
+        fresh.prepareToPlay(kSR, 256);
+        const auto outLive = render(live, in, 256);
+        const auto outFresh = render(fresh, in, 256);
+        std::cout << "    [RSCore] old state restored while running New: bit-identical to a fresh Classic instance "
+                  << bitIdentical(outLive, outFresh) << ", structural fades " << live.getStructureSwitchCount() << "\n";
+        CHECK(bitIdentical(outLive, outFresh), "[RSCore] live restore of an old state = fresh Classic output");
+        CHECK(live.getStructureSwitchCount() == 0, "[RSCore] a state restore snaps (no fade)");
+    }
+}
+
+static void testResonanceSuppressorNewEngineVizAndMeters()
+{
+    using namespace rsnew;
+    std::cout << "  [RSCore] new engine viz (schema v3) and meters\n";
+    constexpr double kSR = 48000.0;
+    XlethResonanceSuppressorEffect fx;
+    configureNew(fx, 1, 100.0f);
+    fx.prepareToPlay(kSR, 128);
+    fx.setVisualizationEnabled(true);
+    juce::AudioBuffer<float> in(2, 48000 * 2);
+    fillPinkBell(in, kSR, 2500.0f, 0.06f, 0x9999u);
+    juce::MidiBuffer midi;
+    float meter2 = 0.0f, meter3 = 0.0f;
+    std::vector<std::uint8_t> drain(sizeof(xleth::viz::ResonanceBucket) * 2048);
+    std::size_t buckets = 0;
+    xleth::viz::ResonanceBucket last {};
+    for (int pos = 0; pos + 128 <= in.getNumSamples(); pos += 128)
+    {
+        juce::AudioBuffer<float> b(2, 128);
+        for (int ch = 0; ch < 2; ++ch) b.copyFrom(ch, 0, in, ch, pos, 128);
+        fx.processBlock(b, midi);
+        meter2 = std::max(meter2, fx.readMeterValue(2));
+        meter3 = std::max(meter3, fx.readMeterValue(3));
+        const std::size_t bytes = fx.drainVizFrames(drain.data(), drain.size());
+        if (bytes >= sizeof(last))
+            std::memcpy(&last, drain.data() + bytes - sizeof(last), sizeof(last));
+        buckets += bytes / sizeof(xleth::viz::ResonanceBucket);
+    }
+    const auto& core = fx.getCoreForTest();
+    std::cout << "    [RSCore] buckets " << buckets << " (frames per channel " << core.framesProcessed() << "), fft "
+              << last.fftSize << ", quality " << last.qualityIndex << ", activity " << last.activity
+              << ", meter2 peak " << meter2 << ", meter3 (max band cut dB) peak " << meter3 << "\n";
+    CHECK(fx.getVisualizationSchemaVersion() == 3, "[RSCore] viz schema stays v3");
+    CHECK(static_cast<long long>(buckets) == 2 * core.framesProcessed(), "[RSCore] one bucket per hop and channel");
+    CHECK(last.fftSize == 1024.0f && last.qualityIndex == 1.0f && last.hdr.bucketSamples == 256u, "[RSCore] bucket metadata = the tier in use");
+    CHECK(static_cast<int>(last.bucketCount) == 128, "[RSCore] 128 buckets");
+
+    // Bucket i is centred at 20 Hz x 1000^(i / 127).
+    auto bucketAt = [](float hz) {
+        return std::clamp(static_cast<int>(std::lround(127.0 * std::log(hz / 20.0) / std::log(1000.0))), 0, 127);
+    };
+    bool inRange = true;
+    for (std::size_t i = 0; i < 128; ++i)
+        inRange = inRange && last.spectrum[i] >= 0.0f && last.spectrum[i] <= 1.0f
+               && last.reduction[i] >= 0.0f && last.reduction[i] <= 1.0f
+               && last.weighting[i] >= 0.0f && last.weighting[i] <= 2.5f;
+    const int b25 = bucketAt(25.0f), b1k = bucketAt(1000.0f), b2k5 = bucketAt(2500.0f), b20k = bucketAt(19500.0f), b300 = bucketAt(300.0f);
+    std::cout << "    [RSCore] weighting 25 Hz / 1 kHz / 19.5 kHz: " << last.weighting[b25] << " / " << last.weighting[b1k]
+              << " / " << last.weighting[b20k] << "; reduction 2.5 kHz / 300 Hz: " << last.reduction[b2k5] * 24.0f
+              << " / " << last.reduction[b300] * 24.0f << " dB; spectrum 1 kHz " << last.spectrum[b1k] << "\n";
+    CHECK(inRange, "[RSCore] bucket arrays in their documented ranges");
+    CHECK(last.weighting[b25] == 0.0f && std::abs(last.weighting[b1k] - 1.0f) < 1.0e-6f && last.weighting[b20k] < 0.5f,
+          "[RSCore] viz weighting is the RS default focus curve (0 below 40 Hz, 1 mid, ramp down above 16 kHz)");
+    CHECK(last.reduction[b2k5] * 24.0f > 3.0f && last.reduction[b2k5] > last.reduction[b300], "[RSCore] viz reduction shows the cut at the bell");
+    CHECK(last.spectrum[b1k] > 0.1f, "[RSCore] viz spectrum shows the input");
+    CHECK(meter2 > 0.05f && meter3 > 3.0f, "[RSCore] meters: activity slot 2 and max band cut slot 3 rise");
+
+    // The weight curve the core receives is the RS default on its band grid.
+    const float* w = fx.getCoreWeightCurveForTest();
+    int zeroLow = 0, unity = 0;
+    float top = 1.0f;
+    for (int b = 0; b < core.numBands(); ++b)
+    {
+        const float hz = core.bandCentreHz(b);
+        if (hz < 40.0f && w[b] == 0.0f) ++zeroLow;
+        if (hz > 200.0f && hz < 12000.0f && std::abs(w[b] - 1.0f) < 1.0e-6f) ++unity;
+        if (hz > 18000.0f) top = std::min(top, w[b]);
+    }
+    int lowBands = 0, midBands = 0;
+    for (int b = 0; b < core.numBands(); ++b)
+    {
+        if (core.bandCentreHz(b) < 40.0f) ++lowBands;
+        if (core.bandCentreHz(b) > 200.0f && core.bandCentreHz(b) < 12000.0f) ++midBands;
+    }
+    std::cout << "    [RSCore] core weight curve: " << zeroLow << "/" << lowBands << " bands below 40 Hz at 0, "
+              << unity << "/" << midBands << " bands 200 Hz-12 kHz at 1, min above 18 kHz " << top << "\n";
+    CHECK(zeroLow == lowBands && unity == midBands && top < 0.5f, "[RSCore] the core gets the RS default (non-flat) focus curve");
+    fx.setVisualizationEnabled(false);
+
+    // Display calibration: white noise of RMS r reads 20 log10(r) dBFS in the
+    // 1 kHz bucket, at every tier (averaged over the last second of buckets).
+    const float amp = 0.2f;
+    const double rmsDb = 20.0 * std::log10(amp / std::sqrt(3.0));
+    for (int q = 0; q < 3; ++q)
+    {
+        XlethResonanceSuppressorEffect w;
+        configureNew(w, q, 0.0f);
+        w.prepareToPlay(kSR, 256);
+        w.setVisualizationEnabled(true);
+        juce::AudioBuffer<float> wn(2, 48000 * 2);
+        fillWhite(wn, amp, 0xC0FFEEu + static_cast<std::uint32_t>(q));
+        double sum = 0.0;
+        int count = 0;
+        std::vector<std::uint8_t> buf(sizeof(xleth::viz::ResonanceBucket) * 512);
+        for (int pos = 0; pos + 256 <= wn.getNumSamples(); pos += 256)
+        {
+            juce::AudioBuffer<float> b(2, 256);
+            for (int ch = 0; ch < 2; ++ch) b.copyFrom(ch, 0, wn, ch, pos, 256);
+            w.processBlock(b, midi);
+            const std::size_t bytes = w.drainVizFrames(buf.data(), buf.size());
+            if (pos < 48000) continue;
+            for (std::size_t off = 0; off + sizeof(xleth::viz::ResonanceBucket) <= bytes; off += sizeof(xleth::viz::ResonanceBucket))
+            {
+                xleth::viz::ResonanceBucket bk {};
+                std::memcpy(&bk, buf.data() + off, sizeof(bk));
+                sum += bk.spectrum[b1k] * 120.0 - 120.0;
+                ++count;
+            }
+        }
+        const double readDb = count > 0 ? sum / count : -999.0;
+        std::cout << "    [RSCore] display calibration quality " << q << ": white noise RMS " << rmsDb
+                  << " dBFS reads " << readDb << " dB in the 1 kHz bucket\n";
+        CHECK(std::abs(readDb - rmsDb) < 1.5, "[RSCore] viz spectrum calibrated (white noise RMS in the 1 kHz bucket, every tier)");
+    }
+}
+
 // ─── Delay stereo_mode Tests ────────────────────────────────────────────────
 //
 // stereo_mode (0=Single, 1=Dual, 2=PingPong) selects how the two delay lines
@@ -3908,9 +5181,14 @@ static void testEQLayout()
 
     CHECK(eq.getBandCount() == 0, "EQ should start with 0 bands");
 
-    // Should have 210 APVTS params (13 per band × 16 + 2 global)
+    // 16 per band × 16 bands + 4 global + 16 slopes.  Per band: freq, gain, q,
+    // type, enabled, channel, mode, dyn_{thresh,ratio,attack,release,range},
+    // spec_{sens,sel,attack,release}.  Spectral depth is the band's own gain
+    // knob, so there is no spec_depth parameter.  Global: linphase, oversample,
+    // then ([EQCore]) spectral_engine, spectral_quality, then (appended last)
+    // the per-band Low / High Pass slope b{i}_slope.
     const auto& params = eq.getParameters();
-    CHECK(static_cast<int>(params.size()) == 210, "EQ should have 210 APVTS params");
+    CHECK(static_cast<int>(params.size()) == 276, "EQ should have 276 APVTS params");
 }
 
 static void testEQAddRemove()
@@ -4094,6 +5372,346 @@ static void testEQSerialization()
     }
 }
 
+// ─── EQ per-band channel routing (Stereo / Left / Right / Mid / Side) ───────
+
+// Drives a 1 kHz sine through a single +12 dB bell band routed to `channel`
+// and returns the settled (L, R) output magnitudes.
+//
+// `lGain`/`rGain` scale the sine fed to each channel so M/S routing can be
+// exercised with genuinely correlated / anti-correlated content.
+static void runEQRoutedBell(int channel, float lGain, float rGain,
+                            float& outL, float& outR)
+{
+    constexpr double kSR = 44100.0;
+    constexpr int    kBS = 1024;
+    const float pi2 = 2.0f * juce::MathConstants<float>::pi;
+
+    XlethParametricEQ eq;
+    eq.prepareToPlay(kSR, kBS);
+
+    int b = eq.addBand();
+    eq.setBandParam(b, "freq",    1000.0f);
+    eq.setBandParam(b, "gain",    12.0f);
+    eq.setBandParam(b, "q",       1.0f);
+    eq.setBandParam(b, "type",    0.0f);   // Bell
+    eq.setBandParam(b, "enabled", 1.0f);
+    eq.setBandParam(b, "channel", static_cast<float>(channel));
+
+    juce::AudioBuffer<float> buf(2, kBS);
+    juce::MidiBuffer midi;
+
+    // Several blocks so the freq/gain/Q smoothers settle.
+    for (int blk = 0; blk < 6; ++blk)
+    {
+        for (int s = 0; s < kBS; ++s)
+        {
+            const float v = std::sin(pi2 * 1000.0f
+                * static_cast<float>(blk * kBS + s) / static_cast<float>(kSR));
+            buf.setSample(0, s, v * lGain);
+            buf.setSample(1, s, v * rGain);
+        }
+        eq.processBlock(buf, midi);
+    }
+
+    outL = buf.getMagnitude(0, 0, kBS);
+    outR = buf.getMagnitude(1, 0, kBS);
+}
+
+static void testEQChannelRoutingDefault()
+{
+    std::cout << "  [EQ routing: default is Stereo]\n";
+    XlethParametricEQ eq;
+    eq.prepareToPlay(44100.0, 512);
+
+    eq.addBand();
+    auto bands = nlohmann::json::parse(eq.getBandsAsJSON());
+    CHECK(bands.is_array() && bands.size() == 1, "getBandsAsJSON should report 1 band");
+    CHECK(bands[0].contains("channel"), "band JSON should expose a channel field");
+    CHECK(bands[0]["channel"].get<int>() == 0, "a new band should default to Stereo (0)");
+
+    // Round-trips through the same generic path the N-API handler uses.
+    CHECK(eq.setBandParam(0, "channel", 4.0f), "setBandParam(\"channel\", 4) should succeed");
+    bands = nlohmann::json::parse(eq.getBandsAsJSON());
+    CHECK(bands[0]["channel"].get<int>() == 4, "channel should read back as Side (4)");
+}
+
+static void testEQChannelRoutingLeftRight()
+{
+    std::cout << "  [EQ routing: Left / Right]\n";
+
+    float refL = 0.0f, refR = 0.0f;
+    runEQRoutedBell(0, 1.0f, 1.0f, refL, refR);   // Stereo baseline
+    CHECK(refL > 1.5f && refR > 1.5f, "Stereo routing should boost both channels");
+    CHECK_NEAR(refL, refR, 0.01f, "Stereo routing should treat L and R identically");
+
+    float l = 0.0f, r = 0.0f;
+    runEQRoutedBell(1, 1.0f, 1.0f, l, r);         // Left
+    CHECK_NEAR(l, refL, 0.02f, "Left routing should boost L exactly like Stereo does");
+    CHECK_NEAR(r, 1.0f, 0.02f, "Left routing must leave R untouched (unity)");
+
+    runEQRoutedBell(2, 1.0f, 1.0f, l, r);         // Right
+    CHECK_NEAR(l, 1.0f, 0.02f, "Right routing must leave L untouched (unity)");
+    CHECK_NEAR(r, refR, 0.02f, "Right routing should boost R exactly like Stereo does");
+}
+
+static void testEQChannelRoutingMidSide()
+{
+    std::cout << "  [EQ routing: Mid / Side]\n";
+
+    float refL = 0.0f, refR = 0.0f;
+    runEQRoutedBell(0, 1.0f, 1.0f, refL, refR);   // Stereo baseline, boost factor
+
+    // Fully correlated content: S == 0, so a Mid band sees the whole signal
+    // (behaves like Stereo) and a Side band has nothing to work on.
+    float l = 0.0f, r = 0.0f;
+    runEQRoutedBell(3, 1.0f, 1.0f, l, r);         // Mid on mono-in-stereo
+    CHECK_NEAR(l, refL, 0.02f, "Mid routing on correlated content should match Stereo (L)");
+    CHECK_NEAR(r, refR, 0.02f, "Mid routing on correlated content should match Stereo (R)");
+
+    runEQRoutedBell(4, 1.0f, 1.0f, l, r);         // Side on mono-in-stereo
+    CHECK_NEAR(l, 1.0f, 0.02f, "Side routing on correlated content must pass L through");
+    CHECK_NEAR(r, 1.0f, 0.02f, "Side routing on correlated content must pass R through");
+
+    // Fully anti-correlated content: M == 0, so the roles swap.
+    runEQRoutedBell(3, 1.0f, -1.0f, l, r);        // Mid on anti-correlated
+    CHECK_NEAR(l, 1.0f, 0.02f, "Mid routing on anti-correlated content must pass L through");
+    CHECK_NEAR(r, 1.0f, 0.02f, "Mid routing on anti-correlated content must pass R through");
+
+    runEQRoutedBell(4, 1.0f, -1.0f, l, r);        // Side on anti-correlated
+    CHECK_NEAR(l, refL, 0.02f, "Side routing on anti-correlated content should boost L");
+    CHECK_NEAR(r, refR, 0.02f, "Side routing on anti-correlated content should boost R");
+}
+
+static void testEQChannelRoutingResponseCurve()
+{
+    std::cout << "  [EQ routing: per-group response curves]\n";
+    constexpr int kN = XlethParametricEQ::kResponseSize;
+    constexpr int kModes = XlethParametricEQ::kNumChannelModes;
+
+    // One +12 dB bell at 1 kHz routed to `channel`; returns all five traces
+    // (Stereo, Left, Right, Mid, Side) back to back.
+    auto curvesFor = [](int channel, float* out)
+    {
+        XlethParametricEQ eq;
+        eq.prepareToPlay(44100.0, 512);
+        int b = eq.addBand();
+        eq.setBandParam(b, "freq",    1000.0f);
+        eq.setBandParam(b, "gain",    12.0f);
+        eq.setBandParam(b, "q",       1.0f);
+        eq.setBandParam(b, "type",    0.0f);
+        eq.setBandParam(b, "enabled", 1.0f);
+        eq.setBandParam(b, "channel", static_cast<float>(channel));
+        eq.getChannelResponseCurves(out, kN);
+    };
+
+    auto peakOf = [](const float* trace)
+    {
+        float peak = -300.0f;
+        for (int i = 0; i < kN; ++i) peak = std::max(peak, trace[i]);
+        return peak;
+    };
+    auto isFlat = [](const float* trace)
+    {
+        for (int i = 0; i < kN; ++i)
+            if (std::abs(trace[i]) > 0.01f) return false;
+        return true;
+    };
+
+    // Each routing must land the full +12 dB bell on ITS trace and leave every
+    // other trace flat — no averaging across channels.
+    static const char* kNames[kModes] = { "Stereo", "Left", "Right", "Mid", "Side" };
+    for (int channel = 0; channel < kModes; ++channel)
+    {
+        std::vector<float> curves(static_cast<size_t>(kModes) * kN);
+        curvesFor(channel, curves.data());
+
+        for (int k = 0; k < kModes; ++k)
+        {
+            const float* trace = curves.data() + static_cast<size_t>(k) * kN;
+            if (k == channel)
+            {
+                CHECK_NEAR(peakOf(trace), 12.0f, 0.5f,
+                           (std::string(kNames[channel]) + " band should peak at the full +12 dB on its own trace").c_str());
+                CHECK_NEAR(trace[0], 0.0f, 0.2f,
+                           (std::string(kNames[channel]) + " trace should be flat at 20 Hz").c_str());
+            }
+            else
+            {
+                CHECK(isFlat(trace),
+                      (std::string(kNames[channel]) + " band must not bleed into the " + kNames[k] + " trace").c_str());
+            }
+        }
+    }
+
+    // getResponseCurve() is the Stereo trace of the same data.
+    XlethParametricEQ eq;
+    eq.prepareToPlay(44100.0, 512);
+    int b = eq.addBand();
+    eq.setBandParam(b, "freq",    1000.0f);
+    eq.setBandParam(b, "gain",    12.0f);
+    eq.setBandParam(b, "q",       1.0f);
+    eq.setBandParam(b, "type",    0.0f);
+    eq.setBandParam(b, "enabled", 1.0f);
+    float stereoOnly[kN];
+    std::vector<float> all(static_cast<size_t>(kModes) * kN);
+    eq.getResponseCurve(stereoOnly, kN);
+    eq.getChannelResponseCurves(all.data(), kN);
+    for (int i = 0; i < kN; ++i)
+        CHECK_NEAR(stereoOnly[i], all[i], 1e-4f, "getResponseCurve must equal the Stereo trace");
+
+    // Two bands in the SAME group multiply (dB add); bands in different groups
+    // stay on separate traces.
+    int b2 = eq.addBand();
+    eq.setBandParam(b2, "freq",    1000.0f);
+    eq.setBandParam(b2, "gain",    6.0f);
+    eq.setBandParam(b2, "q",       1.0f);
+    eq.setBandParam(b2, "type",    0.0f);
+    eq.setBandParam(b2, "enabled", 1.0f);
+    eq.setBandParam(b2, "channel", 4.0f);   // Side
+    eq.getChannelResponseCurves(all.data(), kN);
+    CHECK_NEAR(peakOf(all.data()), 12.0f, 0.5f, "Stereo trace must ignore the Side band");
+    CHECK_NEAR(peakOf(all.data() + 4 * kN), 6.0f, 0.5f, "Side trace must show only the Side band");
+}
+
+static void testEQChannelRoutingFoldsForLinPhase()
+{
+    std::cout << "  [EQ routing: linPhase folds to Stereo]\n";
+    constexpr double kSR = 44100.0;
+    constexpr int    kBS = 1024;
+    const float pi2 = 2.0f * juce::MathConstants<float>::pi;
+
+    XlethParametricEQ eq;
+    eq.prepareToPlay(kSR, kBS);
+
+    int b = eq.addBand();
+    eq.setBandParam(b, "freq",    1000.0f);
+    eq.setBandParam(b, "gain",    12.0f);
+    eq.setBandParam(b, "q",       1.0f);
+    eq.setBandParam(b, "type",    0.0f);
+    eq.setBandParam(b, "enabled", 1.0f);
+    eq.setBandParam(b, "channel", 1.0f);   // Left
+    eq.setParameterValue("linphase", 1.0f);
+
+    juce::AudioBuffer<float> buf(2, kBS);
+    juce::MidiBuffer midi;
+    for (int blk = 0; blk < 8; ++blk)
+    {
+        for (int s = 0; s < kBS; ++s)
+        {
+            const float v = std::sin(pi2 * 1000.0f
+                * static_cast<float>(blk * kBS + s) / static_cast<float>(kSR));
+            buf.setSample(0, s, v);
+            buf.setSample(1, s, v);
+        }
+        eq.processBlock(buf, midi);
+    }
+
+    const float l = buf.getMagnitude(0, 0, kBS);
+    const float r = buf.getMagnitude(1, 0, kBS);
+    // Linear phase applies one shared kernel, so routing is ignored and R is
+    // boosted right alongside L (see foldChannelForContext).
+    CHECK(r > 1.3f, "linPhase should boost R too — routing folds to Stereo");
+    CHECK_NEAR(l, r, 0.05f, "linPhase should treat L and R identically despite Left routing");
+
+    // The displayed curve must agree with that fold.
+    float curve[XlethParametricEQ::kResponseSize];
+    eq.getResponseCurve(curve, XlethParametricEQ::kResponseSize);
+    float peak = -300.0f;
+    for (int i = 0; i < XlethParametricEQ::kResponseSize; ++i)
+        peak = std::max(peak, curve[i]);
+    CHECK_NEAR(peak, 12.0f, 0.5f,
+               "under linPhase the curve should show the full +12 dB, not the routed mean");
+}
+
+static void testEQChannelRoutingMonoFoldsToStereo()
+{
+    std::cout << "  [EQ routing: mono folds to Stereo]\n";
+    constexpr double kSR = 44100.0;
+    constexpr int    kBS = 1024;
+    const float pi2 = 2.0f * juce::MathConstants<float>::pi;
+
+    // A Right-routed band on a mono buffer must not silently become a bypass.
+    XlethParametricEQ eq;
+    eq.prepareToPlay(kSR, kBS);
+
+    int b = eq.addBand();
+    eq.setBandParam(b, "freq",    1000.0f);
+    eq.setBandParam(b, "gain",    12.0f);
+    eq.setBandParam(b, "q",       1.0f);
+    eq.setBandParam(b, "type",    0.0f);
+    eq.setBandParam(b, "enabled", 1.0f);
+    eq.setBandParam(b, "channel", 2.0f);   // Right — no such channel here
+
+    juce::AudioBuffer<float> buf(1, kBS);
+    juce::MidiBuffer midi;
+    for (int blk = 0; blk < 6; ++blk)
+    {
+        for (int s = 0; s < kBS; ++s)
+            buf.setSample(0, s, std::sin(pi2 * 1000.0f
+                * static_cast<float>(blk * kBS + s) / static_cast<float>(kSR)));
+        eq.processBlock(buf, midi);
+    }
+
+    CHECK(buf.getMagnitude(0, 0, kBS) > 1.5f,
+          "mono input should fold Right routing to Stereo and still boost");
+}
+
+static void testEQChannelRoutingDynamicDetector()
+{
+    std::cout << "  [EQ routing: dynamic detector follows routing]\n";
+    constexpr double kSR = 44100.0;
+    constexpr int    kBS = 512;
+    const float pi2 = 2.0f * juce::MathConstants<float>::pi;
+
+    // A Right-routed Dynamic band fed loud content on L ONLY must not trigger:
+    // the detector has to listen to R, not to the stereo sum.
+    auto activationFor = [&](int channel, float lGain, float rGain)
+    {
+        XlethParametricEQ eq;
+        eq.prepareToPlay(kSR, kBS);
+        int b = eq.addBand();
+        eq.setBandParam(b, "freq",        1000.0f);
+        eq.setBandParam(b, "gain",        -12.0f);
+        eq.setBandParam(b, "q",           1.0f);
+        eq.setBandParam(b, "type",        0.0f);
+        eq.setBandParam(b, "enabled",     1.0f);
+        eq.setBandParam(b, "mode",        1.0f);   // Dynamic
+        eq.setBandParam(b, "dyn_thresh",  -30.0f);
+        eq.setBandParam(b, "dyn_ratio",   10.0f);
+        eq.setBandParam(b, "dyn_attack",  1.0f);
+        eq.setBandParam(b, "dyn_release", 200.0f);
+        eq.setBandParam(b, "channel",     static_cast<float>(channel));
+
+        juce::AudioBuffer<float> buf(2, kBS);
+        juce::MidiBuffer midi;
+        for (int blk = 0; blk < 40; ++blk)
+        {
+            for (int s = 0; s < kBS; ++s)
+            {
+                const float v = std::sin(pi2 * 1000.0f
+                    * static_cast<float>(blk * kBS + s) / static_cast<float>(kSR));
+                buf.setSample(0, s, v * lGain);
+                buf.setSample(1, s, v * rGain);
+            }
+            eq.processBlock(buf, midi);
+        }
+        // getBandGR() == activation * dyn_range (default +12 dB, unset here).
+        return std::abs(eq.getBandGR(0));
+    };
+
+    const float stereoBoth = activationFor(0, 1.0f, 1.0f);
+    CHECK(stereoBoth > 1.0f, "Stereo dynamic band should trigger on loud stereo content");
+
+    const float rightOnR = activationFor(2, 0.0f, 1.0f);
+    CHECK(rightOnR > 1.0f, "Right-routed dynamic band should trigger on loud R content");
+
+    const float rightOnL = activationFor(2, 1.0f, 0.0f);
+    CHECK(rightOnL < 0.1f,
+          "Right-routed dynamic band must NOT trigger on L-only content");
+    CHECK(rightOnR > rightOnL * 10.0f,
+          "routed detector should discriminate L-only from R-only content");
+}
+
 // ─── Advanced EQ Mode Tests ─────────────────────────────────────────────────
 
 static void testDynamicEQ()
@@ -4107,7 +5725,7 @@ static void testDynamicEQ()
 
     int b = eq.addBand();
     eq.setBandParam(b, "freq",    1000.0f);
-    eq.setBandParam(b, "gain",    12.0f);   // +12 dB boost
+    eq.setBandParam(b, "gain",    0.0f);    // baseline: flat until triggered
     eq.setBandParam(b, "q",       1.0f);
     eq.setBandParam(b, "type",    0.0f);    // Bell
     eq.setBandParam(b, "enabled", 1.0f);
@@ -4116,6 +5734,7 @@ static void testDynamicEQ()
     eq.setBandParam(b, "dyn_ratio",  4.0f);
     eq.setBandParam(b, "dyn_attack", 10.0f);
     eq.setBandParam(b, "dyn_release", 100.0f);
+    eq.setBandParam(b, "dyn_range", -18.0f); // duck up to 18 dB when triggered
 
     // Feed 1 kHz sine at ~-10 dBFS (10 dB above threshold)
     const float pi2 = 2.0f * juce::MathConstants<float>::pi;
@@ -4166,27 +5785,209 @@ static void testSpectralDynamics()
 
     int b = eq.addBand();
     eq.setBandParam(b, "freq",    1000.0f);
-    eq.setBandParam(b, "gain",    0.0f);
+    // In Spectral mode the GAIN knob IS the signed depth — there is no
+    // spec_depth parameter.  -20 dB = suppress detected resonances by 20 dB.
+    eq.setBandParam(b, "gain",    -20.0f);
     eq.setBandParam(b, "q",       1.0f);
     eq.setBandParam(b, "type",    0.0f);
     eq.setBandParam(b, "enabled", 1.0f);
     eq.setBandParam(b, "mode",       2.0f);   // Spectral
-    eq.setBandParam(b, "spec_sens",  0.5f);
-    eq.setBandParam(b, "spec_depth", -20.0f); // -20 dB attenuation
+    eq.setBandParam(b, "spec_sens",  1.0f);   // most sensitive
     eq.setBandParam(b, "spec_sel",   5.0f);
 
-    // Process a few blocks to trigger STFT and latency update
+    // A loud 1 kHz sine on a very low noise floor is exactly the "resonance"
+    // this mode targets: it sits far above its own half-octave local envelope,
+    // so it should be pushed down by close to the full 20 dB.
+    //
+    // Phase has to run continuously across blocks — a per-block phase reset
+    // would smear broadband clicks across the spectrum.
+    const float pi2  = 2.0f * juce::MathConstants<float>::pi;
+    const float amp  = 0.5f;                 // ~-6 dBFS
+    const float step = pi2 * 1000.0f / static_cast<float>(kSR);
+    float phase = 0.0f;
+    std::uint32_t rng = 0x13572468u;         // deterministic dither/noise floor
+
     juce::AudioBuffer<float> buf(2, kBS);
     juce::MidiBuffer midi;
-    for (int i = 0; i < 10; ++i)
+
+    // Latency is 2048 samples and the per-bin envelope needs a handful of STFT
+    // frames (one frame = kSTFTHop = 2048 samples = 4 blocks) to settle.
+    constexpr int kWarmBlocks    = 40;   // ~20 frames
+    constexpr int kMeasureBlocks = 20;
+    double inSumSq = 0.0, outSumSq = 0.0;
+    int    measured = 0;
+
+    for (int i = 0; i < kWarmBlocks + kMeasureBlocks; ++i)
     {
-        fillBuffer(buf, 0.1f);
+        double blockIn = 0.0;
+        for (int s = 0; s < kBS; ++s)
+        {
+            rng = rng * 1664525u + 1013904223u;
+            const float noise = (static_cast<float>(rng >> 8) / 8388608.0f - 1.0f)
+                              * 0.0003f;     // ~-70 dBFS floor
+            const float v = amp * std::sin(phase) + noise;
+            phase += step;
+            if (phase > pi2) phase -= pi2;
+            buf.setSample(0, s, v);
+            buf.setSample(1, s, v);
+            blockIn += static_cast<double>(v) * v;
+        }
+
         eq.processBlock(buf, midi);
+
+        if (i >= kWarmBlocks)
+        {
+            double blockOut = 0.0;
+            const float* p = buf.getReadPointer(0);
+            for (int s = 0; s < kBS; ++s)
+                blockOut += static_cast<double>(p[s]) * p[s];
+            inSumSq  += blockIn;
+            outSumSq += blockOut;
+            ++measured;
+        }
     }
 
-    // Check latency includes STFT hop (2048 samples)
+    CHECK(measured == kMeasureBlocks, "spectral test should measure every tail block");
+
+    const double inRms  = std::sqrt(inSumSq  / (measured * kBS));
+    const double outRms = std::sqrt(outSumSq / (measured * kBS));
+    const double dropDb = 20.0 * std::log10(inRms / std::max(outRms, 1e-12));
+    std::cout << "    spectral drop = " << dropDb << " dB\n";
+    CHECK(dropDb >= 6.0, "Spectral band at gain -20 dB should cut a loud 1 kHz "
+                         "resonance by at least 6 dB");
+
+    // GR metering must report the suppression (signed, negative = cut).
+    const float gr = eq.getBandGR(b);
+    CHECK(gr < -1.0f, "Spectral band should report negative GR while suppressing");
+
+    // Correct WOLA reconstruction costs a full kSTFTSize of latency, not a
+    // hop: a frame is only complete once its last sample has arrived.
     int lat = eq.getLatencySamples();
-    CHECK(lat == 2048, "Spectral mode latency should be 2048 (kSTFTHop)");
+    CHECK(lat == XlethParametricEQ::kSTFTLatency,
+          "Spectral mode latency should be kSTFTLatency (= kSTFTSize)");
+
+    // Depth 0 must leave the band inert: once the envelope has released back
+    // to unity the STFT path is a pass-through.
+    //
+    // The WOLA path reconstructs an unmodified spectrum exactly (sqrt-Hann on
+    // both ends at 75% overlap, normalised by 1/sum(w^2)), so depth 0 is a
+    // true bit-level pass-through and this tolerance can be tight.  It used to
+    // sit at ~1.15 dB because analysis-only windowing at 50% overlap emitted
+    // each output sample before its overlapping frames had all landed — the
+    // same defect that made the path click once per hop.
+    eq.setBandParam(b, "gain", 0.0f);
+    double flatIn = 0.0, flatOut = 0.0;
+    for (int i = 0; i < 60; ++i)   // ~15 frames: plenty for a 100 ms release
+    {
+        double blockIn = 0.0;
+        for (int s = 0; s < kBS; ++s)
+        {
+            const float v = amp * std::sin(phase);
+            phase += step;
+            if (phase > pi2) phase -= pi2;
+            buf.setSample(0, s, v);
+            buf.setSample(1, s, v);
+            blockIn += static_cast<double>(v) * v;
+        }
+        eq.processBlock(buf, midi);
+        if (i >= 50)
+        {
+            const float* p = buf.getReadPointer(0);
+            for (int s = 0; s < kBS; ++s)
+                flatOut += static_cast<double>(p[s]) * p[s];
+            flatIn += blockIn;
+        }
+    }
+    const double inertDb = 20.0 * std::log10(std::sqrt(flatIn)
+                                           / std::max(std::sqrt(flatOut), 1e-12));
+    std::cout << "    spectral depth-0 delta = " << inertDb << " dB\n";
+    CHECK(std::abs(inertDb) < 0.2,
+          "Spectral band at gain 0 dB should be inert (WOLA reconstructs an "
+          "unmodified spectrum exactly)");
+    CHECK(dropDb - inertDb >= 15.0,
+          "Suppression must come from the gain knob, not the STFT path");
+}
+
+// Regression guard for the click train the old analysis-only 50% OLA produced.
+// A spectral band actively suppressing a resonance must not introduce any
+// sample-to-sample discontinuity: the artefact was a step at every hop
+// boundary, which shows up as a |diff| spike far above the signal's own median
+// slew and — diagnostically — lands on an exact kSTFTHop grid at a fixed phase.
+static void testSpectralNoClicks()
+{
+    std::cout << "  [EQ spectral: no frame-boundary clicks]\n";
+    constexpr double kSR = 48000.0;
+    constexpr int    kBS = 512;
+
+    XlethParametricEQ eq;
+    eq.prepareToPlay(kSR, kBS);
+
+    int b = eq.addBand();
+    eq.setBandParam(b, "freq",    1000.0f);
+    eq.setBandParam(b, "gain",    -20.0f);  // depth: suppress hard
+    eq.setBandParam(b, "q",       1.0f);
+    eq.setBandParam(b, "type",    0.0f);
+    eq.setBandParam(b, "enabled", 1.0f);
+    eq.setBandParam(b, "mode",       2.0f);
+    eq.setBandParam(b, "spec_sens",  1.0f);
+    eq.setBandParam(b, "spec_sel",   5.0f);
+
+    const float pi2  = 2.0f * juce::MathConstants<float>::pi;
+    const float step = pi2 * 1000.0f / static_cast<float>(kSR);
+    float phase = 0.0f;
+
+    juce::AudioBuffer<float> buf(2, kBS);
+    juce::MidiBuffer midi;
+
+    // Collect the steady-state tail so the startup ramp is excluded.
+    constexpr int kWarm    = 40;
+    constexpr int kCollect = 40;
+    std::vector<float> out;
+    out.reserve(static_cast<std::size_t>(kCollect) * kBS);
+
+    for (int i = 0; i < kWarm + kCollect; ++i)
+    {
+        for (int s = 0; s < kBS; ++s)
+        {
+            const float v = 0.5f * std::sin(phase);
+            phase += step;
+            if (phase > pi2) phase -= pi2;
+            buf.setSample(0, s, v);
+            buf.setSample(1, s, v);
+        }
+        eq.processBlock(buf, midi);
+        if (i >= kWarm)
+        {
+            const float* p = buf.getReadPointer(0);
+            for (int s = 0; s < kBS; ++s)
+                out.push_back(p[s]);
+        }
+    }
+
+    std::vector<float> diffs;
+    diffs.reserve(out.size());
+    for (std::size_t i = 1; i < out.size(); ++i)
+        diffs.push_back(std::abs(out[i] - out[i - 1]));
+
+    std::vector<float> sorted = diffs;
+    std::sort(sorted.begin(), sorted.end());
+    const float medianDiff = sorted[sorted.size() / 2];
+    float maxDiff = 0.0f;
+    std::size_t maxAt = 0;
+    for (std::size_t i = 0; i < diffs.size(); ++i)
+        if (diffs[i] > maxDiff) { maxDiff = diffs[i]; maxAt = i; }
+
+    const float ratio = maxDiff / std::max(medianDiff, 1.0e-12f);
+    std::cout << "    max|diff|/median|diff| = " << ratio
+              << "  (max at +" << maxAt << ", hop grid phase "
+              << (maxAt % static_cast<std::size_t>(XlethParametricEQ::kSTFTHop))
+              << ")\n";
+
+    // A clean 1 kHz sine at 48 kHz slews smoothly: the largest step can only be
+    // a little above the median. The old path hit >20x here.
+    CHECK(medianDiff > 1.0e-6f, "spectral click test should have real signal to measure");
+    CHECK(ratio < 4.0f,
+          "Spectral band must not step at frame boundaries (WOLA synthesis window)");
 }
 
 static void testLinearPhase()
@@ -4330,6 +6131,1048 @@ static void testLinPhaseDisablesDynamic()
 
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
+// ─── [EQCore] Legacy bit-identity guard ─────────────────────────────────────
+// Every scenario below runs the EQ on its DEFAULT spectral engine (Legacy, the
+// 4096 STFT path) through the public API only, and hashes (64-bit FNV-1a over
+// the bit patterns) every output sample of both channels, every band's GR meter
+// and the reported latency after every block. The expected hashes were recorded
+// by building this very test against the EQ before the [EQCore] work (the
+// locking fix, the spectral_engine / spectral_quality parameters and the core
+// path): any change to what the default EQ outputs, meters or reports fails here.
+namespace eqlegacy
+{
+struct Hash
+{
+    std::uint64_t h = 1469598103934665603ull;
+    void bytes(const void* p, std::size_t n)
+    {
+        const auto* b = static_cast<const unsigned char*>(p);
+        for (std::size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; }
+    }
+    void f(float v) { bytes(&v, sizeof v); }
+    void i(int v)   { bytes(&v, sizeof v); }
+};
+
+static const int kSchedule[] = { 1, 37, 128, 255, 511, 512, 37, 300, 64 };
+
+static void band(XlethParametricEQ& eq, int b, float freq, float gain, float q, int type,
+                 int mode, int channel, float sens = 0.5f, float sel = 5.0f,
+                 float atk = 10.0f, float rel = 100.0f)
+{
+    eq.setBandParam(b, "freq", freq);
+    eq.setBandParam(b, "gain", gain);
+    eq.setBandParam(b, "q", q);
+    eq.setBandParam(b, "type", static_cast<float>(type));
+    eq.setBandParam(b, "channel", static_cast<float>(channel));
+    eq.setBandParam(b, "spec_sens", sens);
+    eq.setBandParam(b, "spec_sel", sel);
+    eq.setBandParam(b, "spec_attack", atk);
+    eq.setBandParam(b, "spec_release", rel);
+    eq.setBandParam(b, "enabled", 1.0f);
+    eq.setBandParam(b, "mode", static_cast<float>(mode));
+}
+
+// The mixed configuration: two Spectral bands (a cut and an upward band), a
+// Left-routed bell, a Mid-routed bell, a Dynamic Side band.
+static void configureMixed(XlethParametricEQ& eq)
+{
+    while (eq.getBandCount() < 5) eq.addBand();
+    band(eq, 0, 2500.0f, -12.0f, 4.0f, 0, 2, 0);
+    band(eq, 1,  400.0f,   4.0f, 1.0f, 0, 0, 1);
+    band(eq, 2,  800.0f,   6.0f, 2.0f, 0, 2, 3, 0.8f, 4.0f, 5.0f, 300.0f);
+    band(eq, 3, 6000.0f,  -3.0f, 0.7f, 0, 0, 3);
+    band(eq, 4, 1200.0f,  -2.0f, 1.5f, 0, 1, 4);
+    eq.setBandParam(4, "dyn_thresh", -40.0f);
+}
+
+using Event = std::function<void(XlethParametricEQ&)>;
+
+static std::uint64_t run(double sr, int channels, int seconds10, const std::function<void(XlethParametricEQ&)>& setup,
+                         const std::vector<std::pair<int, Event>>& events, std::uint32_t seed, bool prepareAfterSetup)
+{
+    XlethParametricEQ eq;
+    eq.prepareToPlay(sr, 512);
+    setup(eq);
+    if (prepareAfterSetup) eq.prepareToPlay(sr, 512);
+
+    const int total = static_cast<int>(sr) * seconds10 / 10;
+    juce::AudioBuffer<float> in(channels, total);
+    rsnew::fillPinkBell(in, sr, 2500.0f, 0.05f, seed);
+    if (channels > 1)   // a right-only component so channel routing matters
+    {
+        float* r = in.getWritePointer(1);
+        for (int s = 0; s < total; ++s)
+            r[s] += 0.03f * std::sin(2.0f * juce::MathConstants<float>::pi * 1300.0f * static_cast<float>(s) / static_cast<float>(sr));
+    }
+
+    Hash h;
+    juce::MidiBuffer midi;
+    int pos = 0, blk = 0;
+    std::size_t ev = 0;
+    while (pos < total)
+    {
+        while (ev < events.size() && events[ev].first == blk) { events[ev].second(eq); ++ev; }
+        const int n = std::min(kSchedule[blk % (sizeof kSchedule / sizeof kSchedule[0])], total - pos);
+        juce::AudioBuffer<float> b(channels, n);
+        for (int ch = 0; ch < channels; ++ch) b.copyFrom(ch, 0, in, ch, pos, n);
+        eq.processBlock(b, midi);
+        for (int ch = 0; ch < channels; ++ch)
+            for (int s = 0; s < n; ++s) h.f(b.getSample(ch, s));
+        for (int k = 0; k < XlethParametricEQ::kMaxBands; ++k) h.f(eq.getBandGR(k));
+        h.i(eq.getReportedProcessorLatencySamples());
+        h.i(eq.getLatencySamples());
+        pos += n;
+        ++blk;
+    }
+    return h.h;
+}
+} // namespace eqlegacy
+
+static void testEQLegacyBitIdentity()
+{
+    std::cout << "  [EQCore] legacy (default engine) bit-identity hashes\n";
+    using namespace eqlegacy;
+
+    juce::MemoryBlock otherState;
+    {
+        XlethParametricEQ src;
+        src.prepareToPlay(48000.0, 512);
+        src.addBand(); src.addBand(); src.addBand();
+        band(src, 0, 3100.0f, -18.0f, 6.0f, 0, 2, 0, 0.3f, 8.0f);
+        band(src, 1,  150.0f,   3.0f, 0.9f, 1, 0, 0);
+        band(src, 2, 9000.0f,  -6.0f, 2.0f, 0, 0, 2);
+        src.getStateInformation(otherState);
+    }
+
+    struct Scenario { const char* name; std::uint64_t expected; std::function<std::uint64_t()> fn; };
+    const std::vector<Scenario> scenarios = {
+        { "mixed steady 48k stereo", 0x66f605bcccb4ab22ull, [] {
+              return run(48000.0, 2, 30, configureMixed, {}, 0x1234u, true); } },
+        { "single spectral band, no re-prepare (smoother ramps) 44.1k", 0x78aacd757cf00495ull, [] {
+              return run(44100.0, 2, 25, [](XlethParametricEQ& eq) { eq.addBand(); band(eq, 0, 1000.0f, -20.0f, 1.0f, 0, 2, 0, 1.0f, 5.0f); },
+                         {}, 0x77u, false); } },
+        { "mixed with events (off->on, linphase, bypass, mode, restore, remove/add, reset)", 0xbc048d2cc15b9ce4ull, [&otherState] {
+              std::vector<std::pair<int, Event>> ev = {
+                  { 60,  [](XlethParametricEQ& eq) { eq.setBandParam(0, "enabled", 0.0f); } },
+                  { 80,  [](XlethParametricEQ& eq) { eq.setBandParam(2, "enabled", 0.0f); } },
+                  { 120, [](XlethParametricEQ& eq) { eq.setBandParam(0, "enabled", 1.0f); eq.setBandParam(2, "enabled", 1.0f); } },
+                  { 170, [](XlethParametricEQ& eq) { eq.setParameterValue("linphase", 1.0f); } },
+                  { 200, [](XlethParametricEQ& eq) { eq.setParameterValue("linphase", 0.0f); } },
+                  { 240, [](XlethParametricEQ& eq) { eq.setBypassed(true); } },
+                  { 280, [](XlethParametricEQ& eq) { eq.setBypassed(false); } },
+                  { 320, [](XlethParametricEQ& eq) { eq.setBandParam(1, "mode", 1.0f); eq.setBandParam(0, "gain", 8.0f); } },
+                  { 360, [&otherState](XlethParametricEQ& eq) { eq.setStateInformation(otherState.getData(), static_cast<int>(otherState.getSize())); } },
+                  { 400, [](XlethParametricEQ& eq) { eq.removeBand(1); } },
+                  { 430, [](XlethParametricEQ& eq) { const int b = eq.addBand(); band(eq, b, 700.0f, -9.0f, 3.0f, 0, 2, 0); } },
+                  { 470, [](XlethParametricEQ& eq) { eq.reset(); } },
+                  { 500, [](XlethParametricEQ& eq) { eq.setParameterValue("oversample", 1.0f); eq.setBandParam(0, "mode", 0.0f); eq.setBandParam(2, "mode", 0.0f); } },
+                  { 540, [](XlethParametricEQ& eq) { eq.setBandParam(0, "mode", 2.0f); } },
+              };
+              return run(48000.0, 2, 60, configureMixed, ev, 0x9abcu, true); } },
+        { "mono spectral 48k", 0xdc07ae225603b341ull, [] {
+              return run(48000.0, 1, 20, [](XlethParametricEQ& eq) { eq.addBand(); band(eq, 0, 2500.0f, -15.0f, 3.0f, 0, 2, 3); },
+                         {}, 0x55u, true); } },
+        { "spectral 96k", 0x31f512480340db1bull, [] {
+              return run(96000.0, 2, 15, [](XlethParametricEQ& eq) { eq.addBand(); eq.addBand(); band(eq, 0, 2500.0f, -24.0f, 4.0f, 0, 2, 0);
+                                                                     band(eq, 1, 5000.0f, -6.0f, 8.0f, 0, 2, 2); },
+                         {}, 0x99u, true); } },
+    };
+
+    for (const auto& s : scenarios)
+    {
+        const std::uint64_t got = s.fn();
+        std::printf("    [EQCore] legacy hash %-80s 0x%016llx\n", s.name, static_cast<unsigned long long>(got));
+        CHECK(got == s.expected,
+              std::string("[EQCore] legacy EQ output / meters / latency must be bit-identical to the pre-[EQCore] EQ: ") + s.name);
+    }
+}
+
+// ─── [EQCore] spectral_engine / spectral_quality: defaults, round trip, old states ──
+namespace eqcore
+{
+// The state blob of `fx` with the PARAM elements `ids` removed (= a state saved
+// before those parameters existed).
+static void stateWithout(juce::AudioProcessor& fx, std::initializer_list<const char*> ids, juce::MemoryBlock& out)
+{
+    juce::MemoryBlock state;
+    fx.getStateInformation(state);
+    auto xml = juce::AudioProcessor::getXmlFromBinary(state.getData(), static_cast<int>(state.getSize()));
+    if (xml == nullptr) return;
+    for (const char* id : ids)
+    {
+        for (auto* child = xml->getFirstChildElement(); child != nullptr; child = child->getNextElement())
+        {
+            if (child->hasTagName("PARAM") && child->getStringAttribute("id") == id)
+            {
+                xml->removeChildElement(child, true);
+                break;
+            }
+        }
+    }
+    juce::AudioProcessor::copyXmlToBinary(*xml, out);
+}
+
+static bool stateHasParam(const juce::MemoryBlock& state, const char* id)
+{
+    auto xml = juce::AudioProcessor::getXmlFromBinary(state.getData(), static_cast<int>(state.getSize()));
+    if (xml == nullptr) return false;
+    for (auto* child = xml->getFirstChildElement(); child != nullptr; child = child->getNextElement())
+        if (child->hasTagName("PARAM") && child->getStringAttribute("id") == id)
+            return true;
+    return false;
+}
+} // namespace eqcore
+
+static void testEQCoreParamsAndState()
+{
+    std::cout << "  [EQCore] spectral_engine / spectral_quality parameters and state\n";
+
+    XlethParametricEQ fresh;
+    CHECK(fresh.getParameterValue("spectral_engine") == 0.0f, "[EQCore] spectral_engine defaults to Legacy (0)");
+    CHECK(fresh.getParameterValue("spectral_quality") == 1.0f, "[EQCore] spectral_quality defaults to Normal (1)");
+    {
+        const auto& params = fresh.getParameters();
+        const int n = static_cast<int>(params.size());
+        auto idOf = [&](int i) {
+            auto* p = dynamic_cast<juce::AudioProcessorParameterWithID*>(params[static_cast<std::size_t>(i)]);
+            return p ? p->paramID : juce::String();
+        };
+        // The 16 per-band slope parameters were appended after these four.
+        constexpr int kSlopes = XlethParametricEQ::kMaxBands;
+        CHECK(n >= 4 + kSlopes && idOf(n - kSlopes - 4) == "linphase" && idOf(n - kSlopes - 3) == "oversample"
+                  && idOf(n - kSlopes - 2) == "spectral_engine" && idOf(n - kSlopes - 1) == "spectral_quality"
+                  && idOf(n - kSlopes) == "b0_slope" && idOf(n - 1) == "b15_slope",
+              "[EQCore] the new parameters are appended last; every existing parameter keeps its index");
+        CHECK(idOf(0) == "b0_freq" && idOf(255) == "b15_spec_release", "[EQCore] band parameter indices unchanged");
+    }
+
+    // Round trip: Core / High survives getState -> setState.
+    juce::MemoryBlock coreState;
+    {
+        XlethParametricEQ src;
+        src.prepareToPlay(48000.0, 512);
+        src.addBand();
+        CHECK(src.setParameterValue("spectral_engine", 1.0f), "[EQCore] spectral_engine settable");
+        CHECK(src.setParameterValue("spectral_quality", 2.0f), "[EQCore] spectral_quality settable");
+        src.getStateInformation(coreState);
+        CHECK(eqcore::stateHasParam(coreState, "spectral_engine") && eqcore::stateHasParam(coreState, "spectral_quality"),
+              "[EQCore] a saved state carries both new parameters");
+    }
+    {
+        XlethParametricEQ dst;
+        dst.prepareToPlay(48000.0, 512);
+        dst.setStateInformation(coreState.getData(), static_cast<int>(coreState.getSize()));
+        CHECK(dst.getParameterValue("spectral_engine") == 1.0f && dst.getParameterValue("spectral_quality") == 2.0f,
+              "[EQCore] Core / High round-trips through the state");
+        const auto json = nlohmann::json::parse(dst.getGlobalParamsAsJSON());
+        CHECK(json.value("spectral_engine", -1) == 1 && json.value("spectral_quality", -1) == 2,
+              "[EQCore] getGlobalParamsAsJSON reports spectral_engine / spectral_quality");
+    }
+
+    // An old state (no spectral_engine / spectral_quality) restores as Legacy /
+    // Normal even into an instance currently set to Core / Fast (APVTS would
+    // otherwise keep the instance's values).
+    {
+        XlethParametricEQ oldSrc;
+        oldSrc.prepareToPlay(48000.0, 512);
+        oldSrc.addBand();
+        oldSrc.setBandParam(0, "mode", 2.0f);
+        juce::MemoryBlock oldState;
+        eqcore::stateWithout(oldSrc, { "spectral_engine", "spectral_quality" }, oldState);
+        CHECK(!eqcore::stateHasParam(oldState, "spectral_engine") && !eqcore::stateHasParam(oldState, "spectral_quality"),
+              "[EQCore] the synthetic old state lacks both parameters");
+
+        XlethParametricEQ dst;
+        dst.prepareToPlay(48000.0, 512);
+        dst.setParameterValue("spectral_engine", 1.0f);
+        dst.setParameterValue("spectral_quality", 0.0f);
+        dst.setStateInformation(oldState.getData(), static_cast<int>(oldState.getSize()));
+        CHECK(dst.getParameterValue("spectral_engine") == 0.0f, "[EQCore] an old state restores as Legacy (spectral_engine 0)");
+        CHECK(dst.getParameterValue("spectral_quality") == 1.0f, "[EQCore] an old state restores the default quality (Normal)");
+        CHECK(dst.getBandCount() == 1, "[EQCore] the old state's band restores");
+    }
+}
+
+// â”€â”€â”€ [EQCore] Spectral bands on the shared resonance core â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+namespace eqcoretest
+{
+using Core = xleth::dsp::resonance::Core;
+using Event = std::function<void(XlethParametricEQ&)>;
+
+static void spectralBand(XlethParametricEQ& eq, int b, float freq, float gain, float q, int channel = 0,
+                         float sens = 0.5f, float sel = 5.0f, float atk = 10.0f, float rel = 100.0f)
+{
+    eqlegacy::band(eq, b, freq, gain, q, 0, 2, channel, sens, sel, atk, rel);
+}
+
+// A prepared EQ: `setup` adds / configures bands, then the engine and quality
+// are set and the EQ is prepared again (smoothers start on their targets, the
+// structure is adopted without a fade). Instance index pinned to 0.
+static std::unique_ptr<XlethParametricEQ> make(double sr, int block, bool core, int quality,
+                                               const std::function<void(XlethParametricEQ&)>& setup)
+{
+    auto eq = std::make_unique<XlethParametricEQ>();
+    eq->setCoreInstanceIndex(0);
+    eq->prepareToPlay(sr, block);
+    setup(*eq);
+    eq->setParameterValue("spectral_engine", core ? 1.0f : 0.0f);
+    eq->setParameterValue("spectral_quality", static_cast<float>(quality));
+    eq->prepareToPlay(sr, block);
+    return eq;
+}
+
+// Renders `in` in blocks; events[i] runs before block i.
+static juce::AudioBuffer<float> render(XlethParametricEQ& eq, const juce::AudioBuffer<float>& in, int block,
+                                       const std::vector<std::pair<int, Event>>& events = {})
+{
+    juce::AudioBuffer<float> out(in.getNumChannels(), in.getNumSamples());
+    juce::MidiBuffer midi;
+    std::size_t ev = 0;
+    int blk = 0;
+    for (int pos = 0; pos < in.getNumSamples(); pos += block, ++blk)
+    {
+        while (ev < events.size() && events[ev].first == blk) { events[ev].second(eq); ++ev; }
+        const int n = std::min(block, in.getNumSamples() - pos);
+        juce::AudioBuffer<float> b(in.getNumChannels(), n);
+        for (int ch = 0; ch < in.getNumChannels(); ++ch) b.copyFrom(ch, 0, in, ch, pos, n);
+        eq.processBlock(b, midi);
+        for (int ch = 0; ch < in.getNumChannels(); ++ch) out.copyFrom(ch, pos, b, ch, 0, n);
+    }
+    return out;
+}
+
+// Independent pink noise per channel (Kellet), no bell.
+static void fillPink(juce::AudioBuffer<float>& buf, float gain, std::uint32_t seed)
+{
+    for (int ch = 0; ch < buf.getNumChannels(); ++ch)
+    {
+        std::uint32_t lcg = seed ^ static_cast<std::uint32_t>(ch * 7919 + 1);
+        float b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
+        float* d = buf.getWritePointer(ch);
+        for (int s = 0; s < buf.getNumSamples(); ++s)
+        {
+            lcg = lcg * 1664525u + 1013904223u;
+            const float white = static_cast<float>((lcg >> 8) & 0x00ffffffu) / 8388608.0f - 1.0f;
+            b0 = 0.99886f * b0 + white * 0.0555179f;
+            b1 = 0.99332f * b1 + white * 0.0750759f;
+            b2 = 0.96900f * b2 + white * 0.1538520f;
+            b3 = 0.86650f * b3 + white * 0.3104856f;
+            b4 = 0.55000f * b4 + white * 0.5329522f;
+            b5 = -0.7616f * b5 - white * 0.0168980f;
+            const float pink = b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362f;
+            b6 = white * 0.115926f;
+            d[s] = pink * gain;
+        }
+    }
+}
+
+static void addSine(juce::AudioBuffer<float>& buf, int ch, double sr, double hz, float amp)
+{
+    float* d = buf.getWritePointer(ch);
+    for (int s = 0; s < buf.getNumSamples(); ++s)
+        d[s] += amp * static_cast<float>(std::sin(2.0 * juce::MathConstants<double>::pi * hz * s / sr));
+}
+
+static float maxStep(const juce::AudioBuffer<float>& b, int ch, int from, int to)
+{
+    float m = 0.0f;
+    for (int s = std::max(1, from); s < std::min(to, b.getNumSamples()); ++s)
+        m = std::max(m, std::abs(b.getSample(ch, s) - b.getSample(ch, s - 1)));
+    return m;
+}
+
+// Longest run (ms) inside [from, to) where the output's 1 ms peak stays below
+// `floor`: the dip of a transition on a steady tone.
+static double dipMs(const juce::AudioBuffer<float>& b, int ch, int from, int to, double sr, float floor)
+{
+    const int win = std::max(1, static_cast<int>(sr / 1000.0));
+    int run = 0, best = 0;
+    for (int s = from; s + win <= std::min(to, b.getNumSamples()); ++s)
+    {
+        float pk = 0.0f;
+        for (int k = 0; k < win; ++k) pk = std::max(pk, std::abs(b.getSample(ch, s + k)));
+        if (pk < floor) best = std::max(best, ++run); else run = 0;
+    }
+    return (best > 0 ? best + win - 1 : 0) * 1000.0 / sr;
+}
+
+static bool bitEqual(const juce::AudioBuffer<float>& a, const juce::AudioBuffer<float>& b, int ch, int from, int to)
+{
+    return std::memcmp(a.getReadPointer(ch) + from, b.getReadPointer(ch) + from,
+                       sizeof(float) * static_cast<std::size_t>(to - from)) == 0;
+}
+} // namespace eqcoretest
+
+static void testEQCoreLatency()
+{
+    std::cout << "  [EQCore] latency: reported == Core::latencyFor == measured impulse delay\n";
+    using namespace eqcoretest;
+    for (double sr : { 48000.0, 96000.0 })
+    {
+        for (int q = 0; q < 3; ++q)
+        {
+            const int expected = Core::latencyFor(sr, static_cast<Core::FrameTier>(q));
+            // gain 0: the band is a region of depth 0 (the core passes the audio, delayed).
+            auto eq = make(sr, 256, true, q, [](XlethParametricEQ& e) { e.addBand(); spectralBand(e, 0, 1000.0f, 0.0f, 1.0f); });
+            CHECK(eq->getLatencySamples() == expected && eq->getReportedProcessorLatencySamples() == expected,
+                  "[EQCore] Core reported latency == Core::latencyFor (sr " + std::to_string(sr) + ", q " + std::to_string(q)
+                      + "): got " + std::to_string(eq->getReportedProcessorLatencySamples()) + " expected " + std::to_string(expected));
+            juce::AudioBuffer<float> in(2, static_cast<int>(sr * 0.5));
+            in.clear();
+            const int at = 3000;
+            in.setSample(0, at, 1.0f);
+            in.setSample(1, at, -0.5f);
+            const auto out = render(*eq, in, 256);
+            float pk0 = 0.0f, pk1 = 0.0f;
+            const int i0 = rsnew::peakIndex(out, 0, &pk0), i1 = rsnew::peakIndex(out, 1, &pk1);
+            std::printf("    [EQCore] sr %.0f q %d: reported %d, impulse at +%d / +%d (height %.6f / %.6f)\n",
+                        sr, q, eq->getReportedProcessorLatencySamples(), i0 - at, i1 - at, pk0, pk1);
+            CHECK(i0 - at == expected && i1 - at == expected, "[EQCore] measured impulse delay == reported latency");
+            CHECK(std::abs(pk0 - 1.0f) < 1.0e-5f && std::abs(pk1 - 0.5f) < 1.0e-5f, "[EQCore] depth 0 passes the impulse at unit height");
+        }
+    }
+
+    // Legacy, Core without a Spectral band, Core with only a disabled band: the
+    // latencies the EQ reported before the core existed.
+    auto legacy = make(48000.0, 256, false, 1, [](XlethParametricEQ& e) { e.addBand(); spectralBand(e, 0, 1000.0f, -12.0f, 1.0f); });
+    CHECK(legacy->getReportedProcessorLatencySamples() == XlethParametricEQ::kSTFTLatency, "[EQCore] Legacy keeps kSTFTLatency");
+    auto noBand = make(48000.0, 256, true, 2, [](XlethParametricEQ& e) { e.addBand(); });
+    CHECK(noBand->getReportedProcessorLatencySamples() == 0, "[EQCore] Core engine without a Spectral band reports 0");
+    noBand->setBandParam(0, "mode", 2.0f);
+    CHECK(noBand->getReportedProcessorLatencySamples() == Core::latencyFor(48000.0, Core::FrameTier::High),
+          "[EQCore] enabling a Spectral band on the Core publishes the tier's latency at the request");
+    noBand->setBandParam(0, "enabled", 0.0f);
+    CHECK(noBand->getReportedProcessorLatencySamples() == 0, "[EQCore] a disabled Spectral band reports 0 again (as Legacy does)");
+
+    // Zero cost: the core does not run when no Spectral band is active or the engine is Legacy.
+    {
+        juce::AudioBuffer<float> in(2, 48000);
+        fillPink(in, 0.05f, 7u);
+        auto idle = make(48000.0, 256, true, 1, [](XlethParametricEQ& e) { e.addBand(); e.setBandParam(0, "gain", -6.0f); });
+        render(*idle, in, 256);
+        CHECK(idle->getCoreForTest().framesProcessed() == 0 && idle->getActiveSpectralRendererForTest() == 0,
+              "[EQCore] Core engine, no Spectral band: the core never runs (0 frames)");
+        render(*legacy, in, 256);
+        CHECK(legacy->getCoreForTest().framesProcessed() == 0 && legacy->getActiveSpectralRendererForTest() == 1,
+              "[EQCore] Legacy engine with a Spectral band: the core never runs (0 frames)");
+    }
+}
+
+// Goal (a): detection on both channels. The Legacy path detects on L only: an
+// R-only resonance is never cut (the defect, demonstrated). The Core cuts it.
+static void testEQCoreBothChannelDetection()
+{
+    std::cout << "  [EQCore] L-only / R-only resonances: Legacy L-only defect vs Core both channels\n";
+    using namespace eqcoretest;
+    constexpr double sr = 48000.0;
+    for (bool core : { false, true })
+    {
+        for (int toneCh : { 0, 1 })
+        {
+            juce::AudioBuffer<float> in(2, static_cast<int>(sr * 4));
+            fillPink(in, 0.05f, 0x51u);
+            addSine(in, toneCh, sr, 2500.0, 0.05f);
+            auto eq = make(sr, 256, core, 1, [](XlethParametricEQ& e) { e.addBand(); spectralBand(e, 0, 2500.0f, -24.0f, 2.0f); });
+            const int lat = eq->getReportedProcessorLatencySamples();
+            const auto out = render(*eq, in, 256);
+            const int from = static_cast<int>(sr * 2), to = static_cast<int>(sr * 3.8);
+            const double cutTone  = computeAlignedToneReductionDb(in, out, lat, from, to, toneCh, sr, 2500.0);
+            const double cutOther = computeAlignedToneReductionDb(in, out, lat, from, to, 1 - toneCh, sr, 2500.0);
+            std::printf("    [EQCore] %s, tone in %s: cut at 2.5 kHz %.2f dB in the tone channel, %.2f dB (pink only) in the other\n",
+                        core ? "Core  " : "Legacy", toneCh == 0 ? "L" : "R", cutTone, cutOther);
+            if (core)
+                CHECK(cutTone >= 6.0, std::string("[EQCore] Core cuts a ") + (toneCh == 0 ? "L" : "R") + "-only resonance");
+            else if (toneCh == 0)
+                CHECK(cutTone >= 6.0, "[EQCore] Legacy cuts an L-only resonance");
+            else
+                CHECK(cutTone < 1.0, "[EQCore] Legacy defect demonstrated: an R-only resonance is NOT cut (detection on L only)");
+        }
+    }
+}
+
+// Goal (b): two regions on one weight curve. Two planted resonances inside two
+// Spectral bands are both cut; a resonance at a frequency no band lists is not.
+static void testEQCoreTwoRegions()
+{
+    std::cout << "  [EQCore] two Spectral regions on one weight curve\n";
+    using namespace eqcoretest;
+    constexpr double sr = 48000.0;
+    juce::AudioBuffer<float> in(2, static_cast<int>(sr * 4));
+    fillPink(in, 0.05f, 0x77u);
+    for (int ch = 0; ch < 2; ++ch)
+    {
+        addSine(in, ch, sr, 1000.0, 0.05f);
+        addSine(in, ch, sr, 5000.0, 0.05f);
+        addSine(in, ch, sr, 2500.0, 0.05f);   // unlisted
+    }
+    auto eq = make(sr, 256, true, 1, [](XlethParametricEQ& e) {
+        e.addBand(); e.addBand();
+        spectralBand(e, 0, 1000.0f, -18.0f, 4.0f);
+        spectralBand(e, 1, 5000.0f, -12.0f, 4.0f);
+    });
+    const int lat = eq->getReportedProcessorLatencySamples();
+    const auto out = render(*eq, in, 256);
+    const int from = static_cast<int>(sr * 2), to = static_cast<int>(sr * 3.8);
+    double cut[3];
+    const double hz[3] = { 1000.0, 5000.0, 2500.0 };
+    for (int i = 0; i < 3; ++i)
+        cut[i] = 0.5 * (computeAlignedToneReductionDb(in, out, lat, from, to, 0, sr, hz[i])
+                      + computeAlignedToneReductionDb(in, out, lat, from, to, 1, sr, hz[i]));
+
+    const float* w = eq->getCoreWeightCurveForTest();
+    const int* owner = eq->getCoreRegionOwnerForTest();
+    const auto& core = eq->getCoreForTest();
+    auto weightAt = [&](double f, int* who) {
+        int best = 0;
+        for (int k = 1; k < core.numBands(); ++k)
+            if (std::abs(std::log2(core.bandCentreHz(k) / f)) < std::abs(std::log2(core.bandCentreHz(best) / f))) best = k;
+        if (who) *who = owner[best];
+        return w[best];
+    };
+    int o1 = -2, o5 = -2, o25 = -2;
+    const float w1 = weightAt(1000.0, &o1), w5 = weightAt(5000.0, &o5), w25 = weightAt(2500.0, &o25);
+    std::printf("    [EQCore] cuts: 1 kHz (band 0, -18 dB) %.2f dB, 5 kHz (band 1, -12 dB) %.2f dB, 2.5 kHz (unlisted) %.2f dB; "
+                "weights at the nearest grid band 1 kHz %.3f (owner %d), 5 kHz %.3f (owner %d), 2.5 kHz %.3f (owner %d); GR band 0 %.2f, band 1 %.2f\n",
+                cut[0], cut[1], cut[2], w1, o1, w5, o5, w25, o25, eq->getBandGR(0), eq->getBandGR(1));
+    CHECK(cut[0] >= 6.0, "[EQCore] region 1 (1 kHz) resonance cut");
+    CHECK(cut[1] >= 4.0, "[EQCore] region 2 (5 kHz) resonance cut");
+    CHECK(cut[2] < 1.0, "[EQCore] an unlisted frequency (2.5 kHz) is left alone");
+    CHECK(w1 > 0.85f && o1 == 0 && w5 > 0.55f && w5 < 0.7f && o5 == 1,
+          "[EQCore] the curve is the union: region 1 at full weight, region 2 scaled by its depth (12 / 18)");
+    CHECK(eq->getBandGR(0) < -1.0f && eq->getBandGR(1) < -1.0f, "[EQCore] each region's band meter shows its cut");
+}
+
+// Mid / Side / L / R bands on the Core: the processed component goes through
+// the core, the other through its aux channel, delay-only.
+static void testEQCoreRoutedModes()
+{
+    std::cout << "  [EQCore] L / R / Mid / Side Spectral bands on the Core\n";
+    using namespace eqcoretest;
+    constexpr double sr = 48000.0;
+    const int n = static_cast<int>(sr * 3);
+
+    // L and R: the other channel is the input, delayed, bit for bit, at full depth.
+    for (int mode : { 1, 2 })
+    {
+        juce::AudioBuffer<float> in(2, n);
+        fillPink(in, 0.05f, 0x99u);
+        addSine(in, 0, sr, 2500.0, 0.05f);
+        addSine(in, 1, sr, 2500.0, 0.05f);
+        auto eq = make(sr, 256, true, 1, [mode](XlethParametricEQ& e) { e.addBand(); spectralBand(e, 0, 2500.0f, -24.0f, 2.0f, mode); });
+        const int lat = eq->getReportedProcessorLatencySamples();
+        const auto out = render(*eq, in, 256);
+        const int proc = mode == 1 ? 0 : 1, other = 1 - proc;
+        bool exact = true;
+        for (int s = lat; s < n && exact; ++s)
+            exact = std::memcmp(out.getReadPointer(other) + s, in.getReadPointer(other) + s - lat, sizeof(float)) == 0;
+        const double cutProc = computeAlignedToneReductionDb(in, out, lat, static_cast<int>(sr * 1.5), static_cast<int>(sr * 2.8), proc, sr, 2500.0);
+        std::printf("    [EQCore] %s band: processed channel cut %.2f dB, untouched channel bit-identical (delayed %d): %d, mode %d\n",
+                    mode == 1 ? "Left " : "Right", cutProc, lat, exact ? 1 : 0, eq->getActiveCoreChannelModeForTest());
+        CHECK(eq->getActiveCoreChannelModeForTest() == mode, "[EQCore] the Core runs the band's routing");
+        CHECK(exact, "[EQCore] L / R band: the other channel is the input, delayed, bit-identical (depth 24 dB)");
+        CHECK(cutProc >= 6.0, "[EQCore] L / R band: the routed channel's resonance is cut");
+    }
+
+    // Mid / Side at depth 0 with a pure-side / pure-mid input: the untouched
+    // component (and so the whole output) is the input delayed, bit for bit.
+    for (int mode : { 3, 4 })
+    {
+        juce::AudioBuffer<float> in(2, n);
+        fillPink(in, 0.05f, 0xA5u);
+        float* l = in.getWritePointer(0);
+        float* r = in.getWritePointer(1);
+        for (int s = 0; s < n; ++s) r[s] = mode == 3 ? -l[s] : l[s];   // Mid band + pure side, Side band + pure mid
+        auto eq = make(sr, 256, true, 1, [mode](XlethParametricEQ& e) { e.addBand(); spectralBand(e, 0, 2500.0f, 0.0f, 2.0f, mode); });
+        const int lat = eq->getReportedProcessorLatencySamples();
+        const auto out = render(*eq, in, 256);
+        bool exact = true;
+        for (int ch = 0; ch < 2 && exact; ++ch)
+            for (int s = lat; s < n && exact; ++s)
+                exact = std::memcmp(out.getReadPointer(ch) + s, in.getReadPointer(ch) + s - lat, sizeof(float)) == 0;
+        std::printf("    [EQCore] %s band, depth 0, pure-%s input: output == input delayed %d, bit-identical: %d\n",
+                    mode == 3 ? "Mid " : "Side", mode == 3 ? "side" : "mid", lat, exact ? 1 : 0);
+        CHECK(exact, std::string("[EQCore] ") + (mode == 3 ? "Mid" : "Side") + " band at depth 0: the untouched component is bit-identical");
+
+        // General material: the untouched component differs only by the M +- S rounding.
+        juce::AudioBuffer<float> gen(2, n);
+        fillPink(gen, 0.05f, 0x1234u);
+        auto eq2 = make(sr, 256, true, 1, [mode](XlethParametricEQ& e) { e.addBand(); spectralBand(e, 0, 2500.0f, -24.0f, 2.0f, mode); });
+        const auto out2 = render(*eq2, gen, 256);
+        float maxErr = 0.0f;
+        for (int s = lat; s < n; ++s)
+        {
+            const float inC  = mode == 3 ? 0.5f * (gen.getSample(0, s - lat) - gen.getSample(1, s - lat))
+                                         : 0.5f * (gen.getSample(0, s - lat) + gen.getSample(1, s - lat));
+            const float outC = mode == 3 ? 0.5f * (out2.getSample(0, s) - out2.getSample(1, s))
+                                         : 0.5f * (out2.getSample(0, s) + out2.getSample(1, s));
+            maxErr = std::max(maxErr, std::abs(inC - outC));
+        }
+        std::printf("    [EQCore] %s band at depth 24 dB, general material: untouched component max error %.3g\n",
+                    mode == 3 ? "Mid " : "Side", maxErr);
+        CHECK(maxErr < 1.0e-6f, "[EQCore] routed M / S: the untouched component is the input (rounding only)");
+    }
+
+    // Bands that ask for different routings: one core cannot honour both; it runs Stereo and says so.
+    {
+        juce::AudioBuffer<float> in(2, static_cast<int>(sr * 0.2));
+        fillPink(in, 0.05f, 3u);
+        auto eq = make(sr, 256, true, 1, [](XlethParametricEQ& e) {
+            e.addBand(); e.addBand();
+            spectralBand(e, 0, 1000.0f, -12.0f, 2.0f, 1);
+            spectralBand(e, 1, 4000.0f, -12.0f, 2.0f, 3);
+        });
+        render(*eq, in, 256);
+        CHECK(eq->getActiveCoreChannelModeForTest() == 0 && eq->isSpectralCoreChannelConflict(),
+              "[EQCore] conflicting routings: the Core runs Stereo and reports the conflict");
+    }
+}
+
+// Transitions on the Core: off -> on, on -> off, Legacy <-> Core, quality,
+// routing, un-bypass. A clean 1 kHz sine and pink noise + a +12 dB bell: every
+// transition's largest step is bounded by the larger of the input's own largest
+// step and the steady output's. The stale-splice and un-bypass checks use the
+// phase-displaced sine of [EQSpliceFix] / [EQBypassFix] (13 samples skipped
+// while the Core is off / bypassed).
+static void testEQCoreTransitions()
+{
+    std::cout << "  [EQCore] transitions: steps, dips, stale splices, un-bypass\n";
+    using namespace eqcoretest;
+    constexpr double sr = 48000.0;
+    constexpr int block = 480;
+    const int n = static_cast<int>(sr * 3);
+    const int switchBlock = 150;                       // 1.5 s
+    const int at = switchBlock * block;
+
+    auto sine = [&](int skipFrom, int skip) {
+        juce::AudioBuffer<float> b(2, n);
+        for (int s = 0; s < n; ++s)
+        {
+            const int k = s + (s >= skipFrom ? skip : 0);
+            const float v = 0.5f * std::sin(2.0f * juce::MathConstants<float>::pi * static_cast<float>(k % 48) / 48.0f);
+            b.setSample(0, s, v);
+            b.setSample(1, s, v);
+        }
+        return b;
+    };
+    juce::AudioBuffer<float> pinkBell(2, n);
+    rsnew::fillPinkBell(pinkBell, sr, 2500.0f, 0.05f, 0x4242u);
+
+    struct Case
+    {
+        const char* name;
+        bool coreAtStart;
+        int startQuality;
+        bool bandOnAtStart;
+        std::vector<std::pair<int, Event>> events;
+    };
+    const auto band = [](XlethParametricEQ& e) { e.addBand(); spectralBand(e, 0, 1000.0f, -24.0f, 1.0f); };
+    std::vector<Case> cases = {
+        { "Core band off -> on (None -> Core)",   true,  1, false, { { switchBlock, [](XlethParametricEQ& e) { e.setBandParam(0, "enabled", 1.0f); } } } },
+        { "Core band on -> off (Core -> None)",   true,  1, true,  { { switchBlock, [](XlethParametricEQ& e) { e.setBandParam(0, "enabled", 0.0f); } } } },
+        { "engine Legacy -> Core",                false, 1, true,  { { switchBlock, [](XlethParametricEQ& e) { e.setParameterValue("spectral_engine", 1.0f); } } } },
+        { "engine Core -> Legacy",                true,  1, true,  { { switchBlock, [](XlethParametricEQ& e) { e.setParameterValue("spectral_engine", 0.0f); } } } },
+        { "quality Normal -> High (tier switch)", true,  1, true,  { { switchBlock, [](XlethParametricEQ& e) { e.setParameterValue("spectral_quality", 2.0f); } } } },
+        { "quality High -> Fast (tier switch)",   true,  2, true,  { { switchBlock, [](XlethParametricEQ& e) { e.setParameterValue("spectral_quality", 0.0f); } } } },
+        { "routing Stereo -> Mid",                true,  1, true,  { { switchBlock, [](XlethParametricEQ& e) { e.setBandParam(0, "channel", 3.0f); } } } },
+    };
+
+    for (const auto& c : cases)
+    {
+        for (int sig = 0; sig < 2; ++sig)
+        {
+            // Sine: an inert band (depth 0, the renderers pass the audio delayed) so
+            // splices and dips show undisturbed; pink + bell: a real -24 dB cut.
+            const auto in = sig == 0 ? sine(n, 0) : pinkBell;   // a clean sine: its own largest step is the bound
+            const float g = sig == 0 ? 0.0f : -24.0f;
+            const auto setupCase = [&](XlethParametricEQ& e) {
+                e.addBand();
+                spectralBand(e, 0, sig == 0 ? 1000.0f : 2500.0f, g, 1.0f);
+                if (!c.bandOnAtStart) e.setBandParam(0, "enabled", 0.0f);
+            };
+            auto eq = make(sr, block, c.coreAtStart, c.startQuality, setupCase);
+            auto steady = make(sr, block, c.coreAtStart, c.startQuality, setupCase);
+            const auto out = render(*eq, in, block, c.events);
+            const auto ref = render(*steady, in, block);
+            const float inStep = maxStep(in, 0, 1, n);
+            const float steadyStep = std::max(maxStep(ref, 0, at - static_cast<int>(sr), n), maxStep(out, 0, at - static_cast<int>(sr), at));
+            const float trStep = std::max(maxStep(out, 0, at, at + static_cast<int>(sr * 0.25)), maxStep(out, 1, at, at + static_cast<int>(sr * 0.25)));
+            const float bound = std::max(inStep, steadyStep);
+            const double dip = sig == 0 ? dipMs(out, 0, at - block, at + static_cast<int>(sr * 0.2), sr, 0.02f) : 0.0;
+            bool finite = true;
+            for (int s = 0; s < n && finite; ++s) finite = std::isfinite(out.getSample(0, s)) && std::isfinite(out.getSample(1, s));
+            std::printf("    [EQCore] %-40s %-9s max step %.4f (input %.4f, steady %.4f, ratio %.3f)%s, switches %llu\n",
+                        c.name, sig == 0 ? "sine" : "pink+bell", trStep, inStep, steadyStep, trStep / std::max(bound, 1.0e-9f),
+                        sig == 0 ? (std::string(", dip ") + std::to_string(dip).substr(0, 5) + " ms").c_str() : "",
+                        static_cast<unsigned long long>(eq->getStructureSwitchCount()));
+            CHECK(finite, std::string("[EQCore] transition output finite: ") + c.name);
+            CHECK(trStep <= 1.0f * bound + 1.0e-6f,
+                  std::string("[EQCore] transition step <= max(input step, steady output step): ") + c.name
+                      + (sig == 0 ? " (sine)" : " (pink+bell)"));
+        }
+    }
+
+    // Off -> on without a stale splice: a Core that ran before (phase A, then
+    // off while the signal moves 13 samples) and a Core that never ran (band
+    // off from the start) give the SAME output from the re-enable on.
+    {
+        const auto in = sine(100 * block, 13);
+        auto tested = make(sr, block, true, 1, band);
+        auto fresh  = make(sr, block, true, 1, [&](XlethParametricEQ& e) { band(e); e.setBandParam(0, "enabled", 0.0f); });
+        const auto a = render(*tested, in, block, { { 100, [](XlethParametricEQ& e) { e.setBandParam(0, "enabled", 0.0f); } },
+                                                    { 150, [](XlethParametricEQ& e) { e.setBandParam(0, "enabled", 1.0f); } } });
+        const auto b = render(*fresh, in, block, { { 150, [](XlethParametricEQ& e) { e.setBandParam(0, "enabled", 1.0f); } } });
+        const bool same = bitEqual(a, b, 0, at, n) && bitEqual(a, b, 1, at, n);
+        std::printf("    [EQCore] off -> on after a prior Core period vs a Core that never ran: identical from the re-enable on: %d\n", same ? 1 : 0);
+        CHECK(same, "[EQCore] off -> on: no stale splice (identical to a Core with no history)");
+    }
+
+    // Un-bypass: the Core keeps running while bypassed (aligned dry), so after
+    // the 5 ms crossfade the output IS the never-bypassed output, and the
+    // bypassed output is the input on the Core's timeline (constant latency).
+    {
+        const auto in = sine(100 * block, 13);
+        auto tested = make(sr, block, true, 1, band);
+        auto never  = make(sr, block, true, 1, band);
+        const std::uint64_t notify0 = tested->getLatencyChangeNotifyCount();
+        const auto a = render(*tested, in, block, { { 100, [](XlethParametricEQ& e) { e.setBypassed(true); } },
+                                                    { 150, [](XlethParametricEQ& e) { e.setBypassed(false); } } });
+        const auto b = render(*never, in, block);
+        const int lat = tested->getReportedProcessorLatencySamples();
+        const int xfade = static_cast<int>(sr * 0.005) + 1;
+        const bool after = bitEqual(a, b, 0, at + xfade, n) && bitEqual(a, b, 1, at + xfade, n);
+        bool bypassedAligned = true;
+        for (int s = 110 * block; s < 145 * block && bypassedAligned; ++s)
+            bypassedAligned = a.getSample(0, s) == in.getSample(0, s - lat);
+        // From the un-bypass on (the 13-sample skip lies inside the bypassed phase).
+        const float step = std::max(maxStep(a, 0, at, n), maxStep(a, 1, at, n));
+        const float sineStep = maxStep(sine(n, 0), 0, 1, n);
+        std::printf("    [EQCore] un-bypass: identical to never-bypassed after the crossfade: %d; bypassed output == input delayed %d: %d; "
+                    "max step %.4f (input %.4f); latency notifications %llu\n",
+                    after ? 1 : 0, lat, bypassedAligned ? 1 : 0, step, sineStep,
+                    static_cast<unsigned long long>(tested->getLatencyChangeNotifyCount() - notify0));
+        CHECK(after, "[EQCore] un-bypass: no stale state (identical to the never-bypassed Core after the crossfade)");
+        CHECK(bypassedAligned, "[EQCore] bypassed on the Core: the output is the input on the Core's timeline");
+        CHECK(step <= sineStep + 1.0e-6f, "[EQCore] un-bypass: no step beyond the input's own (clean sine step)");
+        CHECK(tested->getLatencyChangeNotifyCount() == notify0, "[EQCore] bypass keeps the Core's latency (no PDC retarget)");
+    }
+}
+
+// State: both engines round-trip bit-identically; an OLD state (no
+// spectral_engine) restored into a running Core instance renders exactly like
+// a fresh Legacy instance with that state.
+static void testEQCoreStateRender()
+{
+    std::cout << "  [EQCore] state round trips and old-state restore (rendered)\n";
+    using namespace eqcoretest;
+    constexpr double sr = 48000.0;
+    constexpr int block = 256;
+    juce::AudioBuffer<float> in(2, static_cast<int>(sr * 2));
+    rsnew::fillPinkBell(in, sr, 2500.0f, 0.05f, 0x2468u);
+    const auto setup = [](XlethParametricEQ& e) {
+        e.addBand(); e.addBand();
+        spectralBand(e, 0, 2500.0f, -18.0f, 3.0f, 0, 0.4f, 6.0f, 5.0f, 150.0f);
+        eqlegacy::band(e, 1, 400.0f, 3.0f, 1.0f, 0, 0, 3);
+    };
+
+    for (bool core : { false, true })
+    {
+        auto src = make(sr, block, core, 2, setup);
+        juce::MemoryBlock state;
+        src->getStateInformation(state);
+        const auto a = render(*src, in, block);
+
+        auto dst = std::make_unique<XlethParametricEQ>();
+        dst->setCoreInstanceIndex(0);
+        dst->prepareToPlay(sr, block);
+        dst->setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+        dst->prepareToPlay(sr, block);
+        const auto b = render(*dst, in, block);
+        const bool same = rsnew::bitIdentical(a, b);
+        std::printf("    [EQCore] %s state round trip: rendered output bit-identical: %d\n", core ? "Core  " : "Legacy", same ? 1 : 0);
+        CHECK(same, std::string("[EQCore] state round trip renders bit-identically: ") + (core ? "Core" : "Legacy"));
+    }
+
+    // Old state (no spectral_engine / spectral_quality) restored LIVE into an
+    // instance running the Core with the same bands: from the restore on it is a
+    // fresh Legacy instance.
+    juce::MemoryBlock oldState;
+    {
+        auto legacySrc = make(sr, block, false, 1, setup);
+        eqcore::stateWithout(*legacySrc, { "spectral_engine", "spectral_quality" }, oldState);
+    }
+    const int restoreBlock = 200;
+    const int at = restoreBlock * block;
+    auto running = make(sr, block, true, 0, setup);
+    const auto a = render(*running, in, block, { { restoreBlock, [&](XlethParametricEQ& e) {
+        e.setStateInformation(oldState.getData(), static_cast<int>(oldState.getSize())); } } });
+
+    auto legacy = std::make_unique<XlethParametricEQ>();
+    legacy->setCoreInstanceIndex(0);
+    legacy->prepareToPlay(sr, block);
+    legacy->setStateInformation(oldState.getData(), static_cast<int>(oldState.getSize()));
+    legacy->prepareToPlay(sr, block);
+    juce::AudioBuffer<float> tail(2, in.getNumSamples() - at);
+    for (int ch = 0; ch < 2; ++ch) tail.copyFrom(ch, 0, in, ch, at, tail.getNumSamples());
+    const auto b = render(*legacy, tail, block);
+    bool same = true;
+    for (int ch = 0; ch < 2 && same; ++ch)
+        same = std::memcmp(a.getReadPointer(ch) + at, b.getReadPointer(ch), sizeof(float) * static_cast<std::size_t>(tail.getNumSamples())) == 0;
+    std::printf("    [EQCore] old state restored into a running Core instance: engine %.0f, renders == fresh Legacy instance: %d\n",
+                running->getParameterValue("spectral_engine"), same ? 1 : 0);
+    CHECK(running->getParameterValue("spectral_engine") == 0.0f, "[EQCore] the old state switches the running instance to Legacy");
+    CHECK(same, "[EQCore] an old state restored live renders bit-identically to a fresh Legacy instance");
+}
+
+// Hop phase: each EQ instance's core gets Core::hopPhaseOffsetForInstance(index,
+// hop) from the EQ's OWN instance counter (the RS's counter does not move).
+static void testEQCoreHopPhase()
+{
+    std::cout << "  [EQCore] per-instance hop phase (EQ's own instance counter)\n";
+    using Core = xleth::dsp::resonance::Core;
+    const int hop = Core::fftSizeFor(48000.0, Core::FrameTier::Normal) / 4;
+    std::string offsets;
+    bool ok = true;
+    for (int i = 0; i < 8; ++i)
+    {
+        XlethParametricEQ eq;
+        eq.setCoreInstanceIndex(i);
+        eq.prepareToPlay(48000.0, 64);
+        const int got = eq.getCoreForTest().hopPhaseOffset();
+        offsets += (i ? ", " : "") + std::to_string(got);
+        ok = ok && got == Core::hopPhaseOffsetForInstance(i, hop);
+    }
+    std::printf("    [EQCore] pinned indices 0..7 at hop %d: offsets {%s}\n", hop, offsets.c_str());
+    CHECK(ok, "[EQCore] the core's hop phase is hopPhaseOffsetForInstance(index, hop)");
+
+    XlethResonanceSuppressorEffect rsProbe;
+    rsProbe.prepareToPlay(48000.0, 64);
+    const int rsBefore = rsProbe.getCoreInstanceIndex();
+    XlethParametricEQ a, b;
+    a.prepareToPlay(48000.0, 64);
+    b.prepareToPlay(48000.0, 64);
+    XlethResonanceSuppressorEffect rsAfter;
+    rsAfter.prepareToPlay(48000.0, 64);
+    std::printf("    [EQCore] unpinned EQ indices %d, %d; RS indices around them %d, %d\n",
+                a.getCoreInstanceIndex(), b.getCoreInstanceIndex(), rsBefore, rsAfter.getCoreInstanceIndex());
+    CHECK(b.getCoreInstanceIndex() == a.getCoreInstanceIndex() + 1, "[EQCore] unpinned EQ instances take consecutive indices");
+    CHECK(rsAfter.getCoreInstanceIndex() == rsBefore + 1, "[EQCore] EQ instances do not consume the RS's instance numbering");
+}
+
+// ─── EQ Low / High Pass slopes ───────────────────────────────────────────────
+namespace eqslopetest
+{
+using namespace eqcoretest;
+
+// dB of a 512-point response trace at `hz` (linear interpolation along the grid).
+static double curveAtHz(const float* c, double hz)
+{
+    const int n = XlethParametricEQ::kResponseSize;
+    const double x = std::clamp(std::log(hz / 20.0) / std::log(1000.0), 0.0, 1.0) * (n - 1);
+    const int i = std::clamp(static_cast<int>(x), 0, n - 2);
+    const double f = x - i;
+    return c[i] * (1.0 - f) + c[i + 1] * f;
+}
+
+static void hpBand(XlethParametricEQ& eq, int b, float freq, int type, int slope, int mode = 0, float gain = 0.0f)
+{
+    eqlegacy::band(eq, b, freq, gain, 0.70710678f, type, mode, 0);
+    eq.setBandParam(b, "slope", static_cast<float>(slope));
+}
+
+} // namespace eqslopetest
+
+static void testEQSlopes()
+{
+    std::cout << "  [EQ slopes] Low / High Pass 6 dB/oct .. Brickwall\n";
+    using namespace eqslopetest;
+    constexpr double sr = 48000.0;
+    // Nominal attenuation one octave away from the corner per slope index.
+    const double nominal[9] = { 6.0, 12.0, 18.0, 24.0, 36.0, 48.0, 72.0, 96.0, 90.0 };
+
+    // The slope parameter exists, defaults to 12 dB/oct and is in the band JSON.
+    {
+        XlethParametricEQ eq;
+        eq.prepareToPlay(sr, 256);
+        eq.addBand();
+        auto j = nlohmann::json::parse(eq.getBandsAsJSON());
+        CHECK(j[0]["slope"].get<int>() == 1, "[EQ slopes] a new band's slope is 12 dB/oct (index 1)");
+    }
+
+    // Response of each slope: -3 dB at the corner, the nominal steepness, flat pass band.
+    for (int type : { 3, 4 })   // LowPass, HighPass
+    {
+        double prevOctave = 1.0;
+        for (int slope = 0; slope < 9; ++slope)
+        {
+            XlethParametricEQ eq;
+            eq.prepareToPlay(sr, 256);
+            eq.addBand();
+            hpBand(eq, 0, 1000.0f, type, slope);
+            float curve[XlethParametricEQ::kResponseSize];
+            eq.getResponseCurve(curve, XlethParametricEQ::kResponseSize);
+            const double atCorner = curveAtHz(curve, 1000.0);
+            const double stop = curveAtHz(curve, type == 4 ? 500.0 : 2000.0);
+            const double pass = curveAtHz(curve, type == 4 ? 6000.0 : 150.0);
+            std::printf("    [EQ slopes] %s slope %d: corner %.2f dB, 1 oct %.2f dB, pass %.3f dB\n",
+                        type == 4 ? "HP" : "LP", slope, atCorner, stop, pass);
+            CHECK(std::abs(atCorner + 3.01) < 0.35, "[EQ slopes] -3 dB at the corner for every slope");
+            CHECK(std::abs(pass) < 0.15, "[EQ slopes] pass band is flat");
+            if (slope < 8) CHECK(std::abs(-stop - nominal[slope]) < 1.5, "[EQ slopes] one octave out is the nominal slope");
+            else CHECK(stop < -75.0, "[EQ slopes] Brickwall is >75 dB down one octave out");
+            CHECK(stop < prevOctave, "[EQ slopes] every step is steeper than the one before");
+            prevOctave = stop;
+        }
+    }
+
+    // Audio: a stop band tone is attenuated by what the curve says, a pass band tone is not.
+    for (int slope : { 0, 2, 3, 5 })
+    {
+        XlethParametricEQ eq;
+        eq.prepareToPlay(sr, 256);
+        eq.addBand();
+        hpBand(eq, 0, 1000.0f, 4, slope);
+        float curve[XlethParametricEQ::kResponseSize];
+        eq.getResponseCurve(curve, XlethParametricEQ::kResponseSize);
+        juce::AudioBuffer<float> in(2, static_cast<int>(sr * 2));
+        in.clear();
+        for (int ch = 0; ch < 2; ++ch) { addSine(in, ch, sr, 500.0, 0.5f); addSine(in, ch, sr, 4000.0, 0.25f); }
+        const auto out = render(eq, in, 256);
+        const int lat = eq.getReportedProcessorLatencySamples();
+        const double cut500  = computeAlignedToneReductionDb(in, out, lat, static_cast<int>(sr), static_cast<int>(sr * 1.9), 0, sr, 500.0);
+        const double cut4k   = computeAlignedToneReductionDb(in, out, lat, static_cast<int>(sr), static_cast<int>(sr * 1.9), 0, sr, 4000.0);
+        std::printf("    [EQ slopes] slope %d audio: 500 Hz cut %.2f dB (curve %.2f), 4 kHz cut %.3f dB\n",
+                    slope, cut500, -curveAtHz(curve, 500.0), cut4k);
+        CHECK(std::abs(cut500 + curveAtHz(curve, 500.0)) < 1.0, "[EQ slopes] audio follows the drawn curve");
+        CHECK(std::abs(cut4k) < 0.3, "[EQ slopes] pass band tone untouched");
+    }
+
+    // Stability: extreme corners and Q, every slope, noise in; slope changes mid-stream.
+    {
+        bool finite = true;
+        float peak = 0.0f;
+        for (int type : { 3, 4 })
+            for (float freq : { 20.0f, 60.0f, 19000.0f })
+                for (int slope = 0; slope < 9; ++slope)
+                    for (float q : { 0.1f, 0.707f, 12.0f })
+                    {
+                        XlethParametricEQ eq;
+                        eq.prepareToPlay(sr, 256);
+                        eq.addBand();
+                        hpBand(eq, 0, freq, type, slope);
+                        eq.setBandParam(0, "q", q);
+                        juce::AudioBuffer<float> in(2, static_cast<int>(sr));
+                        fillPink(in, 0.1f, 0x5eedu);
+                        const auto out = render(eq, in, 256);
+                        for (int ch = 0; ch < 2; ++ch)
+                            for (int s = 0; s < out.getNumSamples(); ++s)
+                            {
+                                const float v = out.getSample(ch, s);
+                                finite = finite && std::isfinite(v);
+                                peak = std::max(peak, std::abs(v));
+                            }
+                    }
+        std::printf("    [EQ slopes] extreme corner / Q sweep: peak %.3f, finite %d\n", peak, finite ? 1 : 0);
+        CHECK(finite && peak < 6.0f, "[EQ slopes] every slope is stable at extreme corners and Q");
+
+        XlethParametricEQ eq;
+        eq.prepareToPlay(sr, 256);
+        eq.addBand();
+        hpBand(eq, 0, 80.0f, 4, 1);
+        juce::AudioBuffer<float> in(2, static_cast<int>(sr * 3));
+        fillPink(in, 0.1f, 0xfeedu);
+        std::vector<std::pair<int, Event>> ev;
+        for (int i = 1; i <= 8; ++i)
+            ev.push_back({ i * 60, [i](XlethParametricEQ& e) { e.setBandParam(0, "slope", static_cast<float>(i % 9)); } });
+        const auto out = render(eq, in, 256, ev);
+        bool ok = true;
+        for (int ch = 0; ch < 2; ++ch)
+            for (int s = 0; s < out.getNumSamples(); ++s) ok = ok && std::isfinite(out.getSample(ch, s)) && std::abs(out.getSample(ch, s)) < 6.0f;
+        CHECK(ok, "[EQ slopes] switching slope mid-stream stays finite and bounded");
+    }
+
+    // An old state (saved before slopes) restores every band to 12 dB/oct, even over a
+    // live instance holding another slope.
+    {
+        XlethParametricEQ saved;
+        saved.prepareToPlay(sr, 256);
+        saved.addBand();
+        hpBand(saved, 0, 1000.0f, 4, 1);
+        juce::MemoryBlock old;
+        eqcore::stateWithout(saved, { "b0_slope", "b1_slope", "b2_slope", "b3_slope", "b4_slope", "b5_slope", "b6_slope", "b7_slope",
+                                      "b8_slope", "b9_slope", "b10_slope", "b11_slope", "b12_slope", "b13_slope", "b14_slope", "b15_slope" }, old);
+        CHECK(!eqcore::stateHasParam(old, "b0_slope"), "[EQ slopes] (test) the old state lacks the slope parameter");
+        XlethParametricEQ live;
+        live.prepareToPlay(sr, 256);
+        live.addBand();
+        hpBand(live, 0, 1000.0f, 4, 7);
+        live.setStateInformation(old.getData(), static_cast<int>(old.getSize()));
+        auto j = nlohmann::json::parse(live.getBandsAsJSON());
+        CHECK(j[0]["slope"].get<int>() == 1, "[EQ slopes] an old state restores to 12 dB/oct");
+
+        juce::MemoryBlock now;
+        saved.setParameterValue("b0_slope", 5.0f);
+        saved.getStateInformation(now);
+        XlethParametricEQ other;
+        other.prepareToPlay(sr, 256);
+        other.setStateInformation(now.getData(), static_cast<int>(now.getSize()));
+        auto j2 = nlohmann::json::parse(other.getBandsAsJSON());
+        CHECK(!j2.empty() && j2[0]["slope"].get<int>() == 5, "[EQ slopes] a saved slope round-trips");
+    }
+
+    // Reso (Spectral) on a High Pass band follows the slope: Core weight curve == the drawn
+    // curve's stop band attenuation over the depth, for every slope; a steeper slope is a
+    // sharper edge on the same corner.
+    {
+        constexpr float depth = -24.0f;
+        double w700[9] = {};
+        for (int slope : { 0, 1, 3, 5, 7, 8 })
+        {
+            auto eq = make(sr, 256, true, 1, [&](XlethParametricEQ& e) { e.addBand(); hpBand(e, 0, 1000.0f, 4, slope, 2, depth); });
+            juce::AudioBuffer<float> in(2, static_cast<int>(sr));
+            fillPink(in, 0.05f, 0xabcdu);
+            render(*eq, in, 256);
+            float curve[XlethParametricEQ::kResponseSize];
+            eq->getResponseCurve(curve, XlethParametricEQ::kResponseSize);
+            const float* w = eq->getCoreWeightCurveForTest();
+            const auto& core = eq->getCoreForTest();
+            double worst = 0.0;
+            for (int k = 0; k < core.numBands(); ++k)
+            {
+                const double hz = core.bandCentreHz(k);
+                const double expect = std::clamp(-curveAtHz(curve, hz) / 24.0, 0.0, 1.0);
+                worst = std::max(worst, std::abs(expect - static_cast<double>(w[k])));
+            }
+            int nearest = 0;
+            for (int k = 1; k < core.numBands(); ++k)
+                if (std::abs(std::log2(core.bandCentreHz(k) / 700.0)) < std::abs(std::log2(core.bandCentreHz(nearest) / 700.0))) nearest = k;
+            w700[slope] = w[nearest];
+            std::printf("    [EQ slopes] Core Reso on HP slope %d: worst |weight - curve| %.3f, weight near 700 Hz %.3f\n", slope, worst, w700[slope]);
+            CHECK(worst < 0.08, "[EQ slopes] Reso region aligns with the slope's drawn curve");
+        }
+        CHECK(w700[7] >= w700[3] - 1e-4 && w700[3] >= w700[1] - 1e-4 && w700[8] >= w700[7] - 1e-4,
+              "[EQ slopes] steeper slope, sharper Reso edge (weight just below the corner)");
+    }
+
+    // Reso audio on both engines: a tone in the High Pass stop band is cut, one in the pass band is not.
+    for (bool core : { false, true })
+        for (int slope : { 1, 3, 8 })
+        {
+            juce::AudioBuffer<float> in(2, static_cast<int>(sr * 4));
+            fillPink(in, 0.05f, 0x4242u);
+            for (int ch = 0; ch < 2; ++ch) { addSine(in, ch, sr, 200.0, 0.05f); addSine(in, ch, sr, 4000.0, 0.05f); }
+            auto eq = make(sr, 256, core, 1, [&](XlethParametricEQ& e) { e.addBand(); hpBand(e, 0, 1000.0f, 4, slope, 2, -24.0f); });
+            const int lat = eq->getReportedProcessorLatencySamples();
+            const auto out = render(*eq, in, 256);
+            const int from = static_cast<int>(sr * 2), to = static_cast<int>(sr * 3.8);
+            const double cutStop = computeAlignedToneReductionDb(in, out, lat, from, to, 0, sr, 200.0);
+            const double cutPass = computeAlignedToneReductionDb(in, out, lat, from, to, 0, sr, 4000.0);
+            std::printf("    [EQ slopes] %s Reso HP slope %d: 200 Hz cut %.2f dB, 4 kHz cut %.2f dB\n",
+                        core ? "Core  " : "Legacy", slope, cutStop, cutPass);
+            CHECK(cutStop >= 6.0, "[EQ slopes] Reso cuts a resonance in the High Pass stop band");
+            CHECK(cutPass < 1.0, "[EQ slopes] Reso leaves the pass band alone");
+        }
+}
+
 int main()
 {
     // JUCE requires a ScopedJuceInitialiser_GUI to initialise internals
@@ -4350,12 +7193,20 @@ int main()
     testBypass();
     testJSONHelpers();
     testDistortionModesDiffer();
+    testDistortionDefaultRenderUnchanged();
+    testDistortionNewModesSafety();
+    testDistortionCrushParams();
+    testDistortionSymmetry();
+    testDistortionModeLoudness();
+    testDistortionParameterSurface();
     testTransientAttackShaping();
     testTransientSustainShaping();
     testTransientMixAndBypass();
     testTransientSafety();
     testTransientStereoLinking();
     testTransientMidiAttackMode();
+    testTransientEnvelopeModeOnOscillatingHits();
+    testTransientEnvelopeModeBusyBus();
     testResonanceSuppressorWolaIdentity();
     testResonanceSuppressorLowLatencyMode();
     testResonanceSuppressorLatencySafeBypass();
@@ -4369,6 +7220,11 @@ int main()
     testResonanceSuppressorStereoModes();
     testResonanceSuppressorModeSwitching();
     testResonanceSuppressorVisualization();
+    testResonanceSuppressorNewEngineLatency();
+    testResonanceSuppressorNewEngineMidSide();
+    testResonanceSuppressorNewEngineTransitions();
+    testResonanceSuppressorNewEngineState();
+    testResonanceSuppressorNewEngineVizAndMeters();
 
     testDelayStereoModeParameter();
     testDelayStereoModeDual();
@@ -4383,12 +7239,34 @@ int main()
     testEQBypassBand();
     testEQSerialization();
 
+    std::cout << "\n=== test_eq_channel_routing ===\n";
+    testEQChannelRoutingDefault();
+    testEQChannelRoutingLeftRight();
+    testEQChannelRoutingMidSide();
+    testEQChannelRoutingResponseCurve();
+    testEQChannelRoutingFoldsForLinPhase();
+    testEQChannelRoutingMonoFoldsToStereo();
+    testEQChannelRoutingDynamicDetector();
+
     std::cout << "\n=== test_eq_advanced ===\n";
     testDynamicEQ();
     testSpectralDynamics();
+    testSpectralNoClicks();
     testLinearPhase();
     testOversampling();
     testLinPhaseDisablesDynamic();
+    testEQLegacyBitIdentity();
+    testEQCoreParamsAndState();
+    testEQCoreLatency();
+    testEQCoreBothChannelDetection();
+    testEQCoreTwoRegions();
+    testEQCoreRoutedModes();
+    testEQCoreTransitions();
+    testEQCoreStateRender();
+    testEQCoreHopPhase();
+
+    std::cout << "\n=== test_eq_slopes ===\n";
+    testEQSlopes();
 
     std::cout << "\nResults: " << g_passed << " passed, " << g_failed << " failed\n";
     if (g_failed > 0)

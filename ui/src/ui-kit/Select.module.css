@@ -1,0 +1,130 @@
+/* Select. The popup is a FLOATING surface, so it alone carries the hard offset
+ * shadow (DESIGN.md section 1). It enters with the `pop` recipe (ui-kit/motion.css), growing
+ * out of the trigger's edge. */
+@layer kit {
+  .trigger {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-1);
+    height: var(--ctl-h-md);
+    min-width: 72px;
+    max-width: 100%;
+    padding: 0 var(--space-1) 0 var(--space-2);
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g3);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    font-weight: var(--weight-medium);
+    cursor: pointer;
+    -webkit-app-region: no-drag;
+  }
+
+  .trigger[data-size="sm"] { height: var(--ctl-h-sm); }
+  .trigger[data-size="lg"] { height: var(--ctl-h-lg); }
+
+  .triggerLabel {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chevron {
+    flex: none;
+    color: var(--ui-ink-2);
+    transition: rotate var(--mo-edit) var(--mo-ease-out);
+  }
+
+  /* The chevron turns to point back at the trigger while the list is open. */
+  .trigger[aria-expanded="true"] .chevron {
+    rotate: 180deg;
+  }
+
+  .trigger:is(:hover, [data-state="hover"]):not(:disabled) {
+    background: var(--ui-g2);
+  }
+
+  .trigger[aria-expanded="true"] {
+    border-color: var(--ui-value);
+  }
+
+  .trigger:is(:focus-visible, [data-state="focus"]) {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 1px;
+  }
+
+  .trigger:disabled {
+    opacity: var(--ui-mute-opacity);
+    cursor: default;
+  }
+
+  .popup {
+    position: fixed;
+    z-index: var(--xleth-z-popover, 10000);
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    padding: var(--space-1);
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-2);
+    background: var(--ui-g2);
+    box-shadow: var(--ui-shadow-float);
+    font-family: var(--ui-font);
+    --mo-origin: top center;
+  }
+
+  .popup[data-placement="top"] {
+    --mo-origin: bottom center;
+  }
+
+  .group {
+    padding: var(--space-1) var(--space-2) 2px;
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+  }
+
+  .option {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    width: 100%;
+    min-height: var(--row-h);
+    padding: 0 var(--space-2);
+    border: 0;
+    border-radius: var(--ui-radius-1);
+    background: transparent;
+    color: var(--ui-ink);
+    font: inherit;
+    font-size: var(--type-12);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .option[data-highlighted="true"] {
+    background: var(--ui-g4);
+  }
+
+  /* Selected is the check glyph and weight, not just a fill. */
+  .option[aria-selected="true"] {
+    font-weight: var(--weight-semibold);
+  }
+
+  .option:disabled {
+    opacity: var(--ui-mute-opacity);
+    cursor: default;
+  }
+
+  .optionLabel {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}

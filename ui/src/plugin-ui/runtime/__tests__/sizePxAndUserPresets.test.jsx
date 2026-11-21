@@ -12,7 +12,6 @@ import {
   resolveEffectiveKnobSize,
 } from '../components/PluginUIKitKnob.jsx'
 import { useUserKnobPresetsStore } from '../../appearance/useUserKnobPresetsStore.js'
-import AppearanceFields from '../../designer/inspectors/AppearanceFields.jsx'
 
 describe('sizePx schema', () => {
   it('isAppearanceNumberKey identifies sizePx as a number key', () => {
@@ -74,35 +73,6 @@ describe('buildPluginKnobRenderModel with sizePx', () => {
   it('ignores invalid sizePx and uses sizePreset', () => {
     const model = buildPluginKnobRenderModel({ preset: 'studio-ring', sizePx: 999 }, 52)
     expect(model.effectiveSize).toBe(52)
-  })
-})
-
-describe('AppearanceFields renders sizePx input', () => {
-  it('renders a number input for sizePx', () => {
-    const html = renderToStaticMarkup(
-      <AppearanceFields
-        nodeType="knob"
-        appearance={{ preset: 'studio-ring', sizePx: 80 }}
-        onPatchAppearance={() => {}}
-      />,
-    )
-
-    expect(html).toContain('Custom size (px)')
-    expect(html).toContain('type="number"')
-    expect(html).toContain('value="80"')
-  })
-
-  it('renders empty number input when sizePx is unset', () => {
-    const html = renderToStaticMarkup(
-      <AppearanceFields
-        nodeType="knob"
-        appearance={{ preset: 'studio-ring' }}
-        onPatchAppearance={() => {}}
-      />,
-    )
-
-    expect(html).toContain('Custom size (px)')
-    expect(html).toContain('placeholder="(preset default)"')
   })
 })
 
@@ -207,69 +177,5 @@ describe('useUserKnobPresetsStore', () => {
     const result = await useUserKnobPresetsStore.getState().remove('../etc/passwd')
     expect(result.ok).toBe(false)
     expect(deleteSpy).not.toHaveBeenCalled()
-  })
-})
-
-describe('AppearanceFields user presets section', () => {
-  beforeEach(() => {
-    useUserKnobPresetsStore.getState().reset()
-  })
-
-  it('renders empty state when there are no user presets', () => {
-    useUserKnobPresetsStore.setState({ presets: [], isLoaded: true })
-    const html = renderToStaticMarkup(
-      <AppearanceFields
-        nodeType="knob"
-        appearance={{ preset: 'studio-ring' }}
-        onPatchAppearance={() => {}}
-        onApplyPresetDefaults={() => {}}
-        onReplaceAppearance={() => {}}
-      />,
-    )
-    expect(html).toContain('Your presets')
-    expect(html).toContain('No saved presets yet')
-    expect(html).toContain('Save current as preset')
-  })
-
-  it('renders saved user presets as cards', () => {
-    useUserKnobPresetsStore.setState({
-      presets: [
-        { id: 'user-warm', label: 'Warm Studio', description: 'My go-to', appearance: { preset: 'studio-ring' } },
-        { id: 'user-flat', label: 'Flat Tiny', appearance: { preset: 'flat-minimal' } },
-      ],
-      isLoaded: true,
-    })
-
-    const html = renderToStaticMarkup(
-      <AppearanceFields
-        nodeType="knob"
-        appearance={{ preset: 'studio-ring' }}
-        onPatchAppearance={() => {}}
-        onApplyPresetDefaults={() => {}}
-        onReplaceAppearance={() => {}}
-      />,
-    )
-
-    expect(html).toContain('Warm Studio')
-    expect(html).toContain('My go-to')
-    expect(html).toContain('Flat Tiny')
-    expect(html).toContain('data-user-preset-id="user-warm"')
-    expect(html).toContain('data-user-preset-id="user-flat"')
-  })
-
-  it('hides the user presets section when onReplaceAppearance is not provided', () => {
-    useUserKnobPresetsStore.setState({
-      presets: [{ id: 'user-warm', label: 'Warm', appearance: { preset: 'studio-ring' } }],
-      isLoaded: true,
-    })
-    const html = renderToStaticMarkup(
-      <AppearanceFields
-        nodeType="knob"
-        appearance={{ preset: 'studio-ring' }}
-        onPatchAppearance={() => {}}
-      />,
-    )
-    expect(html).not.toContain('Your presets')
-    expect(html).not.toContain('data-user-preset-id="user-warm"')
   })
 })

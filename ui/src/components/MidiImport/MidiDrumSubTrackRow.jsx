@@ -2,7 +2,9 @@ import React from 'react'
 import { gmDrumName } from './filenameMatch.js'
 import { MAX_NOTE_LENGTH_OPTIONS, DEFAULT_MAX_NOTE_LENGTH_DENOM } from './maxNoteLength.js'
 import MidiSampleRail from './MidiSampleRail.jsx'
-import XlethSelect from '../common/XlethSelect.jsx'
+import MidiReimportModeSelect, { MODE_UPDATE } from './MidiReimportModeSelect.jsx'
+import { Checkbox, Select } from '../../ui-kit'
+import styles from './MidiImport.module.css'
 
 const MAX_LENGTH_SELECT_OPTIONS = MAX_NOTE_LENGTH_OPTIONS.map(option => ({
   value: option.value,
@@ -11,20 +13,16 @@ const MAX_LENGTH_SELECT_OPTIONS = MAX_NOTE_LENGTH_OPTIONS.map(option => ({
 
 // options: { enabled, visualOnly, sampleId, outputTrackIndex, pitch, ... }
 // onChange(patch): partial patch dispatched up to onOutputChange in the dialog
-export default function MidiDrumSubTrackRow({ noteNum, options, onChange, sampleItems }) {
+export default function MidiDrumSubTrackRow({ noteNum, options, onChange, sampleItems, reimportTargets }) {
   const gmName = gmDrumName(noteNum) || `Note ${noteNum}`
 
   return (
-    <div className={`midi-drum-sub-row${options.enabled ? '' : ' midi-drum-sub-row--disabled'}`}>
-      <div className="midi-drum-sub-head">
-        <input
-          type="checkbox"
-          checked={options.enabled}
-          onChange={e => onChange({ enabled: e.target.checked })}
-          title="Enable this note"
-        />
-        <span className="midi-drum-sub-note" title={`MIDI note ${noteNum}`}>{gmName}</span>
-        <span className="midi-drum-sub-midi-note">{noteNum}</span>
+    <div className={styles.drumRow} data-disabled={!options.enabled || undefined}>
+      <div className={styles.drumHeadRow}>
+        <Checkbox checked={options.enabled} onChange={enabled => onChange({ enabled })} aria-label={`Enable ${gmName}`}>
+          <span className={styles.trackName} title={`MIDI note ${noteNum}`}>{gmName}</span>
+        </Checkbox>
+        <span className={styles.midiNote}>Note {noteNum}</span>
       </div>
       <MidiSampleRail
         items={sampleItems}
@@ -34,27 +32,33 @@ export default function MidiDrumSubTrackRow({ noteNum, options, onChange, sample
         compact
         ariaLabel={`${gmName} sample assignment`}
       />
-      <div className="midi-track-controls midi-track-controls--compact">
-        <label className="midi-control-group">
-          <span className="midi-control-label">Max Length</span>
-          <XlethSelect
+      <div className={styles.controls}>
+        <MidiReimportModeSelect
+          targets={reimportTargets}
+          mode={options.mode}
+          targetTrackId={options.targetTrackId}
+          onChange={onChange}
+          disabled={!options.enabled}
+          ariaLabel={`${gmName} import target`}
+        />
+        {(reimportTargets?.length > 0) && options.mode === MODE_UPDATE && (
+          <span className={styles.note} title="Re-import rows always keep their existing block placement">
+            Position and tiling are ignored on re-import
+          </span>
+        )}
+        <div className={styles.control}>
+          <span className={styles.label}>Max length</span>
+          <Select
             value={options.maxNoteLengthDenom ?? DEFAULT_MAX_NOTE_LENGTH_DENOM}
             options={MAX_LENGTH_SELECT_OPTIONS}
             onChange={value => onChange({ maxNoteLengthDenom: Number(value) })}
             disabled={!options.enabled}
             ariaLabel={`${gmName} maximum note length`}
-            className="midi-max-note-length-select"
           />
-        </label>
-        <label className="midi-visual-only-label">
-          <input
-            type="checkbox"
-            checked={options.visualOnly}
-            onChange={e => onChange({ visualOnly: e.target.checked })}
-            disabled={!options.enabled}
-          />
+        </div>
+        <Checkbox checked={!!options.visualOnly} onChange={visualOnly => onChange({ visualOnly })} disabled={!options.enabled}>
           Visual only
-        </label>
+        </Checkbox>
       </div>
     </div>
   )

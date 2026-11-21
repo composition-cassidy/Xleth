@@ -45,52 +45,92 @@ int64_t RenderClock::videoFrameToSample(int64_t frame, int sampleRate,
 }
 
 // ===========================================================================
-// sample -> PPQ
+// sample <-> PPQ
+//
+// NO RCLOCK_LOG in this section. Unlike the frame helpers, these two run on
+// the AUDIO THREAD (MixEngine's pattern-note scheduler and
+// AutomationPlan::tickAtSamplePosition call them per block, per active block),
+// and XLETH_DEBUG is defined for the libraries that ship them — an fprintf per
+// call would be both a real-time violation and megabytes of stderr.
 // ===========================================================================
 
-int64_t RenderClock::sampleToPPQ(int64_t samplePos, int sampleRate, double bpm)
+namespace {
+
+//  Integer timing domain shared by sampleToPPQ / ppqToSample.
+//
+//  bpm arrives as a double (the RPC layer accepts any JS number), so it is
+//  pinned to a fixed-point grid to get into the integer domain. Micro-BPM is
+//  fine enough that the quantization is invisible: 1e-6 / 140 BPM is a 7e-9
+//  relative error, i.e. under 0.01 tick across a ten-minute timeline, while
+//  leaving bpm headroom to ~9.6e9 before bpmMicro * PPQ can overflow int64.
+constexpr int64_t kBpmScale = 1000000LL;            // bpm  -> micro-BPM
+constexpr int64_t kMinScale = 60LL * kBpmScale;     // 60 s  * micro-BPM
+
+inline int64_t toBpmMicro(double bpm)
 {
-    //  ppq = samplePos * bpm * 960 / (60 * sampleRate)
-    //
-    //  To keep everything integer we express bpm in milli-BPM:
-    //    bpm_milli = round(bpm * 1000)
-    //    ppq = samplePos * bpm_milli * 960 / (60000 * sampleRate)
-    //
-    //  av_rescale(a, b, c) = a * b / c   (128-bit intermediate)
-
-    int64_t bpmMilli = static_cast<int64_t>(std::round(bpm * 1000.0));
-
-    //  a = samplePos * bpmMilli   — could overflow 64-bit at extreme values,
-    //  so we split into two av_rescale calls:
-    //    step1 = av_rescale(samplePos, bpmMilli * PPQ, 60000LL * sampleRate)
-    //  av_rescale handles the 128-bit multiply internally.
-
-    int64_t ppq = av_rescale(samplePos,
-                             bpmMilli * static_cast<int64_t>(PPQ),
-                             60000LL * static_cast<int64_t>(sampleRate));
-
-    RCLOCK_LOG("sampleToPPQ: samplePos=%lld bpm=%.1f -> ppq=%lld",
-               (long long)samplePos, bpm, (long long)ppq);
-
-    return ppq;
+    if (!std::isfinite(bpm) || bpm <= 0.0) return 0;
+    return static_cast<int64_t>(std::llround(bpm * static_cast<double>(kBpmScale)));
 }
 
-int64_t RenderClock::ppqToSample(int64_t ppq, int sampleRate, double bpm)
+} // namespace
+
+int64_t RenderClock::sampleToPPQ(int64_t samplePos, int sampleRate, double bpm,
+                                 AVRounding rnd)
 {
-    if (sampleRate <= 0 || bpm <= 0.0) return 0;
+    //  ppq = samplePos * bpm * 960 / (60 * sampleRate)
+    //      = samplePos * bpm_micro * 960 / (60e6 * sampleRate)
+    //
+    //  av_rescale_rnd(a, b, c, rnd) = a * b / c   (128-bit intermediate),
+    //  so the samplePos * bpm_micro product cannot overflow.
 
-    const int64_t bpmMilli = static_cast<int64_t>(std::round(bpm * 1000.0));
-    if (bpmMilli <= 0) return 0;
+    if (sampleRate <= 0) return 0;
+    const int64_t bpmMicro = toBpmMicro(bpm);
+    if (bpmMicro <= 0) return 0;
 
-    const int64_t sample = av_rescale(
+    return av_rescale_rnd(samplePos,
+                          bpmMicro * static_cast<int64_t>(PPQ),
+                          kMinScale * static_cast<int64_t>(sampleRate),
+                          rnd);
+}
+
+int64_t RenderClock::ppqToSample(int64_t ppq, int sampleRate, double bpm,
+                                 AVRounding rnd)
+{
+    if (sampleRate <= 0) return 0;
+    const int64_t bpmMicro = toBpmMicro(bpm);
+    if (bpmMicro <= 0) return 0;
+
+    return av_rescale_rnd(
         ppq,
-        60000LL * static_cast<int64_t>(sampleRate),
-        bpmMilli * static_cast<int64_t>(PPQ));
+        kMinScale * static_cast<int64_t>(sampleRate),
+        bpmMicro * static_cast<int64_t>(PPQ),
+        rnd);
+}
 
-    RCLOCK_LOG("ppqToSample: ppq=%lld bpm=%.1f -> sample=%lld",
-               (long long)ppq, bpm, (long long)sample);
+// ===========================================================================
+// PPQ <-> beats  (double domain — see the header for why)
+// ===========================================================================
 
-    return sample;
+double RenderClock::ppqToBeats(int64_t ppq)
+{
+    return static_cast<double>(ppq) / static_cast<double>(PPQ);
+}
+
+int64_t RenderClock::beatsToPPQ(double beats)
+{
+    if (!std::isfinite(beats)) return 0;
+    return static_cast<int64_t>(std::llround(beats * static_cast<double>(PPQ)));
+}
+
+// ===========================================================================
+// sample <-> beats  (double domain)
+// ===========================================================================
+
+double RenderClock::sampleToBeats(int64_t samples, int sampleRate, double bpm)
+{
+    if (sampleRate <= 0 || !(bpm > 0.0)) return 0.0;
+    return static_cast<double>(samples)
+         / (static_cast<double>(sampleRate) * 60.0 / bpm);
 }
 
 int64_t RenderClock::beatToSample(double beat, int sampleRate, double bpm)
@@ -126,37 +166,69 @@ int64_t RenderClock::nextFrameBoundary(int64_t currentSample, int sampleRate,
     return videoFrameToSample(currentFrame + 1, sampleRate, fps);
 }
 
+namespace {
+
+//  First frame f with videoFrameToSample(f) >= sample.
+//
+//  videoFrameToSample() is the ONE definition of where a frame starts, and it
+//  is monotonic in f, so the answer is found by estimating with a floor and
+//  correcting. The estimate must NOT come from sampleToVideoFrame(): that
+//  rounds to the NEAREST frame, and treating a rounded-up index as "the frame
+//  this sample is in" is what used to drop frames (see frameBoundsForBuffer).
+int64_t firstFrameStartingAtOrAfter(int64_t sample, int sampleRate, AVRational fps)
+{
+    if (sample <= 0) return 0;
+    const AVRational sampleTB = { 1, sampleRate };
+    const AVRational frameTB  = { fps.den, fps.num };
+    int64_t f = av_rescale_q_rnd(sample, sampleTB, frameTB, AV_ROUND_DOWN);
+    if (f < 0) f = 0;
+    while (f > 0 && RenderClock::videoFrameToSample(f - 1, sampleRate, fps) >= sample) --f;
+    while (RenderClock::videoFrameToSample(f, sampleRate, fps) < sample) ++f;
+    return f;
+}
+
+} // namespace
+
 std::pair<int64_t, int64_t> RenderClock::frameBoundsForBuffer(
     int64_t bufferStart, int bufferSize, int sampleRate, AVRational fps)
 {
-    //  The first frame whose start sample >= bufferStart:
-    //  If bufferStart is exactly on a frame boundary, that frame counts.
-    //  Otherwise, the next frame after bufferStart.
+    //  Frames whose first sample lies in [bufferStart, bufferStart+bufferSize).
+    //
+    //  first = first frame starting at/after bufferStart
+    //  last  = (first frame starting at/after bufferEnd) - 1
+    //
+    //  Both ends come from the same monotonic search, so consecutive buffers
+    //  tile the frame sequence exactly: every frame is reported by exactly one
+    //  buffer, none twice, none never.
+    //
+    //  The previous version derived both ends from sampleToVideoFrame(), which
+    //  rounds to nearest. Whenever the buffer's last sample sat past the
+    //  midpoint of a frame, "the frame at the end" came out as the NEXT frame,
+    //  whose start is outside the buffer, and the code concluded the buffer
+    //  held no boundary at all — silently dropping the frame that did start in
+    //  it. That needs the buffer to be longer than half a frame, i.e. it bit
+    //  every frame rate above ~47 fps at 48 kHz/512 and never 30 fps: a 60 fps
+    //  export lost one frame in four (811 expected, 609 written).
+    if (bufferSize <= 0 || sampleRate <= 0 || fps.num <= 0 || fps.den <= 0) {
+        const int64_t f = firstFrameStartingAtOrAfter(bufferStart, sampleRate > 0 ? sampleRate : 1,
+                                                      (fps.num > 0 && fps.den > 0) ? fps : AVRational{30, 1});
+        return { f, f - 1 };
+    }
 
-    int64_t frameAtStart      = sampleToVideoFrame(bufferStart, sampleRate, fps);
-    int64_t sampleOfThatFrame = videoFrameToSample(frameAtStart, sampleRate, fps);
-
-    int64_t firstFrame;
-    if (sampleOfThatFrame >= bufferStart)
-        firstFrame = frameAtStart;        // boundary is inside (or at start of) buffer
-    else
-        firstFrame = frameAtStart + 1;    // boundary is before buffer, take next
-
-    //  The last frame whose start sample < bufferStart + bufferSize:
-    int64_t bufferEnd        = bufferStart + bufferSize;  // exclusive
-    int64_t frameAtEnd       = sampleToVideoFrame(bufferEnd - 1, sampleRate, fps);
-    int64_t sampleOfEndFrame = videoFrameToSample(frameAtEnd, sampleRate, fps);
-
-    int64_t lastFrame;
-    if (sampleOfEndFrame >= bufferStart && sampleOfEndFrame < bufferEnd)
-        lastFrame = frameAtEnd;
-    else
-        lastFrame = firstFrame - 1;   // empty — no frame boundary in buffer
+    const int64_t bufferEnd  = bufferStart + bufferSize;  // exclusive
+    const int64_t firstFrame = firstFrameStartingAtOrAfter(bufferStart, sampleRate, fps);
+    const int64_t lastFrame  = firstFrameStartingAtOrAfter(bufferEnd,   sampleRate, fps) - 1;
 
     RCLOCK_LOG("frameBoundsForBuffer: bufStart=%lld bufSize=%d -> frames [%lld, %lld]",
                (long long)bufferStart, bufferSize, (long long)firstFrame, (long long)lastFrame);
 
     return { firstFrame, lastFrame };
+}
+
+int64_t RenderClock::frameCountForSamples(int64_t numSamples, int sampleRate, AVRational fps)
+{
+    if (numSamples <= 0 || sampleRate <= 0 || fps.num <= 0 || fps.den <= 0) return 0;
+    return firstFrameStartingAtOrAfter(numSamples, sampleRate, fps);
 }
 
 // ===========================================================================
@@ -230,8 +302,7 @@ bool RenderClock::validate()
         //  So sampleToPPQ(20571, 48000, 140.0) should be close to 960
         //  Exact: 20571 * 140 * 960 / (60 * 48000) = 20571 * 134400 / 2880000
         //       = 2764742400 / 2880000 = 959.98
-        //  With milli-bpm: 20571 * 140000 * 960 / (60000 * 48000) = 959
-        //  (integer truncation toward zero via av_rescale)
+        //  With micro-bpm and the default AV_ROUND_NEAR_INF this lands on 960.
 
         // Use exact sample count for 1 beat: round(48000 * 60 / 140) = 20571
         int64_t ppq = sampleToPPQ(20571, SR, 140.0);

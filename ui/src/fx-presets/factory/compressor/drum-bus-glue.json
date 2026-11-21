@@ -1,0 +1,21 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "compressor",
+  "name": "Drum Bus Glue",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "threshold": -16,
+      "ratio": 2,
+      "attack": 10,
+      "release": 100,
+      "knee": 6,
+      "makeup": 1,
+      "mix": 100,
+      "mix_linked": 1,
+      "detect_mode": 0,
+      "lookahead": 0
+    }
+  }
+}

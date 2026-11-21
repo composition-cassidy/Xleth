@@ -1,0 +1,144 @@
+/* Settings > Shortcuts: a searchable table (action, shortcut, conflicts) with key caps. A custom binding says
+ * "Custom" in text, a clash carries a glyph and words, and a row that is listening shows the selection outline,
+ * so colour is never the only signal. */
+@layer kit {
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .search { flex: 1 1 220px; }
+
+  .count {
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+  }
+
+  .table th {
+    box-sizing: border-box;
+    height: var(--row-h);
+    padding: 0 var(--space-3);
+    background: var(--ui-g2);
+    border-bottom: 1px solid var(--ui-g4);
+    text-align: left;
+    font-size: var(--type-11);
+    font-weight: var(--weight-medium);
+    color: var(--ui-ink-2);
+  }
+
+  .table td {
+    box-sizing: border-box;
+    padding: var(--space-1) var(--space-3);
+    vertical-align: middle;
+  }
+
+  .row + .row td { border-top: 1px solid var(--ui-g4); }
+  .row:hover td { background: var(--ui-g0); }
+
+  .colAction { width: 42%; }
+  .colBinding { width: 30%; }
+  .colConflicts { width: 28%; }
+
+  .actionName {
+    font-size: var(--type-12);
+    font-weight: var(--weight-medium);
+    color: var(--ui-ink);
+  }
+
+  .actionNote {
+    font-size: var(--type-11);
+    line-height: 1.4;
+    color: var(--ui-ink-2);
+  }
+
+  .bindingCell {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .keyButton {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    min-width: var(--hit-min);
+    min-height: var(--ctl-h-md);
+    padding: 0 var(--space-1);
+    border: 1px solid transparent;
+    border-radius: var(--ui-radius-1);
+    background: transparent;
+    color: var(--ui-ink);
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .keyButton:hover:not(:disabled) {
+    border-color: var(--ui-boundary);
+    background: var(--ui-g3);
+  }
+
+  .keyButton:focus-visible,
+  .keyButton[data-listening] {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 0;
+  }
+
+  .keyButton:disabled { cursor: default; }
+
+  .caps {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 3px;
+  }
+
+  .cap {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 6px;
+    border: 1px solid var(--ui-boundary);
+    border-bottom-width: 2px;
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g3);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+    font-weight: var(--weight-medium);
+    line-height: 1;
+  }
+
+  .unassigned,
+  .listening {
+    font-size: var(--type-12);
+    color: var(--ui-ink-2);
+  }
+
+  .custom {
+    font-size: var(--type-11);
+    font-weight: var(--weight-medium);
+    color: var(--ui-ink);
+  }
+
+  .conflict {
+    display: inline-flex;
+    align-items: flex-start;
+    gap: var(--space-1);
+    font-size: var(--type-11);
+    line-height: 1.4;
+    color: var(--theme-semantic-danger-text, var(--ui-rec-text));
+  }
+
+  .conflict svg { flex: 0 0 auto; margin-top: 1px; }
+}

@@ -1,0 +1,13 @@
+/* The folded top row (ui/DESIGN.md section 8.1): a panel-header-high strip. */
+@layer kit {
+  .strip {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    flex: 0 0 var(--panel-header-h);
+    height: var(--panel-header-h);
+    padding: 0 var(--space-2);
+    background: var(--ui-g2);
+    border-bottom: 1px solid var(--ui-g4);
+  }
+}

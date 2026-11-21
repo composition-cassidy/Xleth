@@ -52,6 +52,7 @@ public:
         samplesInAttackWindow_ = 0;
         currentVelocity_ = 0.0f;
         isActive_ = false;
+        onsetLatched_ = false;
         midiNoteActive_ = false;
         envAttackSamplesRemaining_ = 0;
 
@@ -83,6 +84,7 @@ public:
         samplesInAttackWindow_ = 0;
         currentVelocity_ = 0.0f;
         isActive_ = false;
+        onsetLatched_ = false;
         midiNoteActive_ = false;
         envAttackSamplesRemaining_ = 0;
 
@@ -148,7 +150,7 @@ public:
         auto* vizCol = vizActive_.load(std::memory_order_acquire);
 
 #ifdef XLETH_DEBUG
-        static int debugCounter = 0;
+        static std::atomic<int> debugCounter{0};   // shared by every instance; chains may run on helper threads
         const bool doLog = (++debugCounter >= 1000);
         if (doLog)
             debugCounter = 0;
@@ -170,6 +172,7 @@ public:
             float vizFastEnvLin = std::numeric_limits<float>::quiet_NaN();
             float vizSlowEnvLin = std::numeric_limits<float>::quiet_NaN();
             float targetGainDb = 0.0f;
+            bool inAttackWindow = false;
 
             if (midiMode)
             {
@@ -196,6 +199,7 @@ public:
                     targetGainDb = juce::jlimit(-kMaxShapeGainDb, kMaxShapeGainDb,
                                                 attackDb * currentVelocity_);
                     --samplesInAttackWindow_;
+                    inAttackWindow = true;
                 }
                 else if (midiNoteActive_)
                 {
@@ -206,7 +210,13 @@ public:
             }
             else
             {
-                const float fastAttackMs = std::max(0.125f, attackSpeedMs * 0.25f);
+                // The fast follower rises in a fixed 0.1 ms so a hit is found
+                // within about a millisecond whatever attack_speed says. Scaling
+                // its rise with attack_speed (speed / 4) found hits up to 9 ms
+                // late at slow speeds, leaving the front of the hit in the
+                // sustain stage. attack_speed still sets the release times and
+                // the attack window.
+                constexpr float fastAttackMs = 0.1f;
                 const float fastReleaseMs = std::max(1.0f, attackSpeedMs * 1.5f);
                 const float slowAttackMs = std::max(5.0f, attackSpeedMs * 3.0f);
                 const float slowReleaseMs = std::max(40.0f, attackSpeedMs * 12.0f);
@@ -216,29 +226,52 @@ public:
                 const float slowAttCoeff = msToCoeff(slowAttackMs, sr);
                 const float slowRelCoeff = msToCoeff(slowReleaseMs, sr);
 
+                // The slow follower tracks the fast one rather than the raw
+                // rectified signal, so a steady low tone (whose rectified wave
+                // ripples hard at 2x its frequency) never pulls the two apart.
                 updateEnvelope(absIn, fastEnv_, fastAttCoeff, fastRelCoeff);
-                updateEnvelope(absIn, slowEnv_, slowAttCoeff, slowRelCoeff);
+                updateEnvelope(fastEnv_, slowEnv_, slowAttCoeff, slowRelCoeff);
 
                 vizFastEnvLin = fastEnv_;
                 vizSlowEnvLin = slowEnv_;
 
+                // Gate on the envelope, never on the raw sample: a raw sample
+                // drops under any threshold at every zero crossing, which used
+                // to close and re-open the gate every half cycle, re-arm the
+                // attack window forever and turn the effect into a flat gain
+                // with no sustain stage at all.
                 const float threshLin = std::pow(10.0f, thresholdDb / 20.0f);
-                const bool wasActive = isActive_;
-                if (!isActive_ && absIn > threshLin)
+                if (!isActive_ && fastEnv_ > threshLin)
                     isActive_ = true;
-                if (isActive_ && absIn < threshLin * 0.7f)
+                if (isActive_ && fastEnv_ < threshLin * 0.7f)
+                {
                     isActive_ = false;
+                    onsetLatched_ = false;
+                }
+
+                // An onset is the fast envelope jumping above the slow one, so
+                // hits on a busy bus (where the gate never closes between them)
+                // each get their own attack window. Simulated on steady sines
+                // 30 Hz..2 kHz at attack_speed 0.5..20 ms the fast/slow ratio
+                // peaks at +1.1 dB; kick hits over a running bass line or right
+                // after a tone stops cross +3 dB within 1.4 ms. The latch
+                // releases only after the attack window has run out and the
+                // envelopes have converged again, so one hit fires once.
+                const float envRatio = fastEnv_ / std::max(slowEnv_, 1.0e-9f);
+                if (onsetLatched_ && envAttackSamplesRemaining_ == 0
+                    && envRatio < kOnsetRearmRatio)
+                    onsetLatched_ = false;
 
                 // Same exclusive attack-then-sustain state machine as MIDI
-                // mode, just gated by the envelope crossing the threshold
-                // instead of a note-on. A fresh onset re-arms the attack
-                // window so attack always gets its full, undiluted window
-                // before sustain takes over for the rest of the held note.
-                if (isActive_ && !wasActive)
+                // mode, triggered by a detected onset instead of a note-on, so
+                // attack always gets its full, undiluted window before sustain
+                // takes over for the rest of the held note.
+                if (isActive_ && !onsetLatched_ && envRatio > kOnsetRatio)
                 {
                     const float attackWindowSamples =
                         std::max(1.0f, attackSpeedMs * 0.001f * sr);
                     envAttackSamplesRemaining_ = static_cast<int>(std::ceil(attackWindowSamples));
+                    onsetLatched_ = true;
                 }
 
                 if (isActive_)
@@ -248,6 +281,7 @@ public:
                         const float attackDb = amountToSignedDb(attackPct);
                         targetGainDb = juce::jlimit(-kMaxShapeGainDb, kMaxShapeGainDb, attackDb);
                         --envAttackSamplesRemaining_;
+                        inAttackWindow = true;
                     }
                     else
                     {
@@ -276,7 +310,12 @@ public:
 
             const bool engagingMore =
                 std::abs(targetGainDb) > std::abs(smoothedGainDb_) + 1.0e-6f;
-            const float gainCoeff = engagingMore ? gainDbAttackCoeff : gainDbReleaseCoeff;
+            // The attack window always moves at the fast rate, even when that
+            // means backing off: a hit that lands while the previous hit's
+            // sustain cut is still applied must get its own onset back at
+            // once, not after a 4 ms release that swallows the transient.
+            const float gainCoeff = (engagingMore || inAttackWindow)
+                ? gainDbAttackCoeff : gainDbReleaseCoeff;
 
             smoothedGainDb_ = gainCoeff * smoothedGainDb_
                             + (1.0f - gainCoeff) * targetGainDb;
@@ -402,6 +441,8 @@ private:
     static constexpr float kMaxShapeGainDb = 12.0f;
     static constexpr float kMinShapeGainLin = 0.25118864f;
     static constexpr float kMaxShapeGainLin = 3.98107171f;
+    static constexpr float kOnsetRatio = 1.41253754f;       // +3 dB fast over slow
+    static constexpr float kOnsetRearmRatio = 1.18850223f;  // +1.5 dB
 
     float fastEnv_ = 0.0f;
     float slowEnv_ = 0.0f;
@@ -412,6 +453,7 @@ private:
     bool midiNoteActive_ = false;
 
     bool isActive_ = false;
+    bool onsetLatched_ = false;
     int envAttackSamplesRemaining_ = 0;
     double sampleRate_ = 44100.0;
 

@@ -8,7 +8,7 @@ import {
   Position,
   MarkerType,
 } from '@xyflow/react'
-import '@xyflow/react/dist/style.css'
+import '../../styles/vendor-xyflow.css'
 import useNodeGraphStore from '../../stores/nodeGraphStore.js'
 import { tokenValue } from '../../theming/tokenValue.ts'
 import TrackContextMenu from '../timeline/TrackContextMenu.jsx'
@@ -22,14 +22,25 @@ const PLUGIN_NAMES = {
   testgain: 'Test Gain', compressor: 'Compressor', limiter: 'Limiter',
   overdone: 'Overdone', transientproc: 'Transient Proc', xletheq: 'Xleth EQ',
   xlethfilter: 'Xleth Filter', distortion: 'Distortion', waveshaper: 'Waveshaper',
+  amp: 'Amp Stack',
   uniflange: 'UniFlange', chorus: 'Chorus', flanger: 'Flanger', phaser: 'Phaser',
   phanjer: 'Phanjer', delay: 'Delay', reverb: 'Reverb', smartbalance: 'Smart Balance',
-  resonancesuppressor: 'Resonance Suppressor',
+  resonancesuppressor: 'Resonance Suppressor', pitchshifter: 'Pitch Shifter',
+  glue: 'Glue Comp',
+  opto: 'Opto Comp',
+  fet: 'FET Comp',
+  varimu: 'Vari-Mu Comp',
+  fedda: 'Fedda',
+  szkrezh: 'Szkrezh',
 }
 
 const EFFECT_CATEGORIES = [
   { label: 'Dynamics', submenu: [
-    { label: 'Compressor', id: 'compressor' }, { label: 'Limiter', id: 'limiter' },
+    { label: 'Compressor', id: 'compressor' }, { label: 'Glue Comp', id: 'glue' },
+    { label: 'Opto Comp', id: 'opto' },
+    { label: 'FET Comp', id: 'fet' },
+    { label: 'Vari-Mu Comp', id: 'varimu' },
+    { label: 'Limiter', id: 'limiter' },
     { label: 'Overdone', id: 'overdone' }, { label: 'Transient Proc', id: 'transientproc' },
     { label: 'Resonance Suppressor', id: 'resonancesuppressor' },
   ]},
@@ -38,6 +49,7 @@ const EFFECT_CATEGORIES = [
   ]},
   { label: 'Distortion', submenu: [
     { label: 'Distortion', id: 'distortion' }, { label: 'Waveshaper', id: 'waveshaper' },
+    { label: 'Amp Stack', id: 'amp' },
   ]},
   { label: 'Modulation', submenu: [
     { label: 'UniFlange', id: 'uniflange' }, { label: 'Chorus', id: 'chorus' },
@@ -47,8 +59,12 @@ const EFFECT_CATEGORIES = [
   { label: 'Time', submenu: [
     { label: 'Delay', id: 'delay' }, { label: 'Reverb', id: 'reverb' },
   ]},
+  { label: 'Pitch', submenu: [
+    { label: 'Pitch Shifter', id: 'pitchshifter' }, { label: 'Szkrezh', id: 'szkrezh' },
+  ]},
   { label: 'Utility', submenu: [
     { label: 'Smart Balance', id: 'smartbalance' },
+    { label: 'Fedda', id: 'fedda' },
   ]},
 ]
 

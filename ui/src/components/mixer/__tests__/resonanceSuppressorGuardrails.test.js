@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { shouldShowRsHqRealtimeWarning } from '../ResonanceSuppressorPanel.jsx'
+import { shouldShowRsHqRealtimeWarning } from '../../devices/ResonanceSuppressorDevice.jsx'
 
 describe('ResonanceSuppressorPanel RS HQ guardrail', () => {
   it('shows the inline HQ warning only for warning or overrunning diagnostics', () => {

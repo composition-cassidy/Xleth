@@ -1,0 +1,19 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "uniflange",
+  "name": "Mono-Safe Thicken",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "order": 4,
+      "depth": 35,
+      "speed": 30,
+      "delay": 30,
+      "spread": 0,
+      "cross": 0,
+      "dry": 80,
+      "wet": 50
+    }
+  }
+}

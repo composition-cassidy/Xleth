@@ -1,11 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as SP from '../managers/StatePersistence';
+import { DEFAULT_PRESET_ID, loadPreset } from '../managers/PresetManager';
 import {
   createInitialDockRegionSizes,
   createInitialPanelStates,
   DEFAULT_DOCK_REGION_SIZES,
+  MIN_DOCK_REGION_SIZES,
   usePanelRegistry,
 } from '../registry/PanelRegistry';
+import { PANEL_CATALOG } from '../registry/panelCatalog';
 
 function makeAdapter(): SP.MemoryAdapter {
   return new SP.MemoryAdapter();
@@ -51,23 +54,31 @@ describe('StatePersistence', () => {
     await expect(SP.loadPersistedState()).resolves.toBe(false);
   });
 
-  it('loadPersistedState rejects forward-incompat schema versions', async () => {
+  it('loadPersistedState merges envelopes written by a newer schema version', async () => {
+    // A forward version is merged field-by-field like any other: unknown fields
+    // are ignored and known ones validated, which beats discarding a layout the
+    // user spent time arranging.
     const adapter = makeAdapter();
-    const before = usePanelRegistry.getState().panels;
+    const panels = createInitialPanelStates();
+    panels.mixer.hidden = false;
     await adapter.write(JSON.stringify({
       version: SP.LAYOUT_SCHEMA_VERSION + 1,
-      panels: createInitialPanelStates(),
+      panels,
       dockRegionSizes: createInitialDockRegionSizes(),
+      somethingFromTheFuture: { nope: true },
     }));
     SP.setPersistenceAdapter(adapter);
-    await expect(SP.loadPersistedState()).resolves.toBe(false);
-    expect(usePanelRegistry.getState().panels).toEqual(before);
+    await expect(SP.loadPersistedState()).resolves.toBe(true);
+    expect(usePanelRegistry.getState().panels.mixer.hidden).toBe(false);
   });
 
-  it('loadPersistedState rejects payloads with missing panel ids', async () => {
+  it('loadPersistedState keeps the panels it has when an id is missing', async () => {
+    // THE regression this contract exists for: every release that adds a panel
+    // used to invalidate the whole saved layout and silently reset everyone.
     const adapter = makeAdapter();
-    const before = usePanelRegistry.getState().panels;
     const panels = createInitialPanelStates();
+    panels.mixer.hidden = false;
+    panels.mixer.floating = { x: 11, y: 22, width: 640, height: 480 };
     delete (panels as Partial<typeof panels>).preview;
     await adapter.write(JSON.stringify({
       version: SP.LAYOUT_SCHEMA_VERSION,
@@ -75,22 +86,47 @@ describe('StatePersistence', () => {
       dockRegionSizes: createInitialDockRegionSizes(),
     }));
     SP.setPersistenceAdapter(adapter);
-    await expect(SP.loadPersistedState()).resolves.toBe(false);
-    expect(usePanelRegistry.getState().panels).toEqual(before);
+    await expect(SP.loadPersistedState()).resolves.toBe(true);
+
+    const loaded = usePanelRegistry.getState().panels;
+    expect(loaded.mixer.hidden).toBe(false);
+    expect(loaded.mixer.floating).toEqual({ x: 11, y: 22, width: 640, height: 480 });
+    // The absent panel falls back to its catalog default rather than undefined.
+    expect(loaded.preview).toBeDefined();
+    expect(loaded.preview.floating).toEqual(PANEL_CATALOG.preview.defaultFloating);
   });
 
-  it('loadPersistedState rejects v2 payloads with missing dockRegionSizes', async () => {
+  it('loadPersistedState ignores panel ids that are no longer in the catalog', async () => {
+    const adapter = makeAdapter();
+    const panels = createInitialPanelStates() as Record<string, unknown>;
+    panels.someRetiredPanel = { id: 'someRetiredPanel', hidden: false };
+    await adapter.write(JSON.stringify({
+      version: SP.LAYOUT_SCHEMA_VERSION,
+      panels,
+      dockRegionSizes: createInitialDockRegionSizes(),
+    }));
+    SP.setPersistenceAdapter(adapter);
+    await expect(SP.loadPersistedState()).resolves.toBe(true);
+    expect(usePanelRegistry.getState().panels).not.toHaveProperty('someRetiredPanel');
+  });
+
+  it('loadPersistedState fills dock region sizes the envelope omits', async () => {
     const adapter = makeAdapter();
     await adapter.write(JSON.stringify({
       version: SP.LAYOUT_SCHEMA_VERSION,
       panels: createInitialPanelStates(),
-      dockRegionSizes: { left: 280, right: 280 },
+      dockRegionSizes: { left: 320, right: 280 },
     }));
     SP.setPersistenceAdapter(adapter);
-    await expect(SP.loadPersistedState()).resolves.toBe(false);
+    await expect(SP.loadPersistedState()).resolves.toBe(true);
+    expect(usePanelRegistry.getState().dockRegionSizes).toEqual({
+      ...DEFAULT_DOCK_REGION_SIZES,
+      left: 320,
+      right: 280,
+    });
   });
 
-  it('loadPersistedState rejects v2 payloads with below-min dock region sizes', async () => {
+  it('loadPersistedState clamps below-min dock region sizes instead of rejecting', async () => {
     const adapter = makeAdapter();
     await adapter.write(JSON.stringify({
       version: SP.LAYOUT_SCHEMA_VERSION,
@@ -98,21 +134,158 @@ describe('StatePersistence', () => {
       dockRegionSizes: { left: 100, right: 280, top: 240, bottom: 240 },
     }));
     SP.setPersistenceAdapter(adapter);
-    await expect(SP.loadPersistedState()).resolves.toBe(false);
+    await expect(SP.loadPersistedState()).resolves.toBe(true);
+    expect(usePanelRegistry.getState().dockRegionSizes.left).toBe(MIN_DOCK_REGION_SIZES.left);
+    expect(usePanelRegistry.getState().dockRegionSizes.bottom).toBe(240);
   });
 
-  it('loadPersistedState soft-migrates v1 envelopes by filling default dockRegionSizes', async () => {
+  it('loadPersistedState falls back per-field on a corrupt panel entry', async () => {
+    const adapter = makeAdapter();
+    const panels = createInitialPanelStates() as Record<string, any>;
+    panels.mixer = {
+      id: 'mixer',
+      hidden: false,
+      mode: 'not-a-mode',
+      floating: { x: 42, y: Number.NaN, width: 'wide', height: 500 },
+      docked: { region: 'nowhere', sizeInRegion: -9000, tabGroupId: 'ghostPanel' },
+    };
+    await adapter.write(JSON.stringify({
+      version: SP.LAYOUT_SCHEMA_VERSION,
+      panels,
+      dockRegionSizes: createInitialDockRegionSizes(),
+    }));
+    SP.setPersistenceAdapter(adapter);
+    await expect(SP.loadPersistedState()).resolves.toBe(true);
+
+    const mixer = usePanelRegistry.getState().panels.mixer;
+    expect(mixer.hidden).toBe(false);                 // valid field survives
+    expect(mixer.floating.x).toBe(42);                // valid field survives
+    expect(mixer.mode).toBe('docked');                // bad enum -> default (dock tab)
+    expect(mixer.floating.y).toBe(PANEL_CATALOG.mixer.defaultFloating.y);
+    expect(mixer.floating.width).toBe(PANEL_CATALOG.mixer.defaultFloating.width);
+    expect(mixer.floating.height).toBe(500);
+    expect(mixer.docked.region).toBe('bottom');       // bad enum -> default
+    expect(mixer.docked.sizeInRegion).toBe(PANEL_CATALOG.mixer.minDockedSize);
+    expect(mixer.docked.tabGroupId).toBeNull();       // unknown id -> own slot
+  });
+
+  // A maximized panel used to come back with preMaximizeState nulled, which
+  // made restorePanel() — the titlebar control, the double-click and Escape
+  // alike — a permanent no-op: the panel owned the whole workarea and could
+  // never be moved, docked or shared with another panel again.
+  it('loadPersistedState restores a maximized panel with its restore target', async () => {
+    const adapter = makeAdapter();
+    const panels = createInitialPanelStates();
+    usePanelRegistry.getState().openPanel('pianoRoll');
+    usePanelRegistry.getState().dockPanel('pianoRoll', 'top');
+    usePanelRegistry.getState().maximizePanel('pianoRoll');
+    panels.pianoRoll = usePanelRegistry.getState().panels.pianoRoll;
+    expect(panels.pianoRoll.preMaximizeState).not.toBeNull();
+
+    await adapter.write(JSON.stringify({
+      version: SP.LAYOUT_SCHEMA_VERSION,
+      panels,
+      dockRegionSizes: createInitialDockRegionSizes(),
+    }));
+    usePanelRegistry.setState({ panels: createInitialPanelStates() });
+    SP.setPersistenceAdapter(adapter);
+    await expect(SP.loadPersistedState()).resolves.toBe(true);
+
+    expect(usePanelRegistry.getState().panels.pianoRoll.mode).toBe('maximized');
+    usePanelRegistry.getState().restorePanel('pianoRoll');
+    const pianoRoll = usePanelRegistry.getState().panels.pianoRoll;
+    expect(pianoRoll.mode).toBe('docked');
+    expect(pianoRoll.docked.region).toBe('top');
+    expect(pianoRoll.preMaximizeState).toBeNull();
+  });
+
+  it('loadPersistedState un-maximizes a panel whose restore target was lost', async () => {
+    const adapter = makeAdapter();
+    const panels = createInitialPanelStates() as Record<string, any>;
+    // Exactly what builds before this fix wrote: maximized, nothing to restore to.
+    panels.pianoRoll = { ...panels.pianoRoll, hidden: false, mode: 'maximized', preMaximizeState: null };
+    await adapter.write(JSON.stringify({
+      version: SP.LAYOUT_SCHEMA_VERSION,
+      panels,
+      dockRegionSizes: createInitialDockRegionSizes(),
+    }));
+    SP.setPersistenceAdapter(adapter);
+    await expect(SP.loadPersistedState()).resolves.toBe(true);
+    expect(usePanelRegistry.getState().panels.pianoRoll.mode).toBe('floating');
+  });
+
+  it('loadPersistedState fills default dockRegionSizes when a tiled envelope omits them', async () => {
     const adapter = makeAdapter();
     const panels = createInitialPanelStates();
     panels.mixer.hidden = false;
     await adapter.write(JSON.stringify({
-      version: 1,
+      version: SP.LAYOUT_SCHEMA_VERSION,
       panels,
     }));
     SP.setPersistenceAdapter(adapter);
     await expect(SP.loadPersistedState()).resolves.toBe(true);
     expect(usePanelRegistry.getState().panels.mixer.hidden).toBe(false);
     expect(usePanelRegistry.getState().dockRegionSizes).toEqual(DEFAULT_DOCK_REGION_SIZES);
+  });
+
+  it.each([1, 2, 3, undefined])(
+    'migrates a pre-tiled (v%s) layout once to the default layout and writes it back',
+    async (version) => {
+      const adapter = makeAdapter();
+      // The old default: a floating arrangement over an empty work area.
+      const panels = createInitialPanelStates() as unknown as Record<string, Record<string, unknown>>;
+      panels.timeline = { ...panels.timeline, mode: 'floating' };
+      panels.mixer = { ...panels.mixer, hidden: false, mode: 'docked' };
+      await adapter.write(JSON.stringify({ version, panels }));
+      SP.setPersistenceAdapter(adapter);
+
+      await expect(SP.loadPersistedState()).resolves.toBe(true);
+
+      const expected = loadPreset(DEFAULT_PRESET_ID)!;
+      const state = usePanelRegistry.getState();
+      expect(state.panels.timeline.docked.region).toBe('center');
+      expect(state.panels.preview.docked.region).toBe(expected.panels.preview.docked.region);
+      expect(state.panels.preview.docked.region).toBe('left');
+      expect(state.panels.inspector.hidden).toBe(true);
+      expect(state.dockRegionSizes).toEqual(expected.dockRegionSizes);
+
+      // Written back as v4 straight away, so the next launch merges it instead
+      // of migrating again.
+      const written = JSON.parse((await adapter.read())!);
+      expect(written.version).toBe(SP.LAYOUT_SCHEMA_VERSION);
+      expect(written.panels.timeline.docked.region).toBe('center');
+    },
+  );
+
+  it('a v4 layout moves the Sampler from the dock to its own window, once', async () => {
+    const adapter = makeAdapter();
+    const panels = createInitialPanelStates() as unknown as Record<string, Record<string, unknown>>;
+    // What every v4 layout holds: a bottom-dock tab at the old fixed float size.
+    panels.sampler = {
+      ...panels.sampler,
+      mode: 'docked',
+      hidden: false,
+      floating: { x: 340, y: 100, width: 820, height: 870 },
+    };
+    panels.mixer = { ...panels.mixer, hidden: true, mode: 'docked' };
+    await adapter.write(JSON.stringify({ version: 4, panels, dockRegionSizes: createInitialDockRegionSizes() }));
+    SP.setPersistenceAdapter(adapter);
+
+    await expect(SP.loadPersistedState()).resolves.toBe(true);
+    const { sampler, mixer } = usePanelRegistry.getState().panels;
+    expect(sampler.mode).toBe('floating');
+    expect(sampler.hidden).toBe(false);
+    expect(sampler.floating).toEqual(PANEL_CATALOG.sampler.defaultFloating);
+    // Every other panel is merged as saved.
+    expect(mixer.mode).toBe('docked');
+
+    // Written back at the current version, so a Sampler the user then docks stays docked.
+    const written = JSON.parse((await adapter.read())!);
+    expect(written.version).toBe(SP.LAYOUT_SCHEMA_VERSION);
+    written.panels.sampler = { ...written.panels.sampler, mode: 'docked' };
+    await adapter.write(JSON.stringify(written));
+    await expect(SP.loadPersistedState()).resolves.toBe(true);
+    expect(usePanelRegistry.getState().panels.sampler.mode).toBe('docked');
   });
 
   it('init wires writes through adapter on state change', async () => {

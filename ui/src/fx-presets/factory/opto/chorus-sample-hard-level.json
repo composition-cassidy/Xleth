@@ -1,0 +1,14 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "opto",
+  "name": "Chorus Sample Hard Level",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "peak_reduction": 22,
+      "gain": 3,
+      "mode": 1
+    }
+  }
+}

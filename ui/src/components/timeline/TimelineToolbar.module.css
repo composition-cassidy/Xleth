@@ -1,0 +1,99 @@
+/* The arrangement toolbar (DESIGN.md 22): one 32px row on g2 (the tallest control height;
+ * its controls are 24 and 28). The shell's centre-column budget counts this row at 32, so
+ * the height is fixed. Narrow widths scroll the row;
+ * they never squeeze a control. */
+@layer kit {
+  .bar {
+    box-sizing: border-box;
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    height: var(--ctl-h-lg);
+    padding: 0 var(--space-2);
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+    border-bottom: 1px solid var(--ui-g4);
+    background: var(--ui-g2);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .bar > * {
+    flex: none;
+  }
+
+  .tools {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .field {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .fieldLabel {
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+    white-space: nowrap;
+  }
+
+  .snap {
+    width: 96px;
+  }
+
+  .paint {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    max-width: 220px;
+    min-width: 0;
+    color: var(--ui-ink-2);
+    font-size: var(--type-12);
+  }
+
+  .paintLabel {
+    font-size: var(--type-11);
+    white-space: nowrap;
+  }
+
+  .paintDot {
+    flex: none;
+    box-sizing: border-box;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    background: var(--ui-ink-3);
+  }
+
+  /* A syllable of a quote is a template, not the sample itself: outlined. */
+  .paintDot[data-template="true"] {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 1px;
+  }
+
+  .paintName {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--ui-ink);
+  }
+
+  .spacer {
+    flex: 1 1 auto;
+    min-width: var(--space-2);
+  }
+
+  .zoom {
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    white-space: nowrap;
+  }
+}

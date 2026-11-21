@@ -1,5 +1,4 @@
-import { useEffect } from 'react'
-import { createPortal } from 'react-dom'
+import { Button, Dialog, DialogList, DialogListItem, DialogText } from '../../ui-kit'
 
 // ── Deletion contract dialog (Phase C) ───────────────────────────────────────
 //
@@ -13,45 +12,32 @@ import { createPortal } from 'react-dom'
 // where the effect-removal path lives.
 
 export default function AutomationDeleteConfirmDialog({ title, subject, clips, onConfirm, onCancel }) {
-  useEffect(() => {
-    const handler = (e) => {
-      if (e.key === 'Escape') onCancel?.()
-      if (e.key === 'Enter') onConfirm?.()
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [onCancel, onConfirm])
-
   const count = clips.length
 
-  return createPortal(
-    <div className="confirm-dialog-backdrop" onClick={onCancel}>
-      <div className="confirm-dialog automation-delete-dialog" onClick={(e) => e.stopPropagation()}>
-        <div className="confirm-dialog-header">{title}</div>
-        <div className="confirm-dialog-body">
-          <p className="automation-delete-lead">
-            {`Deleting ${subject} will also delete ${count} automation clip${count === 1 ? '' : 's'} bound to `}
-            {count === 1 ? 'it' : 'its parameters'}:
-          </p>
-          <ul className="automation-delete-list">
-            {clips.map((c) => (
-              <li key={c.id} className="automation-delete-item">
-                <span className="automation-delete-item-param">{c.label}</span>
-                <span className="automation-delete-item-pos">{c.position}</span>
-              </li>
-            ))}
-          </ul>
-          <p className="automation-delete-note">
-            Undo restores the automation clips and their lanes in one step.
-          </p>
-        </div>
-        <div className="confirm-dialog-footer">
-          <button className="confirm-dialog-btn" onClick={onCancel} autoFocus>Cancel</button>
-          <button className="confirm-dialog-btn danger" onClick={onConfirm}>Delete anyway</button>
-        </div>
-      </div>
-    </div>,
-    document.body
+  return (
+    <Dialog
+      title={title}
+      width="md"
+      onClose={onCancel}
+      onEnter={onConfirm}
+      actions={
+        <>
+          <Button size="lg" onClick={onCancel} data-autofocus>Cancel</Button>
+          <Button size="lg" variant="danger" onClick={onConfirm}>Delete anyway</Button>
+        </>
+      }
+    >
+      <DialogText>
+        {`Deleting ${subject} will also delete ${count} automation clip${count === 1 ? '' : 's'} bound to `}
+        {count === 1 ? 'it' : 'its parameters'}:
+      </DialogText>
+      <DialogList label="Automation clips that will be deleted">
+        {clips.map((c) => (
+          <DialogListItem key={c.id} label={c.label} value={c.position} />
+        ))}
+      </DialogList>
+      <DialogText tone="secondary">Undo restores the automation clips and their lanes in one step.</DialogText>
+    </Dialog>
   )
 }
 

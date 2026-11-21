@@ -1,0 +1,94 @@
+@layer kit {
+  /* The hero well: a gain-reduction bar and its numeric readout. */
+  .gr {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-1);
+    min-height: 0;
+  }
+
+  .grTitle {
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+  }
+
+  .grBody {
+    display: flex;
+    flex: 1 1 auto;
+    gap: var(--space-2);
+    min-height: 0;
+  }
+
+  .grMeter {
+    flex: 0 0 auto;
+    min-height: 0;
+  }
+
+  .grReadouts {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .readout {
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .caption {
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.2;
+    white-space: nowrap;
+  }
+
+  /* A knob with an optional caption beneath it (the FET's real attack time). */
+  .cell {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+  }
+
+  /* A knob whose switch is off still turns; it is dimmed, and the switch says Off. */
+  .cell[data-off="true"] {
+    opacity: var(--ui-mute-opacity);
+  }
+
+  /* A stepped control under its name (and unit). */
+  .field {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .fieldLabel {
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+  }
+
+  .unit {
+    color: var(--ui-ink-2);
+  }
+
+  .timeReadout {
+    display: grid;
+    grid-template-columns: auto auto;
+    justify-content: center;
+    column-gap: var(--space-2);
+    row-gap: 2px;
+    margin-top: var(--space-1);
+  }
+}

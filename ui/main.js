@@ -7,22 +7,19 @@ const os = require('os');
 const { spawn, execFile } = require('child_process');
 const { runtimeResource, userDataPath } = require('./runtimePaths');
 const { checkForUpdates } = require('./update-checker');
-const {
-  WORKSPACE_BACKDROP_DEFAULT_PREFERENCE,
-  applyWorkspaceBackdropMaterial,
-  getWorkspaceBackdropCachePath,
-  loadWorkspaceBackdropCapability,
-  sanitizeWorkspaceBackdropPreference,
-} = require('./workspaceBackdropCapability');
 
 // Fixed name for the Windows file mapping that backs the FrameOutput double
 // buffer. The engine worker creates it via FrameOutput::initSharedMemory;
 // the Electron main process / preload opens the same name via shm_helper.node.
 const FRAME_SHM_NAME = 'XlethFrameBuffer';
-const WORKSPACE_BACKDROP_DEFAULT_IMAGE = 'backdrop-1@1.25x.png';
-const WORKSPACE_BACKDROP_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp']);
-const BACKDROP_MEDIA_SETTINGS_KEY = 'backdropMedia';
-const BACKDROP_MEDIA_SOURCE_TYPES = new Set(['none', 'acrylic', 'image', 'video']);
+// The section is created once at 100% preview scale and never resized, because
+// a Windows named section's size is fixed at creation: once preload has opened
+// it, our own close/re-create hands back the SAME (old-sized) object and a
+// larger MapViewOfFile fails with ERROR_ACCESS_DENIED, killing the preview for
+// the rest of the session. Must match BASE_CANVAS_W/H in VideoPreview.jsx,
+// which is what previewResolutionScale is a fraction OF.
+const FRAME_SHM_BASE_W = 960;
+const FRAME_SHM_BASE_H = 540;
 
 
 // ── User settings (persisted across sessions, not per-project) ───────────────
@@ -34,12 +31,53 @@ const BACKDROP_MEDIA_SOURCE_TYPES = new Set(['none', 'acrylic', 'image', 'video'
 // Log file for startup debugging
 const logPath = userDataPath('startup.log');
 try { fs.mkdirSync(path.dirname(logPath), { recursive: true }); } catch {}
-fs.writeFileSync(logPath, '');  // clear previous log
-function log(msg) {
+// Buffered async stream instead of a sync appendFileSync-per-line — the
+// renderer console pipe below (and every non-silent IPC call) used to cost a
+// synchronous disk write per log line. 'w' truncates on open, replacing the
+// old separate writeFileSync('') clear.
+//
+// Size cap: the file used to grow without bound for a whole session (~17 MB/h
+// of mostly [IPC] lines; 56 MB seen after 1.5 h). Past LOG_ROTATE_BYTES the
+// current file is moved to startup.1.log (replacing the previous chunk) and a
+// fresh startup.log continues, so disk use stays under ~2x the cap and the
+// most recent lines are always in startup.log. stdout is unaffected.
+const LOG_ROTATE_BYTES = 20 * 1024 * 1024;
+let logStream = fs.createWriteStream(logPath, { flags: 'w' });
+let logBytes = 0;
+let logRotations = 0;
+function rotateLog() {
+  const old = logStream;
+  const rotatedPath = userDataPath('startup.1.log');
+  logRotations += 1;
+  logBytes = 0;
+  // Rename once the old stream has flushed and closed; new lines go to a
+  // fresh stream immediately (opened on a temp name, then swapped in, so no
+  // line is lost or written into the file being renamed).
+  logStream = fs.createWriteStream(`${logPath}.next`, { flags: 'w' });
+  old.end(() => {
+    // libuv opens files with FILE_SHARE_DELETE, so the fresh stream's handle
+    // stays valid while its file is renamed into place.
+    try { fs.renameSync(logPath, rotatedPath); } catch {}
+    try { fs.renameSync(`${logPath}.next`, logPath); } catch {}
+  });
+  logStream.write(`[${new Date().toISOString()}] [log] rotated (#${logRotations}) — previous ${LOG_ROTATE_BYTES >> 20} MB in startup.1.log\n`);
+}
+function writeLogLine(msg) {
   const line = `[${new Date().toISOString()}] ${msg}\n`;
   process.stdout.write(line);
-  fs.appendFileSync(logPath, line);
+  logStream.write(line);
+  logBytes += Buffer.byteLength(line);
+  if (logBytes >= LOG_ROTATE_BYTES) rotateLog();
 }
+
+// ── Session console log capture (Settings → Application → Logs) ──────────────
+// Every main-process line also lands in consoleLog's in-memory ring buffer, so
+// the exported session report contains the same narrative startup.log does
+// without each call site having to log twice. Renderer console output is
+// attached separately in createWindow(). init() is deferred until the settings
+// store is available below; record() works from the first line regardless.
+const consoleLog = require('./electron-main/console-log');
+const log = consoleLog.wrapMainLogger(writeLogLine);
 
 // ── Extracted main-process modules (S5 Stage 1) ──────────────────────────────
 // Engine-worker lifecycle and the local HTTP media server were moved verbatim
@@ -47,9 +85,16 @@ function log(msg) {
 const workerBridge = require('./electron-main/worker');
 const mediaServer = require('./electron-main/media-server');
 workerBridge.init({ log });
-mediaServer.init({ log });
 const { startWorker, callWorker, isWorkerReady, getAddonError, setAddonError, killWorker } = workerBridge;
-const { startMediaServer, getMediaPort } = mediaServer;
+mediaServer.init({
+  log,
+  // The media server may only read files under the open project folder and the folders of its sources.
+  getRoots: async () => {
+    const [info, sources] = await Promise.all([callWorker('project_getInfo'), callWorker('timeline_getSources')]);
+    return [info && info.projectDir, ...(sources || []).map((s) => s && s.filePath && path.dirname(s.filePath))];
+  },
+});
+const { startMediaServer, getMediaPort, getMediaToken } = mediaServer;
 
 // ── Extracted main-process persistence stores + autosave (S5 Stage 2) ────────
 // File-backed stores moved verbatim to ui/electron-main/: user settings +
@@ -69,6 +114,7 @@ const fxPresets = require('./electron-main/fx-presets');
 const fxChains = require('./electron-main/fx-chains');
 const decals = require('./electron-main/decals');
 const gridLayout = require('./electron-main/grid-layout');
+const recentProjects = require('./electron-main/recent-projects');
 settingsStore.init();
 autosave.init({ log, isExportBusy: () => exportHandlers.isExportBusy() });
 themesStore.init();
@@ -78,8 +124,13 @@ fxPresets.init();
 fxChains.init();
 decals.init({ getWin: () => win });
 gridLayout.init({ safeHandler });
+recentProjects.init();
 const { loadSettings, saveSettings, getNewProjectGlobalStretchMethodDefault } = settingsStore;
 const { restartAutosaveTimer } = autosave;
+
+// Needs the settings store for its auto-export-on-quit preference, so it is
+// initialised here rather than beside its require at the top of the file.
+consoleLog.init({ loadSettings, saveSettings, getWin: () => win, log });
 
 // ── Extracted Phase 1 handler domains (S5 Stage 3) ─────────────────────────────
 // Project, Timeline (queries + mutations), Undo/Redo, Transport handlers and
@@ -92,11 +143,29 @@ const timelineHandlers = require('./electron-main/timeline');
 const clipProcessingDefaults = require('./electron-main/clip-processing-defaults');
 const undoRedoHandlers = require('./electron-main/undo-redo');
 const transportHandlers = require('./electron-main/transport');
-projectHandlers.init({ safeHandler });
+const welcomeHandlers = require('./electron-main/welcome');
+// The three hooks are function declarations further down (hoisted): see
+// "Workspace window boot". They only run once a load is actually requested.
+projectHandlers.init({
+  safeHandler,
+  shouldBroadcastTo: (wc) => workspaceTakesBroadcasts(wc),
+  onLoadStart: (event) => onIpcProjectLoadStart(event),
+  onLoadEnd: (event, _dir, ok) => onIpcProjectLoadEnd(event, ok),
+});
 timelineHandlers.init({ safeHandler });
 clipProcessingDefaults.init({ safeHandler });
 undoRedoHandlers.init({ safeHandler });
 transportHandlers.init({ safeHandler });
+// onProjectReady is a lazy reference to launchWorkspace() (defined later,
+// near createWindow) — function declarations hoist, and this callback only
+// actually runs once Welcome signals success, long after the whole module
+// has finished loading.
+welcomeHandlers.init({
+  safeHandler,
+  callWorker,
+  log,
+  onProjectReady: (dir, name) => launchWorkspace(dir, name),
+});
 
 // ── Extracted Phase 1 Audio + Effects/Graph handler domains (S5 Stage 4) ──────
 // Audio (samples/mixer/peaks/diagnostics/output devices), the effect chain +
@@ -124,6 +193,10 @@ const patternHandlers = require('./electron-main/patterns');
 const vst3Handlers = require('./electron-main/vst3');
 const exportHandlers = require('./electron-main/export');
 const diagnosticsHandlers = require('./electron-main/diagnostics');
+// Source separation (P4) — owns the Python/FastAPI sidecar lifecycle. Not on
+// the RPC manifest: every manifest entry names a C++ engine handler symbol,
+// and separation never reaches the engine.
+const separationHandlers = require('./electron-main/separation');
 phase0Compat.init({ safeHandler });
 quickLaunchers.init({ getWin: () => win });
 previewVisibility.init({ safeHandler });
@@ -131,6 +204,10 @@ patternHandlers.init({ safeHandler });
 vst3Handlers.init({ safeHandler, getWin: () => win });
 exportHandlers.init({ safeHandler, getWin: () => win });
 diagnosticsHandlers.init({ safeHandler, getWin: () => win, log });
+// No safeHandler here on purpose — separation never reaches the engine, so
+// gating it on engine readiness would strand the Sandbox's separation strip
+// whenever the panel is opened during startup. See separation.js's `handler`.
+separationHandlers.init({ getWin: () => win, log });
 
 // ── Manifest-driven RPC handlers (AUDIT.md S1) ─────────────────────────────────
 // Pure pass-through channels declared once in ui/rpc-manifest.js; hand-written
@@ -146,300 +223,6 @@ const { pluginIdSafe, validateLayoutStructure, parseImportedPluginUiLayout } = p
 const { DECAL_ASSET_MAX_BYTES, _decalMagicCheck, _ensureDecalAssetDir, _readDecalAssetIndex, _writeDecalAssetIndex, _decalAssetFilePath } = decals;
 const _crypto = require('crypto');
 
-let workspaceBackdropCapability = null;
-let workspaceBackdropState = {
-  capability: null,
-  preference: 'none',
-  mode: 'off',
-  imagePath: null,
-  imageUrl: null,
-  videoPath: null,
-  videoUrl: null,
-  lastError: null,
-};
-
-function getWorkspaceBackdropPreference(settings = loadSettings()) {
-  return sanitizeWorkspaceBackdropPreference(settings.workspaceBackdrop);
-}
-
-function stringOrEmpty(value) {
-  return typeof value === 'string' ? value : '';
-}
-
-function sanitizeBackdropMediaSettings(value, settings = loadSettings()) {
-  const source = typeof value === 'string'
-    ? { sourceType: value }
-    : value && typeof value === 'object'
-      ? value
-      : {};
-  const legacyPreference = getWorkspaceBackdropPreference(settings);
-  let sourceType = BACKDROP_MEDIA_SOURCE_TYPES.has(source.sourceType)
-    ? source.sourceType
-    : null;
-  if (!sourceType) {
-    sourceType = ['acrylic', 'image', 'video'].includes(legacyPreference)
-      ? legacyPreference
-      : 'none';
-  }
-  return {
-    sourceType,
-    imagePath: stringOrEmpty(source.imagePath),
-    videoPath: stringOrEmpty(source.videoPath),
-    lastError: stringOrEmpty(source.lastError),
-  };
-}
-
-function getWorkspaceBackdropArtDir() {
-  return runtimeResource('art');
-}
-
-function isWorkspaceBackdropImageName(name) {
-  return typeof name === 'string'
-    && path.basename(name) === name
-    && WORKSPACE_BACKDROP_IMAGE_EXTENSIONS.has(path.extname(name).toLowerCase());
-}
-
-function isWorkspaceBackdropImagePath(filePath) {
-  return typeof filePath === 'string'
-    && WORKSPACE_BACKDROP_IMAGE_EXTENSIONS.has(path.extname(filePath).toLowerCase());
-}
-
-function isWorkspaceBackdropVideoPath(filePath) {
-  return typeof filePath === 'string' && path.extname(filePath).toLowerCase() === '.mp4';
-}
-
-function buildXlethMediaUrl(filePath) {
-  const normalised = filePath.replace(/\\/g, '/');
-  const driveMatch = normalised.match(/^([a-zA-Z]):\/(.*)$/);
-  if (driveMatch) {
-    const [, drive, rest] = driveMatch;
-    return 'xleth-media://' + drive.toLowerCase() + '/' +
-      rest.split('/').map(encodeURIComponent).join('/');
-  }
-  return 'xleth-media:///' + normalised.split('/').map(encodeURIComponent).join('/');
-}
-
-function resolveWorkspaceBackdropImage(settings = loadSettings(), mediaSettings = null) {
-  if (isWorkspaceBackdropImagePath(mediaSettings?.imagePath)) {
-    try {
-      if (fs.existsSync(mediaSettings.imagePath)) {
-        return {
-          name: path.basename(mediaSettings.imagePath),
-          path: mediaSettings.imagePath,
-          url: buildXlethMediaUrl(mediaSettings.imagePath),
-        };
-      }
-    } catch {}
-  }
-
-  const artDir = getWorkspaceBackdropArtDir();
-  const configuredName = isWorkspaceBackdropImageName(settings.workspaceBackdropImage)
-    ? settings.workspaceBackdropImage
-    : null;
-  const candidates = [
-    configuredName,
-    WORKSPACE_BACKDROP_DEFAULT_IMAGE,
-  ].filter(Boolean);
-
-  try {
-    const discovered = fs.readdirSync(artDir)
-      .filter(isWorkspaceBackdropImageName)
-      .sort((a, b) => a.localeCompare(b));
-    candidates.push(...discovered);
-  } catch {}
-
-  for (const name of candidates) {
-    const candidatePath = path.join(artDir, name);
-    try {
-      if (fs.existsSync(candidatePath)) {
-        return {
-          name,
-          path: candidatePath,
-          url: buildXlethMediaUrl(candidatePath),
-        };
-      }
-    } catch {}
-  }
-  return { name: null, path: null, url: null };
-}
-
-function resolveWorkspaceBackdropVideo(mediaSettings) {
-  const videoPath = isWorkspaceBackdropVideoPath(mediaSettings?.videoPath)
-    ? mediaSettings.videoPath
-    : null;
-  if (!videoPath) return { path: null, url: null, lastError: null };
-  try {
-    if (fs.existsSync(videoPath)) {
-      return { path: videoPath, url: buildXlethMediaUrl(videoPath), lastError: null };
-    }
-  } catch {}
-  return {
-    path: videoPath,
-    url: null,
-    lastError: 'Video backdrop could not be played. The file may be missing or unsupported.',
-  };
-}
-
-function ensureWorkspaceBackdropCapability() {
-  if (workspaceBackdropCapability) return workspaceBackdropCapability;
-  try {
-    workspaceBackdropCapability = loadWorkspaceBackdropCapability({
-      cachePath: getWorkspaceBackdropCachePath(app),
-    });
-  } catch (e) {
-    log(`[Backdrop] capability cache unavailable: ${e.message}`);
-    workspaceBackdropCapability = loadWorkspaceBackdropCapability();
-  }
-  return workspaceBackdropCapability;
-}
-
-function getWorkspaceBackdropStateSnapshot() {
-  return {
-    capability: workspaceBackdropState.capability || ensureWorkspaceBackdropCapability(),
-    preference: workspaceBackdropState.preference,
-    mode: ['native-acrylic', 'image', 'video'].includes(workspaceBackdropState.mode)
-      ? workspaceBackdropState.mode
-      : 'off',
-    imagePath: workspaceBackdropState.imagePath,
-    imageUrl: workspaceBackdropState.imageUrl,
-    videoPath: workspaceBackdropState.videoPath,
-    videoUrl: workspaceBackdropState.videoUrl,
-    lastError: workspaceBackdropState.lastError,
-  };
-}
-
-function logWorkspaceBackdropApply(reason, applyResult) {
-  const state = getWorkspaceBackdropStateSnapshot();
-  const c = state.capability || {};
-  const nativeApply = applyResult.requestedMaterial === 'acrylic'
-    ? (applyResult.applySucceeded ? 'success' : 'failure')
-    : 'not-requested';
-  const error = applyResult.error
-    ? ` error=${String(applyResult.error.message || applyResult.error)}`
-    : '';
-  log(
-    `[Backdrop] ${reason} platform=${c.platform || 'unknown'} osVersion=${c.osVersion || 'unknown'} ` +
-    `windowsBuild=${c.windowsBuild ?? 'unknown'} supportsNativeSystemBackdrop=${!!c.supportsNativeSystemBackdrop} ` +
-    `preference=${state.preference} setBackgroundMaterial=${!!applyResult.materialMethodExists} ` +
-    `nativeAcrylicApply=${nativeApply} finalMode=${state.mode}${error}`
-  );
-}
-
-function notifyWorkspaceBackdropChanged() {
-  if (!win || win.isDestroyed()) return;
-  win.webContents.send('xleth:backdrop:modeChanged', getWorkspaceBackdropStateSnapshot());
-}
-
-function applyMainWorkspaceBackdrop(reason = 'startup', { notify = false } = {}) {
-  const capability = ensureWorkspaceBackdropCapability();
-  const settings = loadSettings();
-  const mediaSettings = sanitizeBackdropMediaSettings(settings[BACKDROP_MEDIA_SETTINGS_KEY], settings);
-  const sourceType = mediaSettings.sourceType;
-  const materialPreference = sourceType === 'acrylic'
-    ? 'acrylic'
-    : sourceType === 'image'
-      ? 'image'
-      : 'off';
-  const applyResult = applyWorkspaceBackdropMaterial(win, { capability, preference: materialPreference });
-  const image = sourceType === 'image'
-    ? resolveWorkspaceBackdropImage(settings, mediaSettings)
-    : { path: null, url: null };
-  const video = sourceType === 'video'
-    ? resolveWorkspaceBackdropVideo(mediaSettings)
-    : { path: null, url: null, lastError: null };
-  workspaceBackdropState = {
-    capability,
-    preference: sourceType,
-    mode: sourceType === 'video'
-      ? 'video'
-      : sourceType === 'acrylic'
-        ? (applyResult.mode === 'native-acrylic' ? 'native-acrylic' : 'off')
-        : (sourceType === 'image' && applyResult.mode === 'image' ? 'image' : 'off'),
-    imagePath: image.path,
-    imageUrl: image.url,
-    videoPath: video.path,
-    videoUrl: video.url,
-    lastError: mediaSettings.lastError || video.lastError,
-  };
-  logWorkspaceBackdropApply(reason, applyResult);
-  if (notify) notifyWorkspaceBackdropChanged();
-  return getWorkspaceBackdropStateSnapshot();
-}
-
-function backdropImportNameForSource(srcPath) {
-  const ext = path.extname(srcPath).toLowerCase();
-  if (!WORKSPACE_BACKDROP_IMAGE_EXTENSIONS.has(ext)) {
-    throw new Error('Workspace backdrops must be PNG, JPEG, or WebP images.');
-  }
-  const stem = path.basename(srcPath, ext)
-    .replace(/[^a-zA-Z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 48) || 'workspace-backdrop';
-  return `${stem}-${Date.now()}${ext}`;
-}
-
-async function chooseWorkspaceBackdropImage() {
-  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-    title: 'Choose Workspace Backdrop',
-    filters: [{ name: 'Images (PNG, JPEG, WebP)', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
-    properties: ['openFile'],
-  });
-  if (canceled || !filePaths.length) return getWorkspaceBackdropStateSnapshot();
-
-  const srcPath = filePaths[0];
-  const destName = backdropImportNameForSource(srcPath);
-  const artDir = getWorkspaceBackdropArtDir();
-  fs.mkdirSync(artDir, { recursive: true });
-  const destPath = path.join(artDir, destName);
-  fs.copyFileSync(srcPath, destPath);
-
-  const settings = loadSettings();
-  settings.workspaceBackdrop = 'image';
-  settings.workspaceBackdropImage = destName;
-  settings[BACKDROP_MEDIA_SETTINGS_KEY] = sanitizeBackdropMediaSettings({
-    ...(settings[BACKDROP_MEDIA_SETTINGS_KEY] || {}),
-    sourceType: 'image',
-    imagePath: destPath,
-    lastError: '',
-  }, settings);
-  saveSettings(settings);
-  return applyMainWorkspaceBackdrop('image-chosen', { notify: true });
-}
-
-async function chooseWorkspaceBackdropVideo() {
-  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-    title: 'Choose Workspace Background Video',
-    filters: [{ name: 'Background Video (MP4)', extensions: ['mp4'] }],
-    properties: ['openFile'],
-  });
-  if (canceled || !filePaths.length) return getWorkspaceBackdropStateSnapshot();
-
-  const srcPath = filePaths[0];
-  if (!isWorkspaceBackdropVideoPath(srcPath)) {
-    throw new Error('Workspace background videos must be MP4 files.');
-  }
-
-  const settings = loadSettings();
-  settings.workspaceBackdrop = 'video';
-  settings[BACKDROP_MEDIA_SETTINGS_KEY] = sanitizeBackdropMediaSettings({
-    ...(settings[BACKDROP_MEDIA_SETTINGS_KEY] || {}),
-    sourceType: 'video',
-    videoPath: srcPath,
-    lastError: '',
-  }, settings);
-  saveSettings(settings);
-  return applyMainWorkspaceBackdrop('video-chosen', { notify: true });
-}
-
-function setWorkspaceBackdropMedia(value) {
-  const settings = loadSettings();
-  const next = sanitizeBackdropMediaSettings(value, settings);
-  settings[BACKDROP_MEDIA_SETTINGS_KEY] = next;
-  settings.workspaceBackdrop = next.sourceType === 'none' ? 'off' : next.sourceType;
-  saveSettings(settings);
-  return applyMainWorkspaceBackdrop('media-settings-changed', { notify: true });
-}
-
 function ffmpegExecutable() {
   const exe = runtimeResource('ffmpeg', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
   if (app.isPackaged || fs.existsSync(exe)) return exe;
@@ -451,6 +234,10 @@ function ffprobeExecutable() {
   if (app.isPackaged || fs.existsSync(exe)) return exe;
   return 'ffprobe';
 }
+
+// Same id as electron-builder's appId, so the taskbar groups XLETH windows (and
+// pins/jump lists) under the XLETH icon instead of electron.exe's identity.
+if (process.platform === 'win32') app.setAppUserModelId('com.xleth.app');
 
 // Cap V8 old-space so the renderer/main heaps don't balloon on long sessions.
 // Caps Electron's V8 heaps only; the forked engine worker runs under system Node
@@ -483,6 +270,48 @@ async function applyEngineDefaults() {
     await callWorker('engine_setGlobalFormantPreserve',
       [saved.globalFormantPreserve]).catch(() => {});
   }
+
+  // Proxy codec (Settings > Graphics > Proxies). Pushed before any project can
+  // open, because project open is what decides whether legacy intra proxies get
+  // migrated to H.264. Unset → the engine's own default (H.264).
+  if (saved.proxyCodec === 'h264' || saved.proxyCodec === 'intra') {
+    const state = await callWorker('proxy_setCodec', [saved.proxyCodec]).catch(() => null);
+    if (!state || state.requested !== saved.proxyCodec) {
+      log(`applyEngineDefaults: restore proxy codec '${saved.proxyCodec}' failed: ${JSON.stringify(state)}`);
+    }
+  }
+
+  // "Delete regenerable files when closing a project" (Settings > Project). Pushed
+  // before any project can open or close: the ENGINE performs the purge, at the
+  // moment it tears the old project down (project switch or quit). Off by default,
+  // so only an explicit true needs pushing. The engine echoes the value in force,
+  // so a call that silently never arrived is logged instead of leaving the
+  // setting ON in the UI and OFF in the engine.
+  if (saved.purgeRegenerableOnClose === true) {
+    const inForce = await callWorker('project_setPurgeOnClose', [true]).catch(() => null);
+    if (inForce !== true) {
+      log(`applyEngineDefaults: restore purge-on-close failed: ${JSON.stringify(inForce)}`);
+    }
+  }
+
+  // Per-machine audio device preferences (output device, buffer size, sample
+  // rate) — hardware properties of this machine, not this project, persisted
+  // in the same generic settings store as previewResolutionScale, never in
+  // project.json. Reapplied here, before the window is ever shown, so any
+  // resulting device reopen happens during the splash screen instead of as
+  // an audible glitch after the UI and audio are already live.
+  if (typeof saved.audioOutputDevice === 'string' && saved.audioOutputDevice) {
+    const result = await callWorker('audio_setOutputDevice', [saved.audioOutputDevice]).catch(() => null);
+    if (result && !result.ok) log(`applyEngineDefaults: restore output device failed: ${result.error}`);
+  }
+  if (typeof saved.audioBufferSize === 'number') {
+    const result = await callWorker('audio_setBufferSize', [saved.audioBufferSize]).catch(() => null);
+    if (result && !result.ok) log(`applyEngineDefaults: restore buffer size failed: ${result.error}`);
+  }
+  if (typeof saved.audioSampleRate === 'number') {
+    const result = await callWorker('audio_setSampleRate', [saved.audioSampleRate]).catch(() => null);
+    if (result && !result.ok) log(`applyEngineDefaults: restore sample rate failed: ${result.error}`);
+  }
 }
 
 function startEngineBackgroundTasks() {
@@ -496,14 +325,18 @@ function startEngineBackgroundTasks() {
 
 let win = null;
 let splashWin = null;
-const DEFAULT_ZOOM_FACTOR = 1;
-const MIN_ZOOM_FACTOR = 0.5;
-const MAX_ZOOM_FACTOR = 3;
-const ZOOM_STEP = 0.1;
-
-function clampZoomFactor(factor) {
-  return Math.min(MAX_ZOOM_FACTOR, Math.max(MIN_ZOOM_FACTOR, factor));
-}
+// UI scale (Phase 7): the window zoom factor IS the global UI scale. 100 % to 200 % in 10 %
+// steps, persisted as `uiScale` (a percent) in settings.json and restored when the workspace
+// window loads. The Zoom In / Zoom Out / Reset Zoom menu items and their shortcuts, and the
+// Settings > Appearance control, all move this one value. Real Chromium zoom, so hit-testing
+// stays correct; never a CSS transform.
+const {
+  DEFAULT_ZOOM_FACTOR,
+  ZOOM_STEP,
+  UI_SCALE_SETTINGS_KEY,
+  clampZoomFactor,
+  factorFromStoredPercent,
+} = require('./electron-main/ui-scale');
 
 function getTargetWindow(event) {
   const senderWindow = BrowserWindow.fromWebContents(event.sender);
@@ -515,9 +348,27 @@ function setWindowZoom(targetWindow, factor) {
   const wc = targetWindow?.webContents;
   if (!wc || wc.isDestroyed()) return DEFAULT_ZOOM_FACTOR;
 
-  const nextFactor = clampZoomFactor(Number(factor.toFixed(2)));
+  const nextFactor = clampZoomFactor(Number(factor));
   wc.setZoomFactor(nextFactor);
+  // Only the workspace window owns the persisted value; child windows follow Chromium's
+  // per-origin zoom and are told about it too.
+  if (targetWindow === win) {
+    const s = loadSettings();
+    const percent = Math.round(nextFactor * 100);
+    if (s[UI_SCALE_SETTINGS_KEY] !== percent) { s[UI_SCALE_SETTINGS_KEY] = percent; saveSettings(s); }
+  }
+  wc.send('xleth:window:zoomChanged', nextFactor);
   return nextFactor;
+}
+
+// Restore the saved scale once the renderer exists. Idempotent: Chromium may already hold it.
+function restoreUiScale(targetWindow) {
+  const wc = targetWindow?.webContents;
+  if (!wc || wc.isDestroyed()) return;
+  const factor = factorFromStoredPercent(loadSettings()[UI_SCALE_SETTINGS_KEY]);
+  wc.setZoomFactor(factor);
+  wc.send('xleth:window:zoomChanged', factor);
+  log(`[Theme] ui scale restored -> ${Math.round(factor * 100)}%`);
 }
 
 function nudgeWindowZoom(targetWindow, direction) {
@@ -528,34 +379,325 @@ function nudgeWindowZoom(targetWindow, direction) {
 }
 const nodeEditorWindows = new Map(); // key → BrowserWindow
 
-function splashStatus(msg) {
-  if (splashWin && !splashWin.isDestroyed()) {
-    splashWin.webContents.send('splash:status', msg);
+// The splash is never waited FOR: whatever it is covering (engine boot, a
+// project load, the workspace window's own boot) starts at once and runs
+// alongside it. A status sent before the splash page exists is remembered and
+// replayed when it appears; a transition that finishes before the splash has
+// even painted closes it unseen instead of flashing it.
+const SPLASH_MIN_VISIBLE_MS = 400;   // once seen, it stays long enough to be read
+let splashVisibleSince = 0;          // Date.now() when it became visible; 0 = not (yet) shown
+let splashShownPromise = null;
+let lastSplashStatus = null;
+let splashEpoch = 0;                 // bumped by every showSplashWindow(); see finishSplash
+
+function splashStatus(message, percent) {
+  lastSplashStatus = [message, percent];
+  if (splashWin && !splashWin.isDestroyed() && splashVisibleSince) {
+    splashWin.webContents.send('splash:status', message, percent);
   }
 }
 
-function createWindow() {
+// Closes the splash, then runs `reveal` (showing whatever it was covering).
+// The minimum-visibility wait counts from when the splash APPEARED, not from
+// when the thing behind it became ready — so it only ever costs time on a
+// transition quick enough that the splash would otherwise blink.
+function finishSplash(reveal) {
+  const w = splashWin;
+  const epoch = splashEpoch;
+  const wait = splashVisibleSince
+    ? Math.max(0, SPLASH_MIN_VISIBLE_MS - (Date.now() - splashVisibleSince))
+    : 0;
+  const done = () => {
+    // Asked for again while this close was waiting out the minimum (a retry
+    // straight after a failed load): it now belongs to that newer transition.
+    if (w && !w.isDestroyed() && epoch === splashEpoch) w.close();
+    if (reveal) {
+      try { reveal(); } catch (e) { log(`[Splash] reveal failed: ${e.message}`); }
+    }
+  };
+  if (wait > 0) setTimeout(done, wait); else done();
+}
+
+// Creates (or reuses) the splash window and resolves once it's actually
+// visible (or with null if it was closed first). Used both for the one-time
+// engine-boot sequence and for any later transition that needs the same
+// "loading, here's the progress" treatment — Welcome handing off to the
+// workspace, and in-app project switches (see launchWorkspace/
+// switchProjectWindow below). Idempotent: if splashWin is already up (e.g. a
+// switch triggered while the previous one is still closing), it's shown/
+// reused rather than duplicated.
+function showSplashWindow() {
+  splashEpoch++;
+  if (splashWin && !splashWin.isDestroyed()) {
+    if (!splashVisibleSince) return splashShownPromise;   // still loading its page
+    if (!splashWin.isVisible()) splashWin.show();
+    return Promise.resolve(splashWin);
+  }
+  splashVisibleSince = 0;
+  const w = new BrowserWindow({
+    width: 640,
+    height: 400,
+    icon: path.join(__dirname, 'assets', 'icon.ico'),
+    frame: false,
+    transparent: false,
+    alwaysOnTop: true,
+    resizable: false,
+    skipTaskbar: true,
+    center: true,
+    show: false,
+    webPreferences: {
+      contextIsolation: false,
+      nodeIntegration: false,
+      sandbox: false,
+      preload: path.join(__dirname, 'splash-preload.js'),
+    },
+  });
+  splashWin = w;
+  splashShownPromise = new Promise((resolve) => {
+    w.once('ready-to-show', () => {
+      if (w.isDestroyed()) { resolve(null); return; }
+      w.show();
+      splashVisibleSince = Date.now();
+      if (lastSplashStatus) w.webContents.send('splash:status', ...lastSplashStatus);
+      resolve(w);
+    });
+    w.once('closed', () => resolve(null));
+  });
+  w.loadFile(path.join(__dirname, 'splash.html'), { query: { v: app.getVersion() } });
+  w.on('closed', () => {
+    if (splashWin === w) { splashWin = null; splashVisibleSince = 0; }
+  });
+  return splashShownPromise;
+}
+
+// ── Workspace window boot ────────────────────────────────────────────────────
+// Booting the workspace renderer (process spawn, bundle load + evaluation)
+// takes about as long as the engine takes to load a project, and neither
+// needs the other. So the window is created HIDDEN as soon as a project load
+// is known to be coming, and the two run side by side:
+//
+//   gate    The renderer evaluates its bundle, then waits on
+//           xleth:boot:whenProjectReady before mounting React (ui/src/
+//           main.jsx). The UI therefore still mounts against a fully loaded
+//           project, exactly as when the window was only created afterwards.
+//   mounted After its first commit the renderer reports xleth:boot:mounted.
+//           That — not Chromium's ready-to-show, which for a gated page fires
+//           on an empty document — is what the reveal waits for, plus the
+//           start-up burst of engine queries draining (whenEngineQuiet).
+//
+// One xleth:project-loaded is delivered per boot (it is what hydrates
+// effectChainStore's FX Graph state), and it is sent immediately BEFORE the
+// gate opens: the stores, whose listeners register when the bundle is
+// evaluated, get it; the components, which are not mounted yet, do not — they
+// read the project once, as they mount. (Sent after the mount, as it used to
+// be, every mounted component threw its fresh state away and fetched the
+// whole project a second time.) project.js's own broadcast skips a window
+// that is still booting, see workspaceTakesBroadcasts.
+//
+// A bundle that predates the gate never asks for it: it mounts at once (its
+// queries simply queue behind the load in the engine worker), gets its signal
+// from the fallback timer, and is revealed by it.
+let workspaceBoot = null;   // boot state of the current workspace window, or null
+let workspaceLaunchRequested = false;   // a project is open(ing) in a workspace window
+let welcomeLoadInFlight = false;
+
+function newWorkspaceBootState(gateOpen) {
+  let openGate;
+  const gatePromise = new Promise((resolve) => { openGate = resolve; });
+  if (gateOpen) openGate();
+  return {
+    gateOpen, openGate, gatePromise,
+    gateAware: false,       // the renderer asked for the gate (current bundle)
+    finishedLoad: false,    // did-finish-load
+    mounted: false,         // xleth:boot:mounted
+    fallback: false,        // gave up waiting for `mounted`
+    fallbackTimer: null,
+    signalled: false,       // xleth:project-loaded delivered
+    revealRequested: false, // openWorkspaceWindow() ran: show it when ready
+    revealed: false,
+    handleSplash: false,
+    createdAt: Date.now(),
+  };
+}
+
+function isWorkspaceSender(event) {
+  return !!(win && !win.isDestroyed() && event.sender === win.webContents);
+}
+
+// project.js asks before each xleth:project-loaded broadcast. The workspace
+// window gets its own, once, when its boot completes; until then it is skipped.
+function workspaceTakesBroadcasts(wc) {
+  if (!win || win.isDestroyed() || wc !== win.webContents) return true;
+  return !workspaceBoot || workspaceBoot.signalled;
+}
+
+// The boot's one xleth:project-loaded. Only ever sent to a renderer whose
+// bundle has been evaluated (it asked for the gate, or the page finished
+// loading), so the stores' listeners exist to receive it.
+function signalWorkspaceProjectLoaded(st) {
+  if (st.signalled || workspaceBoot !== st || !win || win.isDestroyed()) return;
+  st.signalled = true;
+  win.webContents.send('xleth:project-loaded');
+}
+
+ipcMain.handle('xleth:boot:whenProjectReady', (event) => {
+  const st = workspaceBoot;
+  if (!st || !isWorkspaceSender(event)) return true;   // child windows are never gated
+  st.gateAware = true;
+  // Project already in (the window was created after the load, or the load
+  // beat the bundle): signal now, ahead of the reply that lets it mount.
+  if (st.gateOpen) signalWorkspaceProjectLoaded(st);
+  return st.gatePromise.then(() => true);
+});
+
+ipcMain.on('xleth:boot:mounted', (event) => {
+  const st = workspaceBoot;
+  if (!st || !isWorkspaceSender(event)) return;
+  st.mounted = true;
+  advanceWorkspaceBoot();
+});
+
+// Resolves when the engine has had no call in flight for `settleMs` — i.e.
+// the renderer's start-up queries (tracks, clips, chains, …) have been
+// answered — or after `capMs` regardless. Polling calls resolve in well under
+// a millisecond, so they do not hold this open.
+function whenEngineQuiet({ settleMs = 60, capMs = 900 } = {}) {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    let quietSince = 0;
+    const tick = () => {
+      const now = Date.now();
+      if (workerBridge.getPendingCount() === 0) {
+        if (!quietSince) quietSince = now;
+        if (now - quietSince >= settleMs) { resolve(now - start); return; }
+      } else {
+        quietSince = 0;
+      }
+      if (now - start >= capMs) { resolve(now - start); return; }
+      setTimeout(tick, 15);
+    };
+    tick();
+  });
+}
+
+// Moves the workspace boot along whenever one of its inputs changes. Safe to
+// call at any time, any number of times.
+function advanceWorkspaceBoot() {
+  const st = workspaceBoot;
+  if (!st || !win || win.isDestroyed() || !st.gateOpen) return;
+
+  // Never leave the user without a window: if the renderer has not reported a
+  // mount, carry on without it. A bundle that never asked for the gate is not
+  // going to report one, so it gets a short wait; a current one a long one.
+  if (st.finishedLoad && !st.mounted && !st.fallback && !st.fallbackTimer) {
+    st.fallbackTimer = setTimeout(() => {
+      st.fallbackTimer = null;
+      if (workspaceBoot !== st || st.mounted) return;
+      st.fallback = true;
+      log(`[Boot] workspace renderer reported no mount (${st.gateAware ? 'timeout' : 'pre-gate bundle'}) — continuing without it`);
+      advanceWorkspaceBoot();
+    }, st.gateAware ? 3000 : 400);
+  }
+
+  const settled = st.mounted || st.fallback;
+  // Normally sent already, ahead of the gate. This is the pre-gate bundle's
+  // turn (it never asked): its page has loaded, so its listeners exist.
+  if (st.finishedLoad && settled) signalWorkspaceProjectLoaded(st);
+  if (st.revealRequested && !st.revealed && settled) {
+    st.revealed = true;
+    if (st.fallbackTimer) { clearTimeout(st.fallbackTimer); st.fallbackTimer = null; }
+    revealWorkspace(st);
+  }
+}
+
+async function revealWorkspace(st) {
+  const waited = await whenEngineQuiet();
+  const show = () => {
+    if (workspaceBoot !== st || !win || win.isDestroyed()) return;
+    win.show();
+    log(`[Boot] workspace shown ${Date.now() - st.createdAt}ms after its window was created (hydration settled in ${waited}ms)`);
+  };
+  if (st.handleSplash) {
+    splashStatus('Ready.', 100);
+    finishSplash(show);
+  } else {
+    show();
+  }
+}
+
+// Creates the workspace window hidden, gate closed, ahead of a project load
+// that is starting now. openWorkspaceWindow() adopts it once the project is in.
+function prewarmWorkspaceWindow() {
+  if (win && !win.isDestroyed()) return;
+  if (getAddonError()) return;
+  createWindow(newWorkspaceBootState(false));
+  log('[Boot] workspace window booting (hidden) alongside the project load');
+}
+
+// Throws away a pre-warmed window whose project never arrived (load failed,
+// Welcome closed mid-load, engine died). Only ever touches a still-gated,
+// never-shown window.
+function discardPrewarmedWorkspace(reason) {
+  const st = workspaceBoot;
+  if (!st || st.gateOpen || !win || win.isDestroyed()) return false;
+  log(`[Boot] discarding the pre-warmed workspace window (${reason})`);
+  if (st.fallbackTimer) clearTimeout(st.fallbackTimer);
+  workspaceBoot = null;
+  const w = win;
+  win = null;
+  w.destroy();
+  return true;
+}
+
+// xleth:project:load arriving from the Welcome window is the start of the
+// Welcome → workspace hand-off: put the splash up and start the workspace
+// window now, while the engine loads. (The same channel from an already open
+// workspace is an in-app load and needs none of this.)
+function onIpcProjectLoadStart(event) {
+  const welcomeWin = welcomeHandlers.getWelcomeWindow();
+  if (!welcomeWin || welcomeWin.isDestroyed() || event.sender !== welcomeWin.webContents) return;
+  welcomeLoadInFlight = true;
+  showSplashWindow();
+  splashStatus('Loading project…', 30);
+  prewarmWorkspaceWindow();
+}
+
+function onIpcProjectLoadEnd(event, ok) {
+  if (!welcomeLoadInFlight) return;
+  welcomeLoadInFlight = false;
+  if (ok) return;   // Welcome reports projectReady next → launchWorkspace()
+  // Back to Welcome, which shows the error.
+  discardPrewarmedWorkspace('project load failed');
+  finishSplash();
+}
+
+function createWindow(bootState) {
+  workspaceBoot = bootState || newWorkspaceBootState(true);
+  const boot = workspaceBoot;
   win = new BrowserWindow({
     width: 1280,
     height: 800,
     minWidth: 900,
     minHeight: 600,
-    backgroundColor: '#00000000',
-    backgroundMaterial: 'none',
+    icon: path.join(__dirname, 'assets', 'icon.ico'),
+    // Opaque (Phase 7): the workspace backdrop modes needed a transparent window; with them
+    // gone the window is a plain one on the neutral ground (--theme-ui-g0 of the default theme).
+    backgroundColor: '#0F0F0F',
     frame: false,
     show: false,
-    transparent: true,
+    transparent: false,
     webPreferences: {
-      // contextIsolation disabled so preload can hand the renderer a live
-      // ArrayBuffer reference (shm_helper's file-mapped view). With isolation
-      // on, contextBridge would structured-clone the buffer → dead copy.
+      // contextIsolation disabled so preload can hand the renderer live
+      // references — the shm_helper handle and the frame buffers it fills.
+      // With isolation on, contextBridge would structured-clone every frame.
+      // (The mapping itself is never exposed to JS; V8's renderer sandbox
+      // forbids external ArrayBuffers — see the note in preload.js.)
       contextIsolation: false,
       nodeIntegration: false,
       sandbox: false,
       preload: runtimeResource('app', 'preload.js'),
     },
   });
-  applyMainWorkspaceBackdrop('startup');
 
   const addonError = getAddonError();
   if (addonError) {
@@ -569,20 +711,206 @@ function createWindow() {
     win.loadURL('http://localhost:5173');
   }
 
-  // Pipe all renderer console output to startup.log so we can read it externally
-  win.webContents.on('console-message', (_e, level, message, line, source) => {
-    const prefix = level === 3 ? '[RENDERER ERROR]' : level === 2 ? '[RENDERER WARN]' : '[RENDERER]';
-    log(`${prefix} ${message}  (${source}:${line})`);
-  });
+  // The workspace window never exists before its project is loaded (Welcome's
+  // project.load / the auto-boot path both run first) — so the ONE broadcast
+  // electron-main/project.js sends for that load fires to a webContents list
+  // that doesn't include this window yet, and effectChainStore's
+  // onProjectLoaded listener (which is the only thing that hydrates FX Graph
+  // state) never sees it. Re-signal once this window's own renderer bundle
+  // has finished evaluating (its listener registers at module scope, before
+  // did-finish-load), so every fresh workspace window gets its own delivery
+  // regardless of how the project already loaded. In-app project switches are
+  // unaffected — this window already exists then, so project.js's own
+  // broadcast reaches it directly.
+  //
+  // With the boot gate (see "Workspace window boot") the page can finish
+  // loading BEFORE its project has, so the signal is no longer tied to
+  // did-finish-load: it is sent once the project is in, just ahead of the
+  // renderer's mount — still exactly once per window.
+  const thisWin = win;
+  if (!addonError) {
+    win.webContents.once('did-finish-load', () => {
+      if (thisWin.isDestroyed()) return;
+      restoreUiScale(thisWin);
+      boot.finishedLoad = true;
+      advanceWorkspaceBoot();
+    });
+  }
+
+  // Renderer console → the in-memory session buffer, which Settings →
+  // Application → Logs exports and which auto-export writes out on quit or
+  // crash. This is always on: capture costs one array push per line, unlike
+  // the startup.log pipe below, so the chatty-component problem that gates
+  // that pipe does not apply here.
+  consoleLog.attachToWebContents(win.webContents, 'renderer');
+
+  // Pipe renderer console output to startup.log so we can read it externally.
+  // Gated behind a debug flag — chatty timeline components (selectTool logs on
+  // drag start, every commit, every rubber-band) fire a log line, and hence a
+  // disk write, per interaction event otherwise. Set XLETH_LOG_RENDERER_CONSOLE=1
+  // to re-enable while debugging a renderer-side issue.
+  if (process.env.XLETH_LOG_RENDERER_CONSOLE === '1') {
+    win.webContents.on('console-message', (_e, level, message, line, source) => {
+      const prefix = level === 3 ? '[RENDERER ERROR]' : level === 2 ? '[RENDERER WARN]' : '[RENDERER]';
+      log(`${prefix} ${message}  (${source}:${line})`);
+    });
+  }
 
   win.on('closed', () => {
+    if (boot.fallbackTimer) { clearTimeout(boot.fallbackTimer); boot.fallbackTimer = null; }
+    // A discarded pre-warmed window closes after `win` has already moved on
+    // (to null, or to its replacement) — only the current window's closing
+    // tears the session's child windows down.
+    if (win !== thisWin && win !== null) return;
     for (const [, child] of nodeEditorWindows) {
       if (!child.isDestroyed()) child.close();
     }
     nodeEditorWindows.clear();
+    if (workspaceBoot === boot) workspaceBoot = null;
     win = null;
   });
 }
+
+// ── Welcome screen (mandatory startup gate) ──────────────────────────────────
+// Decides what app.whenReady() shows once the engine has booted: either the
+// most recent valid project (auto-boot, only when "show Welcome on startup"
+// is off AND a valid recent exists) or the mandatory Welcome window. The gate
+// is never bypassed, only shortened — no valid recent always falls through
+// to Welcome regardless of the setting.
+function decideBootTarget() {
+  const settings = loadSettings();
+  const showWelcomeOnStartup = settings.showWelcomeOnStartup !== false; // default true
+  if (!showWelcomeOnStartup) {
+    const recent = recentProjects.firstValidRecent();
+    if (recent) return { mode: 'workspace', dir: recent.dir, name: recent.name };
+  }
+  return { mode: 'welcome' };
+}
+
+// Shows the real workspace window for a project that has JUST finished
+// loading, and performs the one-time per-window setup (HWND handoff to the
+// engine, update check). Adopts the window pre-warmed alongside the load when
+// there is one (its renderer is already evaluated and waiting at the boot
+// gate); otherwise creates it now. Either way the window appears only once
+// its renderer has mounted and hydrated — see "Workspace window boot".
+// handleSplash: the splash is up and should be closed as the window appears.
+function openWorkspaceWindow({ handleSplash }) {
+  workspaceLaunchRequested = true;
+  const prewarmed = !!(win && !win.isDestroyed() && workspaceBoot && !workspaceBoot.gateOpen);
+  if (!prewarmed) createWindow(newWorkspaceBootState(true));
+  const st = workspaceBoot;
+  if (win && st) {
+    st.handleSplash = !!handleSplash;
+    if (getAddonError()) {
+      // The engine-error page: no renderer bundle, so no mount report. Show
+      // it on first paint, as before.
+      const errorWin = win;
+      errorWin.once('ready-to-show', () => {
+        if (errorWin.isDestroyed()) return;
+        if (st.handleSplash) finishSplash(() => { if (!errorWin.isDestroyed()) errorWin.show(); });
+        else errorWin.show();
+      });
+    } else {
+      st.revealRequested = true;
+      if (!st.gateOpen) {
+        st.gateOpen = true;
+        // Signal first, then let it mount (same tick, so in that order on the
+        // wire). A renderer that has not asked for the gate yet is signalled
+        // when it does — see xleth:boot:whenProjectReady.
+        if (st.gateAware) signalWorkspaceProjectLoaded(st);
+        st.openGate();
+      }
+      advanceWorkspaceBoot();
+    }
+  }
+
+  // Pass the main-window native HWND to the engine so VST editor-host
+  // processes can call SetWindowLongPtrW(GWLP_HWNDPARENT) and be treated as
+  // owned popups: they minimize with the main window, don't get a separate
+  // taskbar button, and stay above the main window in Z-order.
+  if (win && isWorkerReady()) {
+    try {
+      const hwndBuf = win.getNativeWindowHandle();
+      // Buffer is little-endian; on 64-bit Windows it is 8 bytes.
+      const hwndBigInt = hwndBuf.length >= 8
+        ? hwndBuf.readBigUInt64LE(0)
+        : BigInt(hwndBuf.readUInt32LE(0));
+      const hwndHex = hwndBigInt.toString(16).toUpperCase();
+      log(`[HWND] Main window handle: 0x${hwndHex}`);
+      callWorker('audio_setMainWindowHandle', [hwndHex]).catch(e =>
+        log('[HWND] setMainWindowHandle failed: ' + e.message));
+    } catch (e) {
+      log('[HWND] Failed to read native window handle: ' + e.message);
+    }
+  }
+
+  checkForUpdates(win);
+}
+
+// Welcome's onProjectReady callback (project already created/loaded and
+// touched into recents by the time this fires — see welcome.js). Splash was
+// already closed once when Welcome itself appeared, so it's re-shown here
+// for the Welcome → workspace handoff (this used to be a silent gap: Welcome
+// closes, then nothing visible until the workspace window's first paint).
+function launchWorkspace(dir, name) {
+  // Synchronous on purpose: welcome.js calls this and THEN closes Welcome,
+  // whose 'closed' handler reads workspaceLaunchRequested (set in
+  // openWorkspaceWindow) to know this is not a quit.
+  showSplashWindow();   // usually already up since the load started
+  splashStatus(name ? `Opening “${name}”…` : 'Opening project…', 70);
+  openWorkspaceWindow({ handleSplash: true });
+}
+
+// Wraps an in-app project switch (New Project / Open Project triggered from
+// inside an already-open workspace) with the same splash treatment used at
+// boot: show the splash, hide the workspace window (not destroy it — its
+// native HWND is what VST editor windows are parented to, and destroying/
+// recreating it would orphan any open plugin editors), do the engine work,
+// then reveal the workspace again. `work` is loadProject(dir) or
+// newBlankProject() from electron-main/project.js.
+async function switchProjectWindow(message, work) {
+  // The engine work starts immediately; the splash comes up alongside it and
+  // the workspace is hidden only once the splash is actually covering for it
+  // (never a moment with nothing on screen). A switch that finishes before the
+  // splash has painted skips it entirely.
+  const wasVisible = !!(win && !win.isDestroyed() && win.isVisible());
+  let finished = false;
+  let hidden = false;
+  showSplashWindow().then((shown) => {
+    if (finished || !shown || !win || win.isDestroyed()) return;
+    win.hide();
+    hidden = true;
+  });
+  splashStatus(message, 25);
+
+  const reveal = () => {
+    finished = true;
+    finishSplash(() => {
+      if (hidden && wasVisible && win && !win.isDestroyed()) win.show();
+    });
+  };
+
+  try {
+    const result = await work();
+    splashStatus('Ready.', 100);
+    // The broadcast in work() has the renderer re-reading the whole project;
+    // bring the window back once those queries have been answered.
+    await whenEngineQuiet();
+    reveal();
+    return result;
+  } catch (e) {
+    splashStatus('Failed: ' + e.message, 100);
+    finished = true;
+    setTimeout(reveal, 900); // linger so the failure message is readable
+    throw e;
+  }
+}
+
+ipcMain.handle('xleth:project:switchToNew', safeHandler(() =>
+  switchProjectWindow('Starting new project…', () => projectHandlers.newBlankProject())));
+
+ipcMain.handle('xleth:project:switchToLoad', safeHandler((_event, dir) =>
+  switchProjectWindow('Loading project…', () => projectHandlers.loadProject(dir))));
 
 // ── IPC helpers ───────────────────────────────────────────────────────────────
 
@@ -622,21 +950,44 @@ function graphHandler(keyFn, fn) {
 // and metadata — no buffer crosses IPC.
 let frameShmMeta = null;  // { name, width, height, bufferSize, indexOffset, totalSize }
 
-async function ensureFrameShm(width, height) {
-  if (frameShmMeta && frameShmMeta.width === width && frameShmMeta.height === height) {
+// Serialises ensureFrameShm. The cache test below is a check-then-act across an
+// await, and callers genuinely do overlap: React.StrictMode double-invokes
+// VideoPreview's mount effect, so two restorePreviewSettings() runs race and
+// every preview RPC arrives twice. Both could miss the cache and both fire
+// initVideoSharedMemory, which on the engine side stops the video thread,
+// reframes the mapping, then restarts it — and
+// stopVideoThread/startVideoThread are not reentrant. Chaining each call onto
+// the previous one means the second caller re-tests the cache only after the
+// first has published its result, so a same-size request collapses to one RPC
+// and a genuine resize never overlaps another.
+let frameShmQueue = Promise.resolve();
+
+function ensureFrameShm(width, height) {
+  const run = frameShmQueue.then(async () => {
+    if (frameShmMeta && frameShmMeta.width === width && frameShmMeta.height === height) {
+      return frameShmMeta;
+    }
+    // Capacity is the section size; width/height only move the live frame
+    // inside it. Math.max guards a caller asking for more than base scale.
+    const capW = Math.max(width, FRAME_SHM_BASE_W);
+    const capH = Math.max(height, FRAME_SHM_BASE_H);
+    const res = await callWorker('initVideoSharedMemory', [FRAME_SHM_NAME, width, height, capW, capH]);
+    frameShmMeta = {
+      name:        res.name,
+      width:       res.width,
+      height:      res.height,
+      bufferSize:  res.bufferSize,
+      indexOffset: res.indexOffset,
+      totalSize:   res.totalSize,
+      capacityBufferSize: res.capacityBufferSize,
+    };
+    log(`[IPC] ← shm ready: ${JSON.stringify(frameShmMeta)}`);
     return frameShmMeta;
-  }
-  const res = await callWorker('initVideoSharedMemory', [FRAME_SHM_NAME, width, height]);
-  frameShmMeta = {
-    name:        res.name,
-    width:       res.width,
-    height:      res.height,
-    bufferSize:  res.bufferSize,
-    indexOffset: res.indexOffset,
-    totalSize:   res.totalSize,
-  };
-  log(`[IPC] ← shm ready: ${JSON.stringify(frameShmMeta)}`);
-  return frameShmMeta;
+  });
+  // Swallow rejections on the queue only — `run` still rejects for the caller.
+  // Without this a single failed resize would wedge every later call.
+  frameShmQueue = run.catch(() => {});
+  return run;
 }
 
 ipcMain.handle('xleth:video:getFrameShm', safeHandler(async (_, width, height) => {
@@ -729,33 +1080,11 @@ ipcMain.handle('xleth:importVideo', safeHandler(async () => {
 // Extracted to electron-main/timeline.js (S5 Stage 3).
 
 // ── Global clip-processing defaults ─────────────────────────────────────────
-ipcMain.handle('xleth:settings:get',    (_, key) => {
-  const settings = loadSettings()
-  if (key === 'workspaceBackdrop') return getWorkspaceBackdropPreference(settings)
-  if (key === BACKDROP_MEDIA_SETTINGS_KEY) return sanitizeBackdropMediaSettings(settings[BACKDROP_MEDIA_SETTINGS_KEY], settings)
-  return settings[key]
-})
+ipcMain.handle('xleth:settings:get',    (_, key) => loadSettings()[key])
 ipcMain.handle('xleth:settings:set',    (_, key, value) => {
   const s = loadSettings()
-  if (key === BACKDROP_MEDIA_SETTINGS_KEY) {
-    return setWorkspaceBackdropMedia(value)
-  }
-  if (key === 'workspaceBackdrop') {
-    const previous = getWorkspaceBackdropPreference(s)
-    const next = sanitizeWorkspaceBackdropPreference(value)
-    s[key] = next
-    saveSettings(s)
-    if (next !== previous) {
-      return applyMainWorkspaceBackdrop('preference-changed', { notify: true })
-    }
-    return getWorkspaceBackdropStateSnapshot()
-  }
   s[key] = value; saveSettings(s)
 })
-ipcMain.handle('xleth:backdrop:getState', () => getWorkspaceBackdropStateSnapshot())
-ipcMain.handle('xleth:backdrop:chooseImage', () => chooseWorkspaceBackdropImage())
-ipcMain.handle('xleth:backdrop:chooseVideo', () => chooseWorkspaceBackdropVideo())
-ipcMain.handle('xleth:backdrop:setMedia', (_, value) => setWorkspaceBackdropMedia(value))
 
 // -- Custom file picker filesystem bridge ------------------------------------
 
@@ -1287,6 +1616,17 @@ ipcMain.handle('xleth:audio:probeAudioDuration',
 // ── Sample Video Export / Swap (mirrors Sample Audio Export/Swap above) ──────
 
 // Dialog: open a video file to swap in as the replacement video stream
+// Dialog: pick a .cube LUT for a Color Grade (the renderer hands the path to
+// colorGrade.checkLut before using it).
+ipcMain.handle('xleth:dialog:openLut', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+    title: 'Import LUT',
+    filters: [{ name: '3D LUT', extensions: ['cube'] }],
+    properties: ['openFile'],
+  });
+  return canceled || !filePaths.length ? null : filePaths[0];
+});
+
 ipcMain.handle('xleth:dialog:swapVideo', async () => {
   let defaultPath = undefined;
   try {
@@ -1357,12 +1697,12 @@ ipcMain.handle('xleth:audio:unloadSource',
 // ── Waveform mipmap bindings (replace FFmpeg 8kHz extraction pipeline) ───────
 
 ipcMain.handle('xleth:waveform:getRegionPeaks',
-  safeHandler((_, regionId, startTime, endTime, targetPixels, channel) =>
-    callWorker('waveform_getRegionPeaks', [regionId, startTime, endTime, targetPixels, channel])));
+  safeHandler((_, regionId, startTime, endTime, targetPixels, channel, slotIndex = 0) =>
+    callWorker('waveform_getRegionPeaks', [regionId, startTime, endTime, targetPixels, channel, slotIndex])));
 
 ipcMain.handle('xleth:waveform:getRawSamples',
-  safeHandler((_, regionId, startSample, endSample, channel) =>
-    callWorker('waveform_getRawSamples', [regionId, startSample, endSample, channel])));
+  safeHandler((_, regionId, startSample, endSample, channel, slotIndex = 0) =>
+    callWorker('waveform_getRawSamples', [regionId, startSample, endSample, channel, slotIndex])));
 
 ipcMain.handle('xleth:waveform:getFilePeaks',
   safeHandler((_, filePath, startTime, endTime, targetPixels, channel) =>
@@ -1380,9 +1720,22 @@ ipcMain.handle('xleth:midi:parseSummary', (_, filePath) =>
 ipcMain.handle('xleth:midi:importFull', (_, filePath, optionsJson) =>
     callWorker('midi_importFull', [filePath, optionsJson]));
 
+ipcMain.handle('xleth:midi:getReimportTargets', () =>
+    callWorker('midi_getReimportTargets', []));
+
 ipcMain.handle('xleth:midi:executeImport', (_, noteData, optionsJson) =>
     // preload.js guarantees noteData is a Buffer; the pipe client base64-encodes it.
     callWorker('midi_executeImport', [noteData, optionsJson]));
+
+// FL Studio project import: the .flp is converted to a temp MIDI file here in
+// main (pure JS, electron-main/flp-import.js); the dialog then runs the normal
+// midi.* pipeline on that path.
+ipcMain.handle('xleth:flp:convert', (_, filePath, options) => {
+  const result = require('./electron-main/flp-import.js').convertFlpFile(filePath, options || {});
+  log(`[FlpImport] ${filePath} → ${result.ok ? result.midiPath : 'FAILED: ' + result.reason}` +
+      (result.info ? ` (arrangement ${result.info.arrangementIndex}, ${result.info.tracks.length} tracks)` : ''));
+  return result;
+});
 
 // Replaced by WaveformMipmap N-API bindings — see WaveformMipmap.h
 // Pipeline A (extractPCM, pcmCache, buildPeaks, getWaveformData/Region IPC) removed.
@@ -1522,7 +1875,9 @@ ipcMain.handle('xleth:dialog:importMIDI', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog(win, {
     title: 'Import MIDI',
     filters: [
+      { name: 'MIDI and FL Studio projects', extensions: ['mid', 'midi', 'flp'] },
       { name: 'MIDI Files', extensions: ['mid', 'midi'] },
+      { name: 'FL Studio projects', extensions: ['flp'] },
       { name: 'All Files', extensions: ['*'] },
     ],
     properties: ['openFile'],
@@ -2088,6 +2443,8 @@ ipcMain.handle('xleth:shell:openPath', async (_, filePath) => {
 // ── Media server port (for <video> elements) ──────────────────────────────────
 
 ipcMain.handle('xleth:getMediaPort', () => getMediaPort());
+// Read synchronously by preload so media URLs can be built synchronously.
+ipcMain.on('xleth:getMediaTokenSync', (event) => { event.returnValue = getMediaToken(); });
 
 // ── Window controls (frameless title bar) ─────────────────────────────────────
 
@@ -2109,6 +2466,15 @@ ipcMain.on('xleth:window:resetZoom', (event) => {
   const nextFactor = setWindowZoom(getTargetWindow(event), DEFAULT_ZOOM_FACTOR);
   log(`[IPC] window:resetZoom -> ${nextFactor}`);
 });
+// The Settings control sets an absolute value; getZoom lets it open at the live one.
+ipcMain.on('xleth:window:setZoom', (event, factor) => {
+  const nextFactor = setWindowZoom(getTargetWindow(event), Number(factor));
+  log(`[IPC] window:setZoom -> ${nextFactor}`);
+});
+ipcMain.handle('xleth:window:getZoom', (event) => {
+  const wc = getTargetWindow(event)?.webContents;
+  return wc && !wc.isDestroyed() ? wc.getZoomFactor() : DEFAULT_ZOOM_FACTOR;
+});
 
 // ── Node Editor child windows ─────────────────────────────────────────────────
 
@@ -2126,6 +2492,7 @@ ipcMain.on('xleth:window:openNodeEditor', (event, key, pos) => {
     height: 500,
     minWidth: 500,
     minHeight: 350,
+    icon: path.join(__dirname, 'assets', 'icon.ico'),
     backgroundColor: '#0A0A0F',
     frame: false,
     parent: win,
@@ -2168,47 +2535,12 @@ ipcMain.on('xleth:window:closeNodeEditor', (event) => {
 // ── App lifecycle ──────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
+  const bootStart = Date.now();
   log('app ready — loading addon...');
-
-  // ── Splash window ──────────────────────────────────────────────────────────
-  splashWin = new BrowserWindow({
-    width: 680,
-    height: 400,
-    frame: false,
-    transparent: false,
-    alwaysOnTop: true,
-    resizable: false,
-    center: true,
-    backgroundColor: '#0D0F13',
-    show: false,
-    webPreferences: {
-      contextIsolation: false,
-      nodeIntegration: false,
-      sandbox: false,
-      preload: path.join(__dirname, 'splash-preload.js'),
-    },
-  });
-  splashWin.once('ready-to-show', () => {
-    // Inject logo as base64 data URL — avoids Chromium's cross-origin
-    // block on file:// URLs from different directories.
-    const logoPath = app.isPackaged
-      ? path.join(process.resourcesPath, 'xlethpopup.png')
-      : path.join(__dirname, '..', 'xlethpopup.png');
-    try {
-      const dataUrl = 'data:image/png;base64,' +
-        fs.readFileSync(logoPath).toString('base64');
-      splashWin.webContents.executeJavaScript(
-        `document.getElementById('logo').src = ${JSON.stringify(dataUrl)};`
-      ).catch(() => {});
-    } catch { /* logo file absent — img stays hidden via onerror */ }
-    splashWin.show();
-  });
-  splashWin.loadFile(path.join(__dirname, 'splash.html'));
-  splashWin.on('closed', () => { splashWin = null; });
-  // ──────────────────────────────────────────────────────────────────────────
 
   // COOP/COEP — required so the renderer's `crossOriginIsolated` flag is
   // true, which is a prerequisite for `SharedArrayBuffer` in Chromium.
+  // Installed before any window exists so every page load goes through it.
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     const responseHeaders = { ...details.responseHeaders };
     responseHeaders['Cross-Origin-Opener-Policy']   = ['same-origin'];
@@ -2216,16 +2548,68 @@ app.whenReady().then(async () => {
     callback({ responseHeaders });
   });
 
+  registerMediaProtocol();
+  startMediaServer();
+
+  // ── Start-up runs three things side by side ───────────────────────────────
+  // The splash, the engine, and the first real window (Welcome, or the
+  // workspace on the auto-boot path) do not depend on one another to START,
+  // only to FINISH — so none of them waits for another before beginning.
+  // The splash is not awaited: a status sent before its page exists is
+  // replayed when it appears (splashStatus).
+  showSplashWindow();
+
+  // Settings + recents are plain files; no engine needed to decide.
+  const bootTarget = decideBootTarget();
+
+  // Welcome is shown once BOTH its page has painted and the engine is up (its
+  // buttons all go through the engine). Whichever finishes last calls this.
+  let engineBootDone = false;
+  let welcomePainted = null;   // the Welcome window, once ready-to-show
+  let welcomeShown = false;
+  const maybeShowWelcome = () => {
+    if (welcomeShown || !engineBootDone || !welcomePainted) return;
+    welcomeShown = true;
+    const w = welcomePainted;
+    splashStatus('Ready.', 100);
+    finishSplash(() => {
+      if (w.isDestroyed()) return;
+      w.show();
+      log(`[Boot] Welcome shown ${Date.now() - bootStart}ms after app ready`);
+    });
+  };
+  const openWelcome = () => {
+    welcomeHandlers.createWelcomeWindow({
+      onReadyToShow: (welcomeWin) => { welcomePainted = welcomeWin; maybeShowWelcome(); },
+      onClosed: () => {
+        if (workspaceLaunchRequested) return;   // closed because a project was opened
+        // Closed without a project having been created/opened (the × button,
+        // Alt+F4, taskbar close — see welcome-preload.js/welcome.html). The
+        // mandatory gate: there is no path to the workspace without a
+        // project file, so XLETH quits. Windows-only, so window-all-closed
+        // (below) does that — once nothing else is open: a workspace window
+        // pre-warmed for a load still in flight, and the splash over it,
+        // would otherwise keep the app alive with no visible window.
+        log('[Welcome] closed without a project — quitting (mandatory gate)');
+        discardPrewarmedWorkspace('Welcome closed');
+        finishSplash();
+      },
+    });
+  };
+
+  if (bootTarget.mode === 'welcome') openWelcome();
+  else prewarmWorkspaceWindow();   // auto-boot: its renderer boots during engine init + project load
+
   try {
+    splashStatus('Loading audio engine…', 15); // engine fork about to spawn
     await startWorker();
-    splashStatus('Initializing audio engine…');
-    splashStatus('Registering codecs…');
+    splashStatus('Connecting to engine bridge…', 35); // engine fork is up, bridge IPC ready
 
     await callWorker('initialize');
     log('initialize() OK');
     await applyEngineDefaults();
     startEngineBackgroundTasks();
-    splashStatus('Starting compositor…');
+    splashStatus('Starting compositor…', 65);
 
     // Swap the engine's owned FrameOutput buffer for a Windows named file
     // mapping so the renderer can read frames zero-copy via shm_helper.
@@ -2235,6 +2619,7 @@ app.whenReady().then(async () => {
     } catch (e) {
       log(`shm init FAILED: ${e.message}`);
     }
+    splashStatus('Finalizing startup…', 85);
 
     // Set up audio-scheduler timeline (drum pattern for legacy transport)
     await callWorker('setBPM', [140]);
@@ -2257,9 +2642,43 @@ app.whenReady().then(async () => {
   } catch (e) {
     setAddonError(e.message);
     log(`Engine init FAILED: ${e.message}`);
+    discardPrewarmedWorkspace('engine init failed');
     if (splashWin && !splashWin.isDestroyed()) splashWin.close();
   }
+  engineBootDone = true;
+  log(`[Boot] engine ready ${Date.now() - bootStart}ms after app ready`);
 
+  // ── Mandatory Welcome gate ───────────────────────────────────────────────
+  // No path to the workspace exists without a project file on disk. Auto-boot
+  // straight into the workspace only when "show Welcome on startup" is off
+  // AND a valid recent project exists; otherwise Welcome always shows first —
+  // the gate is shortened, never bypassed.
+  if (bootTarget.mode === 'workspace') {
+    try {
+      splashStatus(bootTarget.name ? `Opening “${bootTarget.name}”…` : 'Opening project…', 90);
+      const loaded = await callWorker('project_load', [bootTarget.dir]);
+      if (!loaded) throw new Error('project_load returned false');
+      recentProjects.touchRecent({ name: bootTarget.name, dir: bootTarget.dir });
+    } catch (e) {
+      log(`[Boot] Auto-load of last project failed, falling back to Welcome: ${e.message}`);
+      bootTarget.mode = 'welcome';
+      discardPrewarmedWorkspace('auto-load failed');
+      openWelcome();
+    }
+  }
+
+  if (bootTarget.mode === 'workspace') {
+    openWorkspaceWindow({ handleSplash: true });
+  } else {
+    maybeShowWelcome();
+  }
+  // ──────────────────────────────────────────────────────────────────────────
+});
+
+// Serve local media files via xleth-media:// protocol so the renderer can load
+// audio/video without file:// CORS/CSP issues when running from localhost:5173.
+// Called once from app.whenReady(), before any window is created.
+function registerMediaProtocol() {
   // Serve local media files via xleth-media:// protocol so the renderer can load
   // audio/video without file:// CORS/CSP issues when running from localhost:5173.
   // Explicit Range support is required for <video> seeking — net.fetch with
@@ -2337,53 +2756,7 @@ app.whenReady().then(async () => {
     );
   });
   log('[Protocol] xleth-media registered');
-
-  startMediaServer();
-
-  createWindow();
-
-  // ── Splash → main window handoff ──────────────────────────────────────────
-  if (win) {
-    win.once('ready-to-show', () => {
-      setTimeout(() => {
-        if (splashWin && !splashWin.isDestroyed()) {
-          splashWin.webContents.executeJavaScript(
-            `document.body.classList.add('fade-out');`
-          ).catch(() => {});
-          setTimeout(() => {
-            if (splashWin && !splashWin.isDestroyed()) splashWin.close();
-            win.show();
-          }, 320); // 300ms CSS transition + 20ms buffer
-        } else {
-          win.show(); // splash already gone — show immediately
-        }
-      }, 400); // minimum splash visibility after first paint
-    });
-  }
-  // ──────────────────────────────────────────────────────────────────────────
-
-  // Pass the main-window native HWND to the engine so VST editor-host
-  // processes can call SetWindowLongPtrW(GWLP_HWNDPARENT) and be treated as
-  // owned popups: they minimize with the main window, don't get a separate
-  // taskbar button, and stay above the main window in Z-order.
-  if (win && isWorkerReady()) {
-    try {
-      const hwndBuf = win.getNativeWindowHandle();
-      // Buffer is little-endian; on 64-bit Windows it is 8 bytes.
-      const hwndBigInt = hwndBuf.length >= 8
-        ? hwndBuf.readBigUInt64LE(0)
-        : BigInt(hwndBuf.readUInt32LE(0));
-      const hwndHex = hwndBigInt.toString(16).toUpperCase();
-      log(`[HWND] Main window handle: 0x${hwndHex}`);
-      callWorker('audio_setMainWindowHandle', [hwndHex]).catch(e =>
-        log('[HWND] setMainWindowHandle failed: ' + e.message));
-    } catch (e) {
-      log('[HWND] Failed to read native window handle: ' + e.message);
-    }
-  }
-
-  checkForUpdates(win);
-});
+}
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
@@ -2415,10 +2788,6 @@ app.on('before-quit', (event) => {
 // Also expose the frame-shm meta synchronously for preload (sendSync path).
 ipcMain.on('xleth:video:getFrameShmSync', (event) => {
   event.returnValue = frameShmMeta;
-});
-
-ipcMain.on('xleth:backdrop:getStateSync', (event) => {
-  event.returnValue = getWorkspaceBackdropStateSnapshot();
 });
 
 process.on('uncaughtException', (e) => {

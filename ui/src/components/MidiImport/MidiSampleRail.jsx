@@ -1,6 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Image, Music2, Search } from 'lucide-react'
-import XlethSelect from '../common/XlethSelect.jsx'
+import { Select, TextField } from '../../ui-kit'
+import styles from './MidiImport.module.css'
+import { getCachedPreview, getSourceFingerprint } from './samplePreviewCache.js'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcFilmStrip = iconComponent('film-strip')
+const IcMusicNotes = iconComponent('music-notes')
+const IcWaveform = iconComponent('waveform')
 
 function getItemKey(item) {
   return item?.id == null ? '__none__' : String(item.id)
@@ -80,39 +86,37 @@ export default function MidiSampleRail({
     const getFrameAtTime = window.xleth?.video?.getFrameAtTime
     if (typeof getFrameAtTime !== 'function') return
 
+    let cancelled = false
     for (const item of railItems) {
       const key = getItemKey(item)
       if (item.isNone || requestedRef.current.has(key) || previews[key] || !canRequestPreview(item)) continue
       requestedRef.current.add(key)
       const sourceId = item.source.id
+      const fingerprint = getSourceFingerprint(item.source)
       const time = Number.isFinite(item.previewTime) ? item.previewTime : 0
-      getFrameAtTime(sourceId, time, compact ? 96 : 144, compact ? 54 : 81)
+      getCachedPreview(getFrameAtTime, sourceId, fingerprint, time, compact ? 96 : 144, compact ? 54 : 81)
         .then(dataUrl => {
-          if (!dataUrl) return
-          setPreviews(prev => ({ ...prev, [key]: dataUrl }))
-        })
-        .catch(() => {
-          setPreviews(prev => ({ ...prev, [key]: null }))
+          if (cancelled) return
+          setPreviews(prev => ({ ...prev, [key]: dataUrl ?? null }))
         })
     }
+    return () => { cancelled = true }
   }, [compact, disabled, previews, railItems])
 
   return (
-    <div className={`midi-sample-rail-wrap${compact ? ' midi-sample-rail-wrap--compact' : ''}`}>
+    <div className={styles.railWrap}>
       {items.length > 0 && (
-        <div className="midi-sample-rail-controls">
-          <div className="midi-sample-rail-search-wrap">
-            <Search size={compact ? 11 : 12} className="midi-sample-rail-search-icon" aria-hidden="true" />
-            <input
-              type="text"
-              className="midi-sample-rail-search"
-              placeholder="Search…"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              aria-label="Search samples"
-            />
-          </div>
-          <XlethSelect
+        <div className={styles.railControls}>
+          <TextField
+            size="sm"
+            type="search"
+            label="Search samples"
+            placeholder="Search samples…"
+            value={search}
+            onChange={setSearch}
+          />
+          <Select
+            size="sm"
             value={filterTag}
             options={[
               { value: 'all', label: 'All' },
@@ -121,12 +125,12 @@ export default function MidiSampleRail({
             ]}
             onChange={setFilterTag}
             ariaLabel="Filter samples by tag"
-            className="midi-sample-rail-filter"
           />
         </div>
       )}
       <div
-        className={`midi-sample-rail${compact ? ' midi-sample-rail--compact' : ''}`}
+        className={styles.rail}
+        data-compact={compact || undefined}
         role="listbox"
         aria-label={ariaLabel}
         aria-disabled={disabled || undefined}
@@ -137,14 +141,15 @@ export default function MidiSampleRail({
             ? value == null || Number(value) < 0
             : String(value) === String(item.id)
           const preview = previews[key]
-          const mediaIcon = item.source?.hasVideo === false ? Music2 : Image
-          const MediaIcon = item.isNone ? Music2 : mediaIcon
+          const mediaIcon = item.source?.hasVideo === false ? IcWaveform : IcFilmStrip
+          const MediaIcon = item.isNone ? IcMusicNotes : mediaIcon
 
           return (
             <button
               key={key}
               type="button"
-              className={`midi-sample-tile${selected ? ' midi-sample-tile--selected' : ''}${item.isNone ? ' midi-sample-tile--none' : ''}`}
+              className={styles.tile}
+              data-sample-tile=""
               role="option"
               aria-selected={selected}
               aria-pressed={selected}
@@ -152,26 +157,24 @@ export default function MidiSampleRail({
               title={item.title || item.name}
               onClick={() => onChange?.(item.id == null ? null : item.id)}
             >
-              <span className="midi-sample-tile-preview" aria-hidden="true">
+              <span className={styles.preview} aria-hidden="true">
                 {preview ? (
                   <img src={preview} alt="" />
                 ) : (
-                  <span className="midi-sample-tile-placeholder">
-                    <MediaIcon size={compact ? 15 : 18} aria-hidden="true" />
-                  </span>
+                  <MediaIcon size={compact ? 15 : 18} aria-hidden="true" />
                 )}
               </span>
-              <span className="midi-sample-tile-copy">
-                <span className="midi-sample-tile-name">{item.name}</span>
+              <span className={styles.tileCopy}>
+                <span className={styles.tileName}>{item.name}</span>
                 {item.subLabel && (
-                  <span className="midi-sample-tile-sub">{item.subLabel}</span>
+                  <span className={styles.tileSub}>{item.subLabel}</span>
                 )}
               </span>
             </button>
           )
         })}
         {showEmpty && (
-          <span className="midi-sample-rail-empty">No matches</span>
+          <span className={styles.empty}>No matches</span>
         )}
       </div>
     </div>

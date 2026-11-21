@@ -8,13 +8,27 @@
  * boundaries via RenderClock::frameBoundsForBuffer.
  *
  * Pipeline per buffer iteration:
- *   1. MixEngine::processBlock  → stereo float audio
- *   2. FFmpegMuxer::writeAudio  → encode + mux audio
+ *   1. MixEngine::processBlock  → stereo float audio at the MIX rate
+ *   2. FFmpegMuxer::writeAudio  → resample to the encode rate, encode + mux
  *   3. RenderClock              → which video frames fall in this buffer?
  *   4. FrameCollector           → what does each grid cell need?
  *   5. RenderVideoDecoder       → decode cache misses
- *   6. GridCompositor           → GPU composite → readback
- *   7. FFmpegMuxer::writeVideo  → encode + mux video
+ *   6. GridCompositor           → GPU composite → readback into the muxer's buffer
+ *   7. FFmpegMuxer::submitVideoBuffer → encode + mux video
+ * Steps 4-7 are one shared stage (ExportVideoStage in the .cpp) used by every
+ * render mode.
+ *
+ * Sample rates: the engine mixes at ExportSettings::audioInputRate() (the
+ * session rate) and startSample/endSample/the tail plan are counted at that
+ * rate. ExportSettings::sampleRate is only the rate of the ENCODED audio; the
+ * muxer converts. An export therefore sounds the same at every output rate.
+ *
+ * Stages 5-6 (produce) run on the render thread; stage 7 (convert + encode +
+ * mux) runs on the muxer'''s own worker behind a bounded queue, so the two
+ * overlap instead of summing (RENDER_PERF_AUDIT Finding 6a). The worker is FIFO
+ * and frame indices are explicit, so the encoder still sees the exact frame
+ * sequence the serial path fed it. XLETH_EXPORT_ENCODE_QUEUE=0 restores the
+ * strictly serial path.
  *
  * Thread model:
  *   - startRender() spawns a dedicated std::thread
@@ -144,7 +158,9 @@ public:
      * captureEnd (no new triggers — the engine note-trigger ceiling enforces it)
      * until the master bus decays below threshold or the cap is reached, and
      * freezes the last captured video frame for that tail so A/V lengths match.
-     * The plan's sample counts must be built at the export sample rate.
+     * The plan's sample counts must be built at the MIX rate
+     * (ExportSettings::audioInputRate()) — the same rate startSample/endSample
+     * are counted in — not at the encoded output rate.
      */
     void setTailRenderPlan(const xleth::TailRenderPlan& plan) { tailPlan_ = plan; }
 
@@ -230,6 +246,15 @@ private:
     void renderImplWrap(int64_t startSample, int64_t endSample,
                         int64_t warmUpStartSample,
                         const ExportSettings& settings);
+
+    /**
+     * Shared tail of both render paths: finalize the muxer, then remux the
+     * fragmented temp file to `outputPath` (or discard it if the render was
+     * cancelled meanwhile). Returns false — with the progress error set — only
+     * if the muxer could not finalize.
+     */
+    bool finishOutput(class FFmpegMuxer& muxer, const std::string& fragPath,
+                      const std::string& outputPath);
 
     /**
      * Remux fragmented MP4 → standard MP4 with moov at front (faststart).

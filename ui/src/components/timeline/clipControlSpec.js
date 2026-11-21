@@ -1,5 +1,7 @@
 export const CLIP_CONTROL_SPEC_VERSION = 1
-export const CLIP_CONTROL_DEFAULTS_REVISION = '2026-07-15.2'
+// 2026-11-07.1: handle glow off (all *ShadowBlur 0); selection is a 1px
+// --ui-select outline drawn by drawClipInlineControls (UI rebuild Phase 3).
+export const CLIP_CONTROL_DEFAULTS_REVISION = '2026-11-07.1'
 export const CLIP_GAIN_MAX_VELOCITY = 2
 export const CLIP_GAIN_MAX_DB = 20 * Math.log10(CLIP_GAIN_MAX_VELOCITY)
 
@@ -52,36 +54,36 @@ const defaults = {
     fadeActiveAlpha: 1,
     fadeStrokeAlpha: 0.34,
     fadeStrokeWidth: 1,
-    fadeIdleShadowBlur: 4,
-    fadeHoverShadowBlur: 6,
-    fadeSelectedShadowBlur: 5,
-    fadeActiveShadowBlur: 8,
+    fadeIdleShadowBlur: 0,
+    fadeHoverShadowBlur: 0,
+    fadeSelectedShadowBlur: 0,
+    fadeActiveShadowBlur: 0,
     railIdleAlpha: 0.80,
     railHoverAlpha: 0.90,
     railSelectedAlpha: 0.95,
     railActiveAlpha: 1,
-    railIdleShadowBlur: 3,
-    railHoverShadowBlur: 4,
-    railSelectedShadowBlur: 5,
-    railActiveShadowBlur: 7,
+    railIdleShadowBlur: 0,
+    railHoverShadowBlur: 0,
+    railSelectedShadowBlur: 0,
+    railActiveShadowBlur: 0,
     lineIdleAlpha: 0.34,
     lineHoverAlpha: 0.58,
     lineSelectedAlpha: 0.72,
     lineActiveAlpha: 0.92,
-    lineIdleShadowBlur: 1,
-    lineHoverShadowBlur: 2,
-    lineSelectedShadowBlur: 3,
-    lineActiveShadowBlur: 7,
+    lineIdleShadowBlur: 0,
+    lineHoverShadowBlur: 0,
+    lineSelectedShadowBlur: 0,
+    lineActiveShadowBlur: 0,
     pillIdleMixToWhite: 0.45,
     pillHoverMixToWhite: 0.50,
     pillSelectedMixToWhite: 0.54,
     pillActiveMixToWhite: 0.58,
     pillStrokeAlpha: 0.45,
     pillStrokeWidth: 1,
-    pillIdleShadowBlur: 4,
-    pillHoverShadowBlur: 6,
-    pillSelectedShadowBlur: 5,
-    pillActiveShadowBlur: 9,
+    pillIdleShadowBlur: 0,
+    pillHoverShadowBlur: 0,
+    pillSelectedShadowBlur: 0,
+    pillActiveShadowBlur: 0,
     unityShadowAlpha: 0.78,
     glyphAlpha: 0.82,
   },
@@ -543,6 +545,16 @@ export function computeClipControlGeometry({ clip, rect, values = null, spec = C
   }
 }
 
+// Below this many pixels of remaining travel a fade handle is treated as stuck.
+const FADE_FROZEN_TRAVEL_PX = 2
+
+// True when the OPPOSITE fade leaves this fade less than FADE_FROZEN_TRAVEL_PX of
+// room to grow, i.e. dragging it could not change anything.
+export function isFadeHandleFrozen(oppositePercent, clipWidth) {
+  const travelPx = Math.max(0, 100 - clampNumber(oppositePercent, 0, 100)) / 100 * Math.max(0, Number(clipWidth) || 0)
+  return travelPx < FADE_FROZEN_TRAVEL_PX
+}
+
 export function hitTestClipControl({ localX, localY, clip, rect, spec = CLIP_CONTROL_DEFAULTS, allowGain = true, allowFade = true }) {
   const normalized = normalizeClipControlSpec(spec)
   const geometry = computeClipControlGeometry({ clip, rect, spec: normalized })
@@ -565,8 +577,11 @@ export function hitTestClipControl({ localX, localY, clip, rect, spec = CLIP_CON
   const radius = normalized.interaction.fadeHandleHalfWidth + normalized.interaction.fadeExtraSlop
   const inDistance = Math.abs(localX - geometry.fadeIn.anchor.x)
   const outDistance = Math.abs(localX - geometry.fadeOut.anchor.x)
-  const inHit = inDistance <= radius
-  const outHit = outDistance <= radius
+  // A fade whose opposite already covers (nearly) the whole clip has no travel
+  // left, and its handle sits on top of the opposite one. Leave it ungrabbable so
+  // the handle that CAN move wins the overlap instead of losing it to a tie-break.
+  const inHit = inDistance <= radius && !isFadeHandleFrozen(geometry.fades.fadeOutPercent, w)
+  const outHit = outDistance <= radius && !isFadeHandleFrozen(geometry.fades.fadeInPercent, w)
   if (!inHit && !outHit) return null
   if (inHit && outHit) {
     if (Math.abs(inDistance - outDistance) < 1e-6) {

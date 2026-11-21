@@ -54,14 +54,6 @@ void Sampler::setSlotPreparedBuffer(int slotIndex,
     s.publish(prepared ? prepared : s.raw);
 }
 
-void Sampler::clearSlotSample(int slotIndex)
-{
-    if (slotIndex < 0 || slotIndex >= MAX_SAMPLE_SLOTS) return;
-    auto& s = slots_[static_cast<size_t>(slotIndex)];
-    s.publish(nullptr);
-    s.raw.reset();
-}
-
 void Sampler::setSlotTuning(int slotIndex, int octave, int semitone,
                             float fineCents, int coarse)
 {
@@ -252,16 +244,7 @@ void Sampler::setLoopPoints(bool enabled, int64_t loopStart, int64_t loopEnd)
 }
 
 void Sampler::setRootNote(int note)      { slots_[0].rootNote  = note; }
-void Sampler::setSmpStart(int64_t start) { slots_[0].smpStart  = std::max<int64_t>(0, start); }
-void Sampler::setSmpLength(int64_t len)  { slots_[0].smpLength = std::max<int64_t>(0, len); }
 void Sampler::setDeclickMs(float ms)     { slots_[0].declickMs = std::max(0.0f, ms); }
-void Sampler::setFadeIn(float ms)        { slots_[0].fadeInMs  = std::max(0.0f, ms); }
-void Sampler::setFadeOut(float ms)       { slots_[0].fadeOutMs = std::max(0.0f, ms); }
-
-void Sampler::setCrossfadeSamples(int64_t samples)
-{
-    slots_[0].crossfadeSamples = std::max<int64_t>(0, samples);
-}
 
 void Sampler::setMonoMode(bool enabled)
 {
@@ -685,13 +668,6 @@ int Sampler::activeVoiceCount() const
     return n;
 }
 
-int Sampler::countActiveVoices() const
-{
-    int n = 0;
-    for (const auto& v : voices_) if (v.active) ++n;
-    return n;
-}
-
 int Sampler::countHeldVoices() const
 {
     int n = 0;
@@ -713,6 +689,12 @@ double Sampler::debugVoicePitch(int voiceIdx) const
 {
     if (voiceIdx < 0 || voiceIdx >= MAX_VOICES) return 0.0;
     return voices_[static_cast<size_t>(voiceIdx)].currentPitchF;
+}
+
+double Sampler::debugVoiceTranspose(int voiceIdx) const
+{
+    if (voiceIdx < 0 || voiceIdx >= MAX_VOICES) return 0.0;
+    return voices_[static_cast<size_t>(voiceIdx)].transposeSemis;
 }
 
 bool Sampler::debugVoiceSlideActive(int voiceIdx) const
@@ -788,50 +770,6 @@ float Sampler::debugModVoiceSlotVolume(int voiceIdx, int slotIdx) const
                       + voices_[static_cast<size_t>(voiceIdx)]
                             .modOffsets.volume[static_cast<size_t>(slotIdx)],
                       0.0f, 2.0f);
-}
-
-float Sampler::debugModVoiceSlotPan(int voiceIdx, int slotIdx) const
-{
-    if (voiceIdx < 0 || voiceIdx >= MAX_VOICES) return 0.0f;
-    if (slotIdx < 0 || slotIdx >= MAX_SAMPLE_SLOTS) return 0.0f;
-    return std::clamp(slots_[static_cast<size_t>(slotIdx)].pan
-                      + voices_[static_cast<size_t>(voiceIdx)]
-                            .modOffsets.pan[static_cast<size_t>(slotIdx)],
-                      -1.0f, 1.0f);
-}
-
-float Sampler::debugModVoiceMasterVolume(int voiceIdx) const
-{
-    if (voiceIdx < 0 || voiceIdx >= MAX_VOICES) return 1.0f;
-    return voices_[static_cast<size_t>(voiceIdx)].modMasterGain;
-}
-
-int Sampler::debugModEvalPosition(int sourceIdx) const
-{
-    const ModGraphPtr g = modGraph_.load(std::memory_order_acquire);
-    if (!g || sourceIdx < 0 || sourceIdx >= xleth::sampmod::kNumSources) return -1;
-    return g->evalPos[static_cast<size_t>(sourceIdx)];
-}
-
-bool Sampler::debugModRouteDeferred(int routeIdx) const
-{
-    const ModGraphPtr g = modGraph_.load(std::memory_order_acquire);
-    if (!g || routeIdx < 0 || routeIdx >= g->numRoutes) return false;
-    return g->routes[static_cast<size_t>(routeIdx)].deferred;
-}
-
-bool Sampler::debugModHasCycle() const
-{
-    const ModGraphPtr g = modGraph_.load(std::memory_order_acquire);
-    return g && g->anyCycle;
-}
-
-int Sampler::debugModEnvStage(int voiceIdx, int envIdx) const
-{
-    if (voiceIdx < 0 || voiceIdx >= MAX_VOICES) return -1;
-    if (envIdx < 0 || envIdx >= xleth::sampmod::kNumEnvs) return -1;
-    return voices_[static_cast<size_t>(voiceIdx)]
-               .modBank.envs[static_cast<size_t>(envIdx)].stage;
 }
 
 // ─── Voice allocation ────────────────────────────────────────────────────────
@@ -1082,6 +1020,10 @@ void Sampler::noteOn(int midiNote, float velocity, int sampleOffset)
             active->spawnAbsSample = (currentAbsSample_ > 0)
                                      ? currentAbsSample_ + sampleOffset
                                      : -1;
+            // A hard retrigger is a respawn, so it takes the CURRENT Clip-mode
+            // transpose. The legato/portamento retune above is not, and keeps
+            // the offset the voice spawned with.
+            active->transposeSemis = transposeSemis_;
         } else {
             // No active voice: start fresh
             fireNoteOn(midiNote, vel, sampleOffset);
@@ -1204,6 +1146,9 @@ void Sampler::fireNoteOn(int midiNote, float velocity, int sampleOffset)
     v->spawnAbsSample = (currentAbsSample_ > 0)
                         ? currentAbsSample_ + sampleOffset
                         : -1;
+    // Clip-mode transpose is latched per voice at spawn: a later table change
+    // retunes only the voices spawned after it.
+    v->transposeSemis = transposeSemis_;
 
     // ── Modulation: arm this voice's half of the system ──────────────────────
     // Every per-voice source restarts here. modCountdown = 0 forces the first
@@ -1491,7 +1436,7 @@ void Sampler::processVoice(Voice& v,
                            double engineSampleRate)
 {
     if (v.numStreams <= 0) { v.active = false; return; }
-#ifdef XLETH_DEBUG
+#ifdef XLETH_RT_TRACE
     if (v.onsetSample != 0)
         fprintf(stderr, "[ProcVoice] entry onset=%d numSamples=%d streams=%d\n",
                 v.onsetSample, numSamples, v.numStreams);
@@ -1506,7 +1451,11 @@ void Sampler::processVoice(Voice& v,
     // cutoff is designed from this once per block (block-rate coefficients,
     // the same convention the effect base class uses) rather than chasing the
     // per-sample pitch modulation — one tan() per block instead of per sample.
-    const double noteHzAtBlockEntry = 440.0 * std::pow(2.0, (v.currentPitchF - 69.0) / 12.0);
+    // The voice's Clip-mode transpose is part of the sounding note: a pattern
+    // transposed by N semitones must key-track exactly as if every note had
+    // been drawn N semitones higher.
+    const double noteHzAtBlockEntry =
+        440.0 * std::pow(2.0, (v.currentPitchF + v.transposeSemis - 69.0) / 12.0);
 
     // Loaded before the geometry pass because MANGLE's design needs to know
     // whether this stream is modulated: a routed instance must be designed from
@@ -1868,8 +1817,11 @@ void Sampler::processVoice(Voice& v,
             // The modulation matrix folds SEM, COARSE and FINE into ONE
             // per-slot semitone offset (FINE already converted from cents), so
             // routing all three costs a single extra add here.
+            //
+            // v.transposeSemis is the Clip-mode transpose latched at spawn
+            // (fractional semitones, double end to end — cents are exact).
             const double semis = (v.currentPitchF - g.rootNote)
-                               + g.tuning + pitchOffsetSemitones
+                               + g.tuning + v.transposeSemis + pitchOffsetSemitones
                                + static_cast<double>(
                                      v.modOffsets.semis[static_cast<size_t>(st.slotIndex)]);
             const double stride = std::pow(2.0, semis / 12.0) * g.srRatio;
@@ -2253,5 +2205,35 @@ void Sampler::processBlock(juce::AudioBuffer<float>& outputBuffer,
     {
         if (!v.active) continue;
         processVoice(v, outputBuffer, numSamples, engineSampleRate);
+    }
+
+    // ── Publish the playhead ─────────────────────────────────────────────────
+    // Once per block, after every voice has advanced. Outside the per-sample
+    // loop on purpose: the panel polls this at ~30 Hz, so block granularity is
+    // already finer than anything it can draw, and the inner loop stays exactly
+    // as it was.
+    //
+    // When a chord is sounding, several voices share a slot. The FIRST active,
+    // unfinished stream wins rather than an average: a playhead is a position
+    // in the sample, and the mean of two read heads is a place neither of them
+    // is. Relaxed stores — see playPositionForSlot() for why that is enough.
+    {
+        std::array<int64_t, MAX_SAMPLE_SLOTS> pos;
+        pos.fill(-1);
+        for (const auto& v : voices_)
+        {
+            if (!v.active) continue;
+            for (int i = 0; i < v.numStreams; ++i)
+            {
+                const auto& st = v.streams[static_cast<size_t>(i)];
+                if (!st.active || st.finished) continue;
+                if (st.slotIndex < 0 || st.slotIndex >= MAX_SAMPLE_SLOTS) continue;
+                auto& slot = pos[static_cast<size_t>(st.slotIndex)];
+                if (slot < 0) slot = static_cast<int64_t>(st.playPosition);
+            }
+        }
+        for (int i = 0; i < MAX_SAMPLE_SLOTS; ++i)
+            slotPlayPos_[static_cast<size_t>(i)].v.store(pos[static_cast<size_t>(i)],
+                                                         std::memory_order_relaxed);
     }
 }

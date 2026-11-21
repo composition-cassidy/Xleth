@@ -1,0 +1,31 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "smartbalance",
+  "name": "Master Gentle Balance",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "amount": 30,
+      "preserve": 70,
+      "response": 300,
+      "mix": 100,
+      "mode": 0,
+      "target_sub": 0,
+      "target_lomid": 0,
+      "target_upmid": 0,
+      "target_air": 0,
+      "bandamt_sub": 100,
+      "bandamt_lomid": 100,
+      "bandamt_upmid": 100,
+      "bandamt_air": 100,
+      "floor_sub": -60,
+      "floor_lomid": -60,
+      "floor_upmid": -60,
+      "floor_air": -60,
+      "warmth": 0,
+      "output": 0,
+      "loudness_match": 1
+    }
+  }
+}

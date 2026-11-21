@@ -325,7 +325,7 @@ public:
         writeMeterValue(1, numCh > 1 ? peakR : peakL);
 
 #ifdef XLETH_DEBUG
-        static int dbgBlockCount_ = 0;
+        static std::atomic<int> dbgBlockCount_{0};   // shared by every instance; chains may run on helper threads
         if ((++dbgBlockCount_ % 500) == 0)
             DBG("[Waveshaper] Throttled:"
                 " pregain=" + juce::String(pregainDb, 1) + "dB"

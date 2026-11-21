@@ -1,11 +1,12 @@
 import { useSyncExternalStore } from 'react';
+import {
+  beginPointerGesture,
+  normalizePointerMeta,
+  type GesturePointerMeta,
+  type PointerGestureSource,
+} from './pointerGesture';
 
-export interface ResizePointerMeta {
-  altKey: boolean;
-  ctrlKey: boolean;
-  metaKey: boolean;
-  shiftKey: boolean;
-}
+export type ResizePointerMeta = GesturePointerMeta;
 
 export interface EdgeResizeMachineConfig<Key, Bounds, Preview> {
   computePreview: (start: Bounds, dx: number, dy: number, meta: ResizePointerMeta) => Preview;
@@ -32,7 +33,14 @@ interface ResizingMachineState<Key, Bounds> {
 type MachineState<Key, Bounds> = IdleMachineState | ResizingMachineState<Key, Bounds>;
 
 export interface EdgeResizeMachine<Key, Bounds, Preview> {
-  begin(key: Key, mouseX: number, mouseY: number, start: Bounds, meta?: Partial<ResizePointerMeta>): void;
+  begin(
+    key: Key,
+    mouseX: number,
+    mouseY: number,
+    start: Bounds,
+    meta?: Partial<ResizePointerMeta>,
+    source?: PointerGestureSource | null,
+  ): void;
   update(mouseX: number, mouseY: number, meta?: Partial<ResizePointerMeta>): void;
   end(): void;
   cancel(): void;
@@ -42,33 +50,13 @@ export interface EdgeResizeMachine<Key, Bounds, Preview> {
   usePreview(key: Key): Preview | null;
 }
 
-const DEFAULT_POINTER_META: ResizePointerMeta = {
-  altKey: false,
-  ctrlKey: false,
-  metaKey: false,
-  shiftKey: false,
-};
-
-function normalizePointerMeta(meta?: Partial<ResizePointerMeta>): ResizePointerMeta {
-  return { ...DEFAULT_POINTER_META, ...meta };
-}
-
-function pointerMetaFromEvent(event: MouseEvent): ResizePointerMeta {
-  return {
-    altKey: event.altKey,
-    ctrlKey: event.ctrlKey,
-    metaKey: event.metaKey,
-    shiftKey: event.shiftKey,
-  };
-}
-
 export function createEdgeResizeMachine<Key, Bounds, Preview>(
   config: EdgeResizeMachineConfig<Key, Bounds, Preview>,
 ): EdgeResizeMachine<Key, Bounds, Preview> {
   let state: MachineState<Key, Bounds> = { state: 'idle' };
   const listeners = new Set<() => void>();
   const previewCache = new Map<Key, Preview>();
-  let windowListenersBound = false;
+  let detachGesture: (() => void) | null = null;
 
   function emit(): void {
     for (const listener of [...listeners]) listener();
@@ -112,26 +100,9 @@ export function createEdgeResizeMachine<Key, Bounds, Preview>(
     emit();
   }
 
-  function onMouseMove(event: MouseEvent): void {
-    update(event.clientX, event.clientY, pointerMetaFromEvent(event));
-  }
-
-  function onMouseUp(): void {
-    end();
-  }
-
-  function bindListeners(): void {
-    if (windowListenersBound || typeof window === 'undefined') return;
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
-    windowListenersBound = true;
-  }
-
   function unbindListeners(): void {
-    if (!windowListenersBound || typeof window === 'undefined') return;
-    window.removeEventListener('mousemove', onMouseMove);
-    window.removeEventListener('mouseup', onMouseUp);
-    windowListenersBound = false;
+    detachGesture?.();
+    detachGesture = null;
   }
 
   function begin(
@@ -140,6 +111,7 @@ export function createEdgeResizeMachine<Key, Bounds, Preview>(
     mouseY: number,
     start: Bounds,
     meta?: Partial<ResizePointerMeta>,
+    source?: PointerGestureSource | null,
   ): void {
     unbindListeners();
     state = {
@@ -153,7 +125,11 @@ export function createEdgeResizeMachine<Key, Bounds, Preview>(
       currentMeta: normalizePointerMeta(meta),
     };
     previewCache.clear();
-    bindListeners();
+    detachGesture = beginPointerGesture(source, {
+      onMove: (x, y, pointerMeta) => update(x, y, pointerMeta),
+      onEnd: end,
+      onCancel: cancel,
+    });
     emit();
   }
 

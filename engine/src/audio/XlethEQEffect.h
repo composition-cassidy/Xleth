@@ -1,17 +1,25 @@
 #pragma once
 
 #include "audio/XlethEffectBase.h"
+#include "dsp/EqSlopeDesign.h"
+#include "dsp/ResonanceCore.h"
 #include <juce_dsp/juce_dsp.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <complex>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
+
+namespace eqslope = xleth::dsp::eqslope;
 
 // ─── XlethParametricEQ ─────────────────────────────────────────────────────
 // Fully parametric equaliser with up to 16 bands.  Each band is a biquad
@@ -25,13 +33,30 @@
 //   b{i}_type    0–6 discrete  (Bell=0, LowShelf=1, HighShelf=2, LowPass=3,
 //                                HighPass=4, Notch=5, Tilt=6)
 //   b{i}_enabled 0/1 boolean
+//   b{i}_channel 0–4 discrete  (Stereo=0, Left=1, Right=2, Mid=3, Side=4)
+//   b{i}_slope   0–8 discrete  LowPass / HighPass steepness (6, 12 (default),
+//                              18, 24, 36, 48, 72, 96 dB/oct, Brickwall); see
+//                              dsp/EqSlopeDesign.h. Ignored by every other type.
 //
 // Coefficients are recomputed once per audio block from smoothed values.
 // 0 bands active by default; add/remove dynamically via addBand()/removeBand().
 //
 // Provides:
-//   getResponseCurve()  — |H(e^jω)| at 512 log-spaced frequencies (main thread)
+//   getResponseCurve()  — Stereo-routed |H(e^jω)| at 512 log-spaced frequencies (main thread)
+//   getChannelResponseCurves() — one such trace per routing group (St/L/R/M/S)
 //   getSpectrumData()   — Hann-windowed 2048-point FFT of recent output (main thread)
+//
+// Threading ([EQCore] locking fix). The RPC / applier threads (addBand,
+// removeBand, setBandParam(s), setParameterValue, setStateInformation) never
+// touch audio-thread state. Every parameter the audio thread uses is read ONCE
+// per block into a private snapshot (ParamSnapshot) through a sequence counter:
+// multi-parameter edits (add / remove / restore / setBandParams) run inside an
+// edit window (editSeq_ odd), and a block whose copy overlapped one keeps the
+// previous block's snapshot instead (wait-free: no lock, no retry loop on the
+// audio thread). Per-band DSP state that an edit invalidates (biquad and
+// detector state, spectral envelopes) is cleared by the audio thread itself,
+// from a request mask published inside the same edit window. The latency status
+// atomics are written by the parameter path only.
 //
 // pluginId: "xletheq"
 
@@ -43,7 +68,53 @@ public:
     static constexpr int kResponseSize = 512;
     static constexpr int kSTFTOrder    = 12;              // 2^12 = 4096
     static constexpr int kSTFTSize     = 1 << kSTFTOrder;
-    static constexpr int kSTFTHop      = kSTFTSize / 2;   // 50% overlap, 2048 latency
+
+    // Weighted Overlap-Add (WOLA), same structure as the Resonance Suppressor's
+    // WolaProcessor: 75% overlap with a sqrt-Hann window applied on BOTH the
+    // analysis and the synthesis side, normalised per hop phase by 1/sum(w^2).
+    //
+    // Analysis-only windowing at 50% overlap does NOT survive spectral gain
+    // modification: the modified frame is no longer confined to the window's
+    // support, so its edges land in the output as a step discontinuity once per
+    // hop — an audible click train locked to the hop grid.  The synthesis
+    // window tapers those edges and 75% overlap keeps four frames summing over
+    // every output sample.
+    static constexpr int kSTFTHop      = kSTFTSize / 4;   // 75% overlap
+
+    // A frame covering [t, t+kSTFTSize) can only be complete once sample
+    // t+kSTFTSize-1 has arrived, so correct WOLA reconstruction costs a full
+    // kSTFTSize of latency — not kSTFTHop.  Output is written at
+    // frameStart + kSTFTLatency (see processSTFTFrame).
+    static constexpr int kSTFTLatency  = kSTFTSize;
+
+    // Power-of-two ring so indexing is a mask, and large enough to hold the
+    // live input window plus the latency-shifted output span and one block.
+    static constexpr int kSTFTRingSize = kSTFTSize * 4;
+    static constexpr int kSTFTRingMask = kSTFTRingSize - 1;
+
+    // Spectral detection soft knee: a bin this far above its local threshold
+    // receives the band's full depth; anything less gets a proportional share,
+    // so mild protrusions are nudged rather than hard-gated.
+    static constexpr float kSpecKneeDb = 6.0f;
+
+    // Fade-in on the first real output of an STFT stream restarted mid-run
+    // (Spectral band re-enabled, linear phase left). See processEffect.
+    static constexpr double kStftFadeInMs = 5.0;
+
+    // ── Spectral engine ([EQCore]) ──────────────────────────────────────────
+    // spectral_engine: which renderer the Spectral bands use.
+    //   Legacy (0, DEFAULT, every old state) = the 4096 WOLA path below
+    //   (kSTFTSize, kSTFTLatency), bit-identical to the EQ before the core.
+    //   Core   (1) = xleth::dsp::resonance::Core (dsp/ResonanceCore.h): both
+    //   channels detected, every Spectral band one region of ONE weight curve,
+    //   quality = the core's frame tier. Contract: ResonanceCore.md, "Using the
+    //   core in the Param EQ".
+    // spectral_quality: the core's tier, Fast 512 / Normal 1024 (DEFAULT) /
+    // High 2048 at <= 50 kHz (Core::fftSizeFor); ignored by Legacy.
+    static constexpr int kSpectralEngineLegacy = 0;
+    static constexpr int kSpectralEngineCore   = 1;
+    static constexpr int kNumSpectralQualities = 3;
+    static constexpr int kDefaultSpectralQuality = 1;   // Normal
 
     // ── Spectrum Analyzer constants ──────────────────────────────────────
     static constexpr int kSpecFFTOrder = 12;              // 2^12 = 4096
@@ -56,6 +127,17 @@ public:
         Bell = 0, LowShelf = 1, HighShelf = 2,
         LowPass = 3, HighPass = 4, Notch = 5, Tilt = 6
     };
+
+    // Per-band channel routing.  Values match the b{i}_channel APVTS range and
+    // the UI's CHANNEL_MODES array order (eqStore.js).
+    enum class ChannelMode : int {
+        Stereo = 0, Left = 1, Right = 2, Mid = 3, Side = 4
+    };
+    static constexpr int kNumChannelModes = 5;
+
+    // Filter-state slots per band: L, R, M, S (indices 0..3).
+    static constexpr int kNumRoutingSlots = 4;
+    static constexpr int kSlotL = 0, kSlotR = 1, kSlotM = 2, kSlotS = 3;
 
     // ── Construction ─────────────────────────────────────────────────────────
     XlethParametricEQ() : XlethEffectBase("xletheq", createLayout()) {}
@@ -79,58 +161,89 @@ public:
         auto xml = getXmlFromBinary(data, sizeInBytes);
         if (xml && xml->hasTagName(apvts_.state.getType()))
         {
-            int count = xml->getIntAttribute("bandCount", -1);
-            apvts_.replaceState(juce::ValueTree::fromXml(*xml));
+            // A state saved before the [EQCore] parameters existed is a Legacy
+            // state. Without these elements APVTS would KEEP the instance's
+            // current values (it does not reset a parameter that is missing from
+            // the restored tree), so insert the defaults explicitly.
+            insertMissingParam(*xml, "spectral_engine", static_cast<float>(kSpectralEngineLegacy));
+            insertMissingParam(*xml, "spectral_quality", static_cast<float>(kDefaultSpectralQuality));
+            // Same for the per-band slope: a state saved before slopes existed
+            // is every band at the 12 dB/oct filter it always had.
+            for (int i = 0; i < kMaxBands; ++i)
+                insertMissingParam(*xml, ("b" + std::to_string(i) + "_slope").c_str(),
+                                   static_cast<float>(eqslope::kDefaultSlope));
 
-            // Backward compat: old saves lack bandCount attr.
-            // Infer by scanning for bands with non-default gain (gain != 0).
-            if (count < 0)
             {
-                count = 0;
-                for (int i = 0; i < kMaxBands; ++i)
-                {
-                    auto* g = apvts_.getRawParameterValue(paramId(i, "gain"));
-                    if (g && std::abs(g->load(std::memory_order_relaxed)) > 0.001f)
-                        count = i + 1;
-                }
-            }
+                // One edit: the audio thread sees the whole restored state or
+                // the previous one, never a mix. It clears the restored bands'
+                // DSP state itself (see requestBandClear).
+                EditScope edit(*this);
 
-            bandCount_.store(count, std::memory_order_relaxed);
-            for (int i = 0; i < count && i < kMaxBands; ++i)
-                bands_[i].clearState();
+                int count = xml->getIntAttribute("bandCount", -1);
+                apvts_.replaceState(juce::ValueTree::fromXml(*xml));
+
+                // Backward compat: old saves lack bandCount attr.
+                // Infer by scanning for bands with non-default gain (gain != 0).
+                if (count < 0)
+                {
+                    count = 0;
+                    for (int i = 0; i < kMaxBands; ++i)
+                    {
+                        auto* g = apvts_.getRawParameterValue(paramId(i, "gain"));
+                        if (g && std::abs(g->load(std::memory_order_relaxed)) > 0.001f)
+                            count = i + 1;
+                    }
+                }
+
+                bandCount_.store(count, std::memory_order_relaxed);
+                for (int i = 0; i < count && i < kMaxBands; ++i)
+                    requestBandClear(i);
+                // [EQCore] the audio thread adopts the restored Spectral
+                // structure at once (no fade) with this edit's snapshot.
+                pendingRestoreSnap_.store(true, std::memory_order_relaxed);
+            }
             refreshLatencySamples();
         }
     }
 
     // ── Band management (main thread only) ───────────────────────────────────
+    // RPC / applier threads. Each call is ONE edit for the audio thread (see the
+    // threading note at the top): it never observes a half-written band.
 
     // Add a new band with default params.  Returns band index or -1 if full.
     int addBand()
     {
-        int count = bandCount_.load(std::memory_order_relaxed);
-        if (count >= kMaxBands) return -1;
+        int count = 0;
+        {
+            EditScope edit(*this);
+            count = bandCount_.load(std::memory_order_relaxed);
+            if (count >= kMaxBands) return -1;
 
-        // Reset APVTS params to defaults for the new band
-        setParamDirect(count, "freq",    1000.0f);
-        setParamDirect(count, "gain",    0.0f);
-        setParamDirect(count, "q",       0.707f);
-        setParamDirect(count, "type",    0.0f);
-        setParamDirect(count, "enabled", 1.0f);
-        setParamDirect(count, "mode",        0.0f);
-        setParamDirect(count, "dyn_thresh", -20.0f);
-        setParamDirect(count, "dyn_ratio",   4.0f);
-        setParamDirect(count, "dyn_attack",  10.0f);
-        setParamDirect(count, "dyn_release", 100.0f);
-        setParamDirect(count, "spec_sens",    0.5f);
-        setParamDirect(count, "spec_depth",   0.0f);
-        setParamDirect(count, "spec_sel",     5.0f);
-        setParamDirect(count, "spec_attack",  10.0f);
-        setParamDirect(count, "spec_release", 100.0f);
+            // Reset APVTS params to defaults for the new band
+            setParamDirect(count, "freq",    1000.0f);
+            setParamDirect(count, "gain",    0.0f);
+            setParamDirect(count, "q",       0.707f);
+            setParamDirect(count, "type",    0.0f);
+            setParamDirect(count, "enabled", 1.0f);
+            setParamDirect(count, "channel", 0.0f);   // 0 = Stereo
+            setParamDirect(count, "slope",   static_cast<float>(eqslope::kDefaultSlope));
+            setParamDirect(count, "mode",        0.0f);
+            setParamDirect(count, "dyn_thresh", -20.0f);
+            setParamDirect(count, "dyn_ratio",   4.0f);
+            setParamDirect(count, "dyn_attack",  10.0f);
+            setParamDirect(count, "dyn_release", 100.0f);
+            setParamDirect(count, "dyn_range",   12.0f);
+            setParamDirect(count, "spec_sens",    0.5f);
+            setParamDirect(count, "spec_sel",     5.0f);
+            setParamDirect(count, "spec_attack",  10.0f);
+            setParamDirect(count, "spec_release", 100.0f);
 
-        // Clear biquad state for the new band
-        bands_[count].clearState();
+            // Clear biquad state for the new band (on the audio thread, with
+            // the snapshot that first contains it).
+            requestBandClear(count);
 
-        bandCount_.store(count + 1, std::memory_order_relaxed);
+            bandCount_.store(count + 1, std::memory_order_relaxed);
+        }
         refreshLatencySamples();
         return count;
     }
@@ -138,18 +251,21 @@ public:
     // Remove band at index.  Swaps with last band, decrements count.
     bool removeBand(int index)
     {
-        int count = bandCount_.load(std::memory_order_relaxed);
-        if (index < 0 || index >= count) return false;
-
-        int last = count - 1;
-        if (index != last)
         {
-            // Copy last band's APVTS params to the removed slot
-            copyBandParams(last, index);
-            bands_[index].clearState();
+            EditScope edit(*this);
+            int count = bandCount_.load(std::memory_order_relaxed);
+            if (index < 0 || index >= count) return false;
+
+            int last = count - 1;
+            if (index != last)
+            {
+                // Copy last band's APVTS params to the removed slot
+                copyBandParams(last, index);
+                requestBandClear(index);
+            }
+            requestBandClear(last);
+            bandCount_.store(last, std::memory_order_relaxed);
         }
-        bands_[last].clearState();
-        bandCount_.store(last, std::memory_order_relaxed);
         refreshLatencySamples();
         return true;
     }
@@ -166,13 +282,141 @@ public:
         return ok;
     }
 
+    // Set several parameters of one band as ONE edit: the audio thread uses
+    // either all of the new values or none of them in any block (a node drag
+    // that moves freq and gain together never renders half-moved). Returns
+    // false when the band does not exist or a name is unknown (the known ones
+    // are still applied).
+    bool setBandParams(int bandIndex, std::initializer_list<std::pair<const char*, float>> params)
+    {
+        bool ok = true;
+        bool latency = false;
+        {
+            EditScope edit(*this);
+            const int count = bandCount_.load(std::memory_order_relaxed);
+            if (bandIndex < 0 || bandIndex >= count) return false;
+            for (const auto& p : params)
+            {
+                const std::string name(p.first);
+                if (!setParamDirect(bandIndex, name, p.second)) ok = false;
+                else if (isLatencyAffectingBandParam(name)) latency = true;
+            }
+        }
+        if (latency)
+            refreshLatencySamples();
+        return ok;
+    }
+
     int getBandCount() const { return bandCount_.load(std::memory_order_relaxed); }
 
-    // ── Response curve (main thread) ─────────────────────────────────────────
-    // Writes 512 magnitude values (dB) at log-spaced frequencies into outBuf.
-    // Computes coefficients on the fly from APVTS parameters so the curve
-    // always reflects the current UI state even when no audio is flowing.
+    // ── Per-block parameter snapshot (audio thread) ─────────────────────────
+    // The raw APVTS values of one band exactly as the parameters hold them
+    // (conversions happen where they are used, as before the snapshot existed).
+    struct BandParamSnapshot
+    {
+        float freq = 1000.0f, gain = 0.0f, q = 0.707f, type = 0.0f;
+        float enabled = 1.0f, channel = 0.0f, mode = 0.0f;
+        float slope = static_cast<float>(eqslope::kDefaultSlope);
+        float dynThresh = -20.0f, dynRatio = 4.0f, dynAttack = 10.0f, dynRelease = 100.0f, dynRange = 12.0f;
+        float specSens = 0.5f, specSel = 5.0f, specAttack = 10.0f, specRelease = 100.0f;
+    };
+
+    // Everything processEffect reads from the parameters, for one block.
+    struct ParamSnapshot
+    {
+        int   count = 0;                  // bands in use (bandCount_)
+        float linPhase = 0.0f;
+        float oversample = 0.0f;
+        float spectralEngine = 0.0f;      // [EQCore] 0 Legacy, 1 Core
+        float spectralQuality = static_cast<float>(kDefaultSpectralQuality);
+        BandParamSnapshot band[kMaxBands];
+    };
+
+    // ── [EQCore] core engine introspection / pinning ─────────────────────────
+    // Instance index for the core's hop phase (Core::hopPhaseOffsetForInstance):
+    // -1 (default) = assigned from this effect's own static counter at the first
+    // prepare (the EQ numbers its instances independently of the Resonance
+    // Suppressor's counter, so neither effect's numbering moves). Tests and the
+    // bench pin it (0 = the core's historical grid). Before prepareToPlay.
+    void setCoreInstanceIndex(int index) noexcept { coreInstanceIndex_ = index; }
+    int getCoreInstanceIndex() const noexcept { return coreInstanceIndex_; }
+    // Read-only view of the core (atomics: any thread; the rest: audio thread).
+    const xleth::dsp::resonance::Core& getCoreForTest() const noexcept { return core_; }
+    // The weight curve the Core path passes (numBands() floats on the core's
+    // grid; the union of the Spectral regions) and the band owning each grid
+    // band (-1 = none). Audio thread / between blocks.
+    const float* getCoreWeightCurveForTest() const noexcept { return coreWeights_.data(); }
+    const int* getCoreRegionOwnerForTest() const noexcept { return coreOwner_.data(); }
+    // Completed structural transitions (fade-out / switch / fade-in); any thread.
+    std::uint64_t getStructureSwitchCount() const noexcept
+    {
+        return structureSwitchCount_.load(std::memory_order_relaxed);
+    }
+    // The renderer the Spectral bands use right now (0 none, 1 Legacy, 2 Core)
+    // and the Core's channel mode (ChannelMode). Audio thread / between blocks.
+    int getActiveSpectralRendererForTest() const noexcept { return specActive_.kind; }
+    int getActiveCoreChannelModeForTest() const noexcept { return specActive_.chan; }
+    // Status for the UI (any thread): the enabled Spectral bands ask for
+    // different channel routings, which one core cannot honour (it runs
+    // Stereo); and the bands whose gain is > 0 (upward), which the core cannot
+    // render (they are inert on the Core engine). Both describe the last block.
+    bool isSpectralCoreChannelConflict() const noexcept { return coreChannelConflict_.load(std::memory_order_relaxed); }
+    std::uint32_t getSpectralCoreUpwardBandMask() const noexcept { return coreUpwardMask_.load(std::memory_order_relaxed); }
+    // Bench / tests only (not saved, not automatable; set while not processing):
+    // the Core's stereo link (default 1, see kCoreDefaultStereoLink) and an
+    // open weight curve (nullptr: every grid band weight 1, the parity setting
+    // against the bare core).
+    void setSpectralCoreStereoLinkForBench(float link) noexcept { coreStereoLink_ = std::clamp(link, 0.0f, 1.0f); }
+    void setSpectralCoreFlatWeightsForBench(bool flat) noexcept { coreFlatWeights_ = flat; }
+
+    // Tests only. The snapshot the LAST processed block used (read it on the
+    // processing thread between blocks), and how many blocks took a fresh
+    // snapshot vs kept the previous one because an edit overlapped the copy.
+    const ParamSnapshot& getAudioParamSnapshotForTest() const noexcept { return snap_; }
+    std::uint64_t getSnapshotAcceptedCountForTest() const noexcept { return snapshotsAccepted_; }
+    std::uint64_t getSnapshotKeptCountForTest() const noexcept { return snapshotsKept_; }
+    // Negative control for the stress test: false = accept every copy even if
+    // an edit overlapped it (the pre-fix behaviour, torn reads possible).
+    void setSnapshotSeqCheckForTest(bool enabled) noexcept { snapshotSeqCheck_ = enabled; }
+
+    // ── Response curves (main thread) ────────────────────────────────────────
+    // A band's routing decides WHICH signal it shapes, so bands with different
+    // routing cannot honestly share one trace: a Side-routed +12 dB bell leaves
+    // Mid untouched, and a single averaged line would report a bell that
+    // neither channel actually gets.  Instead the bands are grouped by
+    // (folded) routing and each group gets its own trace:
+    //
+    //   trace k = 20*log10 | prod over enabled bands routed to k of H_band |
+    //
+    // Every band in a group acts on the same signal (both channels for Stereo,
+    // L / R for Left / Right, the M / S component for Mid / Side) and they
+    // commute, so the product is exactly what that signal is filtered by.
+    // A group with no bands is a flat 0 dB trace.
+    //
+    // Computes coefficients on the fly from APVTS parameters so the curves
+    // always reflect the current UI state even when no audio is flowing.
+
+    // The standard (Stereo-routed) trace only: writes up to kResponseSize dB
+    // values at log-spaced frequencies.  For an all-Stereo chain this is the
+    // whole EQ response.
     void getResponseCurve(float* outBuf, int outSize) const
+    {
+        writeResponseTraces(outBuf, outSize,
+                            static_cast<int>(ChannelMode::Stereo), 1);
+    }
+
+    // Every routing group's trace, back to back in ChannelMode order
+    // (Stereo, Left, Right, Mid, Side).  `outSize` is the per-trace length
+    // (capped at kResponseSize) and outBuf must hold kNumChannelModes * n
+    // floats; trace k starts at outBuf[k * n].
+    void getChannelResponseCurves(float* outBuf, int outSize) const
+    {
+        writeResponseTraces(outBuf, outSize, 0, kNumChannelModes);
+    }
+
+private:
+    void writeResponseTraces(float* outBuf, int outSize,
+                             int firstChannel, int numChannels) const
     {
         const int n       = std::min(outSize, kResponseSize);
         const int count   = bandCount_.load(std::memory_order_relaxed);
@@ -181,9 +425,16 @@ public:
         const double logMin = std::log(20.0);
         const double logMax = std::log(20000.0);
 
+        using Cplx = std::complex<double>;
+
+        // Linear Phase folds every band's routing to Stereo (see
+        // foldChannelForContext) — the displayed curves must agree with that.
+        const bool linPhaseActive = linPhasePtr_
+            ? (linPhasePtr_->load(std::memory_order_relaxed) > 0.5f) : false;
+
         // Snapshot current APVTS parameters and compute coefficients locally
         // so we don't depend on processEffect having run recently.
-        struct LocalCoeffs { double b0, b1, b2, a1, a2; bool enabled; };
+        struct LocalCoeffs { eqslope::Cascade cascade; bool enabled; int channel; };
         LocalCoeffs lc[kMaxBands]{};
 
         for (int b = 0; b < count; ++b)
@@ -201,20 +452,46 @@ public:
             freq = std::max(freq, 20.0f);
             q    = std::max(q, 0.1f);
 
-            // Model B: Dynamic bands are visually "off" (0 dB) when inactive,
-            // and animate toward target gain as activation grows. Snapshot the
-            // activation once per call — audio thread stores atomically.
+            // Channel routing snapshot.  numCh = 2 here: this EQ always runs on
+            // a stereo bus (prepareEffect sizes everything for 2 channels), and
+            // a mono bus folds to Stereo, which is the Stereo group's trace.
+            int chMode = bs.channelPtr
+                ? static_cast<int>(bs.channelPtr->load(std::memory_order_relaxed)) : 0;
+            if (chMode < 0 || chMode >= kNumChannelModes) chMode = 0;
+            lc[b].channel = foldChannelForContext(chMode, mode, linPhaseActive, 2);
+
+            // Skip bands whose group the caller did not ask for.
+            if (lc[b].channel < firstChannel || lc[b].channel >= firstChannel + numChannels)
+            {
+                lc[b].enabled = false;
+                continue;
+            }
+
+            // Dynamic bands: gainDb is the permanent baseline; the curve
+            // animates further from it toward gainDb + dyn_range as activation
+            // grows. Snapshot activation once per call — audio thread stores
+            // it atomically.
             if (mode == 1)
             {
                 const float act = bs.dynActivation.load(std::memory_order_relaxed);
-                gainDb *= act;
+                const float rangeDb = bs.dynRangePtr
+                    ? bs.dynRangePtr->load(std::memory_order_relaxed) : 12.0f;
+                gainDb += act * rangeDb;
             }
 
-            // Compute biquad coefficients (same formulas as computeCoefficients)
-            BandState tmp;
-            computeCoefficients(tmp, static_cast<BandType>(type), freq, gainDb, q, sr);
-            lc[b].b0 = tmp.b0;  lc[b].b1 = tmp.b1;  lc[b].b2 = tmp.b2;
-            lc[b].a1 = tmp.a1;  lc[b].a2 = tmp.a2;
+            // Spectral bands (mode == 2) are drawn as their plain bell, and
+            // that is now honest: the gain knob IS the band's spectral depth
+            // and the per-bin influence weight is this very bell normalised to
+            // 1 at the centre (see updateSpectralWeights).  So the curve reads
+            // as the band's maximum-depth profile — the shape suppression
+            // follows, reached by bins fully over threshold.
+
+            // Compute the band's filter (same formulas as the audio path): one
+            // biquad, or the slope's cascade for a steep Low / High Pass.
+            const int slope = bs.slopePtr
+                ? eqslope::clampSlope(bs.slopePtr->load(std::memory_order_relaxed))
+                : eqslope::kDefaultSlope;
+            computeBandCascade(lc[b].cascade, static_cast<BandType>(type), freq, gainDb, q, slope, sr);
         }
 
         for (int i = 0; i < n; ++i)
@@ -227,28 +504,41 @@ public:
             const double sinw  = std::sin(w);
             const double sin2w = std::sin(2.0 * w);
 
-            double magSq = 1.0; // combined magnitude-squared (product of all bands)
+            // Running complex product per routing group; identity = flat.
+            Cplx group[kNumChannelModes];
+            for (auto& g : group) g = Cplx(1.0, 0.0);
 
             for (int b = 0; b < count; ++b)
             {
                 if (!lc[b].enabled) continue;
 
-                // H(e^jw) = (b0 + b1*e^-jw + b2*e^-j2w) / (1 + a1*e^-jw + a2*e^-j2w)
-                double numRe = lc[b].b0 + lc[b].b1 * cosw + lc[b].b2 * cos2w;
-                double numIm =          - lc[b].b1 * sinw - lc[b].b2 * sin2w;
-                double denRe = 1.0 + lc[b].a1 * cosw + lc[b].a2 * cos2w;
-                double denIm =     - lc[b].a1 * sinw - lc[b].a2 * sin2w;
+                // H(e^jw) = (b0 + b1*e^-jw + b2*e^-j2w) / (1 + a1*e^-jw + a2*e^-j2w),
+                // one factor per section of the band's cascade.
+                for (int sct = 0; sct < lc[b].cascade.n; ++sct)
+                {
+                    const auto& c = lc[b].cascade.s[sct];
+                    const Cplx num(c.b0 + c.b1 * cosw + c.b2 * cos2w,
+                                        - c.b1 * sinw - c.b2 * sin2w);
+                    const Cplx den(1.0 + c.a1 * cosw + c.a2 * cos2w,
+                                        - c.a1 * sinw - c.a2 * sin2w);
 
-                double numMagSq = numRe * numRe + numIm * numIm;
-                double denMagSq = denRe * denRe + denIm * denIm;
-
-                magSq *= (denMagSq > 1e-30) ? (numMagSq / denMagSq) : 1.0;
+                    const double denMagSq = den.real() * den.real() + den.imag() * den.imag();
+                    if (denMagSq > 1e-30)
+                        group[lc[b].channel] *= num / den;
+                }
             }
 
-            // Convert to dB: 10*log10(magSq) = 20*log10(mag)
-            outBuf[i] = static_cast<float>(10.0 * std::log10(std::max(magSq, 1e-30)));
+            // -300 dB floor for exact nulls (HP/LP stopband, notch centre).
+            for (int k = 0; k < numChannels; ++k)
+            {
+                const double db = 20.0 * std::log10(
+                    std::max(std::abs(group[firstChannel + k]), 1e-15));
+                outBuf[k * n + i] = static_cast<float>(db);
+            }
         }
     }
+
+public:
 
     // ── Spectrum Analyzer (double-buffered output, fed by background thread) ──
 
@@ -292,13 +582,15 @@ public:
             b["q"]       = readParam(i, "q");
             b["type"]    = static_cast<int>(readParam(i, "type"));
             b["enabled"] = readParam(i, "enabled") > 0.5f;
+            b["channel"] = static_cast<int>(readParam(i, "channel"));
+            b["slope"]   = eqslope::clampSlope(readParam(i, "slope"));
             b["mode"]        = static_cast<int>(readParam(i, "mode"));
             b["dyn_thresh"]  = readParam(i, "dyn_thresh");
             b["dyn_ratio"]   = readParam(i, "dyn_ratio");
             b["dyn_attack"]  = readParam(i, "dyn_attack");
             b["dyn_release"] = readParam(i, "dyn_release");
+            b["dyn_range"]   = readParam(i, "dyn_range");
             b["spec_sens"]    = readParam(i, "spec_sens");
-            b["spec_depth"]   = readParam(i, "spec_depth");
             b["spec_sel"]     = readParam(i, "spec_sel");
             b["spec_attack"]  = readParam(i, "spec_attack");
             b["spec_release"] = readParam(i, "spec_release");
@@ -322,7 +614,10 @@ public:
     int getLatencySamples() const
     {
         int lat = 0;
-        if (hasSpectralBands_.load(std::memory_order_relaxed)) lat += kSTFTHop;
+        // Spectral: kSTFTLatency for Legacy, Core::latencyFor(sr, requested
+        // tier) for the Core (computed by the parameter path, at the request).
+        if (hasSpectralBands_.load(std::memory_order_relaxed))
+            lat += spectralLatencyStatus_.load(std::memory_order_relaxed);
         if (linPhaseActive_.load(std::memory_order_relaxed)) lat += firLength_ / 2;
         const int currentOSFactor = currentOSFactor_.load(std::memory_order_relaxed);
         if (currentOSFactor > 0)
@@ -348,8 +643,18 @@ public:
         return AudioProcessor::getLatencySamples();
     }
 
+    // Non-audio threads only (every caller is a parameter / band / state writer
+    // or prepare). The EQ has more than one such writer at a time: the RPC
+    // thread and MixEngine's applier thread (FX Graph envelope / LFO modulation
+    // through setParameterValue) are not serialised against each other. Without
+    // this lock, a refresh that read the parameters BEFORE another writer's
+    // latency-affecting change could publish AFTER that writer's own refresh
+    // and leave a stale latency in place (lost update; test case h2-lat). Held
+    // across read-compute-publish, so the last refresh to run always reads
+    // every write that preceded it. Never taken by the audio thread.
     bool refreshLatencySamples()
     {
+        std::lock_guard<std::mutex> lock(latencyRefreshMutex_);
         refreshLatencyStateFromParameters();
         const int newLat = getLatencySamples();
         if (newLat == AudioProcessor::getLatencySamples())
@@ -379,6 +684,10 @@ public:
             ? (linPhasePtr_->load(std::memory_order_relaxed) > 0.5f) : false;
         obj["oversample"] = oversamplePtr_
             ? static_cast<int>(oversamplePtr_->load(std::memory_order_relaxed)) : 0;
+        // [EQCore] (additive keys)
+        obj["spectral_engine"]  = static_cast<int>(readGlobalParam("spectral_engine",
+                                      static_cast<float>(kSpectralEngineLegacy)));
+        obj["spectral_quality"] = readSpectralQualityParam();
         return obj.dump();
     }
 
@@ -387,6 +696,13 @@ public:
     void prepareEffect(double sampleRate, int maxBlockSize) override
     {
         sampleRate_.store(sampleRate, std::memory_order_relaxed);
+
+        // The Brickwall slope builds its Chebyshev prototype once (a function-local
+        // static): do it here so the audio thread never pays for, or waits on, that.
+        {
+            eqslope::Cascade warm;
+            eqslope::design(false, 1000.0, 0.707, eqslope::kBrickwallSlope, sampleRate, warm);
+        }
 
         // Resolve APVTS raw param pointers
         for (int i = 0; i < kMaxBands; ++i)
@@ -397,6 +713,8 @@ public:
             bs.qPtr       = apvts_.getRawParameterValue(paramId(i, "q"));
             bs.typePtr    = apvts_.getRawParameterValue(paramId(i, "type"));
             bs.enabledPtr = apvts_.getRawParameterValue(paramId(i, "enabled"));
+            bs.channelPtr = apvts_.getRawParameterValue(paramId(i, "channel"));
+            bs.slopePtr   = apvts_.getRawParameterValue(paramId(i, "slope"));
 
             // Advanced mode pointers
             bs.modePtr       = apvts_.getRawParameterValue(paramId(i, "mode"));
@@ -404,14 +722,18 @@ public:
             bs.dynRatioPtr   = apvts_.getRawParameterValue(paramId(i, "dyn_ratio"));
             bs.dynAttackPtr  = apvts_.getRawParameterValue(paramId(i, "dyn_attack"));
             bs.dynReleasePtr = apvts_.getRawParameterValue(paramId(i, "dyn_release"));
+            bs.dynRangePtr   = apvts_.getRawParameterValue(paramId(i, "dyn_range"));
             bs.specSensPtr    = apvts_.getRawParameterValue(paramId(i, "spec_sens"));
-            bs.specDepthPtr   = apvts_.getRawParameterValue(paramId(i, "spec_depth"));
             bs.specSelPtr     = apvts_.getRawParameterValue(paramId(i, "spec_sel"));
             bs.specAttackPtr  = apvts_.getRawParameterValue(paramId(i, "spec_attack"));
             bs.specReleasePtr = apvts_.getRawParameterValue(paramId(i, "spec_release"));
 
             // Per-bin spectral envelope buffer (audio-thread read/write; sized once here)
             bs.specBinEnv.assign(kSTFTSize / 2, 1.0f);
+            // Per-bin bell influence weight (rebuilt lazily on the audio thread
+            // by updateSpectralWeights; the -1 freq forces the first rebuild).
+            bs.specBinWeight.assign(kSTFTSize / 2, 0.0f);
+            bs.specWeightFreq = -1.0f;
 
             // Initialise smoothers
             float f = bs.freqPtr ? bs.freqPtr->load(std::memory_order_relaxed) : 1000.0f;
@@ -424,12 +746,25 @@ public:
             bs.gainSmooth.setCurrentAndTargetValue(g);
             bs.qSmooth.reset(sampleRate, 0.030);
             bs.qSmooth.setCurrentAndTargetValue(std::max(q, 1e-6f));
+
+            float range = bs.dynRangePtr ? bs.dynRangePtr->load(std::memory_order_relaxed) : 12.0f;
+            bs.rangeSmooth.reset(sampleRate, 0.020);
+            bs.rangeSmooth.setCurrentAndTargetValue(range);
+
             bs.clearState();
         }
 
         // Resolve global mode pointers
         linPhasePtr_   = apvts_.getRawParameterValue("linphase");
         oversamplePtr_ = apvts_.getRawParameterValue("oversample");
+        spectralEnginePtr_  = apvts_.getRawParameterValue("spectral_engine");
+        spectralQualityPtr_ = apvts_.getRawParameterValue("spectral_quality");
+
+        // [EQCore] The core engine (all three frame tiers) and its buffers are
+        // built HERE, unconditionally, next to the Legacy STFT path below: no
+        // engine, quality or band-mode change ever allocates, frees or
+        // reconstructs anything while the audio thread may run.
+        prepareCoreEngine(sampleRate, maxBlockSize);
 
         // Initialise oversamplers (pre-create both for glitch-free switching)
         os2x_ = std::make_unique<juce::dsp::Oversampling<float>>(
@@ -443,18 +778,37 @@ public:
         preparedBlockSize_ = maxBlockSize;
         for (int ch = 0; ch < 2; ++ch)
         {
-            stftInRing_[ch].assign(kSTFTSize * 2, 0.0f);
-            stftOutRing_[ch].assign(kSTFTSize * 2, 0.0f);
+            stftInRing_[ch].assign(kSTFTRingSize, 0.0f);
+            stftOutRing_[ch].assign(kSTFTRingSize, 0.0f);
         }
-        stftWritePos_ = 0;
-        stftSinceLastFrame_ = 0;
+        resetSTFTStream();
+        stftNeedsRestart_ = false;
+        stftFadeIn_       = false;
+        pendingStreamReset_.store(false, std::memory_order_relaxed);
 
-        // Precompute Hann window for STFT
+        // WOLA window: sqrt of a PERIODIC Hann (denominator kSTFTSize, not
+        // kSTFTSize-1 — the periodic form is the one that overlap-adds exactly).
+        // The same window is applied on analysis and again on synthesis, so the
+        // pair multiplies out to a full Hann.
         {
-            const float piF = juce::MathConstants<float>::pi;
+            const float twoPi = 2.0f * juce::MathConstants<float>::pi;
             for (int i = 0; i < kSTFTSize; ++i)
-                stftWindow_[i] = 0.5f * (1.0f - std::cos(2.0f * piF
-                    * static_cast<float>(i) / static_cast<float>(kSTFTSize - 1)));
+            {
+                const float hann = 0.5f - 0.5f * std::cos(twoPi
+                    * static_cast<float>(i) / static_cast<float>(kSTFTSize));
+                stftWindow_[i] = std::sqrt(std::max(hann, 0.0f));
+            }
+
+            // Per-hop-phase normalisation 1/sum(w^2). Every output sample is
+            // covered by kSTFTSize/kSTFTHop frames whose window indices are
+            // congruent mod kSTFTHop, so one value per phase is exact.
+            for (int phase = 0; phase < kSTFTHop; ++phase)
+            {
+                float sum = 0.0f;
+                for (int i = phase; i < kSTFTSize; i += kSTFTHop)
+                    sum += stftWindow_[i] * stftWindow_[i];
+                stftNorm_[phase] = (sum > 1.0e-8f) ? (1.0f / sum) : 1.0f;
+            }
         }
 
         // Linear phase FIR
@@ -473,6 +827,25 @@ public:
         stftTempIm_.resize(kSTFTSize, 0.0f);
         stftMag_.resize(kSTFTSize / 2, 0.0f);
         stftLogMag_.resize(kSTFTSize / 2, 0.0f);
+
+        // Per-bin trig tables for the spectral bell weight (bin-frequency only)
+        {
+            const int binsN = kSTFTSize / 2;
+            stftBinCosW_.resize(binsN);
+            stftBinSinW_.resize(binsN);
+            stftBinCos2W_.resize(binsN);
+            stftBinSin2W_.resize(binsN);
+            const double twoPi = 2.0 * juce::MathConstants<double>::pi;
+            for (int i = 0; i < binsN; ++i)
+            {
+                const double w = twoPi * static_cast<double>(i)
+                               / static_cast<double>(kSTFTSize);
+                stftBinCosW_[i]  = static_cast<float>(std::cos(w));
+                stftBinSinW_[i]  = static_cast<float>(std::sin(w));
+                stftBinCos2W_[i] = static_cast<float>(std::cos(2.0 * w));
+                stftBinSin2W_[i] = static_cast<float>(std::sin(2.0 * w));
+            }
+        }
 
         // ── Spectrum Analyzer initialisation ────────────────────────────────
         stopAnalysisThread(); // stop any existing thread from previous prepare
@@ -517,6 +890,25 @@ public:
         specThreadRunning_.store(true, std::memory_order_relaxed);
         specThread_ = std::thread([this] { analysisThreadFunc(); });
 
+        // Not processing: the first block's snapshot is the current state, and
+        // every band was cleared above, so no clear request is outstanding.
+        readParamsInto(snap_);
+        pendingBandClear_.store(0u, std::memory_order_relaxed);
+        deferredBandClear_ = 0u;
+
+        // [EQCore] Start on the structure the parameters ask for, without a fade.
+        structFadeLen_ = std::max(1, static_cast<int>(std::lround(sampleRate * (kStructureFadeMs * 0.001))));
+        pendingRestoreSnap_.store(false, std::memory_order_relaxed);
+        deferredRestoreSnap_ = false;
+        restoreSnapPending_ = false;
+        {
+            bool anySpectral = false;
+            if (snap_.linPhase <= 0.5f)
+                for (int b = 0; b < snap_.count; ++b)
+                    if (static_cast<int>(snap_.band[b].mode) == 2 && snap_.band[b].enabled > 0.5f) { anySpectral = true; break; }
+            adoptSpecStructure(targetSpecStructure(anySpectral, snap_, snap_.count, 2), false);
+        }
+
         refreshLatencySamples();
     }
 
@@ -524,27 +916,43 @@ public:
     {
         const int numSamples = buffer.getNumSamples();
         const int numCh      = std::min(buffer.getNumChannels(), 2);
-        const int count      = bandCount_.load(std::memory_order_relaxed);
         const double sr      = sampleRate_.load(std::memory_order_relaxed);
 
-        // ── Read band modes + enabled state ─────────────────────────────────
+        // Every parameter this block uses, read once, consistently (the
+        // previous block's snapshot if an edit was in progress), and the band
+        // state clears the RPC side asked for.
+        takeParamSnapshot();
+        const ParamSnapshot& P = snap_;
+        const int count = P.count;
+
+        // Un-bypass: the stream froze while the base class skipped us. Take the
+        // request here, on the audio thread, and let the restart logic below
+        // rewind it (or the inactive branch re-arm it) like any other re-entry.
+        if (pendingStreamReset_.exchange(false, std::memory_order_acq_rel))
+            stftNeedsRestart_ = true;
+
+        // ── Read global mode state ──────────────────────────────────────────
+        // Read before the per-band latch below: linear phase folds every band's
+        // channel routing back to Stereo. (The status atomics behind
+        // getLatencySamples() belong to the parameter path, not to this thread.)
+        const bool linPhaseActive = P.linPhase > 0.5f;
+
+        // ── Read band modes + enabled + channel routing ─────────────────────
         bool hasDynamic = false;
         for (int b = 0; b < count; ++b)
         {
             auto& bs = bands_[b];
-            bs.mode    = bs.modePtr    ? static_cast<int>(bs.modePtr->load(std::memory_order_relaxed)) : 0;
-            bs.enabled = bs.enabledPtr ? (bs.enabledPtr->load(std::memory_order_relaxed) > 0.5f) : true;
+            const auto& bp = P.band[b];
+            bs.mode    = static_cast<int>(bp.mode);
+            bs.enabled = bp.enabled > 0.5f;
+            bs.channel = static_cast<int>(bp.channel);
+            if (bs.channel < 0 || bs.channel >= kNumChannelModes) bs.channel = 0;
+            bs.channel = foldChannelForContext(bs.channel, bs.mode, linPhaseActive, numCh);
             if (bs.mode == 1 && bs.enabled) hasDynamic = true;
         }
 
-        // ── Read global mode state ──────────────────────────────────────────
-        const bool linPhaseActive = linPhasePtr_
-            ? (linPhasePtr_->load(std::memory_order_relaxed) > 0.5f) : false;
-        linPhaseActive_.store(linPhaseActive, std::memory_order_relaxed);
-
         // Read oversample factor (0=off, 1=2x, 2=4x)
-        int osRaw = oversamplePtr_
-            ? static_cast<int>(oversamplePtr_->load(std::memory_order_relaxed)) : 0;
+        int osRaw = static_cast<int>(P.oversample);
 
         // Spectral + OS mutually exclusive: spectral wins, OS bypassed
         bool anySpectral = false;
@@ -553,8 +961,36 @@ public:
             for (int b = 0; b < count; ++b)
                 if (bands_[b].mode == 2 && bands_[b].enabled) { anySpectral = true; break; }
         }
-        const int currentOSFactor = anySpectral ? 0 : osRaw;
-        currentOSFactor_.store(currentOSFactor, std::memory_order_relaxed);
+
+        // ── [EQCore] Spectral structure ─────────────────────────────────────
+        // Which renderer the Spectral bands use (None / Legacy / Core, and the
+        // Core's channel mode). Edges between None and Legacy are adopted at
+        // once and the Legacy path handles them exactly as before (its own
+        // restart + 5 ms fade-in); every edge that involves the Core is a
+        // structural transition: 5 ms output fade-out, switch at a block
+        // boundary (target reset), 5 ms INPUT fade-in.
+        lastNumCh_ = numCh;
+        const int spectralQuality = std::clamp(static_cast<int>(P.spectralQuality), 0, kNumSpectralQualities - 1);
+        const SpecStructure specTarget = targetSpecStructure(anySpectral, P, count, numCh);
+        if (restoreSnapPending_)
+        {
+            // A state restore is a fresh start (as the RS does): adopt the
+            // restored structure at once, without a fade. Legacy-only edges
+            // touch nothing (bit-identical to the restore before [EQCore]).
+            restoreSnapPending_ = false;
+            adoptSpecStructure(specTarget, false);
+        }
+        const bool baseUsesOurDry = beginStructureBlock(specTarget);
+        applyInputFadeIn(buffer, numCh, numSamples);
+        if (baseUsesOurDry && !blockBypassDryIsCore_ && liveDry_.getNumSamples() >= numSamples)
+            for (int ch = 0; ch < numCh; ++ch)
+                liveDry_.copyFrom(ch, 0, buffer, ch, 0, numSamples);
+
+        // Oversampling follows the ACTIVE structure: with Legacy-only edges this
+        // is exactly `anySpectral` (adopted at once); around the Core it switches
+        // at the structural boundary, where the output is silent.
+        const bool spectralActive = specActive_.kind != kSpecKindNone;
+        const int currentOSFactor = spectralActive ? 0 : osRaw;
 
         // Effective sample rate for coefficient computation
         const double effectiveSR = sr * static_cast<double>(1 << currentOSFactor);
@@ -575,14 +1011,14 @@ public:
                     continue;
                 }
 
-                // Attack/release coefficients from APVTS
-                float attackMs  = bs.dynAttackPtr  ? bs.dynAttackPtr->load(std::memory_order_relaxed)  : 10.0f;
-                float releaseMs = bs.dynReleasePtr ? bs.dynReleasePtr->load(std::memory_order_relaxed) : 100.0f;
+                // Attack/release coefficients from APVTS (this block's snapshot)
+                float attackMs  = P.band[b].dynAttack;
+                float releaseMs = P.band[b].dynRelease;
                 bs.dynAttackCoeff  = 1.0f - std::exp(-1.0f / (attackMs  * 0.001f * static_cast<float>(sr)));
                 bs.dynReleaseCoeff = 1.0f - std::exp(-1.0f / (releaseMs * 0.001f * static_cast<float>(sr)));
 
-                float thresh = bs.dynThreshPtr ? bs.dynThreshPtr->load(std::memory_order_relaxed) : -20.0f;
-                float ratio  = bs.dynRatioPtr  ? bs.dynRatioPtr->load(std::memory_order_relaxed)  : 4.0f;
+                float thresh = P.band[b].dynThresh;
+                float ratio  = P.band[b].dynRatio;
                 ratio = std::max(ratio, 1.0f);
 
                 // Recompute sidechain BPF from end-of-block smoothed freq/Q
@@ -594,22 +1030,53 @@ public:
                 computeSidechainBPF(bs, scFreq, scQ, sr);
 
                 // Run sidechain BPF on input, compute RMS of detector output.
+                // The detector follows the band's channel routing: a Left band
+                // must not duck on Right-only content, and an M/S band detects
+                // on its own M or S signal.
                 double sumSq = 0.0;
-                for (int ch = 0; ch < numCh; ++ch)
+                int    rmsCount = 0;
+
+                if (bs.channel == static_cast<int>(ChannelMode::Stereo))
                 {
-                    const float* data = buffer.getReadPointer(ch);
+                    for (int ch = 0; ch < numCh; ++ch)
+                    {
+                        const float* data = buffer.getReadPointer(ch);
+                        const int slot = (ch == 0) ? kSlotL : kSlotR;
+                        for (int s = 0; s < numSamples; ++s)
+                        {
+                            float x = data[s];
+                            float y  = bs.sc_b0 * x + bs.sc_z1[slot];
+                            bs.sc_z1[slot] = bs.sc_b1 * x - bs.sc_a1 * y + bs.sc_z2[slot];
+                            bs.sc_z2[slot] = bs.sc_b2 * x - bs.sc_a2 * y;
+                            sumSq += static_cast<double>(y * y);
+                        }
+                    }
+                    rmsCount = numSamples * numCh;
+                }
+                else
+                {
+                    // Routed: one detector signal only (L, R, M or S).
+                    // bs.channel is only non-Stereo when numCh >= 2 (see the
+                    // per-block fold), so channel 1 is safe to read here.
+                    float wL = 1.0f, wR = 0.0f;
+                    int   slot = kSlotL;
+                    routingDetectorWeights(bs.channel, wL, wR, slot);
+
+                    const float* dL = buffer.getReadPointer(0);
+                    const float* dR = buffer.getReadPointer(1);
                     for (int s = 0; s < numSamples; ++s)
                     {
-                        float x = data[s];
-                        float y  = bs.sc_b0 * x + bs.sc_z1[ch];
-                        bs.sc_z1[ch] = bs.sc_b1 * x - bs.sc_a1 * y + bs.sc_z2[ch];
-                        bs.sc_z2[ch] = bs.sc_b2 * x - bs.sc_a2 * y;
+                        float x = wL * dL[s] + wR * dR[s];
+                        float y  = bs.sc_b0 * x + bs.sc_z1[slot];
+                        bs.sc_z1[slot] = bs.sc_b1 * x - bs.sc_a1 * y + bs.sc_z2[slot];
+                        bs.sc_z2[slot] = bs.sc_b2 * x - bs.sc_a2 * y;
                         sumSq += static_cast<double>(y * y);
                     }
+                    rmsCount = numSamples;
                 }
 
                 float rmsDb = 10.0f * std::log10(std::max(
-                    static_cast<float>(sumSq / (numSamples * numCh)), 1e-30f));
+                    static_cast<float>(sumSq / std::max(rmsCount, 1)), 1e-30f));
 
                 // Map overshoot → activation target in [0,1].
                 // 0 dB over → 0; grows asymptotically toward 1 with more overshoot.
@@ -626,11 +1093,12 @@ public:
                 float newAct = coeff * activationTarget + (1.0f - coeff) * cur;
                 bs.dynActivation.store(newAct, std::memory_order_relaxed);
 
-                // Meter: signed dB the band is currently contributing.
-                float targetGainDb = bs.gainPtr ? bs.gainPtr->load(std::memory_order_relaxed) : 0.0f;
-                bandGR_[b].store(newAct * targetGainDb, std::memory_order_relaxed);
+                // Meter: signed dB the dynamic swing is currently contributing
+                // on top of the baseline gain (the knob itself, always applied).
+                float rangeDbNow = P.band[b].dynRange;
+                bandGR_[b].store(newAct * rangeDbNow, std::memory_order_relaxed);
 
-#ifdef XLETH_DEBUG
+#ifdef XLETH_RT_TRACE
                 bs.dynLogCounter += numSamples;
                 if (bs.dynLogCounter >= static_cast<int>(sr))
                 {
@@ -655,29 +1123,50 @@ public:
         {
             auto& bs = bands_[b];
 
-            // Read APVTS atomics
-            float freq    = bs.freqPtr ? bs.freqPtr->load(std::memory_order_relaxed) : 1000.0f;
-            float gainDb  = bs.gainPtr ? bs.gainPtr->load(std::memory_order_relaxed) : 0.0f;
-            float q       = bs.qPtr    ? bs.qPtr->load(std::memory_order_relaxed)    : 0.707f;
-            int   type    = bs.typePtr ? static_cast<int>(bs.typePtr->load(std::memory_order_relaxed)) : 0;
+            // This block's parameter snapshot
+            const auto& bp = P.band[b];
+            float freq    = bp.freq;
+            float gainDb  = bp.gain;
+            float q       = bp.q;
+            int   type    = static_cast<int>(bp.type);
+            float rangeDb = bp.dynRange;
 
             // Advance smoothers to end-of-block position
             bs.freqSmooth.setTargetValue(std::max(freq, 20.0f));
             bs.gainSmooth.setTargetValue(gainDb);
             bs.qSmooth.setTargetValue(std::max(q, 0.1f));
+            bs.rangeSmooth.setTargetValue(rangeDb);
 
-            float smoothFreq = bs.freqSmooth.skip(numSamples);
-            float smoothGain = bs.gainSmooth.skip(numSamples);
-            float smoothQ    = bs.qSmooth.skip(numSamples);
+            float smoothFreq  = bs.freqSmooth.skip(numSamples);
+            float smoothGain  = bs.gainSmooth.skip(numSamples);
+            float smoothQ     = bs.qSmooth.skip(numSamples);
+            float smoothRange = bs.rangeSmooth.skip(numSamples);
 
-            // Apply Dynamic EQ activation (Model B): band is off at 0 dB
-            // when untriggered, moves toward user target gain as activation → 1.
+            // Apply Dynamic EQ activation: the gain knob is a permanent
+            // baseline, always applied. Range is how far the band swings
+            // further from that baseline as activation grows toward 1 —
+            // positive range boosts further on trigger, negative ducks.
             if (bs.mode == 1)
-                smoothGain = bs.dynActivation.load(std::memory_order_relaxed) * smoothGain;
+                smoothGain = smoothGain + bs.dynActivation.load(std::memory_order_relaxed) * smoothRange;
 
             if (bs.enabled)
-                computeCoefficients(bs, static_cast<BandType>(type),
-                                    smoothFreq, smoothGain, smoothQ, effectiveSR);
+            {
+                const int slope = eqslope::clampSlope(bp.slope);
+                const bool cascade = isSlopeCascade(static_cast<BandType>(type), slope);
+
+                // A change of cascade (entering / leaving one, or a different
+                // slope) starts it from zero state; the single-biquad path keeps
+                // its own state exactly as it always did.
+                if (cascade && (bs.cascadeSlope != slope))
+                    bs.clearCascadeState();
+                else if (!cascade && bs.cascadeSlope >= 0)
+                    for (int i = 0; i < kNumRoutingSlots; ++i)
+                        bs.z1[i] = bs.z2[i] = 0.0f;
+                bs.cascadeSlope = cascade ? slope : -1;
+
+                computeBandFilter(bs, static_cast<BandType>(type),
+                                  smoothFreq, smoothGain, smoothQ, slope, effectiveSR);
+            }
         }
 
         // ── Pre-EQ spectrum tap (before any filtering) ───────────────────────
@@ -694,19 +1183,33 @@ public:
             specPreWriteIdx_.store(wi, std::memory_order_release);
         }
 
+        // ── [EQCore] Spectral bands on the shared resonance core ───────────────
+        if (specActive_.kind == kSpecKindCore)
+        {
+            processCoreBlock(buffer, numCh, numSamples, P, count, spectralQuality,
+                             specTarget.kind == kSpecKindCore);
+            if (!specPreEnabled_.load(std::memory_order_relaxed))
+                specPreEnabled_.store(true, std::memory_order_release);
+            stftNeedsRestart_ = true;   // the Legacy stream does not advance meanwhile
+        }
         // ── STFT Spectral Dynamics (skipped when linPhase) ────────────────────
-        if (!linPhaseActive)
+        else if (!linPhaseActive)
         {
             bool hasSpectralBands = false;
             for (int b = 0; b < count; ++b)
             {
-                if (bands_[b].mode == 2 && bands_[b].enabled)
-                {
+                if (bands_[b].mode != 2) continue;
+                if (bands_[b].enabled)
                     hasSpectralBands = true;
-                    break;
-                }
+                else
+                    bandGR_[b].store(0.0f, std::memory_order_relaxed);  // don't strand the meter
             }
-            hasSpectralBands_.store(hasSpectralBands, std::memory_order_relaxed);
+            // [EQCore] The Legacy stream runs only while Legacy is the active
+            // structure (always the case without the Core: Legacy-only edges are
+            // adopted at once). Before a pending switch onto the Core it must not
+            // start.
+            if (specActive_.kind != kSpecKindLegacy)
+                hasSpectralBands = false;
 
             // Auto-enable pre-EQ spectrum when any Spectral band is active.
             // Do NOT auto-disable; user may want pre-spectrum with other modes too.
@@ -715,34 +1218,78 @@ public:
 
             if (hasSpectralBands)
             {
-                const int ringSize = kSTFTSize * 2;
+                // The stream only advances while Spectral is active, so after any
+                // inactive block (band disabled, linear phase, ...) its rings and
+                // counters still hold the previous spectral period. Rewind it on
+                // the inactive -> active edge or that audio splices into the new
+                // audio (docs/RESONANCE_SUPPRESSOR_AUDIT.md 3.3 #6). Allocation-free:
+                // fills of preallocated buffers only. prepare/reset leave
+                // stftNeedsRestart_ false, so transport start and seek are unchanged.
+                if (stftNeedsRestart_)
+                {
+                    resetSTFTStream();
+                    for (int b = 0; b < count; ++b)
+                        if (bands_[b].mode == 2)
+                            std::fill(bands_[b].specBinEnv.begin(),
+                                      bands_[b].specBinEnv.end(), 1.0f);
+                    stftNeedsRestart_ = false;
+                    stftFadeIn_       = true;
+                }
+
+                // A restarted stream emits kSTFTLatency samples of silence and
+                // then the input's first sample at full level: a step. Ramp
+                // the first kStftFadeInMs of real output.
+                const std::int64_t fadeLen = std::max<std::int64_t>(
+                    1, static_cast<std::int64_t>(sr * kStftFadeInMs * 0.001));
+
                 for (int s = 0; s < numSamples; ++s)
                 {
-                    int wp = stftWritePos_ % ringSize;
+                    const int inIdx =
+                        static_cast<int>(stftSamplesWritten_ & kSTFTRingMask);
                     for (int ch = 0; ch < numCh; ++ch)
-                        stftInRing_[ch][wp] = buffer.getSample(ch, s);
+                        stftInRing_[ch][inIdx] = buffer.getSample(ch, s);
+                    ++stftSamplesWritten_;
 
-                    stftWritePos_++;
-                    stftSinceLastFrame_++;
-
-                    if (stftSinceLastFrame_ >= kSTFTHop)
+                    // Run every frame whose kSTFTSize-sample window just became
+                    // complete. At 75% overlap this fires once per kSTFTHop.
+                    while (stftNextFrameStart_ + kSTFTSize <= stftSamplesWritten_)
                     {
-                        stftSinceLastFrame_ = 0;
-                        processSTFTFrame(numCh, sr);
+                        processSTFTFrame(stftNextFrameStart_, numCh, sr);
+                        stftNextFrameStart_ += kSTFTHop;
                     }
 
-                    int rp = ((stftWritePos_ - kSTFTHop) % ringSize + ringSize) % ringSize;
+                    float fadeGain = 1.0f;
+                    if (stftFadeIn_)
+                    {
+                        const std::int64_t k = stftSamplesEmitted_ - kSTFTLatency;
+                        if (k >= fadeLen)
+                            stftFadeIn_ = false;
+                        else if (k >= 0)
+                            fadeGain = static_cast<float>(k + 1)
+                                     / static_cast<float>(fadeLen);
+                    }
+
+                    const int outIdx =
+                        static_cast<int>(stftSamplesEmitted_ & kSTFTRingMask);
                     for (int ch = 0; ch < numCh; ++ch)
                     {
-                        buffer.setSample(ch, s, stftOutRing_[ch][rp]);
-                        stftOutRing_[ch][rp] = 0.0f;
+                        buffer.setSample(ch, s, stftOutRing_[ch][outIdx] * fadeGain);
+                        stftOutRing_[ch][outIdx] = 0.0f;
                     }
+                    ++stftSamplesEmitted_;
                 }
+            }
+            else
+            {
+                stftNeedsRestart_ = true;   // stream goes stale while inactive
             }
         }
         else
         {
-            hasSpectralBands_.store(false, std::memory_order_relaxed); // linPhase disables spectral
+            stftNeedsRestart_ = true;       // linear phase also freezes the stream
+            for (int b = 0; b < count; ++b)
+                if (bands_[b].mode == 2)
+                    bandGR_[b].store(0.0f, std::memory_order_relaxed);
         }
 
         // ── Processing path ─────────────────────────────────────────────────
@@ -807,63 +1354,60 @@ public:
                 }
             }
         }
-        else if (currentOSFactor > 0)
+        else if (currentOSFactor > 0 && numCh > 0)
         {
             // ── Oversampled biquad: upsample → cascade → downsample ─────────
             auto* os = (currentOSFactor == 1) ? os2x_.get() : os4x_.get();
             juce::dsp::AudioBlock<float> block(buffer);
             auto upBlock = os->processSamplesUp(block);
 
+            // Sample-outer so an (L, R) pair can be carried through the cascade
+            // together — per-band M/S routing needs both channels in hand.
             const int upN = static_cast<int>(upBlock.getNumSamples());
-            for (int ch = 0; ch < numCh; ++ch)
-            {
-                float* data = upBlock.getChannelPointer(ch);
-                for (int s = 0; s < upN; ++s)
-                {
-                    float x = data[s];
-                    for (int b = 0; b < count; ++b)
-                    {
-                        auto& bs = bands_[b];
-                        if (!bs.enabled || bs.mode == 2) continue;
+            float* upL = upBlock.getChannelPointer(0);
+            float* upR = (numCh > 1) ? upBlock.getChannelPointer(1) : nullptr;
+            const bool hasR = (upR != nullptr);
 
-                        float y  = bs.b0 * x + bs.z1[ch];
-                        bs.z1[ch] = bs.b1 * x - bs.a1 * y + bs.z2[ch];
-                        bs.z2[ch] = bs.b2 * x - bs.a2 * y;
-                        x = y;
-                    }
-                    data[s] = x;
-                }
+            for (int s = 0; s < upN; ++s)
+            {
+                float L = upL[s];
+                float R = hasR ? upR[s] : 0.0f;
+
+                processCascadeSample(count, L, R, hasR);
+
+                upL[s] = L;
+                if (hasR) upR[s] = R;
             }
 
             os->processSamplesDown(block);
         }
-        else
+        else if (numCh > 0)
         {
             // ── Biquad processing (DFII Transposed) ─────────────────────────
             // Spectral-mode bands skip biquad — processed by STFT above.
-            for (int ch = 0; ch < numCh; ++ch)
+            //
+            // Sample-outer rather than channel-outer: per-band channel routing
+            // (Mid/Side especially) needs the L and R samples of one frame in
+            // hand at the same time.
+            float* dataL = buffer.getWritePointer(0);
+            float* dataR = (numCh > 1) ? buffer.getWritePointer(1) : nullptr;
+            const bool hasR = (dataR != nullptr);
+
+            for (int s = 0; s < numSamples; ++s)
             {
-                float* data = buffer.getWritePointer(ch);
+                float L = dataL[s];
+                float R = hasR ? dataR[s] : 0.0f;
 
-                for (int s = 0; s < numSamples; ++s)
-                {
-                    float x = data[s];
+                processCascadeSample(count, L, R, hasR);
 
-                    for (int b = 0; b < count; ++b)
-                    {
-                        auto& bs = bands_[b];
-                        if (!bs.enabled || bs.mode == 2) continue;
-
-                        float y  = bs.b0 * x + bs.z1[ch];
-                        bs.z1[ch] = bs.b1 * x - bs.a1 * y + bs.z2[ch];
-                        bs.z2[ch] = bs.b2 * x - bs.a2 * y;
-                        x = y;
-                    }
-
-                    data[s] = x;
-                }
+                dataL[s] = L;
+                if (hasR) dataR[s] = R;
             }
         }
+
+        // [EQCore] Output fade-out of a pending structural change (and the switch
+        // when it completes); decides the next block's bypass-dry source.
+        finishStructureBlock(buffer, numCh, numSamples, specTarget);
 
         // ── Post-EQ spectrum tap (after all filtering) ──────────────────────
         {
@@ -889,19 +1433,734 @@ public:
         stopAnalysisThread();
         for (int i = 0; i < kMaxBands; ++i)
             bands_[i].clearState();
+        core_.release();
+        coreDry_.setSize(0, 0);
+        coreDryMono_.clear();
+        coreAuxIn_.clear();
+        coreAuxOut_.clear();
+        coreComp_.clear();
+        liveDry_.setSize(0, 0);
     }
 
     void resetEffect() override
     {
         for (int i = 0; i < kMaxBands; ++i)
             bands_[i].clearState();
+
+        // Also rewind the WOLA stream: without this a seek leaves up to
+        // kSTFTSize of the previous position's audio in the rings, which
+        // overlap-adds into the new position as a splice.
+        resetSTFTStream();
+        stftNeedsRestart_ = false;
+        stftFadeIn_       = false;
+        // The stream is pristine now; a pending un-bypass restart is redundant
+        // (and would add a fade-in a plain reset does not have).
+        pendingStreamReset_.store(false, std::memory_order_relaxed);
+
+        // [EQCore] A reset is a fresh start: a structural change still fading
+        // is completed at once, and the Core (if it is the structure) restarts
+        // from cleared state on the requested tier. RT-safe (Core::reset).
+        takeParamSnapshot();
+        bool anySpectral = false;
+        if (snap_.linPhase <= 0.5f)
+            for (int b = 0; b < snap_.count; ++b)
+                if (static_cast<int>(snap_.band[b].mode) == 2 && snap_.band[b].enabled > 0.5f) { anySpectral = true; break; }
+        restoreSnapPending_ = false;
+        adoptSpecStructure(targetSpecStructure(anySpectral, snap_, snap_.count, lastNumCh_), false);
+    }
+
+protected:
+    // [EQCore] While the Core is the active structure (and while a structural
+    // transition runs, so a bypassed output never steps) the bypassed output is
+    // this effect's own dry: the core's aligned dryOut, so the latency stays
+    // the Core's through bypass (constant PDC; legacy keeps its latency through
+    // bypass too) and an un-bypass is the base class's 5 ms crossfade between
+    // two signals on the same timeline. Legacy / no Spectral band: false (the
+    // base class's live-input bypass, exactly as before). Read by the base at
+    // the START of a block, so it is computed for the NEXT block.
+    bool usesLatencyAlignedBypassDry() const override
+    {
+        return alignedBypass_;
+    }
+
+    bool copyLatencyAlignedBypassDry(juce::AudioBuffer<float>& dest, int numSamples) override
+    {
+        const auto& src = blockBypassDryIsCore_ ? coreDry_ : liveDry_;
+        const int channels = std::min({ dest.getNumChannels(), src.getNumChannels(), 2 });
+        if (channels <= 0 || src.getNumSamples() < numSamples || dest.getNumSamples() < numSamples)
+            return false;
+        for (int ch = 0; ch < channels; ++ch)
+            dest.copyFrom(ch, 0, src, ch, 0, numSamples);
+        return true;
     }
 
 private:
+    // Called from setBypassed() on the RPC / applier thread, NOT the audio
+    // thread, so it only raises a flag: the rings and per-bin envelopes are
+    // audio-thread state and are rewound by processEffect (see
+    // pendingStreamReset_). Only the un-bypass edge matters. While bypassed the
+    // base class does not call processEffect (after the 5 ms crossfade), so the
+    // stream freezes and goes stale; raising it on the bypass edge as well would
+    // rewind the stream mid-crossfade and drop the wet side out of the fade.
+    void onBypassChanged(bool bypassed) override
+    {
+        if (!bypassed)
+            pendingStreamReset_.store(true, std::memory_order_release);
+    }
+
     void onParameterValueChanged(const std::string& paramId, float /*value*/) override
     {
         if (isLatencyAffectingParameterId(paramId))
             refreshLatencySamples();
+    }
+
+    // ── Edits vs the audio thread's snapshot ────────────────────────────────
+    // A multi-parameter edit (non-audio threads only). Writers are serialised
+    // by editMutex_ (never taken by the audio thread); while the scope lives,
+    // editSeq_ is odd, so a snapshot copy that overlaps it is rejected by the
+    // audio thread (which keeps its previous snapshot for that block).
+    // Sequence-lock memory orders (Boehm, "Can seqlocks get along with
+    // programming language memory models?"): odd store relaxed + release fence
+    // before the data stores, even store release after them; the reader loads
+    // the counter with acquire, the data relaxed, then an acquire fence and the
+    // counter again.
+    struct EditScope
+    {
+        explicit EditScope(XlethParametricEQ& e) : eq(e), lock(e.editMutex_)
+        {
+            eq.editSeq_.store(eq.editSeq_.load(std::memory_order_relaxed) + 1u, std::memory_order_relaxed);
+            std::atomic_thread_fence(std::memory_order_release);
+        }
+        ~EditScope()
+        {
+            eq.editSeq_.store(eq.editSeq_.load(std::memory_order_relaxed) + 1u, std::memory_order_release);
+        }
+        EditScope(const EditScope&) = delete;
+        EditScope& operator=(const EditScope&) = delete;
+        XlethParametricEQ& eq;
+        std::lock_guard<std::mutex> lock;
+    };
+
+    // Inside an EditScope: the band's DSP state (biquad / detector state,
+    // spectral envelopes) is cleared by the AUDIO thread, together with the
+    // first snapshot that contains this edit. The activation meter is an
+    // atomic the UI reads, so it is zeroed here as well (as the old in-place
+    // clear did); the audio thread zeroes it again when it clears.
+    void requestBandClear(int band) noexcept
+    {
+        if (band < 0 || band >= kMaxBands) return;
+        bands_[band].dynActivation.store(0.0f, std::memory_order_relaxed);
+        pendingBandClear_.fetch_or(1u << band, std::memory_order_relaxed);
+    }
+
+    // Reads every parameter processEffect uses (relaxed atomic loads only).
+    void readParamsInto(ParamSnapshot& s) const noexcept
+    {
+        s.count = std::clamp(bandCount_.load(std::memory_order_relaxed), 0, kMaxBands);
+        s.linPhase   = linPhasePtr_   ? linPhasePtr_->load(std::memory_order_relaxed)   : 0.0f;
+        s.oversample = oversamplePtr_ ? oversamplePtr_->load(std::memory_order_relaxed) : 0.0f;
+        s.spectralEngine  = spectralEnginePtr_  ? spectralEnginePtr_->load(std::memory_order_relaxed)
+                                                : static_cast<float>(kSpectralEngineLegacy);
+        s.spectralQuality = spectralQualityPtr_ ? spectralQualityPtr_->load(std::memory_order_relaxed)
+                                                : static_cast<float>(kDefaultSpectralQuality);
+        for (int b = 0; b < s.count; ++b)
+        {
+            const auto& bs = bands_[b];
+            auto& o = s.band[b];
+            auto rd = [](const std::atomic<float>* p, float fallback) noexcept {
+                return p ? p->load(std::memory_order_relaxed) : fallback;
+            };
+            o.freq        = rd(bs.freqPtr, 1000.0f);
+            o.gain        = rd(bs.gainPtr, 0.0f);
+            o.q           = rd(bs.qPtr, 0.707f);
+            o.type        = rd(bs.typePtr, 0.0f);
+            o.enabled     = rd(bs.enabledPtr, 1.0f);
+            o.channel     = rd(bs.channelPtr, 0.0f);
+            o.mode        = rd(bs.modePtr, 0.0f);
+            o.slope       = rd(bs.slopePtr, static_cast<float>(eqslope::kDefaultSlope));
+            o.dynThresh  = rd(bs.dynThreshPtr, -20.0f);
+            o.dynRatio    = rd(bs.dynRatioPtr, 4.0f);
+            o.dynAttack   = rd(bs.dynAttackPtr, 10.0f);
+            o.dynRelease  = rd(bs.dynReleasePtr, 100.0f);
+            o.dynRange    = rd(bs.dynRangePtr, 12.0f);
+            o.specSens    = rd(bs.specSensPtr, 0.5f);
+            o.specSel     = rd(bs.specSelPtr, 5.0f);
+            o.specAttack  = rd(bs.specAttackPtr, 10.0f);
+            o.specRelease = rd(bs.specReleasePtr, 100.0f);
+        }
+    }
+
+    // Audio thread, once at the top of processEffect. Wait-free: one copy of
+    // the parameters, accepted only if no edit overlapped it; otherwise the
+    // previous block's snapshot stays in force for this block. The band clears
+    // requested inside an edit are applied with the first snapshot that
+    // contains that edit. No allocation, no lock, no logging.
+    void takeParamSnapshot() noexcept
+    {
+        const std::uint32_t s1 = editSeq_.load(std::memory_order_acquire);
+        bool accepted = false;
+        if ((s1 & 1u) == 0u || !snapshotSeqCheck_)
+        {
+            readParamsInto(snapWork_);
+            if (pendingBandClear_.load(std::memory_order_relaxed) != 0u)
+                deferredBandClear_ |= pendingBandClear_.exchange(0u, std::memory_order_acq_rel);
+            if (pendingRestoreSnap_.load(std::memory_order_relaxed))
+                deferredRestoreSnap_ = pendingRestoreSnap_.exchange(false, std::memory_order_acq_rel) || deferredRestoreSnap_;
+            std::atomic_thread_fence(std::memory_order_acquire);
+            accepted = !snapshotSeqCheck_ || editSeq_.load(std::memory_order_relaxed) == s1;
+        }
+
+        if (!accepted)
+        {
+            ++snapshotsKept_;
+            return;
+        }
+
+        snap_ = snapWork_;
+        ++snapshotsAccepted_;
+        if (deferredRestoreSnap_)
+        {
+            restoreSnapPending_ = true;
+            deferredRestoreSnap_ = false;
+        }
+        if (deferredBandClear_ != 0u)
+        {
+            for (int b = 0; b < kMaxBands; ++b)
+                if ((deferredBandClear_ & (1u << b)) != 0u)
+                    bands_[b].clearState();
+            deferredBandClear_ = 0u;
+        }
+    }
+
+    // ── [EQCore] Spectral structure (audio thread) ──────────────────────────
+    // kind: which renderer the Spectral bands use. chan: the Core's channel
+    // mode (ChannelMode value), only meaningful for the Core.
+    static constexpr int kSpecKindNone   = 0;   // no active Spectral band (or linear phase)
+    static constexpr int kSpecKindLegacy = 1;   // the 4096 STFT path
+    static constexpr int kSpecKindCore   = 2;   // xleth::dsp::resonance::Core
+    static constexpr double kStructureFadeMs = 5.0;
+    // The Core's default stereo link: 1 = both channels get the larger of the
+    // two channels' cuts. The Legacy path applies ONE mask (detected on L) to
+    // both channels; link 1 keeps that "one mask, image preserved" behaviour
+    // while detecting on both channels. Not a parameter (yet): see
+    // setSpectralCoreStereoLinkForBench.
+    static constexpr float kCoreDefaultStereoLink = 1.0f;
+    // Hard knee: the core's depth ceiling is 24 dB x depth; a band's |gain| (dB)
+    // maps onto it (deeper bands clamp at 24 dB).
+    static constexpr float kCoreMaxDepthDb = 24.0f;
+
+    struct SpecStructure
+    {
+        int kind = kSpecKindNone;
+        int chan = 0;
+    };
+
+    static bool sameSpecStructure(const SpecStructure& a, const SpecStructure& b) noexcept
+    {
+        if (a.kind != b.kind) return false;
+        return a.kind != kSpecKindCore || a.chan == b.chan;
+    }
+
+    // None <-> Legacy (and Legacy <-> Legacy): the Legacy path's own semantics,
+    // adopted at once (bit-identical to the EQ before the core).
+    static bool isLegacyOnlyEdge(const SpecStructure& a, const SpecStructure& b) noexcept
+    {
+        return a.kind != kSpecKindCore && b.kind != kSpecKindCore;
+    }
+
+    // The Core's channel mode: the routing all enabled Spectral bands share.
+    // ONE core instance processes one channel configuration, so bands that ask
+    // for different routings cannot all be honoured: the Core then runs Stereo
+    // (both channels, the Legacy semantics) and reports the conflict
+    // (isSpectralCoreChannelConflict). Mono input folds to Stereo, as every
+    // routing does.
+    int spectralCoreChannelMode(const ParamSnapshot& P, int count, int numCh, bool& conflict) const noexcept
+    {
+        conflict = false;
+        int mode = -1;
+        for (int b = 0; b < count; ++b)
+        {
+            // From the snapshot (prepare / reset run before any block latched
+            // bands_[b].mode / enabled); the same conversions as the latch.
+            if (static_cast<int>(P.band[b].mode) != 2 || !(P.band[b].enabled > 0.5f)) continue;
+            int c = static_cast<int>(P.band[b].channel);
+            if (c < 0 || c >= kNumChannelModes) c = 0;
+            if (mode < 0) mode = c;
+            else if (mode != c) conflict = true;
+        }
+        if (mode < 0 || conflict || numCh < 2)
+            return static_cast<int>(ChannelMode::Stereo);
+        return mode;
+    }
+
+    SpecStructure targetSpecStructure(bool anySpectral, const ParamSnapshot& P, int count, int numCh) noexcept
+    {
+        SpecStructure s;
+        if (!anySpectral)
+            return s;
+        const int engine = std::clamp(static_cast<int>(P.spectralEngine), 0, 1);
+        if (engine != kSpectralEngineCore)
+        {
+            s.kind = kSpecKindLegacy;
+            return s;
+        }
+        bool conflict = false;
+        s.kind = kSpecKindCore;
+        s.chan = spectralCoreChannelMode(P, count, numCh, conflict);
+        coreChannelConflict_.store(conflict, std::memory_order_relaxed);
+        return s;
+    }
+
+    // Start of a block. Returns whether the base class takes this block's
+    // bypass dry from us (alignedBypass_ as it read it). Legacy-only edges are
+    // adopted at once; an edge involving the Core starts the output fade-out,
+    // but only in a block whose bypass dry the base took from us (otherwise
+    // alignedBypass_ becomes true at the end of this block and the fade starts
+    // with the next one, so a bypassed output fades instead of stepping).
+    bool beginStructureBlock(const SpecStructure& target) noexcept
+    {
+        const bool baseUsesOurDry = alignedBypass_;
+        blockBypassDryIsCore_ = specActive_.kind == kSpecKindCore;
+        if (structFadingOut_)
+        {
+            specTargetStructure_ = target;   // adopted when the fade-out completes
+        }
+        else if (!sameSpecStructure(target, specActive_))
+        {
+            if (isLegacyOnlyEdge(specActive_, target))
+            {
+                specActive_ = target;
+                specTargetStructure_ = target;
+            }
+            else if (baseUsesOurDry)
+            {
+                specTargetStructure_ = target;
+                structFadingOut_ = true;
+                structFadePos_ = 0;
+            }
+        }
+        return baseUsesOurDry;
+    }
+
+    // Fades the INPUT in after a structural switch: the target renderer was
+    // reset, so its history is silence; ramping what enters it (and the dry it
+    // aligns) makes its output start as a 5 ms ramp after its latency instead of
+    // a step. A no-op outside a transition.
+    void applyInputFadeIn(juce::AudioBuffer<float>& buffer, int channels, int numSamples) noexcept
+    {
+        if (inputFadePos_ >= structFadeLen_ || channels <= 0)
+            return;
+        const float inv = 1.0f / static_cast<float>(structFadeLen_);
+        int pos = inputFadePos_;
+        for (int s = 0; s < numSamples && pos < structFadeLen_; ++s, ++pos)
+        {
+            const float r = static_cast<float>(pos + 1) * inv;
+            for (int ch = 0; ch < channels; ++ch)
+                buffer.getWritePointer(ch)[s] *= r;
+        }
+        inputFadePos_ = pos;
+    }
+
+    // Fade-out gain (1 -> 0 over 5 ms) of a pending structural change on the
+    // output and on this block's bypass dry; the target is adopted at the block
+    // boundary where the gain reached 0 (the rest of that block is silence).
+    // Then alignedBypass_ for the NEXT block (the base reads it before
+    // processEffect).
+    void finishStructureBlock(juce::AudioBuffer<float>& buffer, int channels, int numSamples,
+                              const SpecStructure& target) noexcept
+    {
+        if (structFadingOut_)
+        {
+            auto& bypassDry = blockBypassDryIsCore_ ? coreDry_ : liveDry_;
+            const bool scaleBypassDry = bypassDry.getNumSamples() >= numSamples;
+            const int bypassChannels = std::min(channels, bypassDry.getNumChannels());
+            const float inv = 1.0f / static_cast<float>(structFadeLen_);
+            int pos = structFadePos_;
+            for (int s = 0; s < numSamples; ++s)
+            {
+                const float g = pos < structFadeLen_ ? 1.0f - static_cast<float>(pos + 1) * inv : 0.0f;
+                if (pos < structFadeLen_) ++pos;
+                for (int ch = 0; ch < channels; ++ch)
+                    buffer.getWritePointer(ch)[s] *= g;
+                if (scaleBypassDry)
+                    for (int ch = 0; ch < bypassChannels; ++ch)
+                        bypassDry.getWritePointer(ch)[s] *= g;
+            }
+            structFadePos_ = pos;
+            if (structFadePos_ >= structFadeLen_)
+                adoptSpecStructure(specTargetStructure_, true);
+        }
+
+        alignedBypass_ = specActive_.kind == kSpecKindCore
+                      || structFadingOut_
+                      || inputFadePos_ < structFadeLen_
+                      || (!sameSpecStructure(target, specActive_) && !isLegacyOnlyEdge(specActive_, target));
+    }
+
+    // Makes `s` the active structure. Resets the renderer it selects when it
+    // comes from somewhere else: the Core restarts from cleared state on the
+    // requested tier; the Legacy stream is rewound (fresh, no own fade-in: the
+    // input fade-in, or a restore's fresh start, provides the onset) when it
+    // takes over from the Core. RT-safe: every engine was built in prepare.
+    // Also used by prepare / reset / state restore (fadeIn = false).
+    void adoptSpecStructure(const SpecStructure& s, bool fadeIn) noexcept
+    {
+        const SpecStructure prev = specActive_;
+        specActive_ = s;
+        specTargetStructure_ = s;
+        structFadingOut_ = false;
+        structFadePos_ = 0;
+        inputFadePos_ = fadeIn ? 0 : structFadeLen_;
+
+        if (s.kind == kSpecKindCore)
+        {
+            resetCoreOnTier(std::clamp(static_cast<int>(snap_.spectralQuality), 0, kNumSpectralQualities - 1));
+            coreRegionsValid_ = false;
+        }
+        else if (s.kind == kSpecKindLegacy && prev.kind == kSpecKindCore)
+        {
+            resetSTFTStream();
+            for (int b = 0; b < kMaxBands; ++b)
+                std::fill(bands_[b].specBinEnv.begin(), bands_[b].specBinEnv.end(), 1.0f);
+            stftNeedsRestart_ = false;
+            stftFadeIn_ = false;
+        }
+
+        alignedBypass_ = s.kind == kSpecKindCore || fadeIn;
+        if (fadeIn)
+            structureSwitchCount_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    // Puts the core on `quality`'s tier with cleared state, without a tier
+    // crossfade: a pending request is adopted by a zero-length process() and the
+    // transition it starts is completed at once by reset() (ResonanceCore.md
+    // 9.7). The same recipe as the Resonance Suppressor.
+    void resetCoreOnTier(int quality) noexcept
+    {
+        coreRequestedQuality_ = quality;
+        if (core_.sampleRate() <= 0.0)
+            return;
+        if (static_cast<int>(core_.targetFrameTier()) != std::clamp(quality, 0, kNumSpectralQualities - 1))
+        {
+            core_.requestTier(tierForQuality(quality));
+            float* none[1] = { coreDryMono_.empty() ? nullptr : coreDryMono_.data() };
+            if (none[0] != nullptr)
+                core_.process(none, 1, 0, xleth::dsp::resonance::Params{});
+        }
+        core_.reset();
+    }
+
+    // Legacy threshold (local envelope x (1 + spec_sens x spec_sel)) in dB, and
+    // its mapping onto the core's sensitivity (sigma threshold 6 - 4 s): the
+    // same direction (lower threshold = more sensitive) with the Legacy default
+    // (0.5, 5: 10.9 dB) on the core default 0.5 EXACTLY, 0 dB on 1 (most
+    // sensitive), twice the default (21.8 dB) and above on 0.
+    static float coreSensitivityFor(float specSens, float specSel) noexcept
+    {
+        const float thrDb = 20.0f * std::log10(std::max(1.0f + specSens * specSel, 1.0e-6f));
+        const float defDb = 20.0f * std::log10(1.0f + 0.5f * 5.0f);
+        return std::clamp(1.0f - thrDb / (2.0f * defDb), 0.0f, 1.0f);
+    }
+
+    // The regions: every enabled Spectral band with a cut (gain < 0) is one
+    // region of ONE weight curve on the core's band grid. A region is the
+    // band's own bell (the Legacy influence zone: an RBJ bell at the band's
+    // freq / Q and |gain| dB, normalised to 1 at its centre), scaled by
+    // min(|gain|, 24) / D, where D is the deepest region's min(|gain|, 24); the
+    // core's depth is D / 24 (Hard). The union is the maximum over regions.
+    // Recomputed only when a region's (smoothed) freq / Q / gain moves by more
+    // than the Legacy weight cache's thresholds or the set of regions changes
+    // (pre-sized std::arrays: no allocation). The detector settings the core
+    // shares between regions (sensitivity, attack, release) come from the
+    // DOMINANT region: the deepest cut, the lowest band index on a tie.
+    void refreshCoreRegions(const ParamSnapshot& P, int count) noexcept
+    {
+        std::uint32_t mask = 0;
+        bool changed = !coreRegionsValid_;
+        for (int b = 0; b < count; ++b)
+        {
+            if (bands_[b].mode != 2 || !bands_[b].enabled) continue;
+            mask |= 1u << b;
+            const auto& bs = bands_[b];
+            const float f = std::max(bs.freqSmooth.getCurrentValue(), 20.0f);
+            const float q = std::max(bs.qSmooth.getCurrentValue(), 0.1f);
+            const float g = bs.gainSmooth.getCurrentValue();
+            const int shape = regionShapeKey(static_cast<BandType>(static_cast<int>(P.band[b].type)),
+                                             eqslope::clampSlope(P.band[b].slope));
+            auto& key = coreRegionKey_[b];
+            const bool wasRegion = (coreRegionMask_ & (1u << b)) != 0u;
+            if (!wasRegion
+                || key.shape != shape
+                || std::abs(f - key.freq) > key.freq * 0.001f
+                || std::abs(q - key.q) > 0.001f
+                || std::abs(g - key.gain) > 0.01f)
+            {
+                key.freq = f; key.q = q; key.gain = g; key.shape = shape;
+                changed = true;
+            }
+        }
+        if (mask != coreRegionMask_) changed = true;
+        coreRegionMask_ = mask;
+
+        float depthDb = 0.0f;
+        int dominant = -1;
+        std::uint32_t upward = 0;
+        for (int b = 0; b < count; ++b)
+        {
+            if ((mask & (1u << b)) == 0u) continue;
+            const float g = coreRegionKey_[b].gain;
+            if (g < 0.0f)
+            {
+                const float d = std::min(-g, kCoreMaxDepthDb);
+                if (d > depthDb) { depthDb = d; dominant = b; }
+            }
+            else if (g > 0.0f)
+            {
+                upward |= 1u << b;
+            }
+        }
+        coreUpwardMask_.store(upward, std::memory_order_relaxed);
+
+        coreDepthDb_ = depthDb;
+        if (dominant >= 0)
+        {
+            const auto& bp = P.band[dominant];
+            coreSensitivity_ = coreSensitivityFor(bp.specSens, bp.specSel);
+            coreAttackMs_ = bp.specAttack;
+            coreReleaseMs_ = bp.specRelease;
+        }
+
+        if (!changed)
+            return;
+
+        // Per region: its bell's coefficients (computeCoefficients is pure
+        // arithmetic + std::cos / sin / pow on scalars; no allocation).
+        // A Low / High Pass region (cut) is its slope's cascade instead: see
+        // updateSpectralWeights for the shape.
+        struct Bell { float b0, b1, b2, a1, a2, shapeDb, scale; bool on; bool cut; eqslope::Cascade casc; };
+        Bell bells[kMaxBands];
+        for (int b = 0; b < kMaxBands; ++b)
+        {
+            bells[b].on = false;
+            bells[b].cut = false;
+            if (b >= count || (mask & (1u << b)) == 0u || depthDb <= 0.0f) continue;
+            const auto& key = coreRegionKey_[b];
+            if (key.gain >= 0.0f) continue;   // upward / inert: not expressible by the core (cuts only)
+            const float shapeDb = std::max(std::abs(key.gain), 1.0f);
+            const double sr = sampleRate_.load(std::memory_order_relaxed);
+            const auto type = static_cast<BandType>(static_cast<int>(P.band[b].type));
+            if (isCutType(type))
+            {
+                bells[b].cut = true;
+                bells[b].shapeDb = shapeDb;
+                bells[b].scale = std::min(-key.gain, kCoreMaxDepthDb) / depthDb;
+                bells[b].on = true;
+                computeBandCascade(bells[b].casc, type, key.freq, 0.0f, key.q,
+                                   eqslope::clampSlope(P.band[b].slope), sr);
+                continue;
+            }
+            BandState tmp;
+            computeCoefficients(tmp, BandType::Bell, key.freq, shapeDb, key.q, sr);
+            bells[b].b0 = tmp.b0; bells[b].b1 = tmp.b1; bells[b].b2 = tmp.b2;
+            bells[b].a1 = tmp.a1; bells[b].a2 = tmp.a2; bells[b].shapeDb = shapeDb;
+            bells[b].scale = std::min(-key.gain, kCoreMaxDepthDb) / depthDb;
+            bells[b].on = true;
+        }
+
+        const int bands = std::min(core_.numBands(), xleth::dsp::resonance::kGridBands);
+        for (int k = 0; k < bands; ++k)
+        {
+            const float cw = coreGridCosW_[static_cast<std::size_t>(k)], sw = coreGridSinW_[static_cast<std::size_t>(k)];
+            const float c2 = coreGridCos2W_[static_cast<std::size_t>(k)], s2 = coreGridSin2W_[static_cast<std::size_t>(k)];
+            float w = 0.0f;
+            int owner = -1;
+            for (int b = 0; b < kMaxBands; ++b)
+            {
+                if (!bells[b].on) continue;
+                const Bell& h = bells[b];
+                if (h.cut)
+                {
+                    const float wc = cutRegionShape(h.casc, cw, sw, c2, s2, h.shapeDb) * h.scale;
+                    if (wc > w) { w = wc; owner = b; }
+                    continue;
+                }
+                const float nRe = h.b0 + h.b1 * cw + h.b2 * c2;
+                const float nIm =      - h.b1 * sw - h.b2 * s2;
+                const float dRe = 1.0f + h.a1 * cw + h.a2 * c2;
+                const float dIm =      - h.a1 * sw - h.a2 * s2;
+                const float dMagSq = dRe * dRe + dIm * dIm;
+                const float magSq = dMagSq > 1.0e-30f ? (nRe * nRe + nIm * nIm) / dMagSq : 1.0f;
+                const float shape = std::clamp(10.0f * std::log10(std::max(magSq, 1.0e-30f)) / h.shapeDb, 0.0f, 1.0f);
+                const float wb = shape * h.scale;
+                if (wb > w) { w = wb; owner = b; }
+            }
+            coreWeights_[static_cast<std::size_t>(k)] = w;
+            coreOwner_[static_cast<std::size_t>(k)] = owner;
+        }
+        coreRegionsValid_ = true;
+    }
+
+    xleth::dsp::resonance::Params makeCoreParams() const noexcept
+    {
+        xleth::dsp::resonance::Params p;
+        p.depth       = std::clamp(coreDepthDb_ / kCoreMaxDepthDb, 0.0f, 1.0f);
+        p.hardKnee    = true;
+        p.sensitivity = coreSensitivity_;
+        p.attackMs    = coreAttackMs_;
+        p.releaseMs   = coreReleaseMs_;
+        p.stereoLink  = coreStereoLink_;
+        p.weightCurve = coreFlatWeights_ ? nullptr : coreWeights_.data();
+        return p;
+    }
+
+    // The Spectral bands through the core, in place on `buffer` (in the Legacy
+    // path's position: before the biquad cascade). Fills coreDry_ (the input on
+    // the wet output's exact timeline: the bypass dry while the Core runs).
+    // Audio thread: no allocation, lock or log.
+    void processCoreBlock(juce::AudioBuffer<float>& buffer, int numCh, int numSamples,
+                          const ParamSnapshot& P, int count, int quality, bool targetIsCore) noexcept
+    {
+        const int cap = coreDry_.getNumSamples();
+        if (core_.sampleRate() <= 0.0 || numCh <= 0 || numSamples > cap
+            || static_cast<int>(coreAuxIn_.size()) < numSamples)
+        {
+            // Not prepared, or a block larger than prepared (hosts never do
+            // this; the base class's own dry buffer has the same limit).
+            buffer.clear();
+            coreDry_.clear();
+            return;
+        }
+
+        // Quality on the Core is a live tier request, never a reprepare / reset.
+        if (quality != coreRequestedQuality_)
+        {
+            core_.requestTier(tierForQuality(quality));
+            coreRequestedQuality_ = quality;
+        }
+
+        // While fading OUT towards another structure the regions and shared
+        // settings stay what they were (the band that is going away keeps
+        // its cut until the output is silent).
+        if (targetIsCore || !coreRegionsValid_)
+            refreshCoreRegions(P, count);
+        const xleth::dsp::resonance::Params params = makeCoreParams();
+
+        float* outL = buffer.getWritePointer(0);
+        float* outR = numCh > 1 ? buffer.getWritePointer(1) : nullptr;
+        float* dryL = coreDry_.getWritePointer(0);
+        float* dryR = coreDry_.getWritePointer(1);
+        float* comp = coreComp_.data();
+        float* aux = coreAuxIn_.data();
+        float* auxOut = coreAuxOut_.data();
+        float* dryMono = coreDryMono_.data();
+        const int mode = numCh > 1 ? specActive_.chan : static_cast<int>(ChannelMode::Stereo);
+
+        const bool timeCore = isRealtimeTimingEnabled();
+        const std::uint64_t coreStartNs = timeCore ? realtimeNowNs() : 0;
+
+        int processed = 1;
+        switch (static_cast<ChannelMode>(mode))
+        {
+        case ChannelMode::Left:
+        case ChannelMode::Right:
+        {
+            // One channel through the core (channel 0), the other delay-only
+            // through the aux channel on the dry timeline: bit-identical, just
+            // delayed (ResonanceCore.md 9.2).
+            float* proc  = mode == static_cast<int>(ChannelMode::Left) ? outL : outR;
+            float* other = mode == static_cast<int>(ChannelMode::Left) ? outR : outL;
+            float* procDry  = mode == static_cast<int>(ChannelMode::Left) ? dryL : dryR;
+            float* otherDry = mode == static_cast<int>(ChannelMode::Left) ? dryR : dryL;
+            std::copy(other, other + numSamples, aux);
+            float* ch[1] = { proc };
+            float* dry[1] = { procDry };
+            core_.process(ch, 1, numSamples, params, dry, aux, auxOut);
+            std::copy(auxOut, auxOut + numSamples, other);
+            std::copy(auxOut, auxOut + numSamples, otherDry);
+            break;
+        }
+        case ChannelMode::Mid:
+        {
+            // M as the core's channel 0, S delay-only: L' = M' + S_d, R' = M' - S_d.
+            for (int s = 0; s < numSamples; ++s)
+            {
+                comp[s] = 0.5f * (outL[s] + outR[s]);
+                aux[s]  = 0.5f * (outL[s] - outR[s]);
+            }
+            float* ch[1] = { comp };
+            float* dry[1] = { dryMono };
+            core_.process(ch, 1, numSamples, params, dry, aux, auxOut);
+            for (int s = 0; s < numSamples; ++s)
+            {
+                const float side = auxOut[s];
+                outL[s] = comp[s] + side;
+                outR[s] = comp[s] - side;
+                dryL[s] = dryMono[s] + side;
+                dryR[s] = dryMono[s] - side;
+            }
+            break;
+        }
+        case ChannelMode::Side:
+        {
+            // S as the core's channel 0, M delay-only: L' = M_d + S', R' = M_d - S'.
+            for (int s = 0; s < numSamples; ++s)
+            {
+                comp[s] = 0.5f * (outL[s] - outR[s]);
+                aux[s]  = 0.5f * (outL[s] + outR[s]);
+            }
+            float* ch[1] = { comp };
+            float* dry[1] = { dryMono };
+            core_.process(ch, 1, numSamples, params, dry, aux, auxOut);
+            for (int s = 0; s < numSamples; ++s)
+            {
+                const float mid = auxOut[s];
+                outL[s] = mid + comp[s];
+                outR[s] = mid - comp[s];
+                dryL[s] = mid + dryMono[s];
+                dryR[s] = mid - dryMono[s];
+            }
+            break;
+        }
+        case ChannelMode::Stereo:
+        default:
+            if (numCh > 1)
+            {
+                float* ch[2] = { outL, outR };
+                float* dry[2] = { dryL, dryR };
+                core_.process(ch, 2, numSamples, params, dry);
+                processed = 2;
+            }
+            else
+            {
+                float* ch[1] = { outL };
+                float* dry[1] = { dryL };
+                core_.process(ch, 1, numSamples, params, dry);
+            }
+            break;
+        }
+
+        if (timeCore)
+            recordRealtimeSection("eq_core", realtimeNowNs() - coreStartNs);
+
+        // Per-band GR meter (eqGetBandGR): unchanged schema and scale, signed dB,
+        // negative = cut. A band shows the deepest applied cut over the grid
+        // bands its region owns (the core's last frame, every processed channel).
+        // Upward (gain > 0) and inert bands read 0 on the Core (cuts only).
+        float deepest[kMaxBands] = {};
+        const int bandsN = std::min(core_.numBands(), xleth::dsp::resonance::kGridBands);
+        for (int c = 0; c < processed; ++c)
+        {
+            const float* red = core_.bandReductionDb(c);
+            for (int k = 0; k < bandsN; ++k)
+            {
+                const int o = coreOwner_[static_cast<std::size_t>(k)];
+                if (o >= 0 && red[k] > deepest[o]) deepest[o] = red[k];
+            }
+        }
+        for (int b = 0; b < count; ++b)
+            if (bands_[b].mode == 2)
+                bandGR_[b].store(bands_[b].enabled && deepest[b] > 0.0f ? -deepest[b] : 0.0f,
+                                 std::memory_order_relaxed);
     }
 
     // ── Per-band state ───────────────────────────────────────────────────────
@@ -913,20 +2172,47 @@ private:
         std::atomic<float>* qPtr       = nullptr;
         std::atomic<float>* typePtr    = nullptr;
         std::atomic<float>* enabledPtr = nullptr;
+        std::atomic<float>* channelPtr = nullptr;
+        std::atomic<float>* slopePtr   = nullptr;
 
         // Smoothers (audio thread only)
         juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> freqSmooth;
         juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>         gainSmooth;
         juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> qSmooth;
+        juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>         rangeSmooth;
 
         // Current biquad coefficients (normalised: a0 = 1)
         float b0 = 1.0f, b1 = 0.0f, b2 = 0.0f;
         float a1 = 0.0f, a2 = 0.0f;
 
-        // DFII Transposed state per channel (stereo max)
-        float z1[2]{}, z2[2]{};
+        // DFII Transposed state, one slot per routable signal:
+        //   0 = L, 1 = R, 2 = M, 3 = S.
+        // A band only ever runs in one routing at a time, but keeping all four
+        // slots means switching routing mid-stream never drags foreign state in.
+        float z1[kNumRoutingSlots]{}, z2[kNumRoutingSlots]{};
+
+        // Steep Low / High Pass slopes (18 dB/oct and up, Brickwall): a cascade of
+        // up to kMaxSections biquads in DOUBLE precision (high-Q poles at low
+        // cutoffs do not survive float state). nSec == 0 means the band is the
+        // single float biquad above (every other band, and the 6 / 12 dB slopes),
+        // untouched by this. Same slot layout as z1/z2.
+        int nSec = 0;
+        eqslope::Biquad sec[eqslope::kMaxSections];
+        double zs1[kNumRoutingSlots][eqslope::kMaxSections]{};
+        double zs2[kNumRoutingSlots][eqslope::kMaxSections]{};
+        int cascadeSlope = -1;           // slope the cascade state belongs to, -1 = not a cascade
+
+        void clearCascadeState()
+        {
+            for (int i = 0; i < kNumRoutingSlots; ++i)
+                for (int k = 0; k < eqslope::kMaxSections; ++k)
+                    zs1[i][k] = zs2[i][k] = 0.0;
+        }
 
         bool enabled = true;
+
+        // Channel routing, latched once per block (see ChannelMode).
+        int channel = 0;
 
         // ── Mode (0=Normal, 1=Dynamic, 2=Spectral) ─────────────────────────
         std::atomic<float>* modePtr = nullptr;
@@ -937,6 +2223,7 @@ private:
         std::atomic<float>* dynRatioPtr   = nullptr;
         std::atomic<float>* dynAttackPtr  = nullptr;
         std::atomic<float>* dynReleasePtr = nullptr;
+        std::atomic<float>* dynRangePtr   = nullptr;
 
         // Dedicated sidechain BPF coefficients (constant-skirt, peak 0 dB).
         // Recomputed once per block from smoothed freq/Q; independent of band gain.
@@ -944,35 +2231,50 @@ private:
         float sc_a1 = 0.0f, sc_a2 = 0.0f;
 
         // Dynamic EQ runtime state (audio thread)
-        float sc_z1[2]{}, sc_z2[2]{};   // sidechain bandpass DFII state
+        // Same slot layout as z1/z2: the detector follows the band's routing.
+        float sc_z1[kNumRoutingSlots]{}, sc_z2[kNumRoutingSlots]{};
         std::atomic<float> dynActivation{0.0f}; // activation [0,1]: 0 = band off, 1 = at target
         float dynAttackCoeff = 0.0f;     // one-pole attack coefficient
         float dynReleaseCoeff = 0.0f;    // one-pole release coefficient
-#ifdef XLETH_DEBUG
+#ifdef XLETH_RT_TRACE
         int dynLogCounter = 0;
         int specLogCounter = 0;
 #endif
 
         // ── Spectral Dynamics APVTS pointers ────────────────────────────────
+        // Spectral depth is NOT its own parameter: the band's gain knob is the
+        // signed depth in dB (see processSTFTFrame).
         std::atomic<float>* specSensPtr    = nullptr;
-        std::atomic<float>* specDepthPtr   = nullptr;
         std::atomic<float>* specSelPtr     = nullptr;
         std::atomic<float>* specAttackPtr  = nullptr;
         std::atomic<float>* specReleasePtr = nullptr;
 
         // Per-bin spectral reduction envelope, smoothed across STFT frames.
-        // Value in [0, 1+]: 1 = no change, <1 = attenuation toward depthLin,
-        // >1 = boost (upward spectral). Sized kSTFTSize/2 in prepareEffect.
+        // Value in [0, 1+]: 1 = no change, <1 = attenuation, >1 = boost
+        // (upward spectral). Sized kSTFTSize/2 in prepareEffect.
         std::vector<float> specBinEnv;
+
+        // Per-bin bell influence weight in [0, 1]: 1 at the band centre,
+        // falling off with the band's own Q so the suppression profile has the
+        // shape getResponseCurve draws. Sized kSTFTSize/2 in prepareEffect,
+        // rebuilt only when the cached freq/Q/|depth| below move materially.
+        std::vector<float> specBinWeight;
+        float specWeightFreq  = -1.0f;   // < 0 = never built
+        float specWeightQ     = 0.0f;
+        float specWeightDepth = 0.0f;
+        int   specWeightShape = -1;      // shape the weight was built for (see regionShapeKey)
 
         void clearState()
         {
-            z1[0] = z1[1] = 0.0f;
-            z2[0] = z2[1] = 0.0f;
-            sc_z1[0] = sc_z1[1] = 0.0f;
-            sc_z2[0] = sc_z2[1] = 0.0f;
+            for (int i = 0; i < kNumRoutingSlots; ++i)
+            {
+                z1[i] = z2[i] = 0.0f;
+                sc_z1[i] = sc_z2[i] = 0.0f;
+            }
+            clearCascadeState();
             dynActivation.store(0.0f, std::memory_order_relaxed);
             std::fill(specBinEnv.begin(), specBinEnv.end(), 1.0f);
+            specWeightFreq = -1.0f;   // force a weight rebuild
         }
     };
 
@@ -1023,9 +2325,93 @@ private:
     // ── STFT state (Spectral Dynamics) ──────────────────────────────────────
     std::vector<float> stftInRing_[2];
     std::vector<float> stftOutRing_[2];
-    int stftWritePos_ = 0;
-    int stftSinceLastFrame_ = 0;
-    float stftWindow_[kSTFTSize]{};
+
+    // Absolute sample counters (WOLA scheduling, mirrors SpectralChannelState).
+    // Both channels advance in lockstep, so one set covers the pair.
+    std::int64_t stftSamplesWritten_ = 0;   // inputs accepted
+    std::int64_t stftSamplesEmitted_ = 0;   // outputs handed back
+    std::int64_t stftNextFrameStart_ = 0;   // start of the next frame to run
+
+    // Audio thread only. stftNeedsRestart_: a block has run with the STFT path
+    // inactive since the last prepare/reset, so the rings are stale and the next
+    // active block must rewind them. stftFadeIn_: ramp the first real output of
+    // a restarted stream (see processEffect).
+    bool stftNeedsRestart_ = false;
+    bool stftFadeIn_       = false;
+
+    // Set by onBypassChanged(false) (non-audio thread), consumed with an
+    // exchange at the top of processEffect, which folds it into
+    // stftNeedsRestart_ so the SAME rewind + envelope reset + fade-in runs.
+    // A bypassed effect never reaches processEffect, so the "inactive last
+    // block" edge detection cannot see a bypass.
+    std::atomic<bool> pendingStreamReset_{false};
+
+    // ── Parameter snapshot / edits ([EQCore] locking fix) ───────────────────
+    std::mutex editMutex_;                        // edit writers only (never the audio thread)
+    std::mutex latencyRefreshMutex_;              // refreshLatencySamples writers only (never the audio thread)
+    std::atomic<std::uint32_t> editSeq_{0};       // odd while an edit runs
+    std::atomic<std::uint32_t> pendingBandClear_{0};   // bit b: clear band b's DSP state
+    ParamSnapshot snap_;                          // audio thread: the block's parameters
+    ParamSnapshot snapWork_;                      // audio thread: copy in progress
+    std::uint32_t deferredBandClear_ = 0;         // audio thread: clears waiting for an accepted snapshot
+    std::uint64_t snapshotsAccepted_ = 0;         // audio thread (tests)
+    std::uint64_t snapshotsKept_ = 0;             // audio thread (tests)
+    bool snapshotSeqCheck_ = true;                // tests: negative control switch
+
+    // ── [EQCore] core engine (built in prepareEffect, never later) ──────────
+    std::atomic<float>* spectralEnginePtr_  = nullptr;
+    std::atomic<float>* spectralQualityPtr_ = nullptr;
+    xleth::dsp::resonance::Core core_;
+    juce::AudioBuffer<float> coreDry_;            // aligned dry L / R (the bypass dry while Core runs)
+    juce::AudioBuffer<float> liveDry_;            // live input (bypass dry during a transition off Core)
+    std::vector<float> coreDryMono_;              // dryOut of core channel 0 (routed modes)
+    std::vector<float> coreAuxIn_;                // routed modes: the unprocessed component
+    std::vector<float> coreAuxOut_;               // ... on the dryOut timeline
+    std::vector<float> coreComp_;                 // routed modes: the processed component (M or S)
+    std::array<float, xleth::dsp::resonance::kGridBands> coreWeights_ {};   // the regions' union, core grid
+    std::array<int,   xleth::dsp::resonance::kGridBands> coreOwner_ {};     // band whose region owns grid band k (-1 none)
+    std::array<float, xleth::dsp::resonance::kGridBands> coreGridCosW_ {};
+    std::array<float, xleth::dsp::resonance::kGridBands> coreGridSinW_ {};
+    std::array<float, xleth::dsp::resonance::kGridBands> coreGridCos2W_ {};
+    std::array<float, xleth::dsp::resonance::kGridBands> coreGridSin2W_ {};
+    bool coreRegionsValid_ = false;
+    int  coreRequestedQuality_ = kDefaultSpectralQuality;
+    int  coreInstanceIndex_ = -1;
+    inline static std::atomic<int> sCoreInstanceCounter_ { 0 };
+
+    // [EQCore] regions (audio thread): the cached shape per band, the region
+    // set, the core's depth and the shared detector settings of the dominant
+    // region (Legacy defaults until a region exists).
+    struct RegionKey { float freq = 1000.0f, q = 0.707f, gain = 0.0f; int shape = 0; };
+    RegionKey coreRegionKey_[kMaxBands];
+    std::uint32_t coreRegionMask_ = 0;
+    float coreDepthDb_ = 0.0f;
+    float coreSensitivity_ = 0.5f;
+    float coreAttackMs_ = 10.0f;
+    float coreReleaseMs_ = 100.0f;
+    float coreStereoLink_ = kCoreDefaultStereoLink;   // bench / tests override (before processing)
+    bool  coreFlatWeights_ = false;                   // bench / tests: no weight curve (all bands 1)
+    std::atomic<bool> coreChannelConflict_ { false };      // routed Spectral bands disagree (Core runs Stereo)
+    std::atomic<std::uint32_t> coreUpwardMask_ { 0 };      // bands with gain > 0 (the Core cannot boost)
+
+    // [EQCore] structure (audio thread unless noted)
+    SpecStructure specActive_;
+    SpecStructure specTargetStructure_;
+    bool structFadingOut_ = false;
+    int  structFadePos_ = 0;
+    int  structFadeLen_ = 1;
+    int  inputFadePos_ = 1;
+    bool alignedBypass_ = false;          // the value the base reads at the next block start
+    bool blockBypassDryIsCore_ = false;   // this block's bypass dry source (latched)
+    int  lastNumCh_ = 2;
+    bool restoreSnapPending_ = false;
+    bool deferredRestoreSnap_ = false;
+    std::atomic<bool> pendingRestoreSnap_ { false };            // set inside a restore edit
+    std::atomic<std::uint64_t> structureSwitchCount_ { 0 };     // completed fade-out/switch/fade-in (any thread reads)
+    std::atomic<int> spectralLatencyStatus_ { kSTFTLatency };   // parameter path: Legacy 4096 / Core latencyFor
+
+    float stftWindow_[kSTFTSize]{};         // sqrt-Hann (analysis AND synthesis)
+    float stftNorm_[kSTFTHop]{};            // 1/sum(w^2) per hop phase
     std::atomic<bool> hasSpectralBands_{false};
     int  preparedBlockSize_ = 512;
 
@@ -1049,6 +2435,131 @@ private:
     std::vector<float> stftMag_;      // per-bin magnitude (positive freqs, size kSTFTSize/2)
     std::vector<float> stftLogMag_;   // per-bin log magnitude for local-env rolling sum
 
+    // Per-bin e^-jw / e^-j2w tables. Bin frequencies are fixed (w = 2*pi*i/N),
+    // so updateSpectralWeights can evaluate a biquad's |H| per bin without
+    // running any trig on the audio thread. Sized kSTFTSize/2 in prepareEffect.
+    std::vector<float> stftBinCosW_;
+    std::vector<float> stftBinSinW_;
+    std::vector<float> stftBinCos2W_;
+    std::vector<float> stftBinSin2W_;
+
+    // ── Channel routing helpers ─────────────────────────────────────────────
+
+    // Collapse a band's requested routing to what the current context can
+    // actually honour.  Everything that cannot be routed folds to Stereo:
+    //
+    //  • Mono input (numCh < 2) — there is no second channel to route against.
+    //  • Spectral-mode bands (mode == 2) — routing is deliberately NOT
+    //    implemented for these.  M/S spectral processing needs the STFT itself
+    //    run in the M/S domain (a second analysis/synthesis pair plus M/S
+    //    per-bin envelopes), which is a separate unit of work.
+    //  • Linear Phase — deliberately NOT implemented.  Per-channel linear phase
+    //    needs a 2x2 MIMO FIR matrix (four kernels, cross terms included)
+    //    instead of the single shared zero-phase kernel rebuildFIR() produces.
+    //    Also a separate unit of work.
+    static int foldChannelForContext(int channel, int mode, bool linPhaseActive, int numCh)
+    {
+        if (numCh < 2)      return static_cast<int>(ChannelMode::Stereo);
+        if (mode == 2)      return static_cast<int>(ChannelMode::Stereo);
+        if (linPhaseActive) return static_cast<int>(ChannelMode::Stereo);
+        return channel;
+    }
+
+    // One sample through a steep slope's cascade (double DFII-Transposed
+    // sections in series), slot `slot` of the band's cascade state.
+    static inline float cascadeTick(BandState& bs, int slot, float x)
+    {
+        double v = static_cast<double>(x);
+        double* z1 = bs.zs1[slot];
+        double* z2 = bs.zs2[slot];
+        for (int k = 0; k < bs.nSec; ++k)
+        {
+            const auto& c = bs.sec[k];
+            const double y = c.b0 * v + z1[k];
+            z1[k] = c.b1 * v - c.a1 * y + z2[k];
+            z2[k] = c.b2 * v - c.a2 * y;
+            v = y;
+        }
+        return static_cast<float>(v);
+    }
+
+    // One DFII-Transposed biquad step on slot `slot` of the band's state.
+    static inline float biquadTick(BandState& bs, int slot, float x)
+    {
+        if (bs.nSec != 0)
+            return cascadeTick(bs, slot, x);
+
+        const float y  = bs.b0 * x + bs.z1[slot];
+        bs.z1[slot] = bs.b1 * x - bs.a1 * y + bs.z2[slot];
+        bs.z2[slot] = bs.b2 * x - bs.a2 * y;
+        return y;
+    }
+
+    // Run one sample of the whole band cascade over an (L, R) pair, honouring
+    // each band's channel routing.  `hasR` is false for mono input, in which
+    // case every band behaves as Stereo and only L is touched.
+    //
+    // Audio thread; no allocation, no locks, no logging.
+    inline void processCascadeSample(int count, float& L, float& R, bool hasR)
+    {
+        for (int b = 0; b < count; ++b)
+        {
+            auto& bs = bands_[b];
+            if (!bs.enabled || bs.mode == 2) continue;  // Spectral handled by STFT
+
+            switch (static_cast<ChannelMode>(bs.channel))
+            {
+            case ChannelMode::Left:
+                L = biquadTick(bs, kSlotL, L);
+                break;
+
+            case ChannelMode::Right:
+                R = biquadTick(bs, kSlotR, R);
+                break;
+
+            case ChannelMode::Mid:
+            {
+                const float m = 0.5f * (L + R);
+                const float s = 0.5f * (L - R);
+                const float mf = biquadTick(bs, kSlotM, m);
+                L = mf + s;
+                R = mf - s;
+                break;
+            }
+
+            case ChannelMode::Side:
+            {
+                const float m = 0.5f * (L + R);
+                const float s = 0.5f * (L - R);
+                const float sf = biquadTick(bs, kSlotS, s);
+                L = m + sf;
+                R = m - sf;
+                break;
+            }
+
+            case ChannelMode::Stereo:
+            default:
+                L = biquadTick(bs, kSlotL, L);
+                if (hasR) R = biquadTick(bs, kSlotR, R);
+                break;
+            }
+        }
+    }
+
+    // Detector input mix for a routed Dynamic band: x = wL*L + wR*R.
+    // Stereo is handled separately (it sums both channels' detector energy).
+    static void routingDetectorWeights(int channel, float& wL, float& wR, int& slot)
+    {
+        switch (static_cast<ChannelMode>(channel))
+        {
+        case ChannelMode::Left:  wL = 1.0f; wR =  0.0f; slot = kSlotL; break;
+        case ChannelMode::Right: wL = 0.0f; wR =  1.0f; slot = kSlotR; break;
+        case ChannelMode::Mid:   wL = 0.5f; wR =  0.5f; slot = kSlotM; break;
+        case ChannelMode::Side:  wL = 0.5f; wR = -0.5f; slot = kSlotS; break;
+        default:                 wL = 1.0f; wR =  0.0f; slot = kSlotL; break;
+        }
+    }
+
     // ── Sidechain BPF (constant-skirt-gain, peak 0 dB) ──────────────────────
     // Bristow-Johnson "BPF (constant 0 dB peak gain)" form. Independent of
     // band gain — used as the Dynamic-EQ detector so its selectivity does
@@ -1068,6 +2579,85 @@ private:
         bs.sc_b2 = static_cast<float>(-alpha * inv);
         bs.sc_a1 = static_cast<float>(-2.0 * cosw * inv);
         bs.sc_a2 = static_cast<float>((1.0 - alpha) * inv);
+    }
+
+    // ── Low / High Pass slopes (see dsp/EqSlopeDesign.h) ────────────────────
+
+    static bool isCutType(BandType type) noexcept
+    {
+        return type == BandType::LowPass || type == BandType::HighPass;
+    }
+
+    // The slope needs the multi-section cascade (18 dB/oct and up, Brickwall).
+    static bool isSlopeCascade(BandType type, int slope) noexcept
+    {
+        return isCutType(type) && eqslope::isCascadeSlope(slope);
+    }
+
+    // A band's filter for the audio path: the single float biquad (every type,
+    // and the 6 / 12 dB slopes) or the slope's double-precision cascade.
+    static void computeBandFilter(BandState& bs, BandType type,
+                                  float freq, float gainDb, float Q, int slope, double sr)
+    {
+        if (isSlopeCascade(type, slope))
+        {
+            eqslope::Cascade c;
+            eqslope::design(type == BandType::HighPass, static_cast<double>(freq),
+                            static_cast<double>(Q), slope, sr, c);
+            bs.nSec = c.n;
+            for (int i = 0; i < c.n; ++i) bs.sec[i] = c.s[i];
+            return;
+        }
+
+        bs.nSec = 0;
+        if (isCutType(type) && slope == 0)
+        {
+            // 6 dB/oct: first-order section in the biquad's slots (b2 = a2 = 0).
+            const double w0 = 2.0 * juce::MathConstants<double>::pi * static_cast<double>(freq) / sr;
+            const auto c = eqslope::firstOrder(type == BandType::HighPass, std::tan(0.5 * w0));
+            bs.b0 = static_cast<float>(c.b0);  bs.b1 = static_cast<float>(c.b1);  bs.b2 = 0.0f;
+            bs.a1 = static_cast<float>(c.a1);  bs.a2 = 0.0f;
+            return;
+        }
+        computeCoefficients(bs, type, freq, gainDb, Q, sr);
+    }
+
+    // The same filter as a cascade of double sections, for everything that
+    // evaluates a band's response (curves, FIR, Spectral regions). A single
+    // biquad band yields the exact float-rounded coefficients the audio path uses.
+    static void computeBandCascade(eqslope::Cascade& out, BandType type,
+                                   float freq, float gainDb, float Q, int slope, double sr)
+    {
+        if (isSlopeCascade(type, slope))
+        {
+            eqslope::design(type == BandType::HighPass, static_cast<double>(freq),
+                            static_cast<double>(Q), slope, sr, out);
+            return;
+        }
+        BandState tmp;
+        computeBandFilter(tmp, type, freq, gainDb, Q, slope, sr);
+        out.n = 1;
+        out.s[0] = { tmp.b0, tmp.b1, tmp.b2, tmp.a1, tmp.a2 };
+    }
+
+    // Spectral region shape: which family a band's influence weight belongs to
+    // (0 = Bell, otherwise 1 + slope for a Low / High Pass), so a cached weight
+    // is rebuilt when the type / slope changes.
+    static int regionShapeKey(BandType type, int slope) noexcept
+    {
+        return isCutType(type) ? 1 + slope + (type == BandType::HighPass ? 16 : 0) : 0;
+    }
+
+    // A Low / High Pass region's weight at one frequency (cos/sin of w and 2w):
+    // the cascade's attenuation in dB over `shapeDb`, clamped to [0, 1].
+    static float cutRegionShape(const eqslope::Cascade& c, float cw, float sw,
+                                float c2, float s2, float shapeDb) noexcept
+    {
+        double m = 1.0;
+        for (int i = 0; i < c.n; ++i)
+            m *= eqslope::magSq(c.s[i], cw, sw, c2, s2);
+        const double attDb = -10.0 * std::log10(std::max(m, 1.0e-30));
+        return static_cast<float>(std::clamp(attDb / static_cast<double>(shapeDb), 0.0, 1.0));
     }
 
     // ── Bristow-Johnson coefficient computation ─────────────────────────────
@@ -1244,12 +2834,124 @@ private:
         }
     }
 
+    // ── STFT stream reset ──────────────────────────────────────────────────
+
+    // Rewind the WOLA stream. nextFrameStart starts kSTFTSize-kSTFTHop *before*
+    // zero so frames begin firing from the first hop and ramp in through the
+    // window overlap instead of stepping in at full amplitude; the out-of-range
+    // reads that implies return silence.
+    void resetSTFTStream()
+    {
+        stftSamplesWritten_ = 0;
+        stftSamplesEmitted_ = 0;
+        stftNextFrameStart_ = -static_cast<std::int64_t>(kSTFTSize)
+                            +  static_cast<std::int64_t>(kSTFTHop);
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            std::fill(stftInRing_[ch].begin(),  stftInRing_[ch].end(),  0.0f);
+            std::fill(stftOutRing_[ch].begin(), stftOutRing_[ch].end(), 0.0f);
+        }
+    }
+
+    // ── Spectral bell influence weight (audio thread, cached) ──────────────
+
+    // Rebuild a spectral band's per-bin influence weight: the RBJ bell the
+    // band would have at |depthDb| dB with its own Q, evaluated at every STFT
+    // bin and normalised to 1.0 at the peak (the band centre).  This replaces
+    // the old rectangular freq ± freq/Q gate, so the Q knob now shapes the
+    // suppression profile exactly the way getResponseCurve draws it.
+    //
+    // The shape is a Bell for every type except LowPass / HighPass: a Bell has a
+    // gain peak to normalise against, and Spectral mode exists to tame
+    // resonances. A Low / High Pass band instead follows its own slope: the
+    // weight is the filter's stop-band attenuation in dB over the depth, capped
+    // at 1 (so full strength once the filter is |depth| dB down, 0 in the pass
+    // band). The slope selects the cascade, so a steeper slope is a sharper
+    // edge on the same corner, aligned with the curve the band draws.
+    //
+    // Cached on smoothed freq/Q/|depth| and the shape (type/slope), so a parked
+    // band costs nothing per frame and a knob sweep costs one pass of pure
+    // arithmetic (bin trig is precomputed in prepareEffect).
+    void updateSpectralWeights(BandState& bs, BandType type, int slope, float freq, float q,
+                               float depthDb, double sr)
+    {
+        const int   binsN    = kSTFTSize / 2;
+        const float absDepth = std::abs(depthDb);
+        const bool  cut      = isCutType(type);
+        const int   shapeKey = regionShapeKey(type, slope);
+
+        // Clamp before comparing, or a sub-20 Hz smoother ramp would never
+        // match the clamped cache and would rebuild on every frame.
+        const float useFreq = std::max(freq, 20.0f);
+        const float useQ    = std::max(q, 0.1f);
+
+        const bool fresh = (bs.specWeightFreq < 0.0f);
+        if (!fresh
+            && bs.specWeightShape == shapeKey
+            && std::abs(useFreq - bs.specWeightFreq) <= bs.specWeightFreq * 0.001f
+            && std::abs(useQ - bs.specWeightQ) <= 0.001f
+            && std::abs(absDepth - bs.specWeightDepth) <= 0.01f)
+            return;
+
+        bs.specWeightFreq  = useFreq;
+        bs.specWeightQ     = useQ;
+        bs.specWeightDepth = absDepth;
+        bs.specWeightShape = shapeKey;
+
+        if (cut)
+        {
+            const float shapeDbCut = std::max(absDepth, 1.0f);
+            eqslope::Cascade casc;
+            computeBandCascade(casc, type, useFreq, 0.0f, useQ, slope, sr);
+            for (int i = 0; i < binsN; ++i)
+                bs.specBinWeight[i] = cutRegionShape(casc, stftBinCosW_[i], stftBinSinW_[i],
+                                                     stftBinCos2W_[i], stftBinSin2W_[i], shapeDbCut);
+            return;
+        }
+
+        // An RBJ bell's dB profile depends only weakly on its gain, but
+        // normalising by a near-zero peak is unstable — so the shape is always
+        // computed at >= 1 dB.  At depth 0 every bin's target is 0 dB anyway,
+        // which makes the shape irrelevant there.
+        const float shapeDb = std::max(absDepth, 1.0f);
+
+        // Allocation-free: every vector inside a default-constructed BandState
+        // is empty, and computeCoefficients only writes the scalar coeffs.
+        BandState tmp;
+        computeCoefficients(tmp, BandType::Bell, bs.specWeightFreq, shapeDb,
+                            bs.specWeightQ, sr);
+
+        float peakDb = -1.0e9f;
+        for (int i = 0; i < binsN; ++i)
+        {
+            const float cw = stftBinCosW_[i],  sw = stftBinSinW_[i];
+            const float c2 = stftBinCos2W_[i], s2 = stftBinSin2W_[i];
+
+            // H(e^jw) = (b0 + b1 e^-jw + b2 e^-j2w) / (1 + a1 e^-jw + a2 e^-j2w)
+            const float nRe = tmp.b0 + tmp.b1 * cw + tmp.b2 * c2;
+            const float nIm =        - tmp.b1 * sw - tmp.b2 * s2;
+            const float dRe = 1.0f   + tmp.a1 * cw + tmp.a2 * c2;
+            const float dIm =        - tmp.a1 * sw - tmp.a2 * s2;
+
+            const float dMagSq = dRe * dRe + dIm * dIm;
+            const float magSq  = (dMagSq > 1e-30f)
+                ? (nRe * nRe + nIm * nIm) / dMagSq : 1.0f;
+
+            const float magDb = 10.0f * std::log10(std::max(magSq, 1e-30f));
+            bs.specBinWeight[i] = magDb;
+            if (magDb > peakDb) peakDb = magDb;
+        }
+
+        const float invPeak = (peakDb > 1.0e-3f) ? (1.0f / peakDb) : 0.0f;
+        for (int i = 0; i < binsN; ++i)
+            bs.specBinWeight[i] = std::max(0.0f, bs.specBinWeight[i] * invPeak);
+    }
+
     // ── STFT frame processing (Spectral Dynamics) ───────────────────────────
 
-    void processSTFTFrame(int numCh, double sr)
+    void processSTFTFrame(std::int64_t frameStart, int numCh, double sr)
     {
-        const int ringSize = kSTFTSize * 2;
-        const int count = bandCount_.load(std::memory_order_relaxed);
+        const int count = snap_.count;   // this block's snapshot (audio thread)
         const int binsN = kSTFTSize / 2;
 
         // Envelope coefficients derived from STFT frame period (hopSize / sr),
@@ -1258,15 +2960,19 @@ private:
 
         for (int ch = 0; ch < numCh; ++ch)
         {
-            // Read kSTFTSize samples from input ring, apply Hann window
+            // Read this frame's kSTFTSize samples, apply the sqrt-Hann
+            // analysis window. Positions outside the accepted stream (the
+            // startup ramp) read as silence.
             std::fill(stftTempRe_.begin(), stftTempRe_.end(), 0.0f);
             std::fill(stftTempIm_.begin(), stftTempIm_.end(), 0.0f);
 
-            int readStart = ((stftWritePos_ - kSTFTSize) % ringSize + ringSize) % ringSize;
             for (int i = 0; i < kSTFTSize; ++i)
             {
-                int idx = (readStart + i) % ringSize;
-                stftTempRe_[i] = stftInRing_[ch][idx] * stftWindow_[i];
+                const std::int64_t src = frameStart + i;
+                const float x = (src >= 0 && src < stftSamplesWritten_)
+                    ? stftInRing_[ch][static_cast<int>(src & kSTFTRingMask)]
+                    : 0.0f;
+                stftTempRe_[i] = x * stftWindow_[i];
             }
 
             // Forward FFT
@@ -1294,28 +3000,40 @@ private:
                 auto& bs = bands_[b];
                 if (bs.mode != 2 || !bs.enabled) continue;
                 if (static_cast<int>(bs.specBinEnv.size()) < binsN) continue;
+                if (static_cast<int>(bs.specBinWeight.size()) < binsN) continue;
+                // Spectral bands ignore channel routing (folded to Stereo by
+                // foldChannelForContext): the same per-bin envelope is applied
+                // to both channels. M/S spectral would need the STFT itself run
+                // in the M/S domain — out of scope here.
 
                 float bandFreq = bs.freqSmooth.getCurrentValue();
                 float bandQ    = bs.qSmooth.getCurrentValue();
-                float sens  = bs.specSensPtr    ? bs.specSensPtr->load(std::memory_order_relaxed)    : 0.5f;
-                float depth = bs.specDepthPtr   ? bs.specDepthPtr->load(std::memory_order_relaxed)   : 0.0f;
-                float sel   = bs.specSelPtr     ? bs.specSelPtr->load(std::memory_order_relaxed)     : 5.0f;
-                float atkMs = bs.specAttackPtr  ? bs.specAttackPtr->load(std::memory_order_relaxed)  : 10.0f;
-                float relMs = bs.specReleasePtr ? bs.specReleasePtr->load(std::memory_order_relaxed) : 100.0f;
 
-                const float depthLin = std::pow(10.0f, depth / 20.0f);
+                // The band's GAIN knob IS the spectral depth, signed in dB:
+                // negative suppresses detected resonances, positive boosts
+                // them, 0 leaves the band inert.  Spectral bands skip the
+                // biquad cascade entirely (see its `mode == 2` skip), so the
+                // gain knob has no other meaning in this mode — hence no
+                // separate spec_depth parameter.
+                float depthDb = bs.gainSmooth.getCurrentValue();
+                float sens  = snap_.band[b].specSens;
+                float sel   = snap_.band[b].specSel;
+                float atkMs = snap_.band[b].specAttack;
+                float relMs = snap_.band[b].specRelease;
+
                 const float attackCoeff  = 1.0f - std::exp(-framePeriodSec / (atkMs * 0.001f));
                 const float releaseCoeff = 1.0f - std::exp(-framePeriodSec / (relMs * 0.001f));
-
-                // Influence zone: freq ± (freq / Q)
-                const float bwHz   = bandFreq / std::max(bandQ, 0.1f);
-                const float loFreq = std::max(bandFreq - bwHz, 0.0f);
-                const float hiFreq = bandFreq + bwHz;
-                const float binHz  = static_cast<float>(sr) / static_cast<float>(kSTFTSize);
 
                 // Envelope update only on ch=0 to preserve per-frame semantics.
                 if (ch == 0)
                 {
+                    // Influence zone: the band's own bell, per bin, normalised
+                    // to 1 at the centre.  Cached, so this only does real work
+                    // when the smoothed freq/Q/depth have moved materially.
+                    updateSpectralWeights(bs, static_cast<BandType>(static_cast<int>(snap_.band[b].type)),
+                                          eqslope::clampSlope(snap_.band[b].slope),
+                                          bandFreq, bandQ, depthDb, sr);
+
                     // Local envelope: arithmetic mean of logMag in ±half octave
                     // around each bin [i/sqrt(2), i*sqrt(2)]. Rolling sum = O(N).
                     const float loFactor = 0.70710678f; // 1 / sqrt(2)
@@ -1348,19 +3066,30 @@ private:
                             ++runLo;
                         }
 
-                        const float binFreq = static_cast<float>(i) * binHz;
-                        const bool  inZone  = (binFreq >= loFreq && binFreq <= hiFreq);
+                        const float w = bs.specBinWeight[i];
 
                         float target = 1.0f;
-                        if (inZone && runCnt > 0)
+                        if (w > 1.0e-4f && runCnt > 0)
                         {
                             const float localLog = runSum / static_cast<float>(runCnt);
                             const float localEnv = std::exp(localLog);
                             const float thresh   = localEnv * (1.0f + sens * sel);
-                            if (stftMag_[i] > thresh)
-                                target = depthLin;
+                            if (thresh > 1.0e-20f && stftMag_[i] > thresh)
+                            {
+                                // Proportional detection: how far this bin
+                                // protrudes above its local threshold, through
+                                // a kSpecKneeDb soft knee.  A bin 1 dB over
+                                // gets a sixth of the knob, one 6 dB or more
+                                // over gets all of it — no hard gate.
+                                const float overDb =
+                                    20.0f * std::log10(stftMag_[i] / thresh);
+                                const float knee = std::min(
+                                    overDb * (1.0f / kSpecKneeDb), 1.0f);
+                                const float targetDb = depthDb * w * knee;
+                                target = std::pow(10.0f, targetDb * 0.05f);
+                            }
                         }
-                        // Outside zone: relax toward 1.0 via releaseCoeff (set target=1).
+                        // Outside the bell / below threshold: relax toward 1.0.
 
                         const float cur = bs.specBinEnv[i];
                         // Attack = envelope moving toward a stronger reduction
@@ -1380,7 +3109,12 @@ private:
                         }
                     }
 
-#ifdef XLETH_DEBUG
+                    // Signed per-band GR for the UI's eqGetBandGR poll (negative
+                    // = suppression, positive = upward boost).  Computed in the
+                    // loop above unconditionally — it is only a compare.
+                    bandGR_[b].store(maxReductionDb, std::memory_order_relaxed);
+
+#ifdef XLETH_RT_TRACE
                     bs.specLogCounter += kSTFTHop;
                     if (bs.specLogCounter >= static_cast<int>(sr))
                     {
@@ -1390,17 +3124,13 @@ private:
                     }
 #else
                     (void)activeBins;
-                    (void)maxReductionDb;
 #endif
                 }
 
-                // Apply the smoothed per-bin envelope to this channel's spectrum.
-                // Only bins within the influence zone are touched.
-                const int loBinZ = std::max(1,
-                    static_cast<int>(std::floor(loFreq / binHz)));
-                const int hiBinZ = std::min(binsN - 1,
-                    static_cast<int>(std::ceil(hiFreq / binHz)));
-                for (int i = loBinZ; i <= hiBinZ; ++i)
+                // Apply the smoothed per-bin envelope to this channel's
+                // spectrum.  The bell weight has no hard edge, so every bin is
+                // swept; untouched bins sit at exactly 1.0 and stay bit-exact.
+                for (int i = 1; i < binsN; ++i)
                 {
                     const float g = bs.specBinEnv[i];
                     stftTempRe_[i] *= g;
@@ -1417,12 +3147,19 @@ private:
             // Inverse FFT
             ifftCompute(stftTempRe_.data(), stftTempIm_.data(), kSTFTSize);
 
-            // Overlap-add into output ring (no synthesis window — Hann OLA)
-            int writeStart = ((stftWritePos_ - kSTFTSize) % ringSize + ringSize) % ringSize;
+            // Weighted overlap-add: sqrt-Hann synthesis window + per-phase
+            // 1/sum(w^2), written kSTFTLatency ahead of the frame start so
+            // every output sample has all four overlapping frames before it is
+            // read. Slots already handed back are skipped (startup only).
+            const std::int64_t outStart = frameStart + kSTFTLatency;
+            int phase = 0;
             for (int i = 0; i < kSTFTSize; ++i)
             {
-                int idx = (writeStart + i) % ringSize;
-                stftOutRing_[ch][idx] += stftTempRe_[i];
+                const std::int64_t dst = outStart + i;
+                if (dst >= stftSamplesEmitted_)
+                    stftOutRing_[ch][static_cast<int>(dst & kSTFTRingMask)] +=
+                        stftTempRe_[i] * stftWindow_[i] * stftNorm_[phase];
+                if (++phase == kSTFTHop) phase = 0;
             }
         }
     }
@@ -1432,7 +3169,7 @@ private:
     void rebuildFIR()
     {
         const int N = firLength_;
-        const int count = bandCount_.load(std::memory_order_relaxed);
+        const int count = snap_.count;   // audio thread: this block's snapshot
         const double pi   = juce::MathConstants<double>::pi;
 
         // Compute magnitude response at N uniformly-spaced frequency bins
@@ -1451,7 +3188,20 @@ private:
             for (int b = 0; b < count; ++b)
             {
                 if (!bands_[b].enabled) continue;
-                // All bands included as Normal (Dynamic/Spectral folded in)
+                // All bands included as Normal (Dynamic/Spectral folded in).
+                // Channel routing is also folded to Stereo here: one shared
+                // zero-phase kernel is applied to both channels. Per-channel
+                // linear phase would need a 2x2 MIMO FIR matrix — out of scope,
+                // see foldChannelForContext().
+                // A steep slope is a cascade of sections; every other band is
+                // the one float biquad.
+                if (bands_[b].nSec != 0)
+                {
+                    for (int sct = 0; sct < bands_[b].nSec; ++sct)
+                        magSq *= eqslope::magSq(bands_[b].sec[sct], cosw, sinw, cos2w, sin2w);
+                    continue;
+                }
+
                 const double cb0 = bands_[b].b0, cb1 = bands_[b].b1, cb2 = bands_[b].b2;
                 const double ca1 = bands_[b].a1, ca2 = bands_[b].a2;
 
@@ -1581,6 +3331,76 @@ private:
         }
     }
 
+    // ── [EQCore] core engine preparation (message thread, not processing) ────
+
+    static xleth::dsp::resonance::Core::FrameTier tierForQuality(int quality) noexcept
+    {
+        return static_cast<xleth::dsp::resonance::Core::FrameTier>(std::clamp(quality, 0, kNumSpectralQualities - 1));
+    }
+
+    int readSpectralQualityParam() const noexcept
+    {
+        return std::clamp(static_cast<int>(readGlobalParam("spectral_quality",
+                                                           static_cast<float>(kDefaultSpectralQuality))),
+                          0, kNumSpectralQualities - 1);
+    }
+
+    // Builds everything the core path will ever touch: the core with all three
+    // frame tiers (Core::prepare), the aligned-dry / Mid-Side / aux buffers for
+    // the largest block, and the per-grid-band bin tables of the region weight
+    // curve. Hop phase: this effect's own instance counter (setCoreInstanceIndex).
+    void prepareCoreEngine(double sampleRate, int maxBlockSize)
+    {
+        using Core = xleth::dsp::resonance::Core;
+        const int quality = readSpectralQualityParam();
+        if (coreInstanceIndex_ < 0)
+            coreInstanceIndex_ = sCoreInstanceCounter_.fetch_add(1, std::memory_order_relaxed);
+
+        const auto tier = tierForQuality(quality);
+        const int hop = Core::fftSizeFor(sampleRate, tier) / 4;
+        core_.setFrameTier(tier);
+        core_.setHopPhaseOffset(Core::hopPhaseOffsetForInstance(coreInstanceIndex_, hop));
+        core_.prepare(sampleRate, std::max(1, maxBlockSize), 2);
+        coreRequestedQuality_ = quality;
+
+        const int cap = std::max(1, maxBlockSize);
+        coreDry_.setSize(2, cap, false, true, true);
+        liveDry_.setSize(2, cap, false, true, true);
+        coreDryMono_.assign(static_cast<std::size_t>(cap), 0.0f);
+        coreAuxIn_.assign(static_cast<std::size_t>(cap), 0.0f);
+        coreAuxOut_.assign(static_cast<std::size_t>(cap), 0.0f);
+        coreComp_.assign(static_cast<std::size_t>(cap), 0.0f);
+
+        // e^-jw / e^-j2w at every grid band centre (the region bells are RBJ
+        // bells evaluated there; no trig on the audio thread).
+        const int bands = std::min(core_.numBands(), xleth::dsp::resonance::kGridBands);
+        const double twoPi = 2.0 * juce::MathConstants<double>::pi;
+        for (int k = 0; k < bands; ++k)
+        {
+            const double w = twoPi * static_cast<double>(core_.bandCentreHz(k)) / sampleRate;
+            coreGridCosW_[static_cast<std::size_t>(k)]  = static_cast<float>(std::cos(w));
+            coreGridSinW_[static_cast<std::size_t>(k)]  = static_cast<float>(std::sin(w));
+            coreGridCos2W_[static_cast<std::size_t>(k)] = static_cast<float>(std::cos(2.0 * w));
+            coreGridSin2W_[static_cast<std::size_t>(k)] = static_cast<float>(std::sin(2.0 * w));
+        }
+        coreWeights_.fill(0.0f);
+        coreOwner_.fill(-1);
+        coreRegionsValid_ = false;
+    }
+
+    // A PARAM element with this id is added to `xml` (a saved APVTS state) when
+    // it has none; replaceState would otherwise keep the instance's value.
+    static void insertMissingParam(juce::XmlElement& xml, const char* id, float value)
+    {
+        for (auto* child : xml.getChildIterator())
+            if (child != nullptr && child->hasTagName("PARAM") && child->getStringAttribute("id") == id)
+                return;
+        auto el = std::make_unique<juce::XmlElement>("PARAM");
+        el->setAttribute("id", id);
+        el->setAttribute("value", juce::String(value, 1));
+        xml.addChildElement(el.release());
+    }
+
     // ── APVTS helpers ────────────────────────────────────────────────────────
 
     float readGlobalParam(const char* paramId, float fallback) const
@@ -1612,6 +3432,18 @@ private:
             }
         }
 
+        // [EQCore] The Spectral latency of the REQUESTED renderer: Legacy 4096,
+        // Core Core::latencyFor(sr, tier). Published at the request; the audio
+        // reaches it after the structural fade-out (engine / band changes) or
+        // after the core's hold + crossfade (quality changes): the latency
+        // window of ResonanceCore.md "Using the core in the Param EQ".
+        const bool core = static_cast<int>(readGlobalParam("spectral_engine",
+                              static_cast<float>(kSpectralEngineLegacy))) == kSpectralEngineCore;
+        const double sr = sampleRate_.load(std::memory_order_relaxed);
+        spectralLatencyStatus_.store(core
+            ? xleth::dsp::resonance::Core::latencyFor(sr > 0.0 ? sr : 44100.0, tierForQuality(readSpectralQualityParam()))
+            : kSTFTLatency, std::memory_order_relaxed);
+
         linPhaseActive_.store(linPhase, std::memory_order_relaxed);
         hasSpectralBands_.store(anySpectral, std::memory_order_relaxed);
         currentOSFactor_.store(anySpectral ? 0 : osRaw, std::memory_order_relaxed);
@@ -1626,6 +3458,8 @@ private:
     {
         return paramId == "linphase"
             || paramId == "oversample"
+            || paramId == "spectral_engine"
+            || paramId == "spectral_quality"
             || paramId.find("_enabled") != std::string::npos
             || paramId.find("_mode") != std::string::npos;
     }
@@ -1655,8 +3489,9 @@ private:
     void copyBandParams(int srcBand, int dstBand)
     {
         static const char* names[] = { "freq", "gain", "q", "type", "enabled",
-            "mode", "dyn_thresh", "dyn_ratio", "dyn_attack", "dyn_release",
-            "spec_sens", "spec_depth", "spec_sel",
+            "channel", "slope",
+            "mode", "dyn_thresh", "dyn_ratio", "dyn_attack", "dyn_release", "dyn_range",
+            "spec_sens", "spec_sel",
             "spec_attack", "spec_release" };
         for (const char* n : names)
             setParamDirect(dstBand, n, readParam(srcBand, n));
@@ -1667,7 +3502,7 @@ private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     {
         std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
-        params.reserve(kMaxBands * 13 + 2);
+        params.reserve(kMaxBands * 17 + 4);
 
         // Skew factors: makes midpoint of slider map to a musically useful value.
         // JUCE formula: value = start + (end-start) * exp(log(proportion)/skew)
@@ -1713,6 +3548,16 @@ private:
                 juce::NormalisableRange<float>(0.0f, 1.0f, 1.0f), // step = 1 → boolean
                 1.0f));
 
+            // Per-band channel routing. Default 0 (= Stereo) is what every
+            // pre-routing project save restores to, so old saves keep their
+            // original full-stereo behaviour.
+            params.push_back(std::make_unique<juce::AudioParameterFloat>(
+                juce::ParameterID{ prefix + "channel", 1 },
+                label + "Channel",
+                // 0=Stereo, 1=Left, 2=Right, 3=Mid, 4=Side
+                juce::NormalisableRange<float>(0.0f, 4.0f, 1.0f),
+                0.0f));
+
             // ── Advanced mode params ────────────────────────────────────────
 
             params.push_back(std::make_unique<juce::AudioParameterFloat>(
@@ -1748,19 +3593,24 @@ private:
                 100.0f,
                 juce::AudioParameterFloatAttributes().withLabel("ms")));
 
+            // Signed: how far the band swings from its baseline gain (above)
+            // as activation grows toward 1. Positive boosts further on
+            // trigger, negative ducks — independent of the baseline's sign.
+            params.push_back(std::make_unique<juce::AudioParameterFloat>(
+                juce::ParameterID{ prefix + "dyn_range", 1 },
+                label + "Dyn Range",
+                juce::NormalisableRange<float>(-30.0f, 30.0f),
+                12.0f,
+                juce::AudioParameterFloatAttributes().withLabel("dB")));
+
             params.push_back(std::make_unique<juce::AudioParameterFloat>(
                 juce::ParameterID{ prefix + "spec_sens", 1 },
                 label + "Spec Sens",
                 juce::NormalisableRange<float>(0.0f, 1.0f),
                 0.5f));
 
-            params.push_back(std::make_unique<juce::AudioParameterFloat>(
-                juce::ParameterID{ prefix + "spec_depth", 1 },
-                label + "Spec Depth",
-                juce::NormalisableRange<float>(-30.0f, 30.0f),
-                0.0f,
-                juce::AudioParameterFloatAttributes().withLabel("dB")));
-
+            // No spec_depth: a Spectral band's depth is its own gain knob
+            // (signed, +-30 dB, see processSTFTFrame).
             params.push_back(std::make_unique<juce::AudioParameterFloat>(
                 juce::ParameterID{ prefix + "spec_sel", 1 },
                 label + "Spec Sel",
@@ -1795,6 +3645,39 @@ private:
             "Oversample",
             juce::NormalisableRange<float>(0.0f, 2.0f, 1.0f), // 0=off, 1=2x, 2=4x
             0.0f));
+
+        // ── [EQCore] appended last: no existing parameter index moves ───────
+        // Spectral renderer. 0 = Legacy (the 4096 STFT path, DEFAULT; every
+        // state saved without this parameter restores as Legacy, see
+        // setStateInformation), 1 = Core (xleth::dsp::resonance::Core).
+        params.push_back(std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID{ "spectral_engine", 1 },
+            "Spectral Engine",
+            juce::NormalisableRange<float>(0.0f, 1.0f, 1.0f), // 0=Legacy, 1=Core
+            static_cast<float>(kSpectralEngineLegacy)));
+
+        // Core frame tier: 0 = Fast (512), 1 = Normal (1024, DEFAULT), 2 = High
+        // (2048) at <= 50 kHz, doubled per sample-rate octave above. Only the
+        // Core engine reads it (Legacy is always 4096).
+        params.push_back(std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID{ "spectral_quality", 1 },
+            "Spectral Quality",
+            juce::NormalisableRange<float>(0.0f, 2.0f, 1.0f), // 0=Fast, 1=Normal, 2=High
+            static_cast<float>(kDefaultSpectralQuality)));
+
+        // ── Low / High Pass slopes: appended after everything else, so no ──
+        // existing parameter index moves. See dsp/EqSlopeDesign.h:
+        // 0 = 6 dB/oct, 1 = 12 (DEFAULT: the one filter every pre-slope state
+        // has), 2 = 18, 3 = 24, 4 = 36, 5 = 48, 6 = 72, 7 = 96, 8 = Brickwall.
+        // Only Low Pass / High Pass bands read it.
+        for (int i = 0; i < kMaxBands; ++i)
+        {
+            params.push_back(std::make_unique<juce::AudioParameterFloat>(
+                juce::ParameterID{ "b" + juce::String(i) + "_slope", 1 },
+                "B" + juce::String(i) + " Slope",
+                juce::NormalisableRange<float>(0.0f, static_cast<float>(eqslope::kNumSlopes - 1), 1.0f),
+                static_cast<float>(eqslope::kDefaultSlope)));
+        }
 
         return { std::make_move_iterator(params.begin()),
                  std::make_move_iterator(params.end()) };

@@ -32,15 +32,9 @@ import {
   transientLevelToY,
   transientGainToY,
 } from '../visualizers/transientPainter.js'
-import {
-  getPresetOptionsForSource,
-  isPresetAllowedForSource,
-  resolveSafePresetForSource,
-} from '../../designer/inspectors/inspectorHelpers.js'
 import { TRANSIENT_MANIFEST } from '../../manifests/transient.js'
 import { LIMITER_MANIFEST } from '../../manifests/limiter.js'
 import { COMPRESSOR_MANIFEST } from '../../manifests/compressor.js'
-import { getVizSourceOptions } from '../../designer/BindingPicker.jsx'
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -393,71 +387,7 @@ describe('Transient meter values', () => {
 
 // ── Inspector helpers / preset gating ──────────────────────────────────────
 
-describe('Transient visualizer inspector helpers', () => {
-  it('lists Transient presets for transient.shaper source', () => {
-    const options = getPresetOptionsForSource('transient.shaper', null)
-    const keys = options.map(o => o.value)
-    expect(keys).toContain('transientShaper')
-    // Must NOT mix in compressor or limiter presets.
-    expect(keys.every(k => k.startsWith('transient'))).toBe(true)
-  })
-
-  it('lists Limiter presets for limiter.realtime source (no leak)', () => {
-    const options = getPresetOptionsForSource('limiter.realtime', null)
-    const keys = options.map(o => o.value)
-    expect(keys.every(k => !k.startsWith('transient'))).toBe(true)
-  })
-
-  it('isPresetAllowedForSource enforces source-preset matching across plugins', () => {
-    expect(isPresetAllowedForSource('transientShaper', 'transient.shaper')).toBe(true)
-    expect(isPresetAllowedForSource('transientShaper', 'limiter.realtime')).toBe(false)
-    expect(isPresetAllowedForSource('transientShaper', 'compressor.combined')).toBe(false)
-    expect(isPresetAllowedForSource('limiterRealtime', 'transient.shaper')).toBe(false)
-    expect(isPresetAllowedForSource('levelHistory',    'transient.shaper')).toBe(false)
-  })
-
-  it('resolveSafePresetForSource returns the documented default for transient.shaper', () => {
-    expect(resolveSafePresetForSource('transient.shaper')).toBe('transientShaper')
-    expect(TRANSIENT_SOURCE_DEFAULT_PRESET['transient.shaper']).toBe('transientShaper')
-  })
-
-  it('TRANSIENT_VISUALIZER_PRESETS exports a transientShaper preset bound to transient.shaper', () => {
-    const preset = TRANSIENT_VISUALIZER_PRESETS.transientShaper
-    expect(preset).toBeTruthy()
-    expect(preset.sources).toContain('transient.shaper')
-  })
-})
-
 // ── BindingPicker source listing ───────────────────────────────────────────
-
-describe('BindingPicker viz source options for Transient', () => {
-  it('lists transient.shaper for the Transient manifest', () => {
-    const opts = getVizSourceOptions(TRANSIENT_MANIFEST, null)
-    const values = opts.map(o => o.value)
-    expect(values).toContain('transient.shaper')
-  })
-
-  it('does not list compressor / limiter sources for the Transient manifest', () => {
-    const opts = getVizSourceOptions(TRANSIENT_MANIFEST, null)
-    const values = opts.map(o => o.value)
-    for (const v of values) {
-      expect(v.startsWith('compressor.')).toBe(false)
-      expect(v.startsWith('limiter.')).toBe(false)
-    }
-  })
-
-  it('does not list transient sources for the Compressor manifest', () => {
-    const opts = getVizSourceOptions(COMPRESSOR_MANIFEST, null)
-    const values = opts.map(o => o.value)
-    for (const v of values) expect(v.startsWith('transient.')).toBe(false)
-  })
-
-  it('does not list transient sources for the Limiter manifest', () => {
-    const opts = getVizSourceOptions(LIMITER_MANIFEST, null)
-    const values = opts.map(o => o.value)
-    for (const v of values) expect(v.startsWith('transient.')).toBe(false)
-  })
-})
 
 // ── Source-prefix dispatch ────────────────────────────────────────────────
 

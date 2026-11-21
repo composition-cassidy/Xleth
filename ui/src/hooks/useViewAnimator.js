@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react'
+import { motionForcedFlat } from '../ui-kit/motion'
 
 // Shared spring-based view animator — Timeline and Piano Roll both mount one
 // instance each (own state, same code: see useTimelineZoom/useTimelineScroll
@@ -7,19 +8,22 @@ import { useCallback, useEffect, useRef } from 'react'
 // property ("spring") together — never one loop per property.
 //
 // Physics: a critically damped spring (mass = 1, k = omega², c = 2*omega,
-// damping ratio = 1). Integrated with semi-implicit ("symplectic") Euler,
-// which is what makes retargeting mid-flight (a wheel notch arriving before
-// the previous one has settled) just bend the existing trajectory instead of
-// restarting a tween from scratch — there is no fixed duration anywhere in
-// this file, only a rate (omega) and a current (position, velocity) state:
+// damping ratio = 1), advanced by its exact closed-form solution each frame
+// (see stepSpring). The state is a (position, velocity) pair, so retargeting
+// mid-flight (a wheel notch arriving before the previous one has settled)
+// just bends the existing trajectory instead of restarting a tween from
+// scratch. There is no fixed duration anywhere in this file, only a rate
+// (omega):
 //
-//   k = omega*omega, c = 2*omega
-//   vel += (k*(target-current) - c*vel) * dt
-//   current += vel * dt
+//   x = current - target,  b = vel + omega*x
+//   current = target + (x + b*dt) * exp(-omega*dt)
+//   vel     = (vel - omega*b*dt) * exp(-omega*dt)
 //
-// A critically damped step response from rest never overshoots; retargeting
-// further in the same direction the spring is already moving does not
-// overshoot the (new) target either — see useViewAnimator.test.js.
+// A critically damped step response from rest never overshoots, and
+// retargeting further in the same direction the spring is already moving
+// does not overshoot the (new) target either. Because the step is exact, both
+// hold at ANY frame rate. See useViewAnimator.test.jsx, including the
+// slow-frame cases.
 //
 // Zoom (ppb) is registered with `space: 'log'`: current/target are stored as
 // Math.log(value) and integrated in log space, converted back with Math.exp
@@ -106,11 +110,23 @@ export function stepSpring(spring, dt, omega, snap = false) {
     spring.currentInternal = targetInternal
     spring.vel = 0
   } else if (dt > 0) {
-    const k = omega * omega
-    const c = 2 * omega
-    const accel = k * (targetInternal - spring.currentInternal) - c * spring.vel
-    spring.vel += accel * dt
-    spring.currentInternal += spring.vel * dt
+    // Exact closed-form step of the critically damped spring, not a numeric
+    // integration. With displacement x = current - target:
+    //   x(t) = (x0 + (v0 + ω·x0)·t)·e^(-ωt)
+    //   v(t) = (v0 - ω·(v0 + ω·x0)·t)·e^(-ωt)
+    // This is the exact trajectory for ANY dt, so easing is frame-rate
+    // independent. The semi-implicit Euler step it replaces was only damped
+    // while 2ω·dt < 1, i.e. frames under 20ms at ω=25. Past that, velocity
+    // flipped sign every step and the value oscillated around its target.
+    // Zoomed all the way out is the heaviest redraw and so the lowest frame
+    // rate, which made the Timeline zoom stammer back and forth right at the
+    // zoom-out limit.
+    const x0 = spring.currentInternal - targetInternal
+    const v0 = spring.vel
+    const decay = Math.exp(-omega * dt)
+    const b = v0 + omega * x0
+    spring.currentInternal = targetInternal + (x0 + b * dt) * decay
+    spring.vel = (v0 - omega * b * dt) * decay
   }
 
   const atRest = Math.abs(targetInternal - spring.currentInternal) < spring.epsilon
@@ -206,7 +222,9 @@ export default function useViewAnimator({ springs: springConfig, omega = DEFAULT
     const spring = springsRef.current.get(key)
     if (!spring) return
     spring.target = value
-    if (immediate) {
+    // Motion tier 1 (flat, ui/DESIGN.md section 27): no eased zoom or scroll, every change
+    // lands at once. With no tier set at all (unit tests) the spring behaves as it always has.
+    if (immediate || motionForcedFlat()) {
       // Don't make a caller that just wants an instant snap (e.g. a
       // scrollbar thumb drag, or clamping scrollX after content shrinks)
       // wait a frame for a value that isn't going to animate anyway — and

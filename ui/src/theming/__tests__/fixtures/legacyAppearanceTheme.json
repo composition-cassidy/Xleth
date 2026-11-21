@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "name": "User Appearance",
+  "author": "user",
+  "description": "",
+  "locked": false,
+  "ramp": "dark",
+  "derivationDetached": [
+    "--theme-text-muted",
+    "--theme-text-subtle",
+    "--theme-text-placeholder",
+    "--theme-border-subtle",
+    "--theme-ui-g2",
+    "--theme-ui-g3",
+    "--theme-ui-ink-2",
+    "--theme-ui-ink-3",
+    "--theme-ui-boundary"
+  ],
+  "tokens": {
+    "--theme-accent": "#33CED6",
+    "--theme-bg-primary": "#0C1517",
+    "--theme-bg-surface": "#152225",
+    "--theme-bg-inset": "#0C1517",
+    "--theme-text": "#D6F7FE",
+    "--theme-text-muted": "#A3C3CA",
+    "--theme-text-subtle": "#82A1A8",
+    "--theme-text-placeholder": "#82A1A8",
+    "--theme-border-subtle": "#29464B",
+    "--theme-ui-g2": "#1B2B2E",
+    "--theme-ui-g3": "#243639",
+    "--theme-ui-ink-2": "#A3C3CA",
+    "--theme-ui-ink-3": "#82A1A8",
+    "--theme-ui-boundary": "#65838A"
+  }
+}

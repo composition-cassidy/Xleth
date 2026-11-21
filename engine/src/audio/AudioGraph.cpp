@@ -8,7 +8,6 @@
 #include "audio/XlethTransientProcEffect.h"
 #include "audio/XlethEQEffect.h"
 #include "audio/XlethFilterEffect.h"
-#include "audio/DistortionEffect.h"
 #include "audio/XlethDistortionEffect.h"
 #include "audio/XlethWaveshaperEffect.h"
 #include "audio/UniFlangeEffect.h"
@@ -22,16 +21,26 @@
 #include "audio/XlethReverbEffect.h"
 #include "audio/XlethResonanceSuppressorEffect.h"
 #include "audio/XlethApexEffect.h"
+#include "audio/XlethAmpEffect.h"
+#include "audio/XlethPitchShifterEffect.h"
+#include "audio/XlethGlueCompressorEffect.h"
+#include "audio/XlethOptoCompressorEffect.h"
+#include "audio/XlethFetCompressorEffect.h"
+#include "audio/XlethVariMuCompressorEffect.h"
 #include "audio/SmartBalanceEffect.h"
+#include "audio/XlethFeddaEffect.h"
+#include "audio/XlethSzkrezhEffect.h"
 #include "audio/WireGainProcessor.h"
 #include "audio/DelayCompensationProcessor.h"
 #include "audio/SidechainSourceProcessor.h"
 #include "audio/GuardedPluginWrapper.h"
 #include "audio/PluginCrashGuard.h"
+#include "audio/PluginLoadBreadcrumb.h"
 #include "audio/GraphEffectParameters.h"
 
 #include <algorithm>
 #include <cstdio>
+#include <limits>
 #include <queue>
 #include <stack>
 
@@ -122,6 +131,8 @@ void AudioGraph::init(double sampleRate, int blockSize)
     blockSize_  = blockSize;
 
     graph_ = std::make_unique<juce::AudioProcessorGraph>();
+    static std::atomic<std::uint64_t> nextGraphSerial{0};
+    graphSerial_ = ++nextGraphSerial;
     graph_->setPlayConfigDetails(2, 2, sampleRate_, blockSize_);
     graph_->prepareToPlay(sampleRate_, blockSize_);
 
@@ -135,13 +146,31 @@ void AudioGraph::init(double sampleRate, int blockSize)
 
     // Direct input → output (empty graph)
     rebuildAPGConnections();
+    publishRealtimeView();
 }
 
 void AudioGraph::destroy()
 {
     stopTimer();
     pendingRebuild_.store(false);
-    outputLatencySamples_ = 0;
+
+    // [PDCNotify] Unsubscribe every node before the graph lets go of them: a
+    // processor kept alive by a retired realtime view must not keep raising a
+    // signal for a graph that no longer accounts for it. (The signal is shared,
+    // so a late raise would be safe anyway - just pointless.)
+    if (graph_)
+    {
+        for (auto& [uid, gn] : nodes_)
+        {
+            juce::ignoreUnused(uid);
+            if (auto* node = graph_->getNodeForId(gn.apgNodeId))
+                if (auto* fx = dynamic_cast<XlethEffectBase*>(node->getProcessor()))
+                    fx->detachLatencyChangeSignal();
+        }
+    }
+    latencyChangeSignal_->clear();
+
+    outputLatencySamples_.store(0, std::memory_order_release);
     latencyEpoch_.store(0, std::memory_order_release);
     nodes_.clear();
     connections_.clear();
@@ -153,8 +182,14 @@ void AudioGraph::destroy()
     sidechainSourceProc_.store(nullptr, std::memory_order_release);
     sidechainSourceNode_ = {};
     graph_.reset();
+    graphSerial_ = 0;
     inputNode_  = {};
     outputNode_ = {};
+
+    // Finding 9: republish so no audio-thread reader is left holding a view of
+    // a graph that no longer exists. The strong Node::Ptrs in the OLD view keep
+    // those processors alive until its last holder drops it.
+    publishRealtimeView();
 }
 
 void AudioGraph::reprepare(double sampleRate, int blockSize)
@@ -166,6 +201,7 @@ void AudioGraph::reprepare(double sampleRate, int blockSize)
     graph_->setPlayConfigDetails(2, 2, sampleRate_, blockSize_);
     graph_->prepareToPlay(sampleRate_, blockSize_);
     computePDC();
+    publishRealtimeView();
 }
 
 // ─── Node management ────────────────────────────────────────────────────────
@@ -271,9 +307,16 @@ int AudioGraph::addNode(const std::string& pluginId)
     if (!graph_) return -1;
     if (static_cast<int>(nodes_.size()) >= kMaxNodes) return -1;
 
-    auto effect = createEffect(pluginId);
+    // P2 load breadcrumb: createEffect opens it for a third-party plugin
+    // (phase "instantiate"); it stays open through prepare and is deleted when
+    // this scope ends — success or clean failure. Inactive for stock effects.
+    PluginLoadBreadcrumb crumb;
+    auto effect = createEffect(pluginId, &crumb);
     if (!effect) return -1;
 
+    // The plugin's prepareToPlay runs inside addProcessorToGraph: the APG
+    // rebuilds synchronously when nodes are added on the message thread.
+    crumb.setPhase("prepare");
     const int uid = addProcessorToGraph(pluginId, std::move(effect));
     if (uid < 0) return -1;
 
@@ -325,6 +368,10 @@ bool AudioGraph::removeNode(int nodeId)
                          vit->second.name.toRawUTF8(), nodeId);
     }
 #endif
+    // [PDCNotify] A removed node no longer counts toward this graph's PDC.
+    if (auto* node = graph_->getNodeForId(it->second.apgNodeId))
+        if (auto* fx = dynamic_cast<XlethEffectBase*>(node->getProcessor()))
+            fx->detachLatencyChangeSignal();
     graph_->removeNode(it->second.apgNodeId);
     nodes_.erase(it);
     adjForward_.erase(nodeId);
@@ -794,6 +841,10 @@ bool AudioGraph::removeEffect(int nodeId)
     }
 
     // Remove the node itself
+    // [PDCNotify] A removed node no longer counts toward this graph's PDC.
+    if (auto* node = graph_->getNodeForId(it->second.apgNodeId))
+        if (auto* fx = dynamic_cast<XlethEffectBase*>(node->getProcessor()))
+            fx->detachLatencyChangeSignal();
     graph_->removeNode(it->second.apgNodeId);
     nodes_.erase(it);
     adjForward_.erase(nodeId);
@@ -913,6 +964,24 @@ nlohmann::json AudioGraph::getChainState() const
         obj["bypassed"] = false;
         obj["missing"]  = (missingNodes_.count(uid) > 0);
         obj["crashed"]  = false;
+        if (missingNodes_.count(uid) > 0)
+        {
+            // P2: why the placeholder exists, plus the quarantine key so the UI
+            // can call audio_unquarantinePlugin. Additive fields.
+            // Computed live from the quarantine list, so it is right again
+            // the moment the plugin is unquarantined.
+            obj["missingReason"] = "missing";
+            auto dit = vstDescriptions_.find(uid);
+            if (dit != vstDescriptions_.end())
+            {
+                if (pluginRegistry_ && pluginRegistry_->isQuarantined(dit->second))
+                    obj["missingReason"] = "quarantined";
+                obj["pluginFormat"]  = dit->second.pluginFormatName.toStdString();
+                obj["pluginVendor"]  = dit->second.manufacturerName.toStdString();
+                obj["uniqueId"]      = PluginLoadBreadcrumb::uidHex(dit->second.uniqueId).toStdString();
+                obj["deprecatedUid"] = PluginLoadBreadcrumb::uidHex(dit->second.deprecatedUid).toStdString();
+            }
+        }
         obj["effectInstanceId"] = it->second.effectInstanceId;
 
         // Additive, session-only sidechain capability (VST-SC.2). `enabled` is
@@ -990,7 +1059,7 @@ nlohmann::json AudioGraph::getGraphTopology() const
         io["x"] = 0.0f;
         io["y"] = 0.0f;
         io["level"] = -1;  // will be filled if topo sort ran
-        io["cumulativeLatency"] = outputLatencySamples_;
+        io["cumulativeLatency"] = outputLatencySamples_.load(std::memory_order_acquire);
         io["bypassed"] = false;
         nodesArr.push_back(io);
     }
@@ -1265,8 +1334,21 @@ bool AudioGraph::fromJSON(const nlohmann::json& j,
                 const bool descOk = (xmlElem != nullptr && desc.loadFromXml(*xmlElem));
 
                 bool instantiated = false;
-                if (descOk && pluginRegistry_)
+                // P2: a plugin that crashed the engine while loading is never
+                // instantiated blindly on load — it takes the placeholder path
+                // (state preserved) until audio_unquarantinePlugin.
+                const bool quarantined =
+                    descOk && pluginRegistry_ && pluginRegistry_->isQuarantined(desc);
+                if (quarantined)
+                    std::fprintf(stderr,
+                                 "[PluginHost] \"%s\" is quarantined (crashed the engine while loading) - "
+                                 "placeholder kept, state preserved (%zu bytes)\n",
+                                 desc.name.toRawUTF8(), storedState.getSize());
+                if (descOk && pluginRegistry_ && !quarantined)
                 {
+                    // Breadcrumb for this one load: instantiate -> prepare -> setState.
+                    PluginLoadBreadcrumb crumb;
+                    crumb.begin(pluginRegistry_->getDataDir(), desc, "projectLoad");
                     juce::String errorMsg;
                     std::unique_ptr<juce::AudioPluginInstance> instance;
                     auto& fmtMgr = pluginRegistry_->getFormatManager();
@@ -1291,6 +1373,7 @@ bool AudioGraph::fromJSON(const nlohmann::json& j,
                     else if (instance)
                     {
                         auto wrapped = std::make_unique<GuardedPluginWrapper>(std::move(instance));
+                        crumb.setPhase("prepare");
                         newId = addProcessorToGraph(plugId, std::move(wrapped));
                         if (newId >= 0)
                         {
@@ -1300,6 +1383,7 @@ bool AudioGraph::fromJSON(const nlohmann::json& j,
                             // mark the node crashed and skip state restore.
                             if (storedState.getSize() > 0)
                             {
+                                crumb.setPhase("setState");
                                 auto* apgNode = graph_->getNodeForId(nodes_[newId].apgNodeId);
                                 if (apgNode)
                                 {
@@ -1511,6 +1595,21 @@ bool AudioGraph::tryResolvePlugin(int nodeId, PluginRegistry& registry)
     const float                   savedX       = nit->second.x;
     const float                   savedY       = nit->second.y;
 
+    // P2: a quarantined plugin is only retried through audio_unquarantinePlugin,
+    // which removes it from the list first.
+    if (registry.isQuarantined(desc))
+    {
+        std::fprintf(stderr,
+                     "[PluginHost] \"%s\" is quarantined - not resolved (unquarantine it first)\n",
+                     desc.name.toRawUTF8());
+        return false;
+    }
+
+    // Breadcrumb for this load: instantiate -> prepare -> setState. Deleted when
+    // this function returns (success or clean failure).
+    PluginLoadBreadcrumb crumb;
+    crumb.begin(registry.getDataDir(), desc, "resolveMissing");
+
     // Try to instantiate the real plugin.  createPluginInstance is guarded:
     // a faulty plugin DLL must not take down the host while the user is merely
     // attempting resolution.
@@ -1563,6 +1662,7 @@ bool AudioGraph::tryResolvePlugin(int nodeId, PluginRegistry& registry)
     removeNode(nodeId);  // also erases missingNodes_[nodeId]
 
     // Add the real plugin (wrapped for crash containment).
+    crumb.setPhase("prepare");
     const int newId = addProcessorToGraph(pluginId, std::move(wrapped));
     if (newId < 0) return false;
 
@@ -1572,6 +1672,7 @@ bool AudioGraph::tryResolvePlugin(int nodeId, PluginRegistry& registry)
     // Restore state.
     if (storedState.getSize() > 0)
     {
+        crumb.setPhase("setState");
         auto* newApgNode = graph_->getNodeForId(nodes_[newId].apgNodeId);
         if (newApgNode)
             newApgNode->getProcessor()->setStateInformation(
@@ -1653,6 +1754,158 @@ void AudioGraph::processBlock(juce::AudioBuffer<float>& buffer, int numSamples,
     XlethEffectBase::setCurrentMidiBuffer(nullptr);
 }
 
+// ─── RealtimeView (Finding 9) ───────────────────────────────────────────────
+//
+// Built on the message thread, published atomically, never mutated afterwards.
+// Everything the audio thread needs from the node model lives here so it can
+// stop taking chainsMutex_ entirely. Each entry keeps a strong Node::Ptr: a
+// node the message thread removes right after this publish stays alive until
+// the last holder of this view lets go.
+
+void AudioGraph::publishRealtimeView()
+{
+    auto view = std::make_shared<RealtimeView>();
+    view->initialized = (graph_ != nullptr);
+    view->graphSerial = graphSerial_;
+
+    if (graph_ != nullptr)
+    {
+        view->effects.reserve(nodes_.size());
+        view->byNodeId.reserve(nodes_.size());
+        view->byInstanceId.reserve(nodes_.size());
+
+        for (const auto& [uid, gn] : nodes_)
+        {
+            juce::AudioProcessorGraph::Node::Ptr node = graph_->getNodeForId(gn.apgNodeId);
+            if (node == nullptr) continue;
+
+            RealtimeNode rn;
+            rn.nodeId    = uid;
+            rn.node      = node;
+            rn.processor = node->getProcessor();
+            rn.effect    = dynamic_cast<XlethEffectBase*>(rn.processor);
+
+            view->byNodeId.emplace(uid, view->effects.size());
+            if (!gn.effectInstanceId.empty())
+                view->byInstanceId.emplace(gn.effectInstanceId, uid);
+            view->effects.push_back(std::move(rn));
+        }
+
+        // Helper nodes (per-wire gain, PDC delay) are not part of the chain
+        // model, but resetProcessors() has always reset them too — keep that
+        // behaviour identical on the lock-free path.
+        const auto addHelper = [&](juce::AudioProcessorGraph::NodeID id)
+        {
+            if (id.uid == 0) return;
+            juce::AudioProcessorGraph::Node::Ptr node = graph_->getNodeForId(id);
+            if (node == nullptr) return;
+            RealtimeNode rn;
+            rn.nodeId    = static_cast<int>(id.uid);
+            rn.node      = node;
+            rn.processor = node->getProcessor();
+            view->helpers.push_back(std::move(rn));
+        };
+
+        for (const auto& [wid, conn] : connections_)
+        {
+            juce::ignoreUnused(wid);
+            addHelper(conn.wire.gainNodeId);
+            addHelper(conn.wire.delayNodeId);
+        }
+    }
+
+    auto previous = realtimeView_.exchange(
+        std::shared_ptr<const RealtimeView>(std::move(view)),
+        std::memory_order_acq_rel);
+
+    if (previous)
+        retiredViews_.push_back(std::move(previous));
+
+    retiredViews_.erase(
+        std::remove_if(retiredViews_.begin(), retiredViews_.end(),
+                       [](const std::shared_ptr<const RealtimeView>& v)
+                       { return v.use_count() == 1; }),
+        retiredViews_.end());
+}
+
+void AudioGraph::resetProcessors(const RealtimeView& view) noexcept
+{
+    for (const auto& rn : view.effects)
+    {
+        if (rn.processor == nullptr) continue;
+        if (rn.effect != nullptr)
+            rn.effect->takeDeferredReset();      // a full reset covers it
+        rn.processor->reset();
+    }
+
+    for (const auto& rn : view.helpers)
+        if (rn.processor != nullptr)
+            rn.processor->reset();
+}
+
+bool AudioGraph::resetProcessorsOnAudioThread(const RealtimeView& view) noexcept
+{
+    bool complete = true;
+    for (const auto& rn : view.effects)
+    {
+        if (rn.processor == nullptr) continue;
+        if (rn.effect == nullptr)
+            complete = false;                    // VST3: reset() is not realtime safe
+        else if (! rn.effect->resetOnAudioThread())
+        {
+            rn.effect->markDeferredReset();
+            complete = false;
+        }
+    }
+
+    for (const auto& rn : view.helpers)
+        if (rn.processor != nullptr)
+            rn.processor->reset();
+
+    return complete;
+}
+
+void AudioGraph::resetDeferredProcessors(const RealtimeView& view) noexcept
+{
+    for (const auto& rn : view.effects)
+    {
+        if (rn.processor == nullptr) continue;
+        if (rn.effect == nullptr || rn.effect->takeDeferredReset())
+            rn.processor->reset();
+    }
+}
+
+void AudioGraph::primeDeferredResets(const RealtimeView& view)
+{
+    for (const auto& rn : view.effects)
+        if (rn.effect != nullptr)
+            rn.effect->primeDeferredReset();
+}
+
+void AudioGraph::deliverModulationGate(const RealtimeView& view,
+                                       bool valid,
+                                       std::int64_t gateStartSample,
+                                       std::int64_t gateEndSample) noexcept
+{
+    for (const auto& rn : view.effects)
+        if (rn.effect != nullptr)
+            rn.effect->applyModulationGate(valid, gateStartSample, gateEndSample);
+}
+
+XlethEffectBase* AudioGraph::effectFor(const RealtimeView& view, int nodeId) noexcept
+{
+    const auto* rn = view.find(nodeId);
+    return rn == nullptr ? nullptr : rn->effect;
+}
+
+int AudioGraph::nodeIdForEffectInstance(const RealtimeView& view,
+                                        const std::string& effectInstanceId) noexcept
+{
+    if (effectInstanceId.empty()) return -1;
+    auto it = view.byInstanceId.find(effectInstanceId);
+    return it == view.byInstanceId.end() ? -1 : it->second;
+}
+
 void AudioGraph::resetProcessors()
 {
     if (!graph_) return;
@@ -1726,6 +1979,15 @@ void AudioGraph::rebuildImmediate()
 void AudioGraph::refreshLatencyDiagnostics()
 {
     computePDC();
+}
+
+bool AudioGraph::servicePendingLatencyChange()
+{
+    if (!graph_ || !latencyChangeSignal_->isPending())
+        return false;
+
+    computePDC();   // clears the signal before it reads any node latency
+    return true;
 }
 
 // ─── Cycle detection ────────────────────────────────────────────────────────
@@ -1826,6 +2088,14 @@ void AudioGraph::computePDC()
 {
     if (!graph_) return;
 
+    // [PDCNotify] Clear BEFORE reading any node latency. A change published
+    // before this point is about to be read; one published concurrently (an
+    // effect mutated on another thread without the owner's lock) re-raises after
+    // its write, so the next service pass picks up the final value. Because
+    // every inline owner-path recompute lands here, the raise its own mutation
+    // caused is absorbed and never triggers a second recompute.
+    latencyChangeSignal_->clear();
+
     auto levels = topologicalSortWithLevels();
 
     // Reset all latencies
@@ -1865,7 +2135,16 @@ void AudioGraph::computePDC()
             {
                 auto* node = graph_->getNodeForId(nIt->second.apgNodeId);
                 if (node && node->getProcessor())
+                {
+                    // [PDCNotify] Subscribe every stock node this graph accounts
+                    // for. Done here rather than at each of the several insert
+                    // paths: every topology change ends in computePDC, so a node
+                    // is subscribed by the time its latency first counts.
+                    // Subscribe before reading, so a change after the read raises.
+                    if (auto* fx = dynamic_cast<XlethEffectBase*>(node->getProcessor()))
+                        fx->attachLatencyChangeSignal(latencyChangeSignal_);
                     nodeLat = node->getProcessor()->getLatencySamples();
+                }
             }
 
             cumLatency[uid] = maxInputLat + nodeLat;
@@ -1876,7 +2155,8 @@ void AudioGraph::computePDC()
     }
 
     auto outIt = cumLatency.find(outUid);
-    outputLatencySamples_ = (outIt != cumLatency.end()) ? outIt->second : 0;
+    outputLatencySamples_.store((outIt != cumLatency.end()) ? outIt->second : 0,
+                                std::memory_order_release);
     latencyEpoch_.fetch_add(1, std::memory_order_acq_rel);
 
     // For each connection, determine if delay compensation is needed
@@ -1954,7 +2234,7 @@ void AudioGraph::refreshOutputLatencyCache()
     auto levels = topologicalSortWithLevels();
     if (levels.empty())
     {
-        outputLatencySamples_ = 0;
+        outputLatencySamples_.store(0, std::memory_order_release);
         return;
     }
 
@@ -2003,7 +2283,8 @@ void AudioGraph::refreshOutputLatencyCache()
     }
 
     auto outIt = cumLatency.find(outUid);
-    outputLatencySamples_ = (outIt != cumLatency.end()) ? outIt->second : 0;
+    outputLatencySamples_.store((outIt != cumLatency.end()) ? outIt->second : 0,
+                                std::memory_order_release);
 }
 
 // ─── APG rebuild ────────────────────────────────────────────────────────────
@@ -2123,6 +2404,10 @@ void AudioGraph::rebuildAPGConnections()
         for (int ch = 0; ch < 2; ++ch)
             graph_->addConnection({{inputNode_, ch}, {outputNode_, ch}});
     }
+
+    // Finding 9: every topology change funnels through here, so this is the
+    // one place the audio-thread view has to be refreshed.
+    publishRealtimeView();
 }
 
 // ─── Sidechain key infrastructure ─────────────────────────────────────────────
@@ -2236,7 +2521,8 @@ bool AudioGraph::applySidechainTargetInstances(
         auto* node = graph_->getNodeForId(gn.apgNodeId);
         if (!node) continue;
         auto* proc = node->getProcessor();
-        const bool want = enabledInstanceIds.count(gn.effectInstanceId) > 0;
+        const bool want = enabledInstanceIds.count(gn.effectInstanceId) > 0
+                       || enabledInstanceIds.count(kAllSidechainTargets) > 0;
 
         // Stock external-sidechain-capable effects (today only the compressor).
         if (auto* eff = dynamic_cast<XlethEffectBase*>(proc))
@@ -2468,6 +2754,50 @@ std::vector<XlethEffectBase*> AudioGraph::collectEffects() const
     return out;
 }
 
+void AudioGraph::visitEffectsInChainOrder(void* context, EffectVisitor visit) const
+{
+    if (!graph_ || visit == nullptr) return;
+
+    const auto visitNode = [&](int uid, const GraphNode& gn)
+    {
+        auto* n = graph_->getNodeForId(gn.apgNodeId);
+        if (n == nullptr) return;
+        if (auto* fx = dynamic_cast<XlethEffectBase*>(n->getProcessor()))
+            visit(context, uid, fx);
+    };
+
+    // updateLinearOrder() only leaves linearOrder_ populated when the whole
+    // graph is one input->output path through EVERY node; the size check
+    // re-asserts that here rather than trusting a cache that could be stale.
+    if (!linearOrder_.empty() && linearOrder_.size() == nodes_.size())
+    {
+        for (int uid : linearOrder_)
+        {
+            auto it = nodes_.find(uid);
+            if (it != nodes_.end()) visitNode(uid, it->second);
+        }
+        return;
+    }
+
+    // Non-linear: ascending uid. A repeated min-greater-than scan instead of a
+    // sorted copy keeps this allocation-free; nodes_ is capped at
+    // EffectChainManager::kMaxEffects, so the quadratic walk is bounded.
+    long long prev = std::numeric_limits<long long>::min();
+    for (;;)
+    {
+        const GraphNode* best = nullptr;
+        int bestUid = 0;
+        for (const auto& [uid, gn] : nodes_)
+        {
+            if (static_cast<long long>(uid) <= prev) continue;
+            if (best == nullptr || uid < bestUid) { best = &gn; bestUid = uid; }
+        }
+        if (best == nullptr) break;
+        visitNode(bestUid, *best);
+        prev = bestUid;
+    }
+}
+
 juce::AudioProcessor* AudioGraph::getProcessor(int nodeId)
 {
     auto it = nodes_.find(nodeId);
@@ -2605,6 +2935,14 @@ juce::String AudioGraph::getPluginFilePath(int nodeId) const
     auto it = vstDescriptions_.find(nodeId);
     if (it == vstDescriptions_.end()) return {};
     return it->second.fileOrIdentifier;
+}
+
+bool AudioGraph::getPluginDescription(int nodeId, juce::PluginDescription& out) const
+{
+    auto it = vstDescriptions_.find(nodeId);
+    if (it == vstDescriptions_.end()) return false;
+    out = it->second;
+    return true;
 }
 
 // ─── FXG.4-a graph-owned parameter descriptor + normalized read/write ───────
@@ -2797,7 +3135,8 @@ nlohmann::json AudioGraph::setGraphEffectParameterNormalized(int nodeId,
 
 // ─── Factory ────────────────────────────────────────────────────────────────
 
-std::unique_ptr<juce::AudioProcessor> AudioGraph::createEffect(const std::string& pluginId)
+std::unique_ptr<juce::AudioProcessor> AudioGraph::createEffect(const std::string& pluginId,
+                                                               PluginLoadBreadcrumb* crumb)
 {
     if (pluginId == "testgain")      return std::make_unique<TestGainEffect>();
     if (pluginId == "compressor")    return std::make_unique<XlethCompressorEffect>();
@@ -2818,7 +3157,15 @@ std::unique_ptr<juce::AudioProcessor> AudioGraph::createEffect(const std::string
     if (pluginId == "resonancesuppressor") return std::make_unique<XlethResonanceSuppressorEffect>();
     if (pluginId == "smartbalance")  return std::make_unique<SmartBalanceEffect>();
     if (pluginId == "apex")          return std::make_unique<XlethApexEffect>();
+    if (pluginId == "amp")           return std::make_unique<XlethAmpEffect>();
+    if (pluginId == "pitchshifter")  return std::make_unique<XlethPitchShifterEffect>();
     if (pluginId == "gloss")         return std::make_unique<XlethApexEffect>("gloss");   // one-knob APEX skin — same DSP, distinct persisted id
+    if (pluginId == "glue")          return std::make_unique<XlethGlueCompressorEffect>();
+    if (pluginId == "opto")          return std::make_unique<XlethOptoCompressorEffect>();
+    if (pluginId == "fet")           return std::make_unique<XlethFetCompressorEffect>();
+    if (pluginId == "varimu")        return std::make_unique<XlethVariMuCompressorEffect>();
+    if (pluginId == "fedda")         return std::make_unique<XlethFeddaEffect>();   // mono-safe widener (StereoizeCore)
+    if (pluginId == "szkrezh")       return std::make_unique<XlethSzkrezhEffect>(); // transport-locked granular reverse pitch echo
 
     // VST3 fallback — look up in the plugin registry and instantiate.
     // The createPluginInstance call itself is guarded (some plugins fault on load).
@@ -2828,6 +3175,20 @@ std::unique_ptr<juce::AudioProcessor> AudioGraph::createEffect(const std::string
         const auto desc = pluginRegistry_->findPluginByIdentifier(juce::String(pluginId));
         if (!desc.name.isEmpty())
         {
+            // P2: an explicit insert of a quarantined plugin is allowed (the
+            // user asked for it; a repeat crash re-quarantines it). Only blind
+            // loads (project load, resolve) are refused.
+            if (pluginRegistry_->isQuarantined(desc))
+                std::fprintf(stderr,
+                             "[PluginHost] inserting quarantined plugin \"%s\" on explicit request\n",
+                             desc.name.toRawUTF8());
+
+            // Breadcrumb: the caller's scope when given (kept open through
+            // prepare), else one that covers instantiation only.
+            PluginLoadBreadcrumb localCrumb;
+            PluginLoadBreadcrumb& bc = crumb ? *crumb : localCrumb;
+            bc.begin(pluginRegistry_->getDataDir(), desc, "insert");
+
             juce::String errorMsg;
             std::unique_ptr<juce::AudioPluginInstance> instance;
             auto& fmtMgr = pluginRegistry_->getFormatManager();

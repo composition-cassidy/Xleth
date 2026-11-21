@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { CATEGORIES, SUBSYSTEMS, tokensBySubsystem } from '../tokens/catalog'
 import type { ThemeFile } from '../schema/types'
 import TokenCategoryTree from './TokenCategoryTree'
+import styles from './ThemeEditor.module.css'
 
 interface Props {
   workingTheme: ThemeFile
@@ -18,7 +19,7 @@ export default function AdvancedMode({ workingTheme, resolvedValues, onTokenChan
   )
 
   return (
-    <div className="advanced-mode">
+    <div className={styles.advanced}>
       {CATEGORIES.map(cat => {
         const subsystems = SUBSYSTEMS.filter(s => s.category === cat)
         return (

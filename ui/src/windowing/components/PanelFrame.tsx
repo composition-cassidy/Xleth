@@ -1,18 +1,30 @@
 import React, { useRef } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { PanelVisibilityProvider } from '../contexts/PanelVisibilityContext';
-import { useDragOffset } from '../managers/DragManager';
+import { useDockSlot } from '../contexts/DockSlotContext';
+import { PanelTabStrip } from './PanelTabStrip';
+import { isRegionHiddenByShell, useShellLayoutStore } from '../layout/shellLayoutStore';
+import { useDragOffset, useIsDragging } from '../managers/DragManager';
 import { useResizePreview } from '../managers/ResizeManager';
 import { PANEL_CATALOG, panelTypeColorVar, type PanelId } from '../registry/panelCatalog';
 import { usePanelRegistry, type PanelState } from '../registry/PanelRegistry';
+import { usePanelValue } from '../registry/usePanelValue';
 import { ResizeHandles } from './ResizeHandles';
 import { Titlebar } from './Titlebar';
 import './windowing.css';
+import chrome from './PanelChrome.module.css';
+import { MotionDiv, hadUserInput } from '../../ui-kit';
 
 export interface PanelFrameProps {
   id: PanelId;
   children: ReactNode;
   titlebarContent?: ReactNode;
+  /** Let titlebarContent take the titlebar's free width (its own empty space still drags). */
+  titlebarContentFill?: boolean;
+  /** Rendered above the titlebar when the panel shares a slot with others. */
+  tabStrip?: ReactNode;
+  /** A docked panel that is not the active tab of its slot renders nothing. */
+  inactiveTab?: boolean;
 }
 
 export type PanelFrameRenderPath = 'hidden' | 'docked' | 'maximized' | 'floating';
@@ -22,55 +34,45 @@ export function getPanelFrameRenderPath(panel: PanelState | null | undefined): P
   return panel.mode;
 }
 
-export function PanelFrame({ id, children, titlebarContent }: PanelFrameProps) {
-  // ── Primitive selectors ──────────────────────────────────────────────────────
-  // Zustand v5 wraps each selector in React.useCallback([api, selector]).  When
-  // the selector is an inline arrow function it gets a new reference every render,
-  // so useCallback creates a new getSnapshot function every render.  React 18's
-  // useSyncExternalStore then calls the new getSnapshot and compares its return
-  // value with the cached snapshot via Object.is.
-  //
-  // If the selector returns an object (state.panels[id]) the comparison will
-  // always fail after commitPanels clones the whole panel map — even for panels
-  // whose data did not change — triggering the "getSnapshot should be cached"
-  // warning and eventually "Maximum update depth exceeded".
-  //
-  // Primitives (boolean, string, number) compare by VALUE, so Object.is returns
-  // true whenever the underlying data is unchanged, even though the panel object
-  // itself is a new reference.  Each selector below selects exactly one scalar.
-  const reactiveHidden  = usePanelRegistry((s) => s.panels[id].hidden);
-  const reactiveMode    = usePanelRegistry((s) => s.panels[id].mode);
-  const reactiveFocused = usePanelRegistry((s) => s.panels[id].focused);
-  const reactiveZIndex  = usePanelRegistry((s) => s.panels[id].zIndex);
-  const reactiveFloatX  = usePanelRegistry((s) => s.panels[id].floating.x);
-  const reactiveFloatY  = usePanelRegistry((s) => s.panels[id].floating.y);
-  const reactiveFloatW  = usePanelRegistry((s) => s.panels[id].floating.width);
-  const reactiveFloatH  = usePanelRegistry((s) => s.panels[id].floating.height);
-  const focusPanel      = usePanelRegistry((s) => s.focusPanel);
+export function PanelFrame({
+  id,
+  children,
+  titlebarContent,
+  titlebarContentFill = false,
+  tabStrip: tabStripOverride,
+  inactiveTab: inactiveTabOverride,
+}: PanelFrameProps) {
+  // Slot membership arrives by context because panel wrappers own the
+  // <PanelFrame> call site; see DockSlotContext.
+  const slot = useDockSlot();
+  const inSlot = slot?.tabIds.includes(id) ?? false;
+  const inactiveTab = inactiveTabOverride ?? (inSlot && slot!.activeId !== id);
+  const tabStrip = tabStripOverride ?? (inSlot && slot!.tabIds.length > 1
+    ? <PanelTabStrip region={slot!.region} tabIds={slot!.tabIds} activeId={slot!.activeId} />
+    : null);
 
-  // SSR / test-env fallback: renderToStaticMarkup calls useSyncExternalStore
-  // with getInitialState() (not the mutated getState()), so test mutations would
-  // be invisible.  Read getState() directly when window is absent.
-  const ssrPanel = typeof window === 'undefined'
-    ? usePanelRegistry.getState().panels[id]
-    : null;
-
-  const hidden  = ssrPanel !== null ? ssrPanel.hidden           : reactiveHidden;
-  const mode    = ssrPanel !== null ? ssrPanel.mode             : reactiveMode;
-  const focused = ssrPanel !== null ? ssrPanel.focused          : reactiveFocused;
-  const zIndex  = ssrPanel !== null ? ssrPanel.zIndex           : reactiveZIndex;
-  const floatX  = ssrPanel !== null ? ssrPanel.floating.x       : reactiveFloatX;
-  const floatY  = ssrPanel !== null ? ssrPanel.floating.y       : reactiveFloatY;
-  const floatW  = ssrPanel !== null ? ssrPanel.floating.width   : reactiveFloatW;
-  const floatH  = ssrPanel !== null ? ssrPanel.floating.height  : reactiveFloatH;
+  const hidden = usePanelValue(id, (p) => p.hidden);
+  const collapsed = usePanelValue(id, (p) => p.collapsed);
+  const mode = usePanelValue(id, (p) => p.mode);
+  const focused = usePanelValue(id, (p) => p.focused);
+  const zIndex = usePanelValue(id, (p) => p.zIndex);
+  const floatX = usePanelValue(id, (p) => p.floating.x);
+  const floatY = usePanelValue(id, (p) => p.floating.y);
+  const floatW = usePanelValue(id, (p) => p.floating.width);
+  const floatH = usePanelValue(id, (p) => p.floating.height);
+  const focusPanel = usePanelRegistry((s) => s.focusPanel);
+  // The shell can fold a whole region (the top row on a short window). Its panels
+  // stay mounted but must not render or decode into a box nobody can see.
+  const regionHidden = useShellLayoutStore((s) => (slot ? isRegionHiddenByShell(s, slot.region) : false));
 
   const panelRef = useRef<HTMLElement>(null);
   const dragOffset = useDragOffset(id);
+  const dragging = useIsDragging(id);
   const resizePreview = useResizePreview(id);
   const renderPath: PanelFrameRenderPath = hidden ? 'hidden' : mode as PanelFrameRenderPath;
+  const entry = PANEL_CATALOG[id];
 
   if (renderPath === 'hidden') {
-    const entry = PANEL_CATALOG[id];
     if (!entry.keepAliveWhenHidden) return null;
 
     return (
@@ -82,25 +84,48 @@ export function PanelFrame({ id, children, titlebarContent }: PanelFrameProps) {
     );
   }
 
+  // A background tab stays mounted but unpainted, exactly like a hidden
+  // keep-alive panel: its state, caches and subscriptions survive a tab switch.
+  if (inactiveTab) {
+    return (
+      <PanelVisibilityProvider isVisible={false}>
+        <div style={{ display: 'none' }} data-panel-id={id} data-panel-mode="inactive-tab">
+          {children}
+        </div>
+      </PanelVisibilityProvider>
+    );
+  }
+
+  // Claim panel ownership before child controls can stop the bubble phase.
+  // Canvas clip handles and portaled menus intentionally stop mousedown;
+  // leaving this in bubble phase makes panel-scoped shortcuts depend on
+  // whichever panel happened to be focused previously.
+  const claimFocus = () => { focusPanel(id); panelRef.current?.focus(); };
+
+  const accessibility = {
+    role: 'region' as const,
+    'aria-label': entry.title,
+  };
+
   if (renderPath === 'docked') {
     return (
-      <PanelVisibilityProvider isVisible={true}>
+      <PanelVisibilityProvider isVisible={!collapsed && !regionHidden}>
         <section
           ref={panelRef}
           tabIndex={-1}
-          className="xleth-panel-frame is-docked"
+          className={`xleth-panel-frame is-docked${collapsed ? ' is-collapsed' : ''}`}
           data-panel-id={id}
           data-panel-mode="docked"
-          data-backdrop-fx-panel-rect="true"
+          data-collapsed={collapsed ? 'true' : 'false'}
           style={{ '--xleth-windowing-panel-color': panelTypeColorVar(id) } as CSSProperties}
-          // Claim panel ownership before child controls can stop the bubble phase.
-          // Canvas clip handles and portaled menus intentionally stop mousedown;
-          // leaving this in bubble phase makes panel-scoped shortcuts depend on
-          // whichever panel happened to be focused previously.
-          onMouseDownCapture={() => { focusPanel(id); panelRef.current?.focus(); }}
+          onMouseDownCapture={claimFocus}
+          {...accessibility}
         >
-          <Titlebar id={id} focused={focused}>{titlebarContent}</Titlebar>
-          <div className="xleth-panel-body">{children}</div>
+          {/* Docked panels draw no titlebar: the region names them (the detail
+              dock's tab, the layout itself). A shared slot keeps its tab strip.
+              Anything a titlebar carried moves into the panel's own toolbar. */}
+          {tabStrip}
+          {collapsed ? null : <div className="xleth-panel-body" id={`xleth-panel-body-${id}`}>{children}</div>}
         </section>
       </PanelVisibilityProvider>
     );
@@ -122,28 +147,46 @@ export function PanelFrame({ id, children, titlebarContent }: PanelFrameProps) {
     ...baseFrameStyle,
     transform: `translate3d(${floatingBounds.x}px, ${floatingBounds.y}px, 0)`,
     width: `${floatingBounds.width}px`,
-    height: `${floatingBounds.height}px`,
+    // A collapsed floating panel is its titlebar. Height comes from the frame's
+    // own chrome rather than a computed number so the two cannot drift.
+    height: collapsed ? 'auto' : `${floatingBounds.height}px`,
   } as CSSProperties;
 
+  const className = [
+    'xleth-panel-frame',
+    chrome.frame,
+    focused ? 'is-focused' : '',
+    collapsed ? 'is-collapsed' : '',
+    // Lifts the dragged frame out of hit-testing so DragManager's
+    // elementFromPoint() can see the dock tab strip underneath the cursor.
+    dragging ? 'is-dragging' : '',
+  ].filter(Boolean).join(' ');
+
   return (
-    <PanelVisibilityProvider isVisible={true}>
-      <section
+    <PanelVisibilityProvider isVisible={!collapsed}>
+      <MotionDiv
+        as="section"
+        // A window the user opened fades in; windows restored with the layout are just there.
+        recipe="window"
+        enter={hadUserInput()}
+        exit={{ fadeOnly: true }}
         ref={panelRef}
         tabIndex={-1}
-        className={`xleth-panel-frame${focused ? ' is-focused' : ''}`}
+        className={className}
         data-panel-id={id}
         data-panel-mode={mode}
         data-focused={focused}
-        data-backdrop-fx-panel-rect="true"
+        data-collapsed={collapsed ? 'true' : 'false'}
         style={frameStyle}
-        onMouseDownCapture={() => { focusPanel(id); panelRef.current?.focus(); }}
+        onMouseDownCapture={claimFocus}
+        {...accessibility}
       >
-        <Titlebar id={id} focused={focused}>{titlebarContent}</Titlebar>
-        <div className="xleth-panel-body">{children}</div>
-        {renderPath === 'floating' && PANEL_CATALOG[id].resizable !== false
+        <Titlebar id={id} focused={focused} contentFill={titlebarContentFill}>{titlebarContent}</Titlebar>
+        {collapsed ? null : <div className="xleth-panel-body" id={`xleth-panel-body-${id}`}>{children}</div>}
+        {renderPath === 'floating' && !collapsed && entry.resizable !== false
           ? <ResizeHandles id={id} />
           : null}
-      </section>
+      </MotionDiv>
     </PanelVisibilityProvider>
   );
 }

@@ -4,8 +4,11 @@
 //
 //   IPC mode (normal):
 //     Spawned by the worker process via ChildProcessCoordinator. The JUCE IPC
-//     pipe args are present in the command line. Worker sends INIT with the
-//     plugin path and state; editor responds with REDY once the window is up.
+//     pipe args are present in the command line. Worker sends INIT (protocol v2)
+//     with the full PluginDescription, the engine's sample rate / block size and
+//     the state; the host acks with VERS, creates EXACTLY that plugin (never
+//     findAllTypesForFile → descriptions[0]) and responds with REDY once the
+//     window is up.
 //
 //   Fallback mode (manual testing):
 //     Launched directly from a terminal with argv[1] = .vst3 path.
@@ -13,13 +16,16 @@
 //     No IPC — just loads and shows the editor window.
 //
 // Message protocol (see EditorProcessCoordinator.h for the authoritative spec):
-//   Coordinator → Worker:  INIT\n<pluginPath>\n<stateBase64>\n<parentHwndHex>
+//   Coordinator → Worker:  INIT\nprotocolVersion=2\nsampleRate=<d>\nblockSize=<n>
+//                              \nparentHwnd=<hex>\nstate=<b64>\ndesc=<xml>   (desc last)
 //                          CLOS
 //                          PARM\n<paramIndex>\n<normalizedValue>
 //                          STAT\n<stateBase64>
-//   Worker → Coordinator:  REDY\n<W>x<H>
+//   Worker → Coordinator:  VERS\n<protocolVersion>   (INIT accepted)
+//                          REDY\n<W>x<H>
 //                          CLSD
-//                          ERR_\n<message>
+//                          ERR_\n<message>   ("protocol-mismatch" = INIT version
+//                                              missing or different → stale exe)
 //                          PARM\n<paramIndex>\n<normalizedValue>
 //
 // UID token MUST match kEditorHostUID in EditorProcessCoordinator.h.
@@ -67,6 +73,20 @@ static const std::chrono::high_resolution_clock::time_point g_t0 =
 // UID token — must match kEditorHostUID in EditorProcessCoordinator.h.
 static constexpr const char* kEditorHostUID = "XlethEditorHost";
 
+// INIT protocol version — must match kEditorProtocolVersion in
+// EditorProcessCoordinator.h (P2).
+static constexpr int kEditorProtocolVersion = 2;
+
+// One parsed INIT v2 request.
+struct InitRequest
+{
+    juce::PluginDescription desc;
+    double                  sampleRate = 0.0;
+    int                     blockSize  = 0;
+    juce::String            stateB64;
+    juce::String            parentHwndHex;
+};
+
 // ─── File-based log ──────────────────────────────────────────────────────────
 // Written two directories above the exe so it lands in bridge/ alongside the
 // other log files (scanner-log.txt). Flushed after every write.
@@ -104,9 +124,7 @@ class EditorHostWorker : public juce::ChildProcessWorker
 {
 public:
     // Set by EditorHostApp after construction.
-    std::function<void(const juce::String& pluginPath,
-                       const juce::String& stateB64,
-                       const juce::String& parentHwndHex)> onInitReceived;
+    std::function<void(const InitRequest& request)> onInitReceived;
     std::function<void()> onCloseReceived;
     std::function<void()> onConnectionLost;
 
@@ -125,6 +143,14 @@ public:
         const juce::String msg = "REDY\n" + juce::String(w) + "x" + juce::String(h);
         const juce::MemoryBlock mb(msg.toRawUTF8(), (size_t)msg.getNumBytesAsUTF8());
         ELOG("[EditorHost IPC] Sending REDY %dx%d (%d bytes)", w, h, (int)mb.getSize());
+        sendMessageToCoordinator(mb);
+    }
+
+    void sendVersion()
+    {
+        const juce::String msg = "VERS\n" + juce::String(kEditorProtocolVersion);
+        const juce::MemoryBlock mb(msg.toRawUTF8(), (size_t)msg.getNumBytesAsUTF8());
+        ELOG("[EditorHost IPC] Sending VERS %d", kEditorProtocolVersion);
         sendMessageToCoordinator(mb);
     }
 
@@ -180,24 +206,74 @@ private:
 
         if (msg.startsWith("INIT"))
         {
-            // INIT\n<pluginPath>\n<stateBase64>\n<parentHwndHex>
-            juce::StringArray lines;
-            lines.addTokens(msg, "\n", "");
+            // INIT v2: key=value lines, `desc` last (its value runs to the end).
+            InitRequest req;
+            int  version = 0;
+            bool descOk  = false;
+            {
+                const juce::String body    = msg.fromFirstOccurrenceOf("\n", false, false);
+                const int          descAt  = body.startsWith("desc=") ? 0 : body.indexOf("\ndesc=");
+                const juce::String head    = descAt < 0 ? body : body.substring(0, descAt);
+                const juce::String descXml = descAt < 0 ? juce::String()
+                                           : body.substring(descAt + (descAt == 0 ? 5 : 6));
 
-            const juce::String pluginPath    = lines.size() > 1 ? lines[1] : juce::String();
-            const juce::String stateB64      = lines.size() > 2 ? lines[2] : juce::String();
-            const juce::String parentHwndHex = lines.size() > 3 ? lines[3].trim() : juce::String();
+                juce::StringArray lines;
+                lines.addTokens(head, "\n", "");
+                for (const auto& line : lines)
+                {
+                    const auto key = line.upToFirstOccurrenceOf("=", false, false).trim();
+                    const auto val = line.fromFirstOccurrenceOf("=", false, false);
+                    if (key == "protocolVersion") version = val.trim().getIntValue();
+                    else if (key == "sampleRate") req.sampleRate = val.trim().getDoubleValue();
+                    else if (key == "blockSize")  req.blockSize = val.trim().getIntValue();
+                    else if (key == "parentHwnd") req.parentHwndHex = val.trim();
+                    else if (key == "state")      req.stateB64 = val.trim();
+                }
+                if (auto xml = juce::XmlDocument::parse(descXml))
+                    descOk = req.desc.loadFromXml(*xml);
+            }
 
-            ELOG("init received plugin=%s stateLen=%d parent=0x%s",
-                 pluginPath.toRawUTF8(), stateB64.length(),
-                 parentHwndHex.isEmpty() ? "0" : parentHwndHex.toRawUTF8());
+            // Version guard: a missing or different version means the engine
+            // and this exe were built from different sources.
+            if (version != kEditorProtocolVersion)
+            {
+                ELOG("INIT protocolVersion=%d, expected %d - replying protocol-mismatch",
+                     version, kEditorProtocolVersion);
+                sendError("protocol-mismatch");
+                if (onConnectionLost)
+                {
+                    auto cb = onConnectionLost;
+                    juce::MessageManager::callAsync([cb]{ cb(); });
+                }
+                return;
+            }
+            sendVersion();
+
+            if (!descOk || req.sampleRate <= 0.0 || req.blockSize <= 0)
+            {
+                ELOG("INIT v2 malformed: desc=%s sr=%.1f bs=%d",
+                     descOk ? "ok" : "unparseable", req.sampleRate, req.blockSize);
+                sendError("bad-init: " + juce::String(descOk ? "rate/block" : "description"));
+                if (onConnectionLost)
+                {
+                    auto cb = onConnectionLost;
+                    juce::MessageManager::callAsync([cb]{ cb(); });
+                }
+                return;
+            }
+
+            ELOG("init v2 received plugin=\"%s\" format=%s uid=%x file=%s sr=%.1f bs=%d stateLen=%d parent=0x%s",
+                 req.desc.name.toRawUTF8(), req.desc.pluginFormatName.toRawUTF8(),
+                 (unsigned)req.desc.uniqueId, req.desc.fileOrIdentifier.toRawUTF8(),
+                 req.sampleRate, req.blockSize, req.stateB64.length(),
+                 req.parentHwndHex.isEmpty() ? "0" : req.parentHwndHex.toRawUTF8());
 
             if (onInitReceived)
             {
                 auto cb = onInitReceived;
-                juce::MessageManager::callAsync([cb, pluginPath, stateB64, parentHwndHex]
+                juce::MessageManager::callAsync([cb, req]
                 {
-                    cb(pluginPath, stateB64, parentHwndHex);
+                    cb(req);
                 });
             }
         }
@@ -422,11 +498,10 @@ public:
 
         worker_ = std::make_unique<EditorHostWorker>();
 
-        worker_->onInitReceived = [this](const juce::String& path,
-                                         const juce::String& stateB64,
-                                         const juce::String& parentHwndHex)
+        worker_->onInitReceived = [this](const InitRequest& req)
         {
-            loadPluginAndShowEditor(path, stateB64, parentHwndHex);
+            loadPluginAndShowEditor(req.desc.fileOrIdentifier, req.stateB64, req.parentHwndHex,
+                                    &req.desc, req.sampleRate, req.blockSize);
         };
 
         worker_->onCloseReceived = [this]
@@ -475,9 +550,15 @@ public:
     }
 
     // ── Plugin loading (called on the message thread) ─────────────────────────
+    // IPC mode passes the exact description + the engine's rate/block (INIT v2):
+    // that description is instantiated as-is. Only the manual argv fallback
+    // (no description) still enumerates the file and takes the first type.
     void loadPluginAndShowEditor(const juce::String& pluginPath,
                                  const juce::String& stateBase64,
-                                 const juce::String& parentHwndHex = juce::String())
+                                 const juce::String& parentHwndHex = juce::String(),
+                                 const juce::PluginDescription* exactDesc = nullptr,
+                                 double sampleRate = 48000.0,
+                                 int    blockSize  = 480)
     {
         ELOG("creating plugin format manager");
         juce::AudioPluginFormatManager formatManager;
@@ -487,30 +568,41 @@ public:
         for (auto* fmt : formatManager.getFormats())
             ELOG("  format: %s", fmt->getName().toRawUTF8());
 
-        // Scan file for plugin descriptions.
-        juce::OwnedArray<juce::PluginDescription> descriptions;
-        for (auto* fmt : formatManager.getFormats())
+        juce::PluginDescription chosen;
+        if (exactDesc != nullptr)
         {
-            if (fmt->fileMightContainThisPluginType(pluginPath))
-                fmt->findAllTypesForFile(descriptions, pluginPath);
+            chosen = *exactDesc;
+            ELOG("loading exact description \"%s\" (%s uid=%x) at %.1f Hz / %d",
+                 chosen.name.toRawUTF8(), chosen.pluginFormatName.toRawUTF8(),
+                 (unsigned)chosen.uniqueId, sampleRate, blockSize);
         }
-
-        if (descriptions.isEmpty())
+        else
         {
-            const juce::String err = "no plugins found in: " + pluginPath;
-            ELOG("%s", err.toRawUTF8());
-            if (ipcMode_ && worker_) worker_->sendError(err);
-            quit();
-            return;
-        }
+            // Manual-test fallback: scan the file, use the first type.
+            juce::OwnedArray<juce::PluginDescription> descriptions;
+            for (auto* fmt : formatManager.getFormats())
+            {
+                if (fmt->fileMightContainThisPluginType(pluginPath))
+                    fmt->findAllTypesForFile(descriptions, pluginPath);
+            }
 
-        ELOG("found %d plugin(s) — using first", (int)descriptions.size());
+            if (descriptions.isEmpty())
+            {
+                const juce::String err = "no plugins found in: " + pluginPath;
+                ELOG("%s", err.toRawUTF8());
+                if (ipcMode_ && worker_) worker_->sendError(err);
+                quit();
+                return;
+            }
+
+            ELOG("found %d plugin(s) — using first (argv fallback)", (int)descriptions.size());
+            chosen = *descriptions[0];
+        }
         ELOG("loading plugin");
 
         juce::String errorMsg;
         PLOG("before_create_instance");
-        plugin_ = formatManager.createPluginInstance(
-            *descriptions[0], 48000.0, 480, errorMsg);
+        plugin_ = formatManager.createPluginInstance(chosen, sampleRate, blockSize, errorMsg);
         PLOG("after_create_instance");
 
         if (!plugin_)

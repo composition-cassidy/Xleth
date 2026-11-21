@@ -22,6 +22,7 @@
 #endif
 
 #include <algorithm>
+#include <cstdlib>
 #include <array>
 #include <atomic>
 #include <cctype>
@@ -1120,11 +1121,21 @@ void writeMarkdownReport(const fs::path& path, const json& report)
         out << "- " << item.get<std::string>() << "\n";
 }
 
+// The developer's own copy of the NO MAIL project (~/Desktop/SR/NO MAIL); pass
+// --original-project to point elsewhere. Forward slashes, as reports print it.
+std::string defaultOriginalProjectDir()
+{
+    const char* home = std::getenv("USERPROFILE");
+    std::string dir = home ? home : "";
+    std::replace(dir.begin(), dir.end(), '\\', '/');
+    return dir + "/Desktop/SR/NO MAIL";
+}
+
 Options parseOptions(int argc, char** argv)
 {
     Options options;
     options.projectDir = options.repoRoot / "diagnostics" / "pdc-stage8a" / "NO_MAIL_stage8a_copy";
-    options.originalProjectDir = "C:/Users/Krasen/Desktop/SR/NO MAIL";
+    options.originalProjectDir = defaultOriginalProjectDir();
     options.jsonPath = options.repoRoot / "diagnostics" / "pdc-stage8a" / "pdc-audible-export-stage8a.json";
     options.markdownPath = options.repoRoot / "docs" / "diagnostics" / "pdc-audible-export-stage8a.md";
 

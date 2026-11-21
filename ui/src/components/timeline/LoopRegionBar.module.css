@@ -1,0 +1,92 @@
+/* The loop / render region bar in the ruler (DESIGN.md 22): a 7px strip along the top of
+ * the ruler, a value-colour fill while the loop is armed and a neutral grey while it is
+ * not. Armed also shows on the toggle (an inverted chip), so it is never colour alone. */
+@layer kit {
+  /* The overlay spans the full ruler height so the toggle tab, which hangs below the strip,
+   * has room. Only the body, the edges and the toggle take pointer events; everywhere else
+   * the ruler stays click-to-seek and wheel-zoom. */
+  .overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    overflow: hidden;
+    pointer-events: none;
+  }
+
+  .bar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    display: flex;
+    align-items: stretch;
+    box-sizing: border-box;
+    pointer-events: none; /* the parts below re-enable it */
+    will-change: transform;
+  }
+
+  .edge,
+  .body {
+    pointer-events: auto;
+    background: var(--ui-value);
+  }
+
+  .edge {
+    flex: 0 0 auto;
+    cursor: ew-resize;
+  }
+
+  .body {
+    flex: 1 1 auto;
+    min-width: 0;
+    cursor: grab;
+  }
+
+  .body:active {
+    cursor: grabbing;
+  }
+
+  /* Disarmed: neutral, but still fully draggable and resizable. */
+  .bar[data-armed="false"] :is(.edge, .body) {
+    background: var(--ui-ink-3);
+    opacity: 0.6;
+  }
+
+  /* The tab under the strip: a 14px chip with a 24px hit area. */
+  .toggle {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    box-sizing: border-box;
+    margin-top: 1px;
+    pointer-events: auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    padding: 0;
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g2);
+    color: var(--ui-ink);
+    cursor: pointer;
+  }
+
+  .toggle::after {
+    content: "";
+    position: absolute;
+    inset: -5px;
+  }
+
+  .toggle[aria-pressed="true"] {
+    border-color: var(--ui-ink);
+    background: var(--ui-ink);
+    color: var(--ui-g1);
+  }
+
+  .toggle:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 1px;
+  }
+}

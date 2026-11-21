@@ -1,0 +1,16 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "fet",
+  "name": "Bass Grip",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "input": 1,
+      "output": 2,
+      "attack": 2,
+      "release": 4,
+      "ratio": 0
+    }
+  }
+}

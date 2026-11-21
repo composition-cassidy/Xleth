@@ -1,0 +1,19 @@
+/* The sample picker sheet (Phase 6): over the Preview + Inspector row only. */
+@layer kit {
+  .sheet {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    /* Above docked panels and their splitters, below floating windows. */
+    z-index: calc(var(--xleth-z-window-dock-splitter, 35) + 1);
+    box-sizing: border-box;
+    height: var(--picker-sheet-h, 340px);
+    max-height: 100%;
+    background: var(--ui-g1);
+    border-bottom: 1px solid var(--ui-boundary);
+    /* A floating surface over the arrangement: the one hard offset shadow. */
+    box-shadow: var(--ui-shadow-float);
+    outline: none;
+  }
+}

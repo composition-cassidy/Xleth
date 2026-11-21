@@ -1,0 +1,90 @@
+/* Trail clone settings (docs/XLETH_CLONE_SPEC.md "Trail clones"): the delay picker
+ * (a kit Button + Menu) and the tint field (swatch + hex). Tokens only; the swatch
+ * colour is the user's tint (data, like a custom track colour), set as --swatch. */
+@layer kit {
+  .trigger {
+    min-width: var(--hit-min);
+    justify-content: space-between;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .triggerText {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .caret {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    color: var(--ui-ink-2);
+  }
+
+  .exact {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-1) var(--space-2);
+  }
+
+  .exactLabel {
+    flex: none;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+  }
+
+  .exactField {
+    width: 88px;
+  }
+
+  .tint {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  /* The swatch is the hit area (24 px); the native colour input is stretched over it. */
+  .swatch {
+    box-sizing: border-box;
+    position: relative;
+    flex: none;
+    width: var(--hit-min);
+    height: var(--hit-min);
+    border: 1px solid var(--ui-boundary);
+    border-radius: 2px;
+    background: var(--swatch);
+    cursor: pointer;
+  }
+
+  .swatch:focus-within {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 1px;
+  }
+
+  .swatch[data-disabled="true"] {
+    cursor: default;
+    opacity: var(--ui-mute-opacity);
+  }
+
+  .swatchInput {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    opacity: 0;
+    cursor: inherit;
+  }
+
+  .hex {
+    flex: 1;
+    min-width: 0;
+    font-variant-numeric: tabular-nums;
+  }
+}

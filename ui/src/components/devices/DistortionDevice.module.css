@@ -1,0 +1,28 @@
+@layer kit {
+  /* The curve canvas fills the well. */
+  .display {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .display > canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  /* The mode switch over the three mode-specific knobs, centred in the section. */
+  .mode {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .extras {
+    display: flex;
+    align-items: flex-start;
+    gap: 2px;
+  }
+}

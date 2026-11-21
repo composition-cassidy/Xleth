@@ -1,0 +1,19 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "fedda",
+  "name": "Clap / Snare Air",
+  "author": "XLETH",
+  "created": "2026-11-11T00:00:00.000Z",
+  "state": {
+    "params": {
+      "width": 70,
+      "character": 2,
+      "size": 8,
+      "low_bypass": 400,
+      "low_slope": 0,
+      "hf_damp": 20000,
+      "guard": 60,
+      "loudness_match": 0
+    }
+  }
+}

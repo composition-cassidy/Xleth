@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { validate } from '../validate.js'
 import { SHIPPED_LAYOUTS } from '../../layouts/index.js'
 import { COMPRESSOR_MANIFEST } from '../../manifests/compressor.js'
-import { isSaveAllowed } from '../../designer/validationStatus.js'
+import { isSaveAllowed } from '../validationStatus.js'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

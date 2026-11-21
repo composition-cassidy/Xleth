@@ -1,22 +1,17 @@
 #pragma once
 
 #include "Transport.h"
-#include "VideoDecoder.h"
 #include "FrameCache.h"
 #include "model/TimelineTypes.h"
 
 #include <functional>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
-// VideoCompositor is only available when building with GPU support.
-// Forward-declare so SyncManager can hold a nullable pointer without
-// pulling in <GL/glew.h> or <GLFW/glfw3.h>.
-class VideoCompositor;
-
 struct VideoEvent {
     double startBeat;       // When this event starts (in beats)
-    double durationBeats;   // How long it lasts
+    double durationBeats;   // How long it lasts (exact ticks: startTick / lengthTicks)
     int    sourceId;        // Which video source
     int    trackId = -1;    // Originating track (for grid compositor lookup)
     double sourceStartTime; // Where in the source video to start (seconds)
@@ -60,8 +55,8 @@ struct VideoEvent {
     double sourceClampStartTime = 0.0; // Trim start / first valid frame for reverse clamps.
 
     // Which SampleRegion this event was emitted for (-1 = unset / not region-backed).
-    // Used by SyncManager::videoTick and FrameCollector to route to a
-    // per-region proxy decoder when one is available.
+    // Used by FrameCollector to route to a per-region proxy decoder when one
+    // is available.
     int regionId = -1;
 
     // Clip-track modulation metadata. Pattern/note events leave these at
@@ -95,98 +90,135 @@ struct VideoEvent {
     // Both are populated by VideoFlipApplier from the track's VideoFlipConfig.
     int         stateIndex  = 0;
     Orientation orientation = Orientation::None;
+
+    // The event's span in TICKS (960 PPQ), exact: the clip start / the
+    // note-on, and the CLAMPED length (a note-off clamped to its block end:
+    // where the video actually stops). Lens/Roam keys are evaluated from these
+    // (spec Ruling 5: from the note's start tick, never the first frame that
+    // sees it), so a key on a zone boundary lands exactly on it, with no beat
+    // round trip. Clip and note events carry the integer ticks; arp steps are
+    // timed in beat space, so theirs are the beat values * 960. A hand-built
+    // event leaves hasTickSpan false and readers fall back to the beats
+    // (videoEventStartTick / videoEventLengthTicks below). Kept LAST so no
+    // positional initializer of the fields above can shift.
+    double startTick   = 0.0;
+    double lengthTicks = 0.0;
+    bool   hasTickSpan = false;
+
+    // The note this event plays, for its per-note Lens override (spec Ruling
+    // 6: overrides are keyed {patternId, noteId}; note ids are unique only
+    // inside one pattern). Set on Pattern Track note events; -1 everywhere
+    // else (clips, arp steps), which reads as Follow. Kept after the tick
+    // span for the same positional-initializer reason.
+    int lensPatternId = -1;
+    int lensNoteId    = -1;
+
+    // Clones (model/Clone.h): the track whose Track Lens, hit curve and note
+    // overrides this event plays. -1 = trackId (every event but a Voice
+    // clone's). A note routed to a Voice clone has trackId = the clone (its
+    // cell, Roam, Sweep, effects, flip) and lensTrackId = the source when the
+    // clone's Lens is Linked, the clone itself when it is Own. Kept last for
+    // the positional-initializer reason above.
+    int lensTrackId = -1;
 };
 
-class Timeline; // fwd decl — only needed for getRegion() lookup in videoTick
+// The track whose Track Lens an event plays (see VideoEvent::lensTrackId).
+inline int videoEventLensTrackId(const VideoEvent& ev) {
+    return ev.lensTrackId >= 0 ? ev.lensTrackId : ev.trackId;
+}
+
+// An event's start and clamped length in ticks: the exact span when the
+// builder set it, else derived from the beats (see VideoEvent::startTick).
+inline double videoEventStartTick(const VideoEvent& ev) {
+    return ev.hasTickSpan ? ev.startTick : ev.startBeat * 960.0;
+}
+inline double videoEventLengthTicks(const VideoEvent& ev) {
+    return ev.hasTickSpan ? ev.lengthTicks : ev.durationBeats * 960.0;
+}
 
 class SyncManager {
 public:
-    // compositor may be nullptr (Phase 0 / headless / bridge mode).
-    // When null, videoTick() still decodes frames and fills the FrameCache
-    // but skips all GPU upload/render calls.
-    SyncManager(Transport& transport,
-                std::vector<VideoDecoder*>& decoders,
-                FrameCache& cache,
-                VideoCompositor* compositor = nullptr,
-                std::function<int64_t()> presentationPositionProvider = {});
-
-    // Wire in per-region proxy decoders and the Timeline used to resolve
-    // SampleRegion metadata during videoTick(). Both references are stored
-    // by pointer/ref and must remain valid for SyncManager's lifetime.
+    // SyncManager owns the realtime preview's VideoEvent list and answers
+    // "which beat is the audio the user is hearing right now on?".
     //
-    // regionDecoderPtrs: maps regionId -> VideoDecoder* for the region's proxy.
-    //                    Growth of this map during playback is visible through
-    //                    the reference. The owning map (unique_ptr) lives in
-    //                    XlethAddon; this is just a raw-pointer lookup surface.
-    // timeline:           used only for getRegion(regionId) to read
-    //                     proxyStartTime/proxyEndTime/proxyReady during videoTick.
-    void setRegionProxySources(
-        std::unordered_map<int, VideoDecoder*>* regionDecoderPtrs,
-        const Timeline*                         timeline);
+    // It used to also drive an OpenGL VideoCompositor: decode a frame per
+    // active event, upload it, and set a layerIndex-ordered layer. That
+    // compositor was retired (see the Issue 10 note in VIDEO_PREVIEW_AUDIT.txt)
+    // — all compositing, preview and export alike, goes through
+    // FrameCollector + GridCompositor, which is zOrder-ordered. Nothing here
+    // decodes, caches, or renders any more.
+    //
+    // presentationPositionProvider: optional; returns the sample position of
+    // the audio actually leaving the device (vs. the position already
+    // rendered). Falls back to Transport::getPositionSamples() when unset.
+    explicit SyncManager(Transport& transport,
+                         std::function<int64_t()> presentationPositionProvider = {});
 
-    // Add video events to the timeline
+    using EventList      = std::vector<VideoEvent>;
+    using SlideEventList = std::vector<SlideAnimationEvent>;
+
+    // ── Event list: immutable snapshots ─────────────────────────────────────
+    // The list is PUBLISHED, never edited in place: setEvents() swaps in a
+    // freshly built pair of lists, and readers take a shared_ptr to whichever
+    // pair is current. A reader that holds a snapshot keeps a consistent list
+    // for as long as it likes — the video tick holds one across its whole
+    // decode / composite / readback, long after it has dropped the model lock
+    // — and a rebuild landing in the meantime simply publishes a new one.
+    //
+    // The pointer swap itself is not atomic. Callers that publish or take a
+    // snapshot hold the model lock (syncEventsMutex in the bridge) for that
+    // instant only; nothing needs it while USING a snapshot.
+    void setEvents(EventList events, SlideEventList slideEvents);
+    std::shared_ptr<const EventList>      eventsSnapshot()      const { return events_; }
+    std::shared_ptr<const SlideEventList> slideEventsSnapshot() const { return slideEvents_; }
+
+    // Convenience views of the current snapshot. Valid until the next
+    // setEvents / addEvent / clearEvents — i.e. only while the caller holds the
+    // model lock. Take a snapshot instead when the lock will be released.
+    const EventList&      getEvents()      const { return *events_; }
+    const SlideEventList& getSlideEvents() const { return *slideEvents_; }
+
+    // Append one event / drop everything. Each publishes a new snapshot, so a
+    // reader still holding the previous one is unaffected.
     void addEvent(const VideoEvent& event);
+    void addSlideEvent(const SlideAnimationEvent& e);
     void clearEvents();
 
-    // Read-only access to current events (caller must hold external lock if
-    // the event list is being mutated concurrently).
-    const std::vector<VideoEvent>& getEvents() const { return events_; }
+    // Beat position of the audio currently being heard, or -1.0 when the
+    // transport is stopped.
+    //
+    // Pure function of Transport + the presentation-position provider, both of
+    // which are independently thread-safe atomic reads. It touches NO
+    // SyncManager state, so callers must NOT take the event-list lock for it —
+    // that is the whole point: the video thread used to hold the lock shared
+    // with the event-rebuild path for the duration of a full per-event sweep.
+    double currentBeatPosition() const;
 
-    // Slide animation events — parallel list to video events, populated by
-    // pattern-track rebuild for notes flagged isSlide. Cleared by clearEvents().
-    void addSlideEvent(const SlideAnimationEvent& e) { slideEvents_.push_back(e); }
-    const std::vector<SlideAnimationEvent>& getSlideEvents() const { return slideEvents_; }
-
-    // Called on a dedicated video thread at ~60Hz.
-    // Reads transport position -> determines which events are active ->
-    // fetches/decodes frames -> (if compositor != nullptr) uploads + renders.
-    double videoTick();
-
-    // Performance stats
-    double getLastDriftMs()    const;
-    double getMaxDriftMs()     const;
-    double getAvgDriftMs()     const;
-    double getAvgDecodeTimeMs() const;
-    int    getFrameDropCount() const;
-    double getCacheHitRate()   const;
-
-    // Cumulative count of decoder->seekAndDecode() calls made from videoTick()
-    // since construction (every cache-miss attempt, success or failure — same
-    // population as decodeTimeSamples_). That call site lives inside
-    // #ifndef XLETH_CORE_ONLY, so in the bridge (.node) build this must always
-    // read 0: nothing there ever consumes the decoded frame. A non-zero value
-    // in that build means the dead-decode preview-FPS regression (60fps ->
-    // ~17fps, fixed 3db1b33) has resurfaced — see bridge/test_perf_regression.js.
-    int    getDecodeAttemptCount() const;
+    // ── Legacy preview stats ────────────────────────────────────────────────
+    // Retained because they are published verbatim by the getStats RPC
+    // (avgDriftMs / maxDriftMs / frameDrops) and by
+    // diag_getVisualPreviewDiagnostic (counters.syncManagerDecodeCount, which
+    // bridge/test_perf_regression.js asserts is present and stays 0).
+    //
+    // All four are now STRUCTURALLY zero, not measured-and-happens-to-be-zero:
+    // SyncManager holds no decoder, no frame cache, and no compositor, so there
+    // is nothing here that can drift, drop, or decode. getDecodeAttemptCount()
+    // in particular was the sentinel for the dead-decode preview-FPS regression
+    // (60fps -> ~17fps, fixed 3db1b33); that decode site no longer exists in
+    // any build. The perf gate's remaining teeth are its videoTick µs budget
+    // and its delivered-FPS floor.
+    double getMaxDriftMs()         const { return 0.0; }
+    double getAvgDriftMs()         const { return 0.0; }
+    int    getFrameDropCount()     const { return 0; }
+    int    getDecodeAttemptCount() const { return 0; }
 
 private:
-    Transport&                  transport_;
-    std::vector<VideoDecoder*>& decoders_;
-    FrameCache&                 cache_;
-    VideoCompositor*            compositor_;  // nullable
-    std::function<int64_t()>     presentationPositionProvider_;
+    Transport&               transport_;
+    std::function<int64_t()> presentationPositionProvider_;
 
-    // Region proxy lookup surfaces — both nullable; nullptr disables
-    // per-region proxy preference (videoTick falls back to the source decoder).
-    std::unordered_map<int, VideoDecoder*>* regionDecoderPtrs_ = nullptr;
-    const Timeline*                         timelineForRegions_ = nullptr;
-
-    std::vector<VideoEvent>          events_;
-    std::vector<SlideAnimationEvent> slideEvents_;
-
-    // Drift tracking
-    std::vector<double> driftSamples_;
-    double maxDrift_   = 0.0;
-    int    frameDrops_ = 0;
-
-    // Decode timing
-    std::vector<double> decodeTimeSamples_;
-
-    // Frame dedup: don't re-upload if same frame
-    std::unordered_map<int, int> lastDisplayedFrame_; // layerIndex -> frameNumber
-
-    // Track which layers are currently active for visibility toggling
-    int maxLayerIndex_ = 0;
+    // Never null: an empty project has empty lists, not missing ones.
+    std::shared_ptr<const EventList>      events_      = std::make_shared<const EventList>();
+    std::shared_ptr<const SlideEventList> slideEvents_ = std::make_shared<const SlideEventList>();
 
 public:
     // Preview chorus hold state — written by video thread, reset on clearEvents().

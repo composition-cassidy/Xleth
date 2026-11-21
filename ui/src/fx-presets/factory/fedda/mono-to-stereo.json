@@ -1,0 +1,19 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "fedda",
+  "name": "Mono To Stereo",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "width": 100,
+      "character": 1,
+      "size": 10,
+      "low_bypass": 150,
+      "low_slope": 0,
+      "hf_damp": 20000,
+      "guard": 30,
+      "loudness_match": 0
+    }
+  }
+}

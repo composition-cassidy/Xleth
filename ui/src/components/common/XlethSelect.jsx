@@ -1,6 +1,9 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, ChevronDown } from 'lucide-react'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcCaretDown = iconComponent('caret-down')
+const IcCheck = iconComponent('check')
 
 function clamp(value, min, max) {
   if (max < min) return min
@@ -36,6 +39,7 @@ export default function XlethSelect({
   ariaLabel,
   placeholder = 'Select...',
   className = '',
+  openSignal = 0,
 }) {
   const generatedId = useId()
   const triggerId = id || `xleth-select-${generatedId}`
@@ -107,6 +111,19 @@ export default function XlethSelect({
     if (!open) return
     updatePosition()
   }, [open, updatePosition])
+
+  // Callers bump `openSignal` to pop the list open without a click (the sample
+  // picker does this the moment a middle-drag commits a region).
+  const lastOpenSignal = useRef(openSignal)
+  useEffect(() => {
+    if (openSignal === lastOpenSignal.current) return
+    lastOpenSignal.current = openSignal
+    if (openSignal <= 0) return
+    openPopup(selectedIndex)
+    // Focus the trigger too, otherwise the list is open but arrow keys and
+    // Enter have nowhere to land (the gesture that opened it wasn't a click).
+    triggerRef.current?.focus()
+  }, [openSignal, openPopup, selectedIndex])
 
   useEffect(() => {
     if (!open) return
@@ -239,7 +256,7 @@ export default function XlethSelect({
                   onClick={() => selectIndex(index)}
                 >
                   <span className="xleth-select-option-label">{option.label}</span>
-                  {selected && <Check size={14} aria-hidden="true" />}
+                  {selected && <IcCheck size={14} aria-hidden="true" />}
                 </button>
               </React.Fragment>
             )
@@ -271,7 +288,7 @@ export default function XlethSelect({
         <span className="xleth-select-trigger-label">
           {selectedOption?.label ?? placeholder}
         </span>
-        <ChevronDown
+        <IcCaretDown
           className="xleth-select-chevron"
           size={15}
           aria-hidden="true"

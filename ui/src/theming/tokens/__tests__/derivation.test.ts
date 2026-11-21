@@ -243,6 +243,30 @@ describe('deriveTheme — structural contracts', () => {
       '--theme-lipsync-selection-fill',
       '--theme-waveform-envelope-fill',
       '--theme-waveform-rms-body',
+      // UI kit neutral ramp (ui/DESIGN.md §3.1)
+      '--theme-ui-g0',
+      '--theme-ui-g1',
+      '--theme-ui-g2',
+      '--theme-ui-g3',
+      '--theme-ui-g4',
+      '--theme-ui-ink',
+      '--theme-ui-ink-2',
+      '--theme-ui-ink-3',
+      '--theme-ui-boundary',
+      // The arrangement's alternate bar groups: a ramp step from the ground (ui/DESIGN.md §22)
+      '--theme-timeline-bar-group-shade',
+      // Ramp-driven semantic + signal colours (neutralRamp.ts)
+      '--theme-ui-rec',
+      '--theme-ui-rec-text',
+      '--theme-ui-solo',
+      '--theme-ui-signal-audio',
+      '--theme-ui-signal-events',
+      '--theme-ui-signal-parameter',
+      '--theme-ui-signal-video',
+      '--theme-ui-band-1',
+      '--theme-ui-band-2',
+      '--theme-ui-band-3',
+      '--theme-ui-band-4',
     ];
     for (const k of expected) expect(d[k]).toBeTruthy();
     expect(Object.keys(d).length).toBe(expected.length);

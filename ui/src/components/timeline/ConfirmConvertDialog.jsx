@@ -1,5 +1,4 @@
-import { useEffect } from 'react'
-import { createPortal } from 'react-dom'
+import { Button, Dialog, DialogText } from '../../ui-kit'
 
 /**
  * Lightweight confirmation modal for destructive track operations.
@@ -16,32 +15,22 @@ export default function ConfirmConvertDialog({
   title, message, confirmLabel = 'Confirm', cancelLabel = 'Cancel',
   onConfirm, onCancel, danger = true,
 }) {
-  useEffect(() => {
-    const handler = (e) => {
-      if (e.key === 'Escape') onCancel?.()
-      if (e.key === 'Enter')  onConfirm?.()
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [onCancel, onConfirm])
-
-  return createPortal(
-    <div className="confirm-dialog-backdrop" onClick={onCancel}>
-      <div className="confirm-dialog" onClick={(e) => e.stopPropagation()}>
-        <div className="confirm-dialog-header">{title}</div>
-        <div className="confirm-dialog-body">{message}</div>
-        <div className="confirm-dialog-footer">
-          <button className="confirm-dialog-btn" onClick={onCancel}>{cancelLabel}</button>
-          <button
-            className={`confirm-dialog-btn ${danger ? 'danger' : 'primary'}`}
-            onClick={onConfirm}
-            autoFocus
-          >
+  return (
+    <Dialog
+      title={title}
+      width="sm"
+      onClose={onCancel}
+      onEnter={onConfirm}
+      actions={
+        <>
+          <Button size="lg" onClick={onCancel}>{cancelLabel}</Button>
+          <Button size="lg" variant={danger ? 'danger' : 'primary'} onClick={onConfirm} data-autofocus>
             {confirmLabel}
-          </button>
-        </div>
-      </div>
-    </div>,
-    document.body
+          </Button>
+        </>
+      }
+    >
+      {typeof message === 'string' ? <DialogText>{message}</DialogText> : message}
+    </Dialog>
   )
 }

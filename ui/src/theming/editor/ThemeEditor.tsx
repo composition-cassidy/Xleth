@@ -3,20 +3,21 @@ import { useTheme } from '../runtime/ThemeProvider'
 import { getShippedTheme, DEFAULT_THEME_NAME } from '../runtime/ThemeLoader'
 import { resolveTheme } from '../runtime/applyTheme'
 import type { ThemeFile } from '../schema/types'
-import { X } from 'lucide-react'
+import { Button, Tabs, TextField } from '../../ui-kit'
 import ThemeList, { type UserThemeMeta } from './ThemeList'
 import SimpleMode from './SimpleMode'
 import AdvancedMode from './AdvancedMode'
 import PreviewPane from './PreviewPane'
-
-interface Props {
-  onClose: () => void
-}
+import ChromeReadouts from './ChromeReadouts'
+import { applyChromeKnobs, neutralizeTheme, type ChromeKnobs } from '../runtime/chromeKnobs'
+import { resolveHex } from '../runtime/chromeTint'
+import { CHROME_MODEL_VERSION, migrateChrome } from '../runtime/chromeMigration'
+import styles from './ThemeEditor.module.css'
 
 interface ThemeEditorContentProps {
+  /** Kept for callers: the editor only ever mounts inside Settings > Appearance. */
   embedded?: boolean
   onRequestClose?: () => void
-  showHeader?: boolean
 }
 
 const xlethTheme = () => (window as any).xleth?.theme
@@ -39,9 +40,7 @@ function makeWorkingFromActive(active: ThemeFile): ThemeFile {
 }
 
 export function ThemeEditorContent({
-  embedded = false,
   onRequestClose,
-  showHeader = false,
 }: ThemeEditorContentProps) {
   const { slug: activeSlug, theme: activeTheme, setTheme } = useTheme()
 
@@ -97,7 +96,7 @@ export function ThemeEditorContent({
     ;(async () => {
       try {
         const raw = await xlethTheme()?.loadUser?.(selectedSlug)
-        if (raw) setWorkingTheme({ ...(raw as ThemeFile), locked: false })
+        if (raw) setWorkingTheme({ ...migrateChrome(raw as ThemeFile).theme, locked: false })
       } catch (e) {
         console.warn('[ThemeEditor] loadUser failed:', e)
       }
@@ -124,6 +123,20 @@ export function ThemeEditorContent({
       ...prev,
       tokens: { ...prev.tokens, [name]: value },
     }))
+  }, [])
+
+  // Surface knobs (brightness / contrast / tint) re-derive the neutral ramp. The accent is
+  // carried through from the working theme so the knobs never reset it.
+  const accentOf = (theme: ThemeFile): string =>
+    resolveHex(resolveTheme(theme).values, '--theme-accent') ?? '#33CED6'
+
+  const handleChromeChange = useCallback((knobs: ChromeKnobs) => {
+    setWorkingTheme(prev => applyChromeKnobs(prev, accentOf(prev), knobs))
+  }, [])
+
+  const handleNeutralize = useCallback(() => {
+    setWorkingTheme(prev => neutralizeTheme(prev, accentOf(prev), resolveTheme(prev).values))
+    console.debug('[Theme] editor: neutralized chrome tint')
   }, [])
 
   const handleDetachToggle = useCallback((name: string) => {
@@ -178,6 +191,7 @@ export function ThemeEditorContent({
         schemaVersion: 1,
         name,
         locked: false,
+        chromeModel: CHROME_MODEL_VERSION,
         derivationDetached: [],
         tokens: cleanTokens,
       }
@@ -195,112 +209,75 @@ export function ThemeEditorContent({
     }
   }, [saveNameInput, workingTheme, setTheme])
 
-  const flatTokens = workingTheme.tokens as Record<string, string>
+  const EDITOR_TABS = [
+    { id: 'simple', label: 'Simple' },
+    { id: 'advanced', label: 'Advanced' },
+  ] as const
 
   return (
-    <div className={`theme-editor-content${embedded ? ' theme-editor-content--embedded' : ''}`}>
-      {showHeader && (
-        <div className="theme-editor-header">
-          <span className="theme-editor-title">Theme Editor</span>
-          <button className="theme-editor-close" onClick={onRequestClose} aria-label="Close Theme Editor">
-            <X size={15} aria-hidden="true" />
-          </button>
-        </div>
-      )}
-
-      <div className="theme-editor-body">
+    <div className={styles.root}>
+      <div className={styles.body}>
         <ThemeList
           selectedSlug={selectedSlug}
           onSelect={setSelectedSlug}
           userThemes={userThemes}
         />
 
-        <div className="theme-editor-center">
-          <div className="theme-editor-tabs">
-            <button
-              className={`theme-editor-tab ${activeTab === 'simple' ? 'theme-editor-tab--active' : ''}`}
-              onClick={() => setActiveTab('simple')}
-            >
-              Simple
-            </button>
-            <button
-              className={`theme-editor-tab ${activeTab === 'advanced' ? 'theme-editor-tab--active' : ''}`}
-              onClick={() => setActiveTab('advanced')}
-            >
-              Advanced
-            </button>
-          </div>
+        <div className={styles.center}>
+          <Tabs
+            label="Editor mode"
+            tabs={EDITOR_TABS}
+            value={activeTab}
+            onChange={(id) => setActiveTab(id === 'advanced' ? 'advanced' : 'simple')}
+          />
           {activeTab === 'simple' ? (
-            <SimpleMode tokens={flatTokens} onTokenChange={handleTokenChange} />
-          ) : (
-            <AdvancedMode
-              workingTheme={workingTheme}
-              resolvedValues={resolvedValues}
+            <SimpleMode
+              values={resolvedValues}
+              onChromeChange={handleChromeChange}
               onTokenChange={handleTokenChange}
-              onDetachToggle={handleDetachToggle}
+              onNeutralize={handleNeutralize}
             />
+          ) : (
+            <>
+              <ChromeReadouts values={resolvedValues} onNeutralize={handleNeutralize} />
+              <AdvancedMode
+                workingTheme={workingTheme}
+                resolvedValues={resolvedValues}
+                onTokenChange={handleTokenChange}
+                onDetachToggle={handleDetachToggle}
+              />
+            </>
           )}
         </div>
 
-        <div className="theme-editor-preview">
+        <div className={styles.preview}>
           <PreviewPane workingTheme={workingTheme} />
         </div>
       </div>
 
       {showSavePrompt && (
-        <div className="theme-editor-save-prompt">
-          <span className="theme-editor-save-label">Theme name</span>
-          <input
-            className="theme-editor-save-input"
-            type="text"
-            placeholder="My Custom Theme"
+        <div className={styles.savePrompt}>
+          <span className={styles.saveLabel}>Theme name</span>
+          <TextField
+            label="Theme name"
+            placeholder="My custom theme"
             value={saveNameInput}
-            onChange={e => setSaveNameInput(e.target.value)}
+            onChange={setSaveNameInput}
             onKeyDown={e => { if (e.key === 'Enter') handleSaveNew() }}
             autoFocus
           />
-          <div className="theme-editor-save-actions">
-            <button
-              className="theme-editor-btn theme-editor-btn--ghost"
-              onClick={() => { setShowSavePrompt(false); setSaveNameInput('') }}
-            >
-              Cancel
-            </button>
-            <button
-              className="theme-editor-btn theme-editor-btn--primary"
-              onClick={handleSaveNew}
-              disabled={!saveNameInput.trim() || saving}
-            >
-              {saving ? 'Saving...' : 'Save'}
-            </button>
-          </div>
+          <Button onClick={() => { setShowSavePrompt(false); setSaveNameInput('') }}>Cancel</Button>
+          <Button variant="primary" onClick={handleSaveNew} disabled={!saveNameInput.trim() || saving}>
+            {saving ? 'Saving…' : 'Save theme'}
+          </Button>
         </div>
       )}
 
-      <div className="theme-editor-footer">
-        <button
-          className="theme-editor-btn theme-editor-btn--ghost"
-          onClick={() => { setSaveNameInput(''); setShowSavePrompt(true) }}
-        >
-          Save as New Theme
-        </button>
-        <div style={{ flex: 1 }} />
-        <button className="theme-editor-btn theme-editor-btn--ghost" onClick={handleRevert}>
-          Revert
-        </button>
-        <button className="theme-editor-btn theme-editor-btn--primary" onClick={handleApply}>
-          Apply
-        </button>
-      </div>
-    </div>
-  )
-}
-
-export default function ThemeEditor({ onClose }: Props) {
-  return (
-    <div className="theme-editor-backdrop" onClick={onClose}>
-      <div className="theme-editor" onClick={e => e.stopPropagation()}>
-        <ThemeEditorContent onRequestClose={onClose} showHeader />
+      <div className={styles.footer}>
+        <Button onClick={() => { setSaveNameInput(''); setShowSavePrompt(true) }}>Save as new theme</Button>
+        <span className={styles.spacer} />
+        <Button onClick={handleRevert}>Revert</Button>
+        <Button variant="primary" onClick={handleApply}>Apply theme</Button>
       </div>
     </div>
   )

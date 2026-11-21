@@ -5,6 +5,9 @@ import useFilterStore, {
   SLOT_TYPES, VOWELS, MOD_DESTS, LFO_SHAPES, LFO_SYNC_DIVISIONS,
   MOD_KINDS, MOD_KIND_OFF, MOD_KIND_LFO, MOD_KIND_ENV, MOD_KIND_DYN,
   MAX_MODS_PER_SLOT, activeMods, laneParam, modKindLabel,
+  decodeLiveState, slotWithLiveValues, hasAnyModulator,
+  LIVE_HEADER_FLOATS, LIVE_LANE_OFFSET, LIVE_SLOT_STRIDE,
+  LIVE_CURVE_OFFSET, LIVE_CURVE_SIZE, LIVE_STATE_FLOATS,
 } from './filterStore.js'
 
 // Pins the Xleth Filter store's slot lifecycle against a stubbed bridge: add
@@ -291,5 +294,105 @@ describe('filterStore modulator lanes', () => {
     // Clamped against lane 1's 9000, so it stays well above lane 0's window.
     expect(written[3]).toBeGreaterThan(400)
     expect(written[3]).toBeLessThan(9000)
+  })
+})
+
+// ─── Live state (the panel's animation frame) ────────────────────────────────
+//
+// decodeLiveState is the ONLY reader of a byte layout the engine writes from
+// C++ (XlethFilterEffect::getLiveState). These pin the two halves of that
+// contract that silently produce a dead or wrong animation if they drift: the
+// field offsets, and the "no live reading" fallbacks.
+
+function makeLivePayload({ slotCount = 1, sampleRate = 48000, format = 1 } = {}) {
+  const buf = new Float32Array(LIVE_STATE_FLOATS)
+  buf[0] = format
+  buf[1] = slotCount
+  buf[2] = sampleRate
+  return buf
+}
+
+function writeLiveSlot(buf, slotIndex, values) {
+  const b = LIVE_HEADER_FLOATS + slotIndex * LIVE_SLOT_STRIDE
+  buf[b + 0] = values.cutoff ?? 0
+  buf[b + 1] = values.q ?? 0
+  buf[b + 2] = values.gain ?? 0
+  buf[b + 3] = values.morph ?? 0
+  buf[b + 4] = values.drive ?? 0
+  buf[b + 5] = values.mix ?? 0
+  buf[b + 6] = values.valid ? 1 : 0
+  for (const [lane, lv] of Object.entries(values.lanes ?? {})) {
+    buf[b + LIVE_LANE_OFFSET + Number(lane) * 2 + 0] = lv.src ?? 0
+    buf[b + LIVE_LANE_OFFSET + Number(lane) * 2 + 1] = lv.accent ?? 0
+  }
+}
+
+describe('filterStore live state decoding', () => {
+  it('reads each slot field and lane from its own fixed offset', () => {
+    const buf = makeLivePayload({ slotCount: 2 })
+    writeLiveSlot(buf, 0, {
+      cutoff: 1234, q: 4.5, gain: -6, morph: 0.25, drive: 12, mix: 0.75,
+      valid: true, lanes: { 0: { src: -0.5, accent: 0.1 }, 3: { src: 0.9 } },
+    })
+    writeLiveSlot(buf, 1, { cutoff: 8000, q: 1, mix: 1, valid: false })
+    buf[LIVE_CURVE_OFFSET] = -3.5
+
+    const live = decodeLiveState(buf)
+    expect(live.slotCount).toBe(2)
+    expect(live.sampleRate).toBe(48000)
+    expect(live.slots[0]).toMatchObject({
+      cutoff: 1234, gain: -6, morph: 0.25, drive: 12, mix: 0.75, valid: true,
+    })
+    expect(live.slots[0].q).toBeCloseTo(4.5, 5)
+    expect(live.slots[0].lanes[0].src).toBeCloseTo(-0.5, 5)
+    expect(live.slots[0].lanes[3].src).toBeCloseTo(0.9, 5)
+    expect(live.slots[1].valid).toBe(false)
+    expect(live.curve.length).toBe(LIVE_CURVE_SIZE)
+    expect(live.curve[0]).toBeCloseTo(-3.5, 5)
+  })
+
+  it('rejects a payload this build does not understand', () => {
+    expect(decodeLiveState(null)).toBeNull()
+    expect(decodeLiveState(new Float32Array(8))).toBeNull()
+    // Format 0 is what a torn-down chain answers with.
+    expect(decodeLiveState(makeLivePayload({ format: 0 }))).toBeNull()
+  })
+
+  it('slotWithLiveValues overlays only when the engine has a live reading', () => {
+    const parked = { cutoff: 1000, q: 0.7071, gain: 0, morph: 0, drive: 0, mix: 1, type: 5 }
+    const moving = { cutoff: 320, q: 8, gain: 4, morph: 0.5, drive: 6, mix: 0.5, valid: true }
+
+    const live = slotWithLiveValues(parked, moving)
+    expect(live.cutoff).toBe(320)
+    expect(live.mix).toBe(0.5)
+    // Everything the modulators cannot reach is carried through untouched.
+    expect(live.type).toBe(5)
+
+    // A slot the audio thread has never composed keeps its parked values, so a
+    // panel opened on a stopped transport draws exactly what it always did.
+    expect(slotWithLiveValues(parked, { ...moving, valid: false })).toBe(parked)
+    expect(slotWithLiveValues(parked, undefined)).toBe(parked)
+  })
+
+  it('hasAnyModulator gates the animation loop on a real modulator', () => {
+    expect(hasAnyModulator([])).toBe(false)
+    expect(hasAnyModulator([{ mods: emptyMods() }])).toBe(false)
+    expect(hasAnyModulator([{ mods: emptyMods() }, { mods: emptyMods(MOD_KIND_LFO) }])).toBe(true)
+    // A slot payload from an engine too old to send lanes must not crash it.
+    expect(hasAnyModulator([{}])).toBe(false)
+  })
+
+  it('fetchLiveState hits the live RPC and never writes the store', async () => {
+    const payload = makeLivePayload()
+    globalThis.window = {
+      xleth: { audio: { filterGetLiveState: vi.fn(async () => payload) } },
+    }
+    useFilterStore.setState({ target: { trackId: 3, nodeId: 7, storeKey: '3' }, slots: [] })
+    const before = useFilterStore.getState()
+
+    const got = await useFilterStore.getState().fetchLiveState()
+    expect(got).toBe(payload)
+    expect(window.xleth.audio.filterGetLiveState).toHaveBeenCalledWith(3, 7)
+    expect(useFilterStore.getState().slots).toBe(before.slots)
   })
 })

@@ -241,6 +241,7 @@ void AudioPerformanceTelemetry::reset()
     mixOverrunCount_.store(0, std::memory_order_relaxed);
     overBudgetBlockCount_.store(0, std::memory_order_relaxed);
     chainLockMissCount_.store(0, std::memory_order_relaxed);
+    chainSnapshotMissingCount_.store(0, std::memory_order_relaxed);
     masterChainSkippedCount_.store(0, std::memory_order_relaxed);
     trackChainSkippedCount_.store(0, std::memory_order_relaxed);
     staleSnapshotReuseCount_.store(0, std::memory_order_relaxed);
@@ -329,9 +330,9 @@ void AudioPerformanceTelemetry::incrementChainLockMiss() noexcept
     chainLockMissCount_.fetch_add(1, std::memory_order_relaxed);
 }
 
-void AudioPerformanceTelemetry::incrementMasterChainSkipped() noexcept
+void AudioPerformanceTelemetry::incrementChainSnapshotMissing() noexcept
 {
-    masterChainSkippedCount_.fetch_add(1, std::memory_order_relaxed);
+    chainSnapshotMissingCount_.fetch_add(1, std::memory_order_relaxed);
 }
 
 void AudioPerformanceTelemetry::incrementTrackChainSkipped(std::uint64_t amount) noexcept
@@ -609,6 +610,8 @@ AudioTelemetryCounterSnapshot AudioPerformanceTelemetry::loadCounters() const no
     counters.mixOverrunCount = mixOverrunCount_.load(std::memory_order_relaxed);
     counters.overBudgetBlockCount = overBudgetBlockCount_.load(std::memory_order_relaxed);
     counters.chainLockMissCount = chainLockMissCount_.load(std::memory_order_relaxed);
+    counters.chainSnapshotMissingCount =
+        chainSnapshotMissingCount_.load(std::memory_order_relaxed);
     counters.masterChainSkippedCount = masterChainSkippedCount_.load(std::memory_order_relaxed);
     counters.trackChainSkippedCount = trackChainSkippedCount_.load(std::memory_order_relaxed);
     counters.staleSnapshotReuseCount = staleSnapshotReuseCount_.load(std::memory_order_relaxed);
@@ -680,12 +683,6 @@ void AudioPerformanceTelemetry::clearRing() noexcept
 {
     readPos_.store(0, std::memory_order_relaxed);
     writePos_.store(0, std::memory_order_relaxed);
-}
-
-std::uint32_t AudioPerformanceTelemetry::elapsedNsToUs(std::uint64_t elapsedNs) noexcept
-{
-    const std::uint64_t us = (elapsedNs + 999u) / 1000u;
-    return us > UINT32_MAX ? UINT32_MAX : static_cast<std::uint32_t>(us);
 }
 
 std::uint32_t AudioPerformanceTelemetry::deadlineUsFor(

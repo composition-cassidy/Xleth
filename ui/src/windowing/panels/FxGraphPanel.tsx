@@ -5,6 +5,9 @@ import useTimelineFocusStore from '../../stores/timelineFocusStore.js';
 import useVstStore from '../../stores/vstStore.js';
 import ConfirmConvertDialog from '../../components/timeline/ConfirmConvertDialog.jsx';
 import { openEffectEditorByEngineNode } from '../../components/mixer/effectEditorOpeners.js';
+import { Button } from '../../ui-kit';
+import useTrackIdentityColor from './fxgraph/useTrackIdentityColor.js';
+import styles from './fxgraph/FxGraphPanel.module.css';
 import { PanelFrame } from '../components/PanelFrame';
 import ChainAsGraphPreview, {
   type ChainEffect,
@@ -14,9 +17,8 @@ import GraphStatePreview, {
   type GraphStateDocument,
   type GraphStateViewport,
 } from './fxgraph/GraphStatePreview';
-import FxGraphEffectPicker, {
-  type FxEffectPickerSelection,
-} from './fxgraph/FxGraphEffectPicker';
+import type { GraphEffectSelection } from './fxgraph/GraphAddMenu';
+import SignalLegend from './fxgraph/SignalLegend';
 import type {
   GraphEffectParameterDescriptor,
   GraphParameterResult,
@@ -147,6 +149,8 @@ export function describeGraphRuntimeStatus(
 export interface FxGraphPanelContentProps {
   trackId?: number | 'master' | null;
   trackLabel?: string;
+  // The track's identity colour (a CSS colour), shown as the header's left edge.
+  identityColor?: string;
   fxMode?: 'chain' | 'graph';
   graphStateStatus?: 'valid' | 'missing' | 'invalid' | 'future';
   graphState?: GraphStateDocument | null;
@@ -155,7 +159,7 @@ export interface FxGraphPanelContentProps {
   onRequestGraphMode?: () => void;
   onGraphNodePositionChange?: (nodeId: string, position: { x: number; y: number }) => void;
   onGraphViewportChange?: (viewport: GraphStateViewport) => void;
-  onAddGraphEffectNode?: (position?: { x: number; y: number }) => void;
+  onAddGraphEffectNode?: (selection: GraphEffectSelection, position?: { x: number; y: number }) => void;
   onAddGraphMacroNode?: (position?: { x: number; y: number }) => void;
   // EVC.3 — envelope node add/edit (graph mode only).
   onAddGraphEnvelopeNode?: (position?: { x: number; y: number }) => void;
@@ -241,6 +245,7 @@ export async function activateFxGraphMode({
 export function FxGraphPanelContent({
   trackId = null,
   trackLabel,
+  identityColor,
   fxMode = 'chain',
   graphStateStatus,
   graphState = null,
@@ -318,35 +323,34 @@ export function FxGraphPanelContent({
     : describeGraphRuntimeStatus(graphRuntimeStatus);
 
   return (
-    <div className="xleth-fx-graph-panel" role="region" aria-label="FX Graph Workspace">
-      <header className="xleth-fx-graph-panel__header">
-        <div>
-          <div className="xleth-fx-graph-panel__eyebrow">FX Graph Workspace</div>
-          <h2 className="xleth-fx-graph-panel__title">
-            {hasTrack ? trackLabel : 'No track selected'}
-          </h2>
-        </div>
-        <div className="xleth-fx-graph-panel__status">
+    <div className={`xleth-fx-graph-panel ${styles.panel}`} role="region" aria-label="FX Graph Workspace">
+      <header
+        className={`xleth-fx-graph-panel__header ${styles.header}`}
+        style={identityColor ? ({ '--fx-identity': identityColor } as React.CSSProperties) : undefined}
+        data-has-identity={identityColor ? 'true' : undefined}
+      >
+        <h2 className={`xleth-fx-graph-panel__title ${styles.title}`}>
+          {hasTrack ? trackLabel : 'No track selected'}
+        </h2>
+        {showPersistedPreview && <SignalLegend />}
+        <span
+          className={`xleth-fx-graph-panel__status ${styles.chip}`}
+          data-owner={graphModeActive ? 'graph' : dormantGraphState ? 'dormant' : 'chain'}
+        >
           {statusText}
-        </div>
+        </span>
       </header>
 
-      <div className="xleth-fx-graph-panel__surface" aria-label="FX Graph workspace">
-        <div className="xleth-fx-graph-panel__surface-inner">
+      <div className={`xleth-fx-graph-panel__surface ${styles.surface}`} aria-label="FX Graph workspace">
+        <div className={`xleth-fx-graph-panel__surface-inner ${styles.surfaceInner}`}>
           {canUseGraphMode && (
-            <div className="xleth-fx-graph-panel__mode-action">
-              <button
-                className="xleth-fx-graph-panel__mode-button"
-                type="button"
-                onClick={onRequestGraphMode}
-              >
-                Convert Chain to FX Graph
-              </button>
-              <p className="xleth-fx-graph-panel__mode-copy">
+            <div className={`xleth-fx-graph-panel__mode-action ${styles.modeAction}`}>
+              <Button onClick={onRequestGraphMode}>Convert chain to FX Graph</Button>
+              <p className={`xleth-fx-graph-panel__mode-copy ${styles.copy}`}>
                 {conversionCopy}
               </p>
               {conversionError && (
-                <p className="xleth-fx-graph-panel__mode-copy" role="alert">
+                <p className={`xleth-fx-graph-panel__mode-copy ${styles.copy} ${styles.copyAlert}`} role="alert">
                   {conversionError}
                 </p>
               )}
@@ -362,16 +366,16 @@ export function FxGraphPanelContent({
               doesn't carry (sidechain route problems, the last graph action's
               rejection reason). */}
           {showPersistedPreview && graphModeActive && (sidechainRouteNotice || graphActionNotice) && (
-            <div className="xleth-fx-graph-panel__mode-active" role="status">
+            <div className={`xleth-fx-graph-panel__mode-active ${styles.note}`} role="status">
               {/* FXG-SC.6D — surface route reconcile failures so the user knows when
                   a sidechain route could not be created or the source is missing. */}
               {sidechainRouteNotice && (
-                <p className="xleth-fx-graph-panel__mode-copy xleth-fx-graph-panel__mode-copy--sidechain-notice" role="status">
+                <p className={`xleth-fx-graph-panel__mode-copy xleth-fx-graph-panel__mode-copy--sidechain-notice ${styles.copy}`} role="status">
                   {sidechainRouteNotice}
                 </p>
               )}
               {graphActionNotice && (
-                <p className="xleth-fx-graph-panel__mode-copy" role="alert">
+                <p className={`xleth-fx-graph-panel__mode-copy ${styles.copy} ${styles.copyAlert}`} role="alert">
                   {graphActionNotice}
                 </p>
               )}
@@ -417,23 +421,23 @@ export function FxGraphPanelContent({
           )}
 
           {showMissingGraphState && (
-            <div className="xleth-fx-graph-panel__mode-active" role="status">
-              <div className="xleth-fx-graph-panel__mode-active-title">
-                FX Graph Mode Active, but no graph data exists for this track.
+            <div className={`xleth-fx-graph-panel__mode-active ${styles.note}`} role="status">
+              <div className={`xleth-fx-graph-panel__mode-active-title ${styles.noteTitle}`}>
+                FX Graph mode is active, but no graph data exists for this track.
               </div>
-              <p className="xleth-fx-graph-panel__mode-copy">
+              <p className={`xleth-fx-graph-panel__mode-copy ${styles.copy}`}>
                 This can happen with legacy projects.
               </p>
             </div>
           )}
 
           {showInvalidGraphState && (
-            <div className="xleth-fx-graph-panel__mode-active" role="alert">
-              <div className="xleth-fx-graph-panel__mode-active-title">
+            <div className={`xleth-fx-graph-panel__mode-active ${styles.note}`} role="alert">
+              <div className={`xleth-fx-graph-panel__mode-active-title ${styles.noteTitle}`}>
                 Graph routing data is invalid and could not be loaded.
               </div>
               {graphModeActive && (
-                <p className="xleth-fx-graph-panel__mode-copy">
+                <p className={`xleth-fx-graph-panel__mode-copy ${styles.copy}`}>
                   Mixer Chain editing remains locked.
                 </p>
               )}
@@ -441,28 +445,28 @@ export function FxGraphPanelContent({
           )}
 
           {showFutureGraphState && (
-            <div className="xleth-fx-graph-panel__mode-active" role="status">
-              <div className="xleth-fx-graph-panel__mode-active-title">
+            <div className={`xleth-fx-graph-panel__mode-active ${styles.note}`} role="status">
+              <div className={`xleth-fx-graph-panel__mode-active-title ${styles.noteTitle}`}>
                 This graphState version is not supported by this build.
               </div>
-              <p className="xleth-fx-graph-panel__mode-copy">
+              <p className={`xleth-fx-graph-panel__mode-copy ${styles.copy}`}>
                 The saved routing data is preserved but is not rendered as an active graph.
               </p>
             </div>
           )}
 
           {isMaster && (
-            <p className="xleth-fx-graph-panel__mode-copy">
+            <p className={`xleth-fx-graph-panel__mode-copy ${styles.copy}`}>
               Master track FX stay in Mixer Chain mode in this phase.
             </p>
           )}
 
           {!hasTrack && (
             <>
-              <div className="xleth-fx-graph-panel__surface-title">
+              <div className={`xleth-fx-graph-panel__surface-title ${styles.noteTitle}`}>
                 Select a mixer track to preview its chain
               </div>
-              <p className="xleth-fx-graph-panel__surface-copy">
+              <p className={`xleth-fx-graph-panel__surface-copy ${styles.copy}`}>
                 FX Graph status and read-only chain previews appear here for normal mixer tracks.
               </p>
             </>
@@ -470,10 +474,10 @@ export function FxGraphPanelContent({
 
           {isMaster && (
             <>
-              <div className="xleth-fx-graph-panel__surface-title">
+              <div className={`xleth-fx-graph-panel__surface-title ${styles.noteTitle}`}>
                 Master track stays chain-only
               </div>
-              <p className="xleth-fx-graph-panel__surface-copy">
+              <p className={`xleth-fx-graph-panel__surface-copy ${styles.copy}`}>
                 Master FX remain owned by the Mixer Chain in this phase.
               </p>
             </>
@@ -486,7 +490,6 @@ export function FxGraphPanelContent({
 
 export default function FxGraphPanel() {
   const [confirmOpen, setConfirmOpen] = useState(false);
-  const [pickerOpen, setPickerOpen] = useState(false);
   const [conversionError, setConversionError] = useState<string | null>(null);
   const [graphActionNotice, setGraphActionNotice] = useState<string | null>(null);
   const renderingWithoutDom = typeof document === 'undefined';
@@ -595,6 +598,7 @@ export default function FxGraphPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mixerTracks drives recompute
     [getEligibleSidechainSources, selectedTrack?.id, mixerTracks],
   );
+  const identityColor = useTrackIdentityColor(selectedTrack?.id);
   const selectedTrackLabel = selectedTrack
     ? selectedTrack.name || `Track ${selectedTrack.id}`
     : undefined;
@@ -608,13 +612,7 @@ export default function FxGraphPanel() {
   useEffect(() => {
     setConversionError(null);
     setGraphActionNotice(null);
-    setPickerOpen(false);
   }, [selectedStoreKey]);
-
-  // Close the picker if this track stops being graph-owned underneath us.
-  useEffect(() => {
-    if (fxMode !== 'graph') setPickerOpen(false);
-  }, [fxMode]);
 
   const handleConfirmGraphMode = useCallback(async () => {
     setConfirmOpen(false);
@@ -643,34 +641,17 @@ export default function FxGraphPanel() {
     void setGraphStateViewport(selectedTrack.id, viewport);
   }, [fxMode, selectedTrack?.id, setGraphStateViewport]);
 
-  // FXG.3-e — the Add Effect Node button no longer drops a placeholder. It opens
-  // the picker, which lists the same stock + scanned-VST catalog the Mixer Chain
-  // exposes. Selecting an effect creates a real graph-owned effect node.
-  // The canvas "Add Plugin" context-menu item calls this same handler with the
-  // right-click's graph position; the picker resolves asynchronously, so the
-  // position is stashed in a ref and consumed once the user picks a plugin.
-  const pendingEffectPositionRef = useRef<{ x: number; y: number } | null>(null);
-  const handleOpenAddEffectPicker = useCallback((position?: { x: number; y: number }) => {
+  // FXG.3-e — choosing a plugin in the shared effect picker (the Devices chain's own list, shown
+  // in the graph's add menu) creates a real graph-owned effect node: real pluginId + displayName
+  // -> graph-owned node + graph-owned engine processor + session effectInstanceId->engineNodeId
+  // mapping. The store instantiates the engine processor first and rolls back the graphState
+  // commit on failure, so a failed add never corrupts the graph or chains.
+  const handleAddGraphEffect = useCallback(async (
+    selection: GraphEffectSelection,
+    position?: { x: number; y: number },
+  ) => {
     if (selectedTrack?.id == null || fxMode !== 'graph') return;
-    pendingEffectPositionRef.current = position ?? null;
     setGraphActionNotice(null);
-    setPickerOpen(true);
-  }, [fxMode, selectedTrack?.id]);
-
-  const handleCancelAddEffectPicker = useCallback(() => {
-    pendingEffectPositionRef.current = null;
-    setPickerOpen(false);
-  }, []);
-
-  const handleSelectGraphEffect = useCallback(async (selection: FxEffectPickerSelection) => {
-    setPickerOpen(false);
-    const position = pendingEffectPositionRef.current;
-    pendingEffectPositionRef.current = null;
-    if (selectedTrack?.id == null || fxMode !== 'graph') return;
-    // Real pluginId + displayName → graph-owned node + graph-owned engine
-    // processor + session effectInstanceId→engineNodeId mapping. The store
-    // instantiates the engine processor first and rolls back the graphState
-    // commit on failure, so a failed add never corrupts the graph or chains.
     const result = await addGraphEffectNodeForTrack(selectedTrack.id, {
       pluginId: selection.pluginId,
       displayName: selection.displayName,
@@ -1013,6 +994,7 @@ export default function FxGraphPanel() {
       <FxGraphPanelContent
         trackId={selectedTrack?.id ?? null}
         trackLabel={selectedTrackLabel}
+        identityColor={identityColor}
         fxMode={fxMode}
         graphStateStatus={graphStateStatus}
         graphState={graphState}
@@ -1021,7 +1003,7 @@ export default function FxGraphPanel() {
         onRequestGraphMode={() => setConfirmOpen(true)}
         onGraphNodePositionChange={handleGraphNodePositionChange}
         onGraphViewportChange={handleGraphViewportChange}
-        onAddGraphEffectNode={handleOpenAddEffectPicker}
+        onAddGraphEffectNode={handleAddGraphEffect}
         onAddGraphMacroNode={handleAddGraphMacroNode}
         onAddGraphEnvelopeNode={handleAddGraphEnvelopeNode}
         onUpdateGraphEnvelope={handleUpdateGraphEnvelope}
@@ -1057,18 +1039,11 @@ export default function FxGraphPanel() {
         <ConfirmConvertDialog
           title={USE_GRAPH_MODE_TITLE}
           message={confirmGraphModeMessage}
-          confirmLabel="Convert Chain to FX Graph"
+          confirmLabel="Convert chain to FX Graph"
           cancelLabel="Cancel"
           danger={false}
           onConfirm={handleConfirmGraphMode}
           onCancel={handleCancelGraphMode}
-        />
-      )}
-      {pickerOpen && fxMode === 'graph' && selectedTrack?.id != null && (
-        <FxGraphEffectPicker
-          vstPlugins={vstPlugins}
-          onSelect={handleSelectGraphEffect}
-          onCancel={handleCancelAddEffectPicker}
         />
       )}
     </PanelFrame>

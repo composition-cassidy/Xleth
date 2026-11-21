@@ -1,0 +1,60 @@
+/* Transport cluster in the top bar (ui/DESIGN.md section 8). Dense, neutral at
+ * rest: the play control is not the hero, and it takes the value colour only
+ * while playing. The buttons and the tempo field are kit components
+ * (ui-kit/Button, ui-kit/NumberBox); this sheet only lays them out and styles
+ * the readout wells. */
+@layer kit {
+  .cluster {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    height: 100%;
+    font-family: var(--ui-font);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .group {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .sep {
+    width: 1px;
+    height: var(--space-4);
+    margin: 0 var(--space-1);
+    background: var(--ui-g4);
+  }
+
+  /* Playing: the pause glyph replaces play (shape), and only now does the
+   * control take the value colour. `button.play` outranks the kit's ghost
+   * IconButton colour. */
+  button.play[data-playing="true"] {
+    color: var(--ui-value);
+  }
+
+  /* The play / pause glyph's wrapper (it carries the `glyph` motion recipe): a box, so the
+   * recipe's scale applies. */
+  .playGlyph {
+    display: inline-flex;
+  }
+
+  /* Recessed readout wells: timecode and BAR.BEAT in the timecode face. */
+  .readout {
+    display: inline-flex;
+    align-items: center;
+    height: var(--ctl-h-sm);
+    padding: 0 var(--space-2);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g0);
+    color: var(--ui-ink);
+    font-family: var(--ui-font-mono);
+    /* 16px (round 3): where you are in the song is the readout worth looking at in the bar. */
+    font-size: var(--type-16);
+    font-weight: var(--weight-medium);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    cursor: default;
+    -webkit-app-region: no-drag;
+  }
+}

@@ -25,8 +25,15 @@ struct VSOutput
 
 float4 PSMain(VSOutput input) : SV_Target
 {
+    // Work in pixel proportions (u scaled by the cell's aspect) so the swirl is
+    // a circle that turns rigidly, not an ellipse that shears on a wide cell.
+    // radius is therefore measured in cell HEIGHTS.
+    uint texW, texH;
+    inputTexture.GetDimensions(texW, texH);
+    const float aspect = (texW > 0u && texH > 0u) ? float(texW) / float(texH) : 1.0;
+
     float2 center = float2(centerX, centerY);
-    float2 delta  = input.uv - center;
+    float2 delta  = (input.uv - center) * float2(aspect, 1.0);
     float  r      = length(delta);
     float  safeRadius = max(radius, 0.0001);
     float  falloff = saturate(1.0 - r / safeRadius);
@@ -40,7 +47,7 @@ float4 PSMain(VSOutput input) : SV_Target
     float s = sin(angle);
     float c = cos(angle);
     float2 swirled = float2(delta.x * c - delta.y * s,
-                            delta.x * s + delta.y * c) + center;
+                            delta.x * s + delta.y * c) / float2(aspect, 1.0) + center;
 
     swirled = clamp(swirled, 0.0, 1.0);
     return inputTexture.Sample(linearSampler, swirled);

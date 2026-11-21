@@ -9,10 +9,18 @@ const invoke = (ch, ...args) => ipcRenderer.invoke(ch, ...args);
 
 // Load the shared-memory helper addon. It has zero JUCE/FFmpeg deps and
 // loads reliably in the Electron renderer's preload Node context. It opens
-// a Windows file mapping by name and returns it as an external ArrayBuffer
-// pointing at the same physical pages the engine (in the forked worker)
-// writes to. With contextIsolation:false the returned buffer reaches the
-// renderer as a live reference — zero copy, zero IPC in the hot path.
+// a Windows file mapping by name — the same physical pages the engine (in the
+// forked worker) writes frames into — and keeps that mapping INTERNAL to the
+// addon, exposing readInt32/readBytes instead of the buffer itself.
+//
+// It cannot hand the mapping to JS directly, and that is not a matter of
+// effort: Electron's renderer runs V8 with the sandbox on, so an ArrayBuffer
+// whose backing store V8 did not allocate is rejected — napi_create_external_-
+// arraybuffer throws "External buffers are not allowed" (measured against
+// Electron 41.1.1, 2026-08-31). RENDER_PERF_AUDIT Finding 5b proposed viewing
+// the inactive shm half directly to drop the memcpy below; that is why it
+// cannot be done. The one copy that remains is into memory the GPU upload
+// can legally read from — no IPC, ~0.2ms for 2 MB.
 let shmHelper = null;
 let frameShm = null;  // { meta, bufA, bufB, readIndex, syncFrame }
 try {
@@ -31,8 +39,15 @@ function openFrameShm() {
     const handle = shmHelper.openSharedMemory(meta.name, meta.totalSize);
     // Two renderer-owned destination buffers — one per half of the mapping.
     // We memcpy the active half from native into one of these per swap.
-    const bufA = new Uint8Array(meta.bufferSize);
-    const bufB = new Uint8Array(meta.bufferSize);
+    //
+    // Sized by the section's CAPACITY, not the current frame: these are
+    // captured once by VideoPreview's tick closure and never reallocated, so
+    // a later previewResolutionScale increase would otherwise overrun them
+    // (readBytes throws "out of range"). Over-sized is harmless — texImage2D
+    // is given sabWidth/sabHeight and ignores the tail.
+    const dstBytes = meta.capacityBufferSize || meta.bufferSize;
+    const bufA = new Uint8Array(dstBytes);
+    const bufB = new Uint8Array(dstBytes);
     frameShm = {
       meta,
       bufA, bufB,
@@ -50,34 +65,37 @@ function openFrameShm() {
   }
 }
 
-function normalizeBackdropState(state) {
-  const mode = state && ['native-acrylic', 'image', 'video'].includes(state.mode) ? state.mode : 'off';
-  const preference = state && ['off', 'acrylic', 'image', 'video', 'none'].includes(state.preference)
-    ? state.preference
-    : 'none';
-  return {
-    capability: state && state.capability ? state.capability : null,
-    preference,
-    mode,
-    imagePath: typeof state?.imagePath === 'string' ? state.imagePath : null,
-    imageUrl: typeof state?.imageUrl === 'string' ? state.imageUrl : null,
-    videoPath: typeof state?.videoPath === 'string' ? state.videoPath : null,
-    videoUrl: typeof state?.videoUrl === 'string' ? state.videoUrl : null,
-    lastError: typeof state?.lastError === 'string' ? state.lastError : null,
-  };
-}
-
-let backdropCurrent = normalizeBackdropState(null);
-try {
-  backdropCurrent = normalizeBackdropState(ipcRenderer.sendSync('xleth:backdrop:getStateSync'));
-} catch (e) {
-  console.warn('[preload] backdrop state seed failed:', e.message);
+// Called after the engine reframes the preview shared-memory surface (e.g. a
+// previewResolutionScale change re-sizes frameOutput to the new compositor
+// output). readIndex/syncFrame read meta.bufferSize/meta.indexOffset at call
+// time, so mutating the already-open mapping's meta in place is enough — no
+// need to reopen the OS-level mapping. That holds in BOTH directions because
+// meta.totalSize is the section's capacity (100% preview scale), not the live
+// frame's size, so every frame the engine can ask for fits the view we already
+// opened. Reopening would not work anyway: a named section's size is fixed at
+// creation, and this handle is what pins it (shm_helper has no close).
+function updateFrameShmMeta(meta) {
+  if (!frameShm || !meta) return;
+  Object.assign(frameShm.meta, meta);
 }
 
 window.xleth = ({
 
+  // ── Boot gate ──────────────────────────────────────────────────────────────
+  // The workspace window is created while its project is still loading (see
+  // "Workspace window boot" in main.js). whenProjectReady() resolves once the
+  // project is in — immediately for any window that was not created early —
+  // and is what src/main.jsx waits on before mounting. notifyMounted() tells
+  // main the first commit is on screen so the window can be shown.
+  boot: {
+    whenProjectReady: () => invoke('xleth:boot:whenProjectReady'),
+    notifyMounted:    () => ipcRenderer.send('xleth:boot:mounted'),
+  },
+
   // ── Media server (for <video> elements) ────────────────────────────────────
   getMediaPort: () => invoke('xleth:getMediaPort'),
+  // Per-session secret every media-server request must carry (see buildMediaServerUrl).
+  mediaToken: ipcRenderer.sendSync('xleth:getMediaTokenSync'),
 
   // ── FL Studio Score (.fsc) parsing ─────────────────────────────────────────
   // Pure read-only parse: returns neutral note data (no Timeline mutation).
@@ -120,6 +138,13 @@ window.xleth = ({
     },
     getSourceThumbnail: (filePath, duration) => invoke('xleth:project:getSourceThumbnail', filePath, duration),
     newBlank:           ()          => invoke('xleth:project:newBlank'),
+    // Same engine calls as load/newBlank above, but wrapped in main.js with a
+    // splash/loading window around the workspace-window hide+show — used when
+    // switching projects from inside an already-open workspace (File menu),
+    // so the transition gets the same "loading, here's progress" treatment
+    // as the initial Welcome → workspace handoff instead of a silent swap.
+    switchToNew:        ()          => invoke('xleth:project:switchToNew'),
+    switchToLoad:       (dir)       => invoke('xleth:project:switchToLoad', dir),
   },
 
   // ── Autosave ──────────────────────────────────────────────────────────────
@@ -148,7 +173,7 @@ window.xleth = ({
     removeClipsBatch: (ids)                 => invoke('xleth:timeline:removeClipsBatch', ids),
     removeClip:       (id)                  => invoke('xleth:timeline:removeClip', id),
     moveClip:         (id, trackId, pos)    => invoke('xleth:timeline:moveClip', id, trackId, pos),
-    resizeClip:       (id, dur)             => invoke('xleth:timeline:resizeClip', id, dur),
+    resizeClip:       (id, dur, offset)     => invoke('xleth:timeline:resizeClip', id, dur, offset),
     resizeClipLeft:   (id, pos, dur, offset) => invoke('xleth:timeline:resizeClipLeft', id, pos, dur, offset),
     stretchClip:      (id, dur)             => invoke('xleth:timeline:stretchClip', id, dur),
     stretchClipLeft:  (id, pos, dur)        => invoke('xleth:timeline:stretchClipLeft', id, pos, dur),
@@ -205,6 +230,7 @@ window.xleth = ({
     // 4). Only the batch ops and previewNote (velocity=0.8 default) stay here.
     moveNotesBatch:         (patternId, moves)                  => invoke('xleth:timeline:moveNotesBatch', patternId, moves),
     addNotesBatch:          (patternId, notes)                  => invoke('xleth:timeline:addNotesBatch', patternId, notes),
+    editPatternNotes:       (patternId, notes)                  => invoke('xleth:timeline:editPatternNotes', patternId, notes),
     quantizeClipsBatch:     (specs)                             => invoke('xleth:timeline:quantizeClipsBatch', specs),
     resizeNotesBatch:       (patternId, resizes)                => invoke('xleth:timeline:resizeNotesBatch', patternId, resizes),
     previewNote:            (patternId, pitch, velocity=0.8)    => invoke('xleth:timeline:previewNote', patternId, pitch, velocity),
@@ -246,10 +272,18 @@ window.xleth = ({
 
   // ── Waveform mipmap (replaces Pipeline A FFmpeg extraction) ────────────────
   waveform: {
-    getRegionPeaks: (regionId, startTime, endTime, targetPixels, channel) =>
-      invoke('xleth:waveform:getRegionPeaks', regionId, startTime, endTime, targetPixels, channel),
-    getRawSamples: (regionId, startSample, endSample, channel) =>
-      invoke('xleth:waveform:getRawSamples', regionId, startSample, endSample, channel),
+    // slotIndex is the OPTIONAL 6th arg the engine already honours
+    // (Waveform_GetRegionPeaks reads info[5] and resolves that slot's mipmap).
+    // It has to be threaded through every layer here, in the ipcMain handler and
+    // in the callWorker arg array -- dropping it anywhere silently falls back to
+    // slot 0, which is what made the sampler editor draw the region's own sample
+    // whichever layer was selected.
+    getRegionPeaks: (regionId, startTime, endTime, targetPixels, channel, slotIndex = 0) =>
+      invoke('xleth:waveform:getRegionPeaks', regionId, startTime, endTime, targetPixels, channel, slotIndex),
+    // Same optional-slot story as getRegionPeaks above: the engine reads an
+    // optional 5th slotIndex, so it has to survive every hop to get there.
+    getRawSamples: (regionId, startSample, endSample, channel, slotIndex = 0) =>
+      invoke('xleth:waveform:getRawSamples', regionId, startSample, endSample, channel, slotIndex),
     getFilePeaks: (filePath, startTime, endTime, targetPixels, channel) =>
       invoke('xleth:waveform:getFilePeaks', filePath, startTime, endTime, targetPixels, channel),
     getClipPeaks: (clipId, startSec, endSec, numPeaks) =>
@@ -328,9 +362,9 @@ window.xleth = ({
     // window methods (openPluginEditor / closePluginEditor / closeAllPluginEditors /
     // isPluginEditorOpen), the missing-plugin helpers (getMissingPlugins /
     // retryMissingPlugin / removeAllMissing), and resetCrashedPlugin all come
-    // from the RPC manifest (attachRpcWrappers below). scanPlugins stays here
-    // (its main handler reshapes the argument); addVstSearchPath owns a dialog.
-    scanPlugins:          (paths)            => invoke('xleth:audio:scanPlugins', paths),
+    // from the RPC manifest (attachRpcWrappers below), as do scanPlugins /
+    // cancelPluginScan / retryFailedPlugins / get+setPluginSearchPaths (P1).
+    // addVstSearchPath owns a dialog.
     addVstSearchPath:     ()                 => invoke('xleth:dialog:addVstSearchPath'),
   },
 
@@ -342,6 +376,12 @@ window.xleth = ({
     // Returns { buffer: ArrayBuffer, meta: {name, width, height, bufferSize, indexOffset, totalSize} }
     // or null if the engine hasn't initialized the shm yet.
     openFrameShm:   () => openFrameShm(),
+    // Re-sizes the shared-memory surface to (width, height) — the engine
+    // re-initializes frameOutput's mapping (initVideoSharedMemory), and this
+    // pushes the resulting meta into the already-open mapping above so
+    // readIndex/syncFrame pick up the new layout without reopening it.
+    getFrameShm:    (width, height) => invoke('xleth:video:getFrameShm', width, height)
+        .then((meta) => { updateFrameShmMeta(meta); return meta; }),
     // FrameServer: open/close a decoder for a source (fast native path)
     openSource:     (id)    => invoke('xleth:video:openSource', id),
     closeSource:    (id)    => invoke('xleth:video:closeSource', id),
@@ -410,6 +450,20 @@ window.xleth = ({
     set: (key, value) => invoke('xleth:settings:set', key, value),
   },
 
+  // ── Session console log (Settings → Application → Logs) ─────────────────────
+  // The buffer itself lives in the main process (electron-main/console-log.js);
+  // the renderer only reads a summary and asks for exports. Deliberately no
+  // "read the lines" call — the renderer has no use for 8k log entries and
+  // shipping them across IPC to render a preview would cost more than the
+  // capture does.
+  logs: {
+    getStatus:     ()       => invoke('xleth:logs:getStatus'),
+    setAutoExport: (on)     => invoke('xleth:logs:setAutoExport', !!on),
+    exportNow:     (format) => invoke('xleth:logs:export', { format }),
+    openFolder:    ()       => invoke('xleth:logs:openFolder'),
+    reveal:        (p)      => invoke('xleth:logs:reveal', p),
+  },
+
   // Custom XLETH file picker filesystem bridge. These calls are intentionally
   // independent of the engine worker so the picker can open during startup.
   filePicker: {
@@ -420,35 +474,6 @@ window.xleth = ({
     getFavorites:   ()                => invoke('xleth:filePicker:getFavorites'),
     setFavorites:   (favorites)       => invoke('xleth:filePicker:setFavorites', favorites),
     probeDurations: (paths)           => invoke('xleth:filePicker:probeDurations', paths),
-  },
-
-  // Workspace backdrop state
-  backdrop: {
-    get current() { return backdropCurrent },
-    getState: async () => {
-      backdropCurrent = normalizeBackdropState(await invoke('xleth:backdrop:getState'));
-      return backdropCurrent;
-    },
-    onModeChanged: (cb) => {
-      const h = (_e, state) => {
-        backdropCurrent = normalizeBackdropState(state);
-        cb(backdropCurrent);
-      };
-      ipcRenderer.on('xleth:backdrop:modeChanged', h);
-      return () => ipcRenderer.removeListener('xleth:backdrop:modeChanged', h);
-    },
-    chooseImage: async () => {
-      backdropCurrent = normalizeBackdropState(await invoke('xleth:backdrop:chooseImage'));
-      return backdropCurrent;
-    },
-    chooseVideo: async () => {
-      backdropCurrent = normalizeBackdropState(await invoke('xleth:backdrop:chooseVideo'));
-      return backdropCurrent;
-    },
-    setMedia: async (settings) => {
-      backdropCurrent = normalizeBackdropState(await invoke('xleth:backdrop:setMedia', settings));
-      return backdropCurrent;
-    },
   },
 
   // Window layout (persisted to userData/layout.json)
@@ -563,6 +588,9 @@ window.xleth = ({
   // ── MIDI Import ───────────────────────────────────────────────────────────
   midi: {
     parseSummary:  (filePath)          => invoke('xleth:midi:parseSummary', filePath),
+    // Candidate Pattern tracks for re-import mode. Resolved engine-side so the
+    // dialog's list and the engine's validation cannot drift apart.
+    getReimportTargets: ()             => invoke('xleth:midi:getReimportTargets'),
     importFull:    (filePath, options) => invoke('xleth:midi:importFull', filePath, JSON.stringify(options || {})),
     executeImport: (noteData, options) => {
       // Convert ArrayBuffer/TypedArray to Buffer before crossing the renderer→main
@@ -577,9 +605,19 @@ window.xleth = ({
     },
   },
 
+  // ── FL Studio project import ──────────────────────────────────────────────
+  // Converts a .flp to a temp MIDI file (main process); the import dialog then
+  // runs the midi.* calls above on the returned midiPath.
+  // options: { arrangementIndex?: number, includeMuted?: boolean }
+  // → { ok, midiPath?, reason?, info? }
+  flp: {
+    convert: (filePath, options) => invoke('xleth:flp:convert', filePath, options || {}),
+  },
+
   // ── Dialogs ───────────────────────────────────────────────────────────────
   dialog: {
     openMidiDialog: () => invoke('xleth:dialog:importMIDI'),
+    openLutDialog: () => invoke('xleth:dialog:openLut'),
   },
 
   // ── Loop Lab (DEV dataset-authoring tool) ─────────────────────────────────
@@ -608,6 +646,33 @@ window.xleth = ({
     export: ()          => invoke('xleth:loopTelemetry:export'),
   },
 
+  // ── Source separation sidecar (P4) ───────────────────────────────────────
+  // Hand-written rather than manifest-generated: the manifest wires channels
+  // through to C++ engine handlers, and separation never touches the engine —
+  // it talks to a local Python/FastAPI process (ui/electron-main/separation.js).
+  //
+  // getStatus is the CHEAP probe (no process spawn) the separation strip calls
+  // on mount; checkEnvironment is the expensive one behind the "unavailable"
+  // explainer. separateBuffer hands over the layer's rendered PCM as
+  // Float32Arrays by structured clone — main writes the WAV, so no base64 or
+  // string copy of a 60 MB buffer happens anywhere.
+  separation: {
+    getStatus:        ()            => invoke('xleth:separation:getStatus'),
+    checkEnvironment: ()            => invoke('xleth:separation:checkEnvironment'),
+    start:            ()            => invoke('xleth:separation:start'),
+    stop:             ()            => invoke('xleth:separation:stop'),
+    listModels:       ()            => invoke('xleth:separation:listModels'),
+    separateBuffer:   (payload)     => invoke('xleth:separation:separateBuffer', payload),
+    separateFile:     (opts)        => invoke('xleth:separation:separateFile', opts),
+    getJob:           (jobId)       => invoke('xleth:separation:getJob', jobId),
+    cancel:           (jobId)       => invoke('xleth:separation:cancel', jobId),
+    onProgress: (cb) => {
+      const h = (_e, data) => cb(data);
+      ipcRenderer.on('separation:progress', h);
+      return () => ipcRenderer.removeListener('separation:progress', h);
+    },
+  },
+
   // ── Window controls (frameless title bar) ─────────────────────────────────
   window: {
     minimize: () => ipcRenderer.send('xleth:window:minimize'),
@@ -616,6 +681,14 @@ window.xleth = ({
     zoomIn:   () => ipcRenderer.send('xleth:window:zoomIn'),
     zoomOut:  () => ipcRenderer.send('xleth:window:zoomOut'),
     resetZoom: () => ipcRenderer.send('xleth:window:resetZoom'),
+    // UI scale (Phase 7): absolute set (factor 1.0-2.0), live read, and change notifications.
+    setZoom:  (factor) => ipcRenderer.send('xleth:window:setZoom', factor),
+    getZoom:  () => invoke('xleth:window:getZoom'),
+    onZoomChanged: (cb) => {
+      const h = (_, factor) => cb(factor);
+      ipcRenderer.on('xleth:window:zoomChanged', h);
+      return () => ipcRenderer.removeListener('xleth:window:zoomChanged', h);
+    },
     openNodeEditor:  (key, pos) => ipcRenderer.send('xleth:window:openNodeEditor', key, pos),
     closeNodeEditor: () => ipcRenderer.send('xleth:window:closeNodeEditor'),
   },

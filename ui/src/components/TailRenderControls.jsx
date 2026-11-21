@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import useLoopRegionStore from '../stores/loopRegionStore.js'
+import { NumberBox } from '../ui-kit'
+import { ExportSelect, Row, exportStyles as styles } from './exportPresets/exportKit.jsx'
 
 // Shared export-dialog controls for LoopRegion tail and warmup settings. The
 // values live in project state and are committed through timeline.setLoopRegion.
@@ -40,93 +42,59 @@ export default function TailRenderControls({ disabled = false }) {
       .catch((e) => console.warn('[TailRender] setLoopRegion failed:', e))
   }, [fetchLoopRegion])
 
-  const commitThreshold = useCallback(() => {
-    const v = clampTailNumber(thresholdText, TAIL_THRESHOLD_MIN, TAIL_THRESHOLD_MAX, -60)
-    setThresholdText(String(v))
-    if (v !== committedThreshold) commit({ tailThresholdDb: v })
-  }, [thresholdText, committedThreshold, commit])
-
-  const commitMaxSeconds = useCallback(() => {
-    const v = clampTailNumber(maxSecondsText, TAIL_MAX_SECONDS_MIN, TAIL_MAX_SECONDS_MAX, 10)
-    setMaxSecondsText(String(v))
-    if (v !== committedMaxSeconds) commit({ tailMaxSeconds: v })
-  }, [maxSecondsText, committedMaxSeconds, commit])
-
   const tailModeHelp = tailMode === 'hardCut'
     ? 'Export stops at the region end. Effect tails are cut off.'
     : tailMode === 'wrap'
       ? 'Effect tails are folded back into the start of the region for seamless loop exports.'
       : 'After the region ends, existing reverb, delay, and effect tails continue until they fade below the limit.'
 
-  return (
-    <div className="tail-render-controls">
-      <div className="export-row">
-        <label>End Behavior</label>
-        <select
-          value={tailMode}
-          onChange={(e) => commit({ tailMode: e.target.value })}
-          disabled={disabled}
-        >
-          <option value="tailClamp">Let audio fade out</option>
-          <option value="hardCut">Cut exactly at end</option>
-          <option value="wrap">Loop-safe wrap</option>
-        </select>
-      </div>
+  const tailModeOptions = [
+    { value: 'tailClamp', label: 'Let audio fade out' },
+    { value: 'hardCut', label: 'Cut exactly at end' },
+    { value: 'wrap', label: 'Loop-safe wrap' },
+  ]
+  const originOptions = [
+    { value: 'absolute', label: 'Project start: safest for effects' },
+    { value: 'normalized', label: 'Region start: faster, may sound different', disabled: true },
+  ]
 
-      <div className="tail-help">{tailModeHelp}</div>
+  return (
+    <div className={styles.panel}>
+      <Row label="End behavior" note={tailModeHelp}>
+        <ExportSelect label="End behavior" value={tailMode} options={tailModeOptions} disabled={disabled} onChange={(v) => commit({ tailMode: v })} />
+      </Row>
 
       {tailMode === 'tailClamp' && (
-        <div className="tail-advanced-fields" aria-label="Tail fade settings">
-          <div className="export-row tail-compact-row">
-            <label htmlFor="tail-threshold-db">Tail threshold (dBFS)</label>
-            <input
-              id="tail-threshold-db"
-              type="number"
-              min={TAIL_THRESHOLD_MIN}
-              max={TAIL_THRESHOLD_MAX}
-              step={1}
-              value={thresholdText}
-              disabled={disabled}
-              onChange={(e) => setThresholdText(e.target.value)}
-              onBlur={commitThreshold}
-              onKeyDown={(e) => { if (e.key === 'Enter') commitThreshold() }}
+        <div className={styles.grid} role="group" aria-label="Tail fade settings">
+          <Row label="Tail threshold">
+            <NumberBox
+              label="Tail threshold" hideLabel width={96}
+              min={TAIL_THRESHOLD_MIN} max={TAIL_THRESHOLD_MAX} step={1} unit="dBFS" quantize={Math.round}
+              defaultValue={-60} disabled={disabled}
+              value={clampTailNumber(thresholdText, TAIL_THRESHOLD_MIN, TAIL_THRESHOLD_MAX, -60)}
+              onChange={(v) => setThresholdText(String(v))}
+              onCommit={(v) => { setThresholdText(String(v)); if (v !== committedThreshold) commit({ tailThresholdDb: v }) }}
             />
-          </div>
-
-          <div className="export-row tail-compact-row">
-            <label htmlFor="tail-max-seconds">Tail max (seconds)</label>
-            <input
-              id="tail-max-seconds"
-              type="number"
-              min={TAIL_MAX_SECONDS_MIN}
-              max={TAIL_MAX_SECONDS_MAX}
-              step={0.5}
-              value={maxSecondsText}
-              disabled={disabled}
-              onChange={(e) => setMaxSecondsText(e.target.value)}
-              onBlur={commitMaxSeconds}
-              onKeyDown={(e) => { if (e.key === 'Enter') commitMaxSeconds() }}
+          </Row>
+          <Row label="Tail max">
+            <NumberBox
+              label="Tail max" hideLabel width={96}
+              min={TAIL_MAX_SECONDS_MIN} max={TAIL_MAX_SECONDS_MAX} step={0.5} unit="s"
+              defaultValue={10} disabled={disabled}
+              value={clampTailNumber(maxSecondsText, TAIL_MAX_SECONDS_MIN, TAIL_MAX_SECONDS_MAX, 10)}
+              onChange={(v) => setMaxSecondsText(String(v))}
+              onCommit={(v) => { setMaxSecondsText(String(v)); if (v !== committedMaxSeconds) commit({ tailMaxSeconds: v }) }}
             />
-          </div>
+          </Row>
         </div>
       )}
 
-      <div className="export-row">
-        <label>Start Processing From</label>
-        <select
-          value={renderOrigin}
-          onChange={(e) => commit({ renderOrigin: e.target.value })}
-          disabled={disabled}
-        >
-          <option value="absolute">Project start — safest for effects</option>
-          <option value="normalized" disabled>Region start — faster, may sound different</option>
-        </select>
-      </div>
-      {renderOrigin === 'normalized' && (
-        <div className="tail-help">
-          Region start processing is reserved in this build, so exports still use project-start warmup.
-        </div>
-      )}
+      <Row
+        label="Start processing from"
+        note={renderOrigin === 'normalized' ? 'Region start processing is reserved in this build, so exports still use project-start warmup.' : undefined}
+      >
+        <ExportSelect label="Start processing from" value={renderOrigin} options={originOptions} disabled={disabled} onChange={(v) => commit({ renderOrigin: v })} />
+      </Row>
     </div>
   )
 }

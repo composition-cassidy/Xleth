@@ -1,0 +1,142 @@
+/* Button and IconButton (also the base look of Toggle). Neutral outline at rest;
+ * "on" is the inverted ink chip (DESIGN.md 3.2), never a hue. No hover lift; hover and state
+ * colour changes take their duration from ui-kit/motion.css, and so does the press-in below.
+ * `data-tone="quiet"` is the on-state of housekeeping toggles that are on nearly all
+ * the time (region toggles, tempo lock): raised g3, its 3:1 outline, ink glyph. */
+@layer kit {
+  .btn {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-1);
+    height: var(--ctl-h-md);
+    min-width: var(--hit-min);
+    padding: 0 var(--space-2);
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g3);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    font-weight: var(--weight-medium);
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+    -webkit-app-region: no-drag;
+  }
+
+  .btn[data-size="sm"] { height: var(--ctl-h-sm); }
+  .btn[data-size="lg"] { height: var(--ctl-h-lg); }
+
+  .btn[data-variant="ghost"] {
+    border-color: transparent;
+    background: transparent;
+    color: var(--ui-ink-2);
+  }
+
+  .btn[data-variant="primary"] {
+    border-color: var(--ui-on);
+    background: var(--ui-on);
+    color: var(--ui-on-fg);
+  }
+
+  .btn[data-variant="primary"]:is(:hover, [data-state="hover"]):not(:disabled) {
+    background: var(--ui-on);
+    color: var(--ui-on-fg);
+    border-color: var(--ui-value);
+  }
+
+  .btn[data-variant="danger"] {
+    border-color: var(--ui-clip);
+    color: var(--theme-semantic-danger-text, var(--ui-rec-text));
+  }
+
+  .icon {
+    width: var(--ctl-h-md);
+    padding: 0;
+  }
+
+  .icon[data-size="sm"] { width: var(--ctl-h-sm); }
+  .icon[data-size="lg"] { width: var(--ctl-h-lg); }
+
+  /* A tool picker's IconButton shows its one-letter shortcut beside the icon, always visible. */
+  .icon[data-key] {
+    width: auto;
+    gap: 2px;
+    padding: 0 var(--space-1);
+  }
+
+  .key {
+    font-size: var(--type-11);
+    font-weight: var(--weight-semibold);
+    font-family: var(--ui-font-mono);
+  }
+
+  .icon svg {
+    width: var(--icon-md);
+    height: var(--icon-md);
+  }
+
+  .glyph {
+    display: inline-flex;
+  }
+
+  .glyph svg {
+    width: var(--icon-sm);
+    height: var(--icon-sm);
+  }
+
+  .btn:is(:hover, [data-state="hover"]):not(:disabled) {
+    background: var(--ui-g2);
+    color: var(--ui-ink);
+  }
+
+  .btn[data-variant="ghost"]:is(:hover, [data-state="hover"]):not(:disabled) {
+    background: var(--ui-g3);
+  }
+
+  .btn:is(:active, [data-state="active"]):not(:disabled) {
+    background: var(--ui-g0);
+    color: var(--ui-ink);
+  }
+
+  /* Press-in: `none` until the lively tier (ui-kit/motion.css, --mo-press-scale). */
+  .btn:is(:active, [data-state="active"]):not(:disabled) {
+    scale: var(--mo-press-scale, none);
+  }
+
+  .btn:is(:focus-visible, [data-state="focus"]) {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 1px;
+  }
+
+  .btn[aria-pressed="true"] {
+    border-color: var(--ui-on);
+    background: var(--ui-on);
+    color: var(--ui-on-fg);
+  }
+
+  /* Quiet on. Off is the borderless ghost, so the state is carried by the outline and the
+   * fill together (g3 on a g2 bar is only 1.2:1; the boundary is 3:1), never by colour. */
+  .btn[data-tone="quiet"][aria-pressed="true"] {
+    border-color: var(--ui-boundary);
+    background: var(--ui-g3);
+    color: var(--ui-ink);
+  }
+
+  .btn[data-tone="quiet"][aria-pressed="true"]:is(:hover, [data-state="hover"]):not(:disabled) {
+    border-color: var(--ui-ink-2);
+    background: var(--ui-g3);
+  }
+
+  .btn[data-tone="quiet"][aria-pressed="true"]:is(:active, [data-state="active"]):not(:disabled) {
+    background: var(--ui-g0);
+  }
+
+  .btn:disabled {
+    opacity: var(--ui-mute-opacity);
+    cursor: default;
+  }
+}

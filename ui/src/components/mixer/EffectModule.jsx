@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { GripVertical, Power } from 'lucide-react'
 import useEffectChainStore from '../../stores/effectChainStore.js'
 import useMixerStore, {
   COMPRESSOR_EXTERNAL_SIDECHAIN_PARAM_ID,
@@ -9,6 +8,10 @@ import useMixerStore, {
 import useVstStore from '../../stores/vstStore.js'
 import ContextMenu from '../ContextMenu.jsx'
 import { EFFECT_EDITORS, PLUGIN_NAMES, resolveTrackId } from './effectEditorOpeners.js'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcDotsSixVertical = iconComponent('dots-six-vertical')
+const IcPower = iconComponent('power')
 import './EffectModule.sidechain.css'
 
 export function isSelectableEffectModule(effect) {
@@ -97,11 +100,14 @@ export function getSidechainStatusText({
   route,
   routeError,
   sourceTrack,
+  mixerSourceNames = '',
 }) {
   if (routeError) return routeError
   if (route?.status && route.status !== 'ok') return mapSidechainRouteStatus(route.status) ?? 'Route stale'
   if (!externalEnabled) return 'Sidechain: Off'
-  if (!route) return 'Sidechain: Off'
+  // No route of its own: the key from the mixer's sidechain routes into this
+  // track (right-click on a route arrow) still reaches it.
+  if (!route) return mixerSourceNames ? `Sidechain: ${mixerSourceNames} (mixer)` : 'Sidechain: Off'
   if (!sourceTrack) return 'Route stale'
   if (route.enabled === false) return 'Sidechain: Off'
   return `Sidechain: ${sourceTrack.name || `Track ${route.sourceTrackId}`}`
@@ -199,7 +205,10 @@ function parseEffectParameters(raw) {
   return Array.isArray(raw) ? raw : []
 }
 
-function SidechainControls({ effect, storeKey }) {
+// Sidechain state and the one write path (setEffectExternalSidechain) for an
+// effect that supports an external sidechain. Shared by the Mixer chain row and
+// the Compressor device's Sidechain section.
+export function useEffectSidechain({ effect, storeKey }) {
   const targetTrackId = resolveTrackId(storeKey)
   const routeKey = `${targetTrackId}::${effect.effectInstanceId}`
   const requiresExternalParam = effect.pluginId === 'compressor'
@@ -226,6 +235,12 @@ function SidechainControls({ effect, storeKey }) {
     [targetTrackId, tracks, trackOrder, outputRoutes, sidechainRoutes],
   )
   const sourceTrack = route ? tracks[route.sourceTrackId] : null
+  // Track-level routes (the mixer's right-click "sidechain here") key every
+  // sidechain-capable effect on this track: listed so the section can say so.
+  const mixerSourceNames = useMemo(() => sidechainRoutes
+    .filter(r => r.targetTrackId === targetTrackId && !r.targetEffectInstanceId && r.enabled !== false)
+    .map(r => tracks[r.sourceTrackId]?.name || `Track ${r.sourceTrackId}`)
+    .join(', '), [sidechainRoutes, targetTrackId, tracks])
   const selectedSourceValue = route?.sourceTrackId != null ? String(route.sourceTrackId) : ''
   const hasSelectableSource = eligibleSources.length > 0 || Boolean(route && sourceTrack)
   const statusText = getSidechainStatusText({
@@ -233,6 +248,7 @@ function SidechainControls({ effect, storeKey }) {
     route,
     routeError,
     sourceTrack,
+    mixerSourceNames,
   })
 
   useEffect(() => {
@@ -297,6 +313,27 @@ function SidechainControls({ effect, storeKey }) {
     }
     return result
   }
+
+  return {
+    requiresExternalParam,
+    externalEnabled,
+    route,
+    routeError,
+    sourceTrack,
+    eligibleSources,
+    selectedSourceValue,
+    hasSelectableSource,
+    statusText,
+    mixerSourceNames,
+    applySidechain,
+  }
+}
+
+function SidechainControls({ effect, storeKey }) {
+  const {
+    requiresExternalParam, externalEnabled, route, routeError, sourceTrack, eligibleSources,
+    selectedSourceValue, hasSelectableSource, statusText, applySidechain,
+  } = useEffectSidechain({ effect, storeKey })
 
   const handleSectionMouseDown = (event) => {
     stopEffectModuleEvent(event)
@@ -482,7 +519,7 @@ export default function EffectModule({
           title="Drag to reorder"
           aria-label="Drag to reorder effect"
         >
-          <GripVertical size={10} />
+          <IcDotsSixVertical size={14} />
         </div>
       </div>
 
@@ -525,7 +562,7 @@ export default function EffectModule({
         title={effect.bypassed ? 'Enable effect' : 'Bypass effect'}
         aria-label={effect.bypassed ? 'Enable effect' : 'Bypass effect'}
       >
-        <Power size={10} />
+        <IcPower size={14} />
       </button>
 
       {showSidechainControls && (

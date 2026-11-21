@@ -58,6 +58,21 @@ export function readMixerCanvasTheme(canvas) {
     const v = cs?.getPropertyValue(key)?.trim()
     return v || FALLBACKS[key]
   }
+  // Inside a device frame (Phase 4b) the canvas wears the kit's neutral ramp,
+  // read here at draw time like every other token; elsewhere the legacy theme.
+  if (canvas?.closest?.('[data-device-plugin]')) {
+    const ui = (key, legacy) => cs?.getPropertyValue(key)?.trim() || get(legacy)
+    return {
+      well: ui('--ui-g0', '--theme-bg-inset'),
+      surface: ui('--ui-g1', '--theme-bg-secondary'),
+      accent: ui('--ui-value', '--theme-accent'),
+      text: ui('--ui-ink', '--theme-text'),
+      textMuted: ui('--ui-ink-2', '--theme-text-muted'),
+      textSubtle: ui('--ui-ink-3', '--theme-text-subtle'),
+      border: ui('--ui-g4', '--theme-border-subtle'),
+      borderStrong: ui('--ui-boundary', '--theme-border-strong'),
+    }
+  }
   return {
     well: get('--theme-bg-inset'),
     surface: get('--theme-bg-secondary'),

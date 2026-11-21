@@ -234,3 +234,36 @@ If you've been working on the same bug for 3+ attempts without resolution, say:
 
 "I've tried \[N] approaches and this one's proving stubborn. Want me to generate a diagnostic report you can paste into a fresh Claude chat for a second opinion? A fresh set of eyes on a structured summary often catches what I'm missing."
 
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+
+## UPDATES.md
+
+UPDATES.md at the repo root is the running bulleted log of changes (Added / Changed / Fixed), newest first.
+
+Rules:
+- When you commit something a user or developer would notice (feature, behaviour change, bug fix), add a bullet under `## Unreleased` in UPDATES.md in the same commit. Only code changes belong: new features, updates and bug fixes. Leave out audits, verification reports, licences, design docs, benches, test-only, scratch and pure-refactor commits.
+- Keep bullets short: bold lead phrase, then what changed and why it matters. Put the long write-up in CHANGELOG.md if one is needed.
+- When a build is cut, rename `Unreleased` to the build name (for example `1.3.0-beta`) and start a fresh empty `Unreleased` above it.
+- Uncommitted work is not logged; list it only under "Not yet committed" if it is large.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues on `composition-cassidy/Xleth` (via the `gh` CLI). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.

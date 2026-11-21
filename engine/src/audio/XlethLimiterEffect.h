@@ -966,7 +966,7 @@ inline void XlethLimiterEffect::processEffect(juce::AudioBuffer<float>& buffer,
     writeMeterValue(4, stLUFS);
 
     // ── J: Debug throttle ─────────────────────────────────────────────────────
-#if XLETH_DEBUG
+#ifdef XLETH_RT_TRACE
     if (++blockCounter_ % 500 == 0)
     {
         juce::Logger::writeToLog(

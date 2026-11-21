@@ -1,8 +1,10 @@
 import React, { useEffect, useRef } from 'react'
+import { useStore } from 'zustand'
 import { tokenValue } from '../../theming/tokenValue.ts'
 import useApexStore from '../../stores/apexStore.js'
 import { MASTER_BAND } from '../../stores/apexStore.js'
-import { bandColorOr } from './apexBandColors.js'
+import { readBandColor } from '../devices/bandPalette.js'
+import { uiCanvasFont } from '../../styles/typography.js'
 import { useDynamicsVizSubscription } from '../../plugin-ui/runtime/useDynamicsVizSubscription.js'
 import { VIZ_TYPE } from '../../constants/dynamicsViz.js'
 import {
@@ -37,12 +39,12 @@ function readColors(el) {
     return inherited || tokenValue(name) || fb
   }
   return {
-    bg:      get('--theme-bg-inset', '#111318'),
-    grid:    get('--xleth-flat-border', 'rgba(255,255,255,0.10)'),
-    text:    get('--xleth-flat-text-muted', 'rgba(255,255,255,0.5)'),
-    spectrum: get('--xleth-flat-text', 'rgba(255,255,255,0.75)'),
-    accent:  get('--theme-accent', '#fe589a'),
-    region:  get('--xleth-flat-text-muted', 'rgba(255,255,255,0.5)'),
+    bg:      get('--ui-g0', '#141414'),
+    grid:    get('--ui-g4', '#3A3A3A'),
+    text:    get('--ui-ink-3', '#929292'),
+    spectrum: get('--ui-ink-2', '#B4B4B4'),
+    accent:  get('--ui-value', '#33CED6'),
+    region:  get('--ui-ink-3', '#929292'),
   }
 }
 
@@ -61,9 +63,11 @@ function withAlpha(color, alpha) {
   return v
 }
 
-export default function ApexAnalysis() {
-  const trackId = useApexStore(s => s.target?.trackId ?? null)
-  const nodeId = useApexStore(s => s.target?.nodeId ?? null)
+// `store` is the APEX store this display reads: a device's private instance, or
+// the global one by default.
+export default function ApexAnalysis({ store = useApexStore, className = 'apex-analysis-canvas' }) {
+  const trackId = useStore(store, s => s.target?.trackId ?? null)
+  const nodeId = useStore(store, s => s.target?.nodeId ?? null)
   const sub = useDynamicsVizSubscription(trackId, nodeId, VIZ_TYPE.APEX)
 
   const canvasRef = useRef(null)
@@ -90,7 +94,7 @@ export default function ApexAnalysis() {
       const c = readColors(canvas)
       const plot = { x: PAD_L, y: PAD_T, w: Math.max(1, cssW - PAD_L - PAD_R), h: Math.max(1, cssH - PAD_T - PAD_B) }
 
-      const state = useApexStore.getState()
+      const state = store.getState()
       const params = state.params
       const selBand = state.selectedBand
       const bucket = subRef.current?.ringRef?.current?.last?.() || null
@@ -118,21 +122,21 @@ export default function ApexAnalysis() {
         // Each band region wears its own identity color (LOW red-orange / MID
         // lime / HIGH aqua). The selected band's wash is stronger so it still
         // reads as "the one being edited".
-        const bandTint = bandColorOr(r.band, c.accent)
+        const bandTint = readBandColor(canvas, r.band, c.accent)
         ctx.fillStyle = withAlpha(bandTint, selected ? 0.16 : 0.05)
         ctx.fillRect(r.x0, plot.y, Math.max(0, r.x1 - r.x0), plot.h)
       }
 
       // Grid — dB lines + labels
       ctx.lineWidth = 1
-      ctx.font = '9px system-ui, sans-serif'
+      ctx.font = uiCanvasFont('10px')
       ctx.textBaseline = 'middle'
       for (const db of DB_LINES) {
         const y = analysisDbToY(db, plot)
         ctx.strokeStyle = c.grid
         ctx.beginPath(); ctx.moveTo(plot.x, y + 0.5); ctx.lineTo(plot.x + plot.w, y + 0.5); ctx.stroke()
         ctx.fillStyle = c.text; ctx.textAlign = 'right'
-        ctx.fillText(`${db}`, plot.x - 4, y)
+        ctx.fillText(db < 0 ? `−${-db}` : `${db}`, plot.x - 4, y)
       }
       // Freq gridlines + labels
       ctx.textBaseline = 'bottom'; ctx.textAlign = 'center'
@@ -188,15 +192,15 @@ export default function ApexAnalysis() {
         const gr = Math.max(0, bandGr[r.band] || 0)
         const frac = clamp(gr / GR_FULL, 0, 1)
         const w = Math.max(0, r.x1 - r.x0)
-        const grColor = bandColorOr(r.band, c.accent)
+        const grColor = readBandColor(canvas, r.band, c.accent)
         if (frac > 0.001) {
           ctx.fillStyle = withAlpha(grColor, 0.18 + 0.5 * frac)
           ctx.fillRect(r.x0, plot.y, w, barMaxH * frac)
         }
         if (gr >= 0.1 && w > 24) {
           ctx.fillStyle = withAlpha(grColor, 0.95)
-          ctx.font = '9px system-ui, sans-serif'
-          ctx.fillText(`-${gr.toFixed(1)}`, r.x0 + w / 2, plot.y + 2)
+          ctx.font = uiCanvasFont('10px')
+          ctx.fillText(`−${gr.toFixed(1)}`, r.x0 + w / 2, plot.y + 2)
         }
       }
 
@@ -213,13 +217,12 @@ export default function ApexAnalysis() {
 
     rafRef.current = requestAnimationFrame(draw)
     return () => { cancelled = true; cancelAnimationFrame(rafRef.current) }
-  }, [])
+  }, [store])
 
   return (
     <canvas
       ref={canvasRef}
-      className="apex-analysis-canvas"
-      style={{ display: 'block', width: '100%', height: '100%', background: 'var(--theme-bg-inset, #111318)' }}
+      className={className}
     />
   )
 }

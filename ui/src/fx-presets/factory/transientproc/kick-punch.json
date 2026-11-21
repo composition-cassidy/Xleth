@@ -1,0 +1,17 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "transientproc",
+  "name": "Kick Punch",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "attack": 65,
+      "sustain": -35,
+      "attack_speed": 12,
+      "threshold": -60,
+      "mix": 100,
+      "midi_detect": 1
+    }
+  }
+}

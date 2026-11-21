@@ -36,6 +36,21 @@ export function labelHexColor(label) {
   return tokenValue(token)
 }
 
+// Every label colour in one pass, keyed by lower-case label name (plus
+// `custom`, the fallback). labelHexColor() is a getComputedStyle read per call,
+// so anything that colours many items per frame (the timeline canvas) resolves
+// this once per theme and looks labels up with pickLabelHexColor() instead.
+export function resolveLabelHexColors() {
+  const out = Object.create(null)
+  for (const key of Object.keys(LABEL_TOKEN_MAP)) out[key] = tokenValue(LABEL_TOKEN_MAP[key])
+  return out
+}
+
+export function pickLabelHexColor(colors, label) {
+  const key = typeof label === 'string' ? label.toLowerCase() : ''
+  return colors[key] ?? colors.custom
+}
+
 export function loadCustomLabels() {
   try {
     return JSON.parse(localStorage.getItem(CUSTOM_LABELS_KEY) || '[]')
@@ -68,6 +83,12 @@ export function buildAudioUrl(filePath) {
   }
   // Non-Windows (Unix) paths
   return 'xleth-media:///' + normalised.split('/').map(encodeURIComponent).join('/')
+}
+
+// URL on the local media server (electron-main/media-server.js), which rejects
+// any request without this session's token (handed over by preload).
+export function buildMediaServerUrl(port, filePath) {
+  return `http://127.0.0.1:${port}/media?path=${encodeURIComponent(filePath)}&token=${window.xleth?.mediaToken ?? ''}`
 }
 
 // ── MIDI note name conversion ────────────────────────────────────────────────

@@ -1,0 +1,37 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "waveshaper",
+  "name": "Gentle Knee",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "pregain": 0,
+      "postgain": 1,
+      "mix": 100,
+      "preset": 0
+    },
+    "points": [
+      [
+        -1,
+        -0.8
+      ],
+      [
+        -0.6,
+        -0.58
+      ],
+      [
+        0,
+        0
+      ],
+      [
+        0.6,
+        0.58
+      ],
+      [
+        1,
+        0.8
+      ]
+    ]
+  }
+}

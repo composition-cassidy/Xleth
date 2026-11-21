@@ -43,5 +43,11 @@ export function readDynamicsTheme(targetEl) {
     grid:      out['--theme-text-subtle'],
     accent:    out['--theme-accent'],
     accentDim: out['--theme-accent-bg-subtle'],
+    // Band palette (ui/DESIGN.md 3.3.1); three-band painters use slots 1, 2, 4.
+    bands: {
+      low:  cs?.getPropertyValue('--ui-band-1')?.trim() || null,
+      mid:  cs?.getPropertyValue('--ui-band-2')?.trim() || null,
+      high: cs?.getPropertyValue('--ui-band-4')?.trim() || null,
+    },
   }
 }

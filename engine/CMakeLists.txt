@@ -60,10 +60,11 @@ endif()
 # ── FFmpeg ───────────────────────────────────────────────────────────────────
 find_package(FFMPEG REQUIRED)
 
-# ── OpenGL + GLEW + GLFW (only used by the standalone executable) ─────────────
-find_package(OpenGL REQUIRED)
-find_package(GLEW REQUIRED)
-find_package(glfw3 CONFIG REQUIRED)
+# No OpenGL/GLEW/GLFW discovery here on purpose. The realtime GL preview path
+# (VideoCompositor + the Main.cpp --video-display / --composite-test / --av-sync
+# entry points) was retired — see Issue 10 in VIDEO_PREVIEW_AUDIT.txt. All
+# compositing, preview and export alike, goes through FrameCollector +
+# GridCompositor on D3D11.
 
 # ── Rubber Band (R3, static, builtin FFT + resampler) ────────────────────────
 # Rubber Band uses Meson, not CMake, so we cannot use FetchContent_MakeAvailable.
@@ -201,11 +202,27 @@ if(XLETH_ASIO)
 endif()
 
 # ── XlethEngineModel ──────────────────────────────────────────────────────────
-# Pure C++ data model: no JUCE, no FFmpeg, no GL. Links against nlohmann/json
+# Pure C++ data model: no JUCE, no GL. Links against nlohmann/json and libavutil
 # only. Safe to link from the bridge, the engine, or standalone tools.
 # Defined BEFORE XlethEngineCore because MixEngine depends on Timeline/Clip/Track.
+#
+# The libavutil dependency is RenderClock (render/RenderClock.cpp), the single
+# owner of every sample <-> tick <-> beat conversion in the engine. It sits at
+# this tier because AutomationPlan — model-only for testability — has to convert
+# a sample position to a tick, and that conversion must be the SAME one
+# MixEngine's note scheduler uses, or the two disagree by a tick at every
+# boundary. libavutil is a leaf C library (av_rescale_q / av_rescale_rnd only);
+# it carries none of the Electron GPU-process conflict risk that keeps JUCE and
+# GL out of this tier, and every engine ctest target already gets the vcpkg bin
+# directory prepended to PATH.
 add_library(XlethEngineModel STATIC
     src/model/ParamTrack.cpp
+    src/model/LensRoam.cpp
+    src/model/ParentMath.cpp
+    src/model/Clone.cpp
+    src/model/ColorGrade.cpp
+    src/model/ColorGradeSnapshot.cpp
+    src/model/TimelineSnapshot.cpp
     src/model/AutomationEnvelope.cpp
     src/model/SampleRegion.cpp
     src/model/SamplerModulationConfig.cpp
@@ -222,23 +239,60 @@ add_library(XlethEngineModel STATIC
     src/model/ClipCompanionFxBuilder.cpp
     src/import/FscScoreParser.cpp
     src/project/ProjectManager.cpp
+    src/project/RegenerableFiles.cpp
     src/commands/UndoManager.cpp
     src/commands/TimelineCommands.cpp
+    src/commands/ColorGradeCommands.cpp
     src/commands/QuantizeClipsBatchCommand.cpp
     src/commands/AddNotesBatchCommand.cpp
     src/commands/AddClipsBatchCommand.cpp
     src/commands/ClipBatchCommands.cpp
+    src/commands/PatternBlockBatchCommands.cpp
+    src/commands/AutomationBatchCommands.cpp
     src/commands/EffectChainCommands.cpp
     src/audio/TrackRouting.cpp
     src/audio/AutomationPlan.cpp
+    src/render/RenderClock.cpp
+    # Sample Sandbox model tier: op descriptors, the workspace that owns the
+    # stacks, and the undo commands that mutate them. Pure data — the buffers
+    # and the DSP live in SandboxRenderer over in XlethEngineCore, which is what
+    # keeps the whole edit model unit-testable with no audio device.
+    src/sandbox/SandboxOp.cpp
+    src/sandbox/SandboxCore.cpp
+    src/sandbox/SandboxCommands.cpp
+    # AUTOTUNE correction curve (P5-2): pure math turning a PitchTrackAnalysis
+    # result + scale/key + the six AUTOTUNE controls into a per-frame target-f0
+    # curve. Only consumes PitchFrame/NoteSegment (plain structs, no JUCE) from
+    # dsp/PitchTrackAnalysis.h, so it belongs at this tier alongside the rest
+    # of the sandbox model rather than in XlethEngineCore with the JUCE-using
+    # detector that produces its input.
+    src/dsp/CorrectionCurve.cpp
+    # PITCH's Resample (varispeed) mode. Model tier for the same reason
+    # CorrectionCurve is — plain math over float pointers, no JUCE — but here
+    # it is load-bearing rather than tidy: SandboxOp::outputLength predicts the
+    # resulting length at THIS tier, and SandboxRenderer must produce exactly
+    # that many samples over in XlethEngineCore. One file, one length rule.
+    src/dsp/VarispeedResample.cpp
 )
 
 target_include_directories(XlethEngineModel PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+target_include_directories(XlethEngineModel PRIVATE
+    ${FFMPEG_INCLUDE_DIRS}
+)
+
+target_link_directories(XlethEngineModel PRIVATE
+    ${FFMPEG_LIBRARY_DIRS}
+)
+
 target_link_libraries(XlethEngineModel PUBLIC
     nlohmann_json::nlohmann_json
+)
+
+target_link_libraries(XlethEngineModel PRIVATE
+    ${FFMPEG_LIBRARIES}
 )
 
 target_compile_definitions(XlethEngineModel PRIVATE
@@ -246,13 +300,15 @@ target_compile_definitions(XlethEngineModel PRIVATE
 )
 
 # ── XlethEngineCore ───────────────────────────────────────────────────────────
-# CPU-only static library — no VideoCompositor, no GLFW/GLEW/OpenGL.
-# This is what the Node.js bridge links against, so the resulting .node DLL
-# does NOT import glfw3.dll or glew32.dll, which would conflict with
-# Electron/Chromium's GPU process initialisation.
+# CPU/D3D11 static library — no GLFW/GLEW/OpenGL anywhere. This is what the
+# Node.js bridge links against, so the resulting .node DLL does NOT import
+# glfw3.dll or glew32.dll, which would conflict with Electron/Chromium's GPU
+# process initialisation.
 #
-# XLETH_CORE_ONLY is defined here; SyncManager.cpp uses it to compile-out
-# all VideoCompositor method calls, avoiding any linker references to GL syms.
+# This used to be enforced by an XLETH_CORE_ONLY compile definition that
+# compiled the GL calls out of SyncManager.cpp. That guard is gone with the GL
+# path itself (Issue 10) — there is no longer any GL code to guard, in this
+# target or anywhere else.
 add_library(XlethEngineCore STATIC
     src/AudioEngine.cpp
     src/AudioScheduler.cpp
@@ -264,6 +320,7 @@ add_library(XlethEngineCore STATIC
     src/audio/MixEngine.cpp
     src/audio/AudioPerformanceTelemetry.cpp
     src/audio/PluginRegistry.cpp
+    src/audio/PluginLoadBreadcrumb.cpp
     src/audio/PluginEditorHost.cpp
     src/audio/EditorProcessCoordinator.cpp
     src/audio/ClipRenderCache.cpp
@@ -272,12 +329,19 @@ add_library(XlethEngineCore STATIC
     src/model/ClipVideoModulationTiming.cpp
     src/audio/TrackMixer.cpp
     src/audio/SourcePlayer.cpp
+    src/audio/Metronome.cpp
+    src/audio/MetronomeSamples.cpp
     src/audio/Sampler.cpp
     src/audio/Arpeggiator.cpp
     src/audio/SampleProcessor.cpp
     src/audio/EffectChainManager.cpp
+    src/audio/SourceTransformTable.cpp
     src/audio/AudioGraph.cpp
     src/audio/GraphEffectParameters.cpp
+    # Pitch Shifter stock effect. Wraps the two P1 DSP modules below
+    # (GranularShifter / LiveShifterWrapper) as a stock insert effect; Clip mode
+    # is a pass-through until its offline path lands.
+    src/audio/XlethPitchShifterEffect.cpp
     src/audio/GuardedPluginWrapper.cpp
     src/audio/NamedAudioRing.cpp
     src/audio/WaveformMipmap.cpp
@@ -286,15 +350,44 @@ add_library(XlethEngineCore STATIC
     src/dsp/LoopAnalysis.cpp
     src/dsp/LoopOptimizer.cpp
     src/dsp/AutoLoopPolicy.cpp
+    src/dsp/PitchTrackAnalysis.cpp
+    # AUTOTUNE renderer (P5-3): time-varying TD-PSOLA driven by a
+    # CorrectionCurve. Separate from TDPSOLA.cpp below, which is a
+    # constant-ratio, per-channel-independent shifter — see
+    # dsp/AutotuneRender.h for why those cannot be the same function.
+    src/dsp/AutotuneRender.cpp
     src/dsp/TDPSOLA.cpp
     src/dsp/RubberBandWrapper.cpp
+    # Realtime pitch-shift DSP foundation (Pitch Shifter effect, P1). Both are
+    # standalone modules with no engine dependencies beyond juce_audio_basics;
+    # LiveShifterWrapper wraps RubberBandLiveShifter, which rubberband_static
+    # already compiles.
+    src/dsp/GranularShifter.cpp
+    src/dsp/LiveShifterWrapper.cpp
     src/dsp/WSOLA.cpp
     src/dsp/PhaseVocoder.cpp
     src/dsp/WORLD.cpp
+    # Pitch Shifter Clip mode: dry/wet lag measurement for the shifted render.
+    src/dsp/DryWetAlign.cpp
+    # Shared resonance detector / gain computer / spectral renderer (resonance-suppressor
+    # rewrite stage 1, docs/RESONANCE_SUPPRESSOR_AUDIT.md s6). Not wired into any effect yet.
+    src/dsp/ResonanceCore.cpp
+    # Mono-safe pseudo-stereo side generator (xleth-spread-spec.md). Fedda is its stock-effect face.
+    src/dsp/stereoize/StereoizeCore.cpp
+    # Transport-locked granular reverse pitch echo (xleth-crystal-shift-research.md). Szkrezh is its stock-effect face.
+    src/dsp/szkrezh/SzkrezhCore.cpp
     src/audio/WorldStretchCache.cpp
     src/audio/SlotBakeCache.cpp
+    src/audio/RealtimeWorkerPool.cpp
+    # Sample Sandbox offline renderer. Sits here rather than in the model tier
+    # because it owns juce::AudioBuffer and a ThreadPool; the op-stack it
+    # evaluates comes from XlethEngineModel.
+    src/sandbox/SandboxRenderer.cpp
+    src/sandbox/SandboxSpectrogram.cpp
+    src/sandbox/SandboxPitchTrack.cpp
     src/video/FrameOutput.cpp
     src/video/FrameServer.cpp
+    src/video/GradeFrameSampler.cpp
     src/FrameCache.cpp
     src/VideoDecoder.cpp
     src/ProxyTranscoder.cpp
@@ -303,18 +396,21 @@ add_library(XlethEngineCore STATIC
     src/project/ProxyManager.cpp
     src/export/AudioExporter.cpp
     src/export/FFmpegMuxer.cpp
-    src/render/RenderClock.cpp
     src/render/GpuDeviceManager.cpp
     src/render/FrameCache.cpp
     src/render/FrameCollector.cpp
+    src/render/VisualEchoTypes.cpp
     src/render/VideoFlipApplier.cpp
     src/render/RenderVideoDecoder.cpp
+    src/render/Nv12Converter.cpp
     src/render/GridCompositor.cpp
     src/render/SnapshotTransitionRenderer.cpp
+    src/render/LandingRenderer.cpp
     src/render/VisualFrameDiagnostics.cpp
     src/render/HwEncoderDetector.cpp
     src/render/OfflineRenderer.cpp
     src/render/ArpVideoExpander.cpp
+    src/render/VideoEventBuilder.cpp
     src/render/AnimationManager.cpp
 )
 
@@ -332,7 +428,6 @@ target_link_directories(XlethEngineCore PRIVATE
 
 target_compile_definitions(XlethEngineCore PRIVATE
     XLETH_DEBUG                       # enable structured debug logging to stderr
-    XLETH_CORE_ONLY                   # disables VideoCompositor/GL calls in SyncManager.cpp
     XLETH_HAS_DECODER                 # enables VideoDecoder/ProxyTranscoder in ProjectManager.cpp
     JUCE_USE_CURL=0
     JUCE_WEB_BROWSER=0
@@ -370,8 +465,8 @@ target_link_libraries(XlethEngineCore PRIVATE
     rubberband_static   # Rubber Band R3 pitch/time-stretch (static, builtin FFT)
     world_static        # WORLD vocoder (StretchMethod::WORLD)
     xxhash_static       # content hashing for WorldStretchCache
-    # No OpenGL::GL, GLEW::GLEW, glfw, or juce_audio_utils here —
-    # kept off the bridge link graph to prevent Electron GPU process conflicts.
+    # No juce_audio_utils here — kept off the bridge link graph to prevent
+    # Electron GPU process conflicts. (GL is gone from the whole tree.)
 )
 
 # MixEngine uses Timeline/Clip/TrackInfo from XlethEngineModel.
@@ -380,11 +475,25 @@ target_link_libraries(XlethEngineCore PUBLIC
     XlethEngineModel
 )
 
+# ── XlethPluginInspect ────────────────────────────────────────────────────────
+# PE preflight for plugin binaries (P2, docs/PLUGIN_HOSTING_LOG.md): machine
+# type + export names, parsed from bytes — never LoadLibrary. Pure std, no JUCE,
+# so any target (scanner, tests) can link it without XlethEngineCore.
+add_library(XlethPluginInspect STATIC
+    src/audio/PluginBinaryInspector.cpp
+)
+target_include_directories(XlethPluginInspect PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_link_libraries(XlethEngineCore PUBLIC
+    XlethPluginInspect
+)
+
 # ── XlethEngineHeaders ────────────────────────────────────────────────────────
 # INTERFACE library: propagates only include directories and compile definitions
 # to consumers (e.g. the Node.js addon) without adding any compiled sources.
-# SyncManager.h no longer includes VideoCompositor.h, so this interface
-# does not pull in GLFW/GLEW headers for consumers.
+# No GL headers exist in the tree, so this interface cannot pull GLFW/GLEW
+# headers into consumers.
 add_library(XlethEngineHeaders INTERFACE)
 
 target_include_directories(XlethEngineHeaders INTERFACE
@@ -434,6 +543,12 @@ target_compile_definitions(XlethEngineService PRIVATE
     XLETH_DEBUG
 )
 
+# One ~28k-line translation unit: the VS 2022 compiler runs out of COFF
+# sections on it (C1128). The VS 2026 one used by the bridge build does not.
+if(MSVC)
+    target_compile_options(XlethEngineService PRIVATE /bigobj)
+endif()
+
 target_link_libraries(XlethEngineService PUBLIC
     XlethEngineCore
     XlethEngineHeaders
@@ -441,9 +556,11 @@ target_link_libraries(XlethEngineService PUBLIC
 )
 
 # ── Standalone executable ─────────────────────────────────────────────────────
-# Thin shell linking XlethEngineCore + VideoCompositor.cpp (GPU).
-# VideoCompositor.cpp is compiled ONLY here so GLFW/GLEW/OpenGL symbols
-# remain absent from the Node.js addon link graph.
+# Developer harness only — the shipping app never spawns this; Electron forks
+# addon-worker.js against xleth_native.node instead. What remains here is the
+# GL-free set: --video-test, --cache-bench, --proxy-bench, and the interactive
+# Phase 0 audio demo. The three OpenGL modes (--video-display, --composite-test,
+# --av-sync) and VideoCompositor.cpp went with Issue 10.
 juce_add_console_app(XlethEngine
     PRODUCT_NAME "Xleth Engine"
     VERSION      "0.0.1"
@@ -451,22 +568,17 @@ juce_add_console_app(XlethEngine
 
 target_sources(XlethEngine PRIVATE
     src/Main.cpp
-    src/VideoCompositor.cpp   # GPU path — compiled only into the executable
 )
 
 # JUCE_STANDALONE_APPLICATION activates START_JUCE_APPLICATION/main() synthesis.
 # Must ONLY appear on the executable, never on the library or addon.
 target_compile_definitions(XlethEngine PRIVATE
     JUCE_STANDALONE_APPLICATION=1
-    # No XLETH_CORE_ONLY here — the executable gets the full compositor
 )
 
 target_link_libraries(XlethEngine PRIVATE
     XlethEngineCore
     XlethEngineHeaders
-    OpenGL::GL
-    GLEW::GLEW
-    glfw
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags
 )
@@ -482,6 +594,37 @@ target_link_libraries(test_timeline PRIVATE
     XlethEngineModel
 )
 
+# ── test_landing ──────────────────────────────────────────────────────────────
+# Landing model + resolver (docs/XLETH_LANDING_SPEC.md): normalize, JSON, cue
+# CRUD, landingsAt windows and skips, From rects, the seam, Reflow. Model-only,
+# like test_timeline — the resolver and LandingMath.h need no GPU.
+add_executable(test_landing
+    test/test_landing.cpp
+)
+
+target_link_libraries(test_landing PRIVATE
+    XlethEngineModel
+)
+
+# RenderClock.h pulls in libavutil headers (the seam test converts ticks to
+# samples exactly as the render path does).
+target_include_directories(test_landing PRIVATE
+    ${FFMPEG_INCLUDE_DIRS}
+)
+
+# ── test_grid_rect_math ───────────────────────────────────────────────────────
+# Rect parity for render/GridRectMath.h (Landing spec §6.1): the promoted
+# slot -> canvas rect function against a frozen copy of the compositor's old
+# arithmetic, bit for bit, across every grid size, placement and gap. Header-
+# only maths; links the model tier only for TimelineTypes.h's include path.
+add_executable(test_grid_rect_math
+    test/test_grid_rect_math.cpp
+)
+
+target_link_libraries(test_grid_rect_math PRIVATE
+    XlethEngineModel
+)
+
 # ── test_loop_region ──────────────────────────────────────────────────────────
 # LoopRegion data model + invariants + the pure LoopTrap playback state machine.
 # Model-only (LoopTrap.h is header-only) — no JUCE, no FFmpeg, no GL.
@@ -491,6 +634,42 @@ add_executable(test_loop_region
 
 target_link_libraries(test_loop_region PRIVATE
     XlethEngineModel
+)
+
+# RenderClock.h pulls in libavutil headers (the seam-rounding test asserts the
+# loop bounds and the pattern-note dispatch share one tick->sample domain).
+target_include_directories(test_loop_region PRIVATE
+    ${FFMPEG_INCLUDE_DIRS}
+)
+
+# ── test_transport_race ───────────────────────────────────────────────────────
+# A seek or stop from another thread is never overwritten by the audio thread's
+# Transport::advance(). Two threads; Transport.cpp is compiled in directly so the
+# test needs no JUCE (it lives in XlethEngineCore).
+add_executable(test_transport_race
+    test/test_transport_race.cpp
+    src/Transport.cpp
+)
+
+target_link_libraries(test_transport_race PRIVATE
+    XlethEngineModel
+)
+
+# Transport.cpp includes RenderClock.h, which pulls in libavutil headers.
+target_include_directories(test_transport_race PRIVATE
+    ${FFMPEG_INCLUDE_DIRS}
+)
+
+# ── test_metronome ────────────────────────────────────────────────────────────
+# Click-track beat grid / bar accent / +3 st resampling. Pure std — no JUCE.
+add_executable(test_metronome
+    test/test_metronome.cpp
+    src/audio/Metronome.cpp
+    src/audio/MetronomeSamples.cpp
+)
+
+target_include_directories(test_metronome PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
 # ── test_render_scope ─────────────────────────────────────────────────────────
@@ -567,6 +746,22 @@ target_link_libraries(test_lfo_parameter_modulation PRIVATE
     XlethEngineModel
 )
 
+# ── test_render_clock ─────────────────────────────────────────────────────────
+# The shared sample <-> tick <-> beat clock (render/RenderClock.h) that every
+# engine timing conversion now goes through. Pure arithmetic, model-only:
+# RenderClock lives in XlethEngineModel so AutomationPlan can share it.
+add_executable(test_render_clock
+    test/test_render_clock.cpp
+)
+
+target_link_libraries(test_render_clock PRIVATE
+    XlethEngineModel
+)
+
+target_include_directories(test_render_clock PRIVATE
+    ${FFMPEG_INCLUDE_DIRS}
+)
+
 # ── test_automation_clips ─────────────────────────────────────────
 # Automation clip engine + model (Phase A): point invariants, tick-absolute
 # envelope evaluation, plan build/overlap resolution, undo commands, the effect
@@ -581,6 +776,69 @@ target_link_libraries(test_automation_clips PRIVATE
     XlethEngineModel
 )
 
+# ── test_sandbox ──────────────────────────────────────────────────────────────
+# Sample Sandbox engine core (SB-1): the typed op-stack model, its JSON
+# round-trip, the undo commands for every stack mutation, and the offline
+# SandboxRenderer — including the headline property, that editing op k of an
+# N-op stack re-renders only ops k..N.
+#
+# Links Core as well as Model because SandboxRenderer owns juce::AudioBuffer.
+# Offline throughout: no audio device is opened.
+add_executable(test_sandbox
+    test/test_sandbox.cpp
+)
+
+target_link_libraries(test_sandbox PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+# ── test_correction_curve ────────────────────────────────────────────────────
+# AUTOTUNE correction curve (P5-2): scale/key tables, quantization, the
+# jumpiness-hold/retune-speed/smoothness state machine, and the Preserve
+# Vibrato low-pass split. Pure math — no JUCE, no FFmpeg, no GL. Links only
+# XlethEngineModel (dsp/CorrectionCurve.cpp lives there; PitchFrame/NoteSegment
+# come along for free as plain structs from dsp/PitchTrackAnalysis.h).
+add_executable(test_correction_curve
+    test/test_correction_curve.cpp
+)
+
+target_link_libraries(test_correction_curve PRIVATE
+    XlethEngineModel
+)
+
+# ── test_autotune_render ──────────────────────────────────────────────────────
+# The AUTOTUNE renderer (P5-3): TD-PSOLA resynthesis onto a CorrectionCurve.
+# Needs XlethEngineCore (dsp/AutotuneRender.cpp + the JUCE-using NSDF detector
+# in dsp/PitchTrackAnalysis.cpp) as well as XlethEngineModel (the correction
+# math). juce_audio_formats is for the OPTIONAL listening-QA pass: pass a WAV
+# path on argv[1] and it renders both deliverable settings out for a listen.
+# The automated run takes no arguments and touches no files.
+add_executable(test_autotune_render
+    test/test_autotune_render.cpp
+)
+
+target_link_libraries(test_autotune_render PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
 # ── test_canvas_fit ───────────────────────────────────────────────────────────
 # Pure geometry for crop/stretch/letterbox of the project canvas into an export
 # of a different aspect ratio (render/CanvasFit.h). Header-only, no GPU — links
@@ -590,6 +848,17 @@ add_executable(test_canvas_fit
 )
 
 target_link_libraries(test_canvas_fit PRIVATE
+    XlethEngineModel
+)
+
+# ── test_presentation_clock_smoother ─────────────────────────────────────────
+# The preview's continuous audio clock (render/PresentationClockSmoother.h):
+# header-only arithmetic, driven with synthetic callback staircases.
+add_executable(test_presentation_clock_smoother
+    test/test_presentation_clock_smoother.cpp
+)
+
+target_link_libraries(test_presentation_clock_smoother PRIVATE
     XlethEngineModel
 )
 
@@ -655,6 +924,36 @@ target_compile_definitions(test_flip_determinism PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_video_event_builder ─────────────────────────────────────────────────
+# The one timeline -> VideoEvent builder shared by live preview and export:
+# note clamp at the block end, no loop wrap with looping off, slide events,
+# clip anchoring, and export == preview.
+add_executable(test_video_event_builder
+    test/test_video_event_builder.cpp
+)
+
+target_link_libraries(test_video_event_builder PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_video_event_builder PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_flip_orientation_golden ─────────────────────────────────────────────
 # Phase 6 GPU shader golden: 6 orientations × 4-quadrant test texture, real
 # D3D11 readback. Skips cleanly if no GPU device is available.
@@ -688,6 +987,19 @@ add_executable(test_project
 )
 
 target_link_libraries(test_project PRIVATE
+    XlethEngineModel
+)
+
+# ── test_regenerable_files ────────────────────────────────────────────────────
+# Safety contract of the regenerable-file registry (purge-on-close, Clean up
+# project, on-open .tmp sweep): only recognised files go, offline-media proxies
+# are retained, source media / project.json are never touched.
+# No JUCE, no FFmpeg, no GL — pure model + filesystem.
+add_executable(test_regenerable_files
+    test/test_regenerable_files.cpp
+)
+
+target_link_libraries(test_regenerable_files PRIVATE
     XlethEngineModel
 )
 
@@ -736,10 +1048,9 @@ target_link_libraries(test_clip_modulation_evaluator PRIVATE
 )
 
 # ── test_clip_companion_fx_builder ───────────────────────────────────────────
-# Phase E.3: shared ClipCompanionFxSnapshot builder used by both the export
-# pipeline (FrameCollector → GridCompositor) and the realtime preview path
-# (SyncManager → VideoCompositor). Verifies gating + signed propagation so
-# preview and export cannot drift apart. Model-only — no JUCE, FFmpeg, or GL.
+# Phase E.3: shared ClipCompanionFxSnapshot builder feeding FrameCollector →
+# GridCompositor, which is now the single compositing path for both preview and
+# export. Verifies gating + signed propagation. Model-only — no JUCE or FFmpeg.
 add_executable(test_clip_companion_fx_builder
     test/test_clip_companion_fx_builder.cpp
 )
@@ -1299,6 +1610,47 @@ target_compile_definitions(xleth_pdc_real_signal_tap PRIVATE
 
 target_link_options(xleth_pdc_real_signal_tap PRIVATE /STACK:33554432)
 
+# ── xleth_rs_quality_bench ───────────────────────────────────────────────────
+# Offline quality bench for the resonance suppressors (RS LL / HQ x3, EQ
+# Spectral): latency, transparency, suppression accuracy, musical-noise jitter,
+# pre-echo, block-size dependence, CPU; writes CSV + summary.md + listening WAVs
+# under bench_out/. Tool-only (not a ctest); run from the repo root with a
+# Release build. Console prefix: [RSBench]. See docs/RESONANCE_SUPPRESSOR_AUDIT.md s4.
+add_executable(xleth_rs_quality_bench
+    tools/xleth_rs_quality_bench.cpp
+)
+
+target_link_libraries(xleth_rs_quality_bench PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_include_directories(xleth_rs_quality_bench PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_compile_definitions(xleth_rs_quality_bench PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+    NOMINMAX
+)
+
+target_link_options(xleth_rs_quality_bench PRIVATE /STACK:33554432)
+
 # ── test_sampler ─────────────────────────────────────────────────────────────
 # Self-verification for the Sampler DSP (pitch shift, ADSR, loop, polyphony).
 # No Timeline / MixEngine — tests the Sampler class directly with synthetic
@@ -1368,6 +1720,44 @@ target_compile_definitions(test_sampler_legacy_migration PRIVATE
     JUCE_USE_WINDOWS_MEDIA_FORMAT=0
     JUCE_STANDALONE_APPLICATION=1
 )
+
+# ── test_sample_bank_batch ───────────────────────────────────────────────────
+# SampleBank::loadSamplesFromSources (the parallel region-audio loader project
+# load uses) against one-at-a-time loadSampleFromSource: same ids, same PCM bit
+# for bit, at every thread count, with failing requests in the mix. Set
+# XLETH_TEST_MEDIA (+ XLETH_TEST_MEDIA_SECONDS) to also run it on a real
+# compressed file. Output prefix: [SampleBankBatch].
+add_executable(test_sample_bank_batch
+    test/test_sample_bank_batch.cpp
+)
+
+target_link_libraries(test_sample_bank_batch PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_include_directories(test_sample_bank_batch PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_compile_definitions(test_sample_bank_batch PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+add_test(NAME test_sample_bank_batch COMMAND test_sample_bank_batch)
 
 # ── test_sampler_modulation ──────────────────────────────────────────────────
 # The modulation system: 6 envelopes, 6 LFOs, VELO/NOTE response curves and the
@@ -1512,6 +1902,39 @@ target_link_libraries(test_tdpsola PRIVATE
 )
 
 target_compile_definitions(test_tdpsola PRIVATE
+    _CRT_SECURE_NO_WARNINGS=1
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_pitch_shift_dsp ─────────────────────────────────────────────────────
+# Realtime pitch-shift DSP foundation (Pitch Shifter P1): dsp/GranularShifter
+# and dsp/LiveShifterWrapper. Covers spectral quality, click freedom, the
+# LATENCY INVARIANCE requirement (constant across +/-24 st and the whole grain
+# size range), and zero allocation in both process() calls.
+add_executable(test_pitch_shift_dsp
+    test/test_pitch_shift_dsp.cpp
+)
+
+target_link_libraries(test_pitch_shift_dsp PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_pitch_shift_dsp PRIVATE
     _CRT_SECURE_NO_WARNINGS=1
     JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
     JUCE_USE_CURL=0
@@ -1672,6 +2095,186 @@ target_compile_definitions(test_fsc_score_parser PRIVATE
     XLETH_FSC_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/fsc"
 )
 
+# ── test_pitch_shifter_effect ────────────────────────────────────────────────
+# The Pitch Shifter STOCK EFFECT (P2) that wraps the P1 DSP modules. Covers
+# latency conformance per mode, the smoothed +/-24 st sweep that justifies
+# routing pitch through the base class smoother, mode-switch PDC, zero
+# allocation in processBlock, and Clip's sample-exact pass-through.
+add_executable(test_pitch_shifter_effect
+    test/test_pitch_shifter_effect.cpp
+)
+
+target_link_libraries(test_pitch_shifter_effect PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_pitch_shifter_effect PRIVATE
+    _CRT_SECURE_NO_WARNINGS=1
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_clip_fx_transform ──────────────────────────────────────────────────────────
+# Pitch Shifter Clip mode (mode 4) for audio clips: CacheKey fx lane, dual
+# lookup + Mix blend in the MixEngine clip loop (Mix 0 golden-hashed against the
+# pre-change engine), dry/wet alignment + no-notch, settle debounce, LRU cap and
+# retirement, allocation-free blend, export parity.
+add_executable(test_clip_fx_transform
+    test/test_clip_fx_transform.cpp
+)
+
+target_link_libraries(test_clip_fx_transform PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_clip_fx_transform PRIVATE
+    _CRT_SECURE_NO_WARNINGS=1
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+target_link_options(test_clip_fx_transform PRIVATE /STACK:8388608)
+
+# ── test_pattern_fx_transpose ────────────────────────────────────────────────
+# Pitch Shifter Clip mode (mode 4) on PATTERN tracks: Sampler voice-spawn
+# transpose from the per-block transform table. Measured fundamental per
+# semis/cents, voice pairing (mono, slides, mid-phrase table changes), video
+# event gate, Pattern.notes/undo untouched, differential allocation count.
+add_executable(test_pattern_fx_transpose
+    test/test_pattern_fx_transpose.cpp
+)
+
+target_link_libraries(test_pattern_fx_transpose PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_pattern_fx_transpose PRIVATE
+    _CRT_SECURE_NO_WARNINGS=1
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+target_link_options(test_pattern_fx_transpose PRIVATE /STACK:8388608)
+
+# ── test_clip_fx_perf_gate ───────────────────────────────────────────────────
+# Pitch Shifter Clip mode (mode 4): permanent perf regression gate. 64-clip
+# track semitone sweep bounded on job count AND peak RSS delta; 100-clip
+# session differential zero-allocation check on the audio path. See the file
+# header for the bound justifications.
+add_executable(test_clip_fx_perf_gate
+    test/test_clip_fx_perf_gate.cpp
+)
+
+target_link_libraries(test_clip_fx_perf_gate PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+if (WIN32)
+    target_link_libraries(test_clip_fx_perf_gate PRIVATE Psapi.lib)
+endif()
+
+target_compile_definitions(test_clip_fx_perf_gate PRIVATE
+    _CRT_SECURE_NO_WARNINGS=1
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+target_link_options(test_clip_fx_perf_gate PRIVATE /STACK:8388608)
+
+# ── test_source_transform_table ──────────────────────────────────────────────
+# Pitch Shifter Clip mode plumbing: SourceTransform capability, the pure
+# per-track table builder (last-in-chain-order wins, track chains only, bypass
+# and removal clear), and MixEngine's epoch-driven lock-free publisher
+# (unchanged poll = no republish and no allocation; one bump = one republish).
+add_executable(test_source_transform_table
+    test/test_source_transform_table.cpp
+)
+
+target_link_libraries(test_source_transform_table PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_source_transform_table PRIVATE
+    _CRT_SECURE_NO_WARNINGS=1
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_effects ──────────────────────────────────────────────────────────────
 # Verifies XlethEffectBase (APVTS, smoothing, metering, serialization, bypass)
 # using TestGainEffect as the concrete subclass.
@@ -1701,6 +2304,250 @@ target_compile_definitions(test_effects PRIVATE
     JUCE_USE_WINDOWS_MEDIA_FORMAT=0
     JUCE_STANDALONE_APPLICATION=1
 )
+
+# ── test_chain_snapshot_lockfree ─────────────────────────────────────────────
+# RENDER_PERF_AUDIT Finding 9: the realtime audio thread must read effect chains
+# through the immutable ChainSnapshot instead of try_lock'ing chainsMutex_, so a
+# contended lock can no longer drop a whole block of effects. Also pins the
+# nonRealtime_ blocking branch, which an offline export depends on.
+add_executable(test_chain_snapshot_lockfree
+    test/test_chain_snapshot_lockfree.cpp
+)
+
+target_link_libraries(test_chain_snapshot_lockfree PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_chain_snapshot_lockfree PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+add_test(NAME test_chain_snapshot_lockfree COMMAND test_chain_snapshot_lockfree)
+
+# ── test_plugin_binary_inspector ─────────────────────────────────────────────
+# PE preflight parser: System32 x64 DLL, SysWOW64 x86 DLL, text renamed .dll,
+# truncated DLL, VST3 bundle resolution. Pure std — no JUCE, no FFmpeg.
+add_executable(test_plugin_binary_inspector
+    test/test_plugin_binary_inspector.cpp
+)
+target_link_libraries(test_plugin_binary_inspector PRIVATE
+    XlethPluginInspect
+)
+add_test(NAME test_plugin_binary_inspector COMMAND test_plugin_binary_inspector)
+add_test(NAME test_metronome COMMAND test_metronome)
+
+# ── test_effect_audio_thread_reset ──────────────────────────────────────────
+# A live transport jump resets effect chains ON THE AUDIO THREAD, in the block
+# that clears the PDC delay lines, via XlethEffectBase::resetOnAudioThread().
+# Holds every stock effect to that contract (zero allocations, bounded time),
+# and the Pitch Shifter to declining when its spare is not primed.
+add_executable(test_effect_audio_thread_reset
+    test/test_effect_audio_thread_reset.cpp
+)
+
+target_link_libraries(test_effect_audio_thread_reset PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_effect_audio_thread_reset PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+add_test(NAME test_effect_audio_thread_reset COMMAND test_effect_audio_thread_reset)
+
+# ── test_effect_processblock_alloc ──────────────────────────────────────────
+# Resonance-suppressor rewrite P0 (docs/RESONANCE_SUPPRESSOR_AUDIT.md RT10):
+# counts operator new around processBlock() for RS Low Latency (static and
+# parameter-sweep cases), RS High Quality (Normal) and EQ Spectral; all assert
+# zero. Also the Low Latency null test against fixtures captured from the
+# pre-P1a implementation (test/fixtures/rs_ll, via XLETH_RS_LL_FIXTURE_DIR).
+# Output prefix: [RSLLAlloc].
+add_executable(test_effect_processblock_alloc
+    test/test_effect_processblock_alloc.cpp
+)
+
+target_link_libraries(test_effect_processblock_alloc PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_effect_processblock_alloc PRIVATE
+    XLETH_RS_LL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/rs_ll"
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+add_test(NAME test_effect_processblock_alloc COMMAND test_effect_processblock_alloc)
+
+# ── test_resonance_core ─────────────────────────────────────────────────────
+# xleth::dsp::resonance::Core (src/dsp/ResonanceCore.*): latency = N, depth-0
+# identity / COLA at several block sizes, impulse, zero operator new in
+# process() (incl. parameter changes every block), block-size independence with
+# the detector active, reset, mono. Output prefix: [ResCore].
+add_executable(test_resonance_core
+    test/test_resonance_core.cpp
+)
+
+target_link_libraries(test_resonance_core PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_include_directories(test_resonance_core PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_compile_definitions(test_resonance_core PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+add_test(NAME test_resonance_core COMMAND test_resonance_core)
+
+# ── test_stereoize_core / test_fedda ────────────────────────────────────────
+# xleth::dsp::stereoize::Core (src/dsp/stereoize/StereoizeCore.*) headless: mono null, correlation
+# calibration, block-size independence, automation zipper, sample rates, denormals, CPU, seed
+# decorrelation, zero operator new. test_fedda: the XlethFeddaEffect wrapper (parameter contract,
+# state round-trip, zero latency, monitors forced off non-realtime). Output prefixes:
+# [StereoizeCore], [Fedda].
+foreach(_fedda_test test_stereoize_core test_fedda)
+    add_executable(${_fedda_test}
+        test/${_fedda_test}.cpp
+    )
+
+    target_link_libraries(${_fedda_test} PRIVATE
+        XlethEngineCore
+        XlethEngineModel
+        juce::juce_core
+        juce::juce_audio_basics
+        juce::juce_audio_formats
+        juce::juce_audio_processors
+        juce::juce_dsp
+        juce::juce_events
+        juce::juce_gui_basics
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+    )
+
+    target_include_directories(${_fedda_test} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+
+    target_compile_definitions(${_fedda_test} PRIVATE
+        JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+        JUCE_USE_CURL=0
+        JUCE_WEB_BROWSER=0
+        JUCE_MODAL_LOOPS_PERMITTED=1
+        JUCE_DIRECTSOUND=0
+        JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+        JUCE_STANDALONE_APPLICATION=1
+    )
+
+    add_test(NAME ${_fedda_test} COMMAND ${_fedda_test})
+endforeach()
+
+# ── test_szkrezh_core / test_szkrezh ────────────────────────────────────────
+# xleth::dsp::szkrezh::Core (src/dsp/szkrezh/SzkrezhCore.*) headless: identity, reverse impulse,
+# recycle staircase, aliasing (Vintage vs Clean), runaway, per-grain latching, transport-locked
+# splice grid (free + sync + bar cut), block-size independence, skipped-block equivalence, Harmony and
+# Keys pitch, gate/duck, freeze, tail hold, zero operator new, CPU. test_szkrezh: the
+# XlethSzkrezhEffect wrapper (parameter contract, state round-trip, zero latency, MIDI channel
+# filter, cross-track Keys lookup, tail-hold flag). Output prefixes: [SzkrezhCore], [Szkrezh].
+foreach(_szkrezh_test test_szkrezh_core test_szkrezh)
+    add_executable(${_szkrezh_test}
+        test/${_szkrezh_test}.cpp
+    )
+
+    target_link_libraries(${_szkrezh_test} PRIVATE
+        XlethEngineCore
+        XlethEngineModel
+        juce::juce_core
+        juce::juce_audio_basics
+        juce::juce_audio_formats
+        juce::juce_audio_processors
+        juce::juce_dsp
+        juce::juce_events
+        juce::juce_gui_basics
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+    )
+
+    target_include_directories(${_szkrezh_test} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+
+    target_compile_definitions(${_szkrezh_test} PRIVATE
+        JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+        JUCE_USE_CURL=0
+        JUCE_WEB_BROWSER=0
+        JUCE_MODAL_LOOPS_PERMITTED=1
+        JUCE_DIRECTSOUND=0
+        JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+        JUCE_STANDALONE_APPLICATION=1
+    )
+
+    add_test(NAME ${_szkrezh_test} COMMAND ${_szkrezh_test})
+endforeach()
 
 # ── test_chain_effect_identity ────────────────────────────────────────────────
 # Prompt 4A: stable chain-mode effectInstanceId — creation, lookup, move, bypass,
@@ -1799,6 +2646,301 @@ target_compile_definitions(test_device_watchdog PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# SourcePlayer buffer lifetime: a callback thread reads while the main thread
+# loads/unloads constant-valued WAVs. Needs FFmpeg DLLs (ctest sets PATH).
+add_executable(test_source_player_unload
+    test/test_source_player_unload.cpp
+)
+
+target_link_libraries(test_source_player_unload PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_devices
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_source_player_unload PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# Sampler set snapshot + sampler event queue: a second thread rebuilds, replaces
+# and plays samplers while blocks render. Also the RtPublished / SpscRing units.
+add_executable(test_sampler_set_handoff
+    test/test_sampler_set_handoff.cpp
+)
+
+target_link_libraries(test_sampler_set_handoff PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_sampler_set_handoff PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+target_link_options(test_sampler_set_handoff PRIVATE /STACK:8388608)
+
+# ── test_automation_runtime_lifetime ─────────────────────────────────────────
+# An automation plan resolved against one effect chain must never write into a
+# chain built after it (project load reuses node ids and, often, the freed
+# effect's address). Was a 0xC0000005 in applyAutomationForBlock.
+add_executable(test_automation_runtime_lifetime
+    test/test_automation_runtime_lifetime.cpp
+)
+
+target_link_libraries(test_automation_runtime_lifetime PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_automation_runtime_lifetime PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+target_link_options(test_automation_runtime_lifetime PRIVATE /STACK:8388608)
+
+# ── test_source_transform_stamp_aba ──────────────────────────────────────────
+# A rebuilt chain whose Pitch Shifter reuses the freed one's address and node id
+# must still republish the SourceTransform table (the stamp carries the graph serial).
+add_executable(test_source_transform_stamp_aba
+    test/test_source_transform_stamp_aba.cpp
+)
+
+target_link_libraries(test_source_transform_stamp_aba PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_source_transform_stamp_aba PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+target_link_options(test_source_transform_stamp_aba PRIVATE /STACK:8388608)
+
+# ── test_automation_plan_rebind ──────────────────────────────────────────────
+# After any chain or timeline mutation and its undo, one envelope applier pass
+# leaves automation driving its parameter again (no site has to remember to
+# mark the plan dirty).
+add_executable(test_automation_plan_rebind
+    test/test_automation_plan_rebind.cpp
+)
+
+target_link_libraries(test_automation_plan_rebind PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_automation_plan_rebind PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+target_link_options(test_automation_plan_rebind PRIVATE /STACK:8388608)
+
+# ── test_automation_plan_snapshot ────────────────────────────────────────────
+# The envelope applier builds the automation plan from the published timeline
+# snapshot, never the live Timeline the bridge thread edits, replaces on project
+# load and swaps for an export's frozen copy.
+add_executable(test_automation_plan_snapshot
+    test/test_automation_plan_snapshot.cpp
+)
+
+target_link_libraries(test_automation_plan_snapshot PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_automation_plan_snapshot PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+target_link_options(test_automation_plan_snapshot PRIVATE /STACK:8388608)
+
+# Timeline reads on the audio thread: a second thread adds, removes and moves
+# blocks, clips and notes and undoes/redoes them while blocks render.
+add_executable(test_timeline_read_lifetime
+    test/test_timeline_read_lifetime.cpp
+)
+
+target_link_libraries(test_timeline_read_lifetime PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_timeline_read_lifetime PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+target_link_options(test_timeline_read_lifetime PRIVATE /STACK:8388608)
+
+# SampleBank buffers on the audio thread: a second thread loads, remaps and
+# unloads samples (and replaces the whole bank, as project load does) while
+# blocks render audio clips, samplers and manual voices from them.
+add_executable(test_sample_bank_lifetime
+    test/test_sample_bank_lifetime.cpp
+)
+
+target_link_libraries(test_sample_bank_lifetime PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_sample_bank_lifetime PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+target_link_options(test_sample_bank_lifetime PRIVATE /STACK:8388608)
+
+# A clip whose region is mapped after its timeline was published (project load
+# while playing, a clip added before its region decodes) must still play.
+add_executable(test_load_while_playing
+    test/test_load_while_playing.cpp
+)
+
+target_link_libraries(test_load_while_playing PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_load_while_playing PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+target_link_options(test_load_while_playing PRIVATE /STACK:8388608)
+
 add_executable(test_distortion
     test/test_distortion.cpp
 )
@@ -1891,6 +3033,40 @@ target_compile_definitions(test_reverb PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_amp ─────────────────────────────────────────────────────────────────
+# XlethAmpEffect ("Amp Stack") — docs/amp spec.docx §10 acceptance tests 1-4:
+# aliasing sweep at max Drive per model, bypass null against latency-compensated
+# dry, per-stage element isolation, and per-instance CPU at the measured engine
+# rate. Also checks the §7 parameter surface and the placeholder cabinet IRs
+# against the numeric character notes in §6.
+add_executable(test_amp
+    test/test_amp.cpp
+)
+
+target_link_libraries(test_amp PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_amp PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_uniflange ───────────────────────────────────────────────────────────
 # Structural DSP tests for UniFlangeEffect (Fruity-Flangus-style unison/
 # ensemble generator). Verifies: cross-matrix exactness, LEGACY-mode
@@ -1917,6 +3093,144 @@ target_link_libraries(test_uniflange PRIVATE
 )
 
 target_compile_definitions(test_uniflange PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_glue_compressor ─────────────────────────────────────────────────────
+# CompressorCore template + the Glue VCA stock compressor ("glue"). Behaviour
+# tests per docs/Compressor_Archetypes_Deep_Dive.md §10: static curve vs the
+# gain computer, ballistics under one time-constant definition (incl. the
+# tracked loop's closed-loop pole and oversampled coefficients), auto-release
+# program dependence, stereo-link identity, stepped-control crossfade, RT
+# safety (allocations, denormals, implicit-loop stability) and PDC latency.
+add_executable(test_glue_compressor
+    test/test_glue_compressor.cpp
+)
+
+target_link_libraries(test_glue_compressor PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_glue_compressor PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_opto_compressor ─────────────────────────────────────────────────────
+# Opto Comp ("opto"), the LA-2A-lineage model on CompressorCore. Behaviour tests
+# per docs/Compressor_Archetypes_Deep_Dive.md §3.4/§10: the burst fitting
+# procedure (release tails lengthen with burst length) with a single-tau
+# negative control, static-curve sweep (soft, program-dependent knee,
+# Compress vs Limit), stereo-link identity, Limit/Compress crossfade, 2x
+# oversampling of the tube colour (aliasing), RT safety and PDC latency.
+add_executable(test_opto_compressor
+    test/test_opto_compressor.cpp
+)
+
+target_link_libraries(test_opto_compressor PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_opto_compressor PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_fet_compressor ──────────────────────────────────────────────────────
+# FET Comp ("fet"), the 1176-lineage model on CompressorCore. Behaviour tests
+# per docs/Compressor_Archetypes_Deep_Dive.md §4/§10: static curve per ratio
+# preset (the threshold moves with the ratio), THD vs gain reduction rising
+# (the eps fit, with an eps = 0 negative control), ballistics measured at the
+# 4x rate (1x negative control), aliasing sweep under fast heavy compression,
+# All-buttons-in as its own mode, stereo link, RT safety and PDC latency.
+add_executable(test_fet_compressor
+    test/test_fet_compressor.cpp
+)
+
+target_link_libraries(test_fet_compressor PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_fet_compressor PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_varimu_compressor ───────────────────────────────────────────────────
+# Vari-Mu Comp ("varimu"), the Fairchild 660/670-lineage model on
+# CompressorCore. Behaviour tests per docs/Compressor_Archetypes_Deep_Dive.md
+# §5.4/§10: the ratio rising with level (negative control: a log-linear g_m),
+# positions 5/6 program dependence (negative control: a fixed release), the
+# §1.3 ÷3 time-constant normalisation (negative control: un-normalised),
+# THD vs GR with push-pull even-order cancellation and no thump, aliasing at
+# 1x/2x/4x, stereo link, Mid/Side independence and the mode crossfade, RT
+# safety, PDC latency.
+add_executable(test_varimu_compressor
+    test/test_varimu_compressor.cpp
+)
+
+target_link_libraries(test_varimu_compressor PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_varimu_compressor PRIVATE
     JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
     JUCE_USE_CURL=0
     JUCE_WEB_BROWSER=0
@@ -1954,6 +3268,48 @@ target_link_libraries(test_apex PRIVATE
 )
 
 target_compile_definitions(test_apex PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_smart_balance ───────────────────────────────────────────────────────
+# SmartBalanceEffect (the gentle 4-band leveller + Warmth). Verifies: balanced
+# material is left alone, an over-bright / dull band is pulled toward the
+# balanced layout within its lift / cut limits, an absent band and the gaps
+# between notes are never lifted, Preserve keeps a hit's crest and stops the
+# post-hit pump, loudness match holds the K-weighted level, Amount 0 / Mix 0 is
+# magnitude-transparent, Warmth adds low-order harmonics below 800 Hz only and
+# is level-independent, the low band never distorts at the fastest Response,
+# block-size independence, robustness, the parameter contract and state.
+# Header-only effect: links JUCE alone (no engine library, no FFmpeg DLLs), so
+# the exe also runs directly: `test_smart_balance --render in.wav out.wav k=v`.
+add_executable(test_smart_balance
+    test/test_smart_balance.cpp
+)
+
+target_link_libraries(test_smart_balance PRIVATE
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_include_directories(test_smart_balance PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_compile_definitions(test_smart_balance PRIVATE
     JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
     JUCE_USE_CURL=0
     JUCE_WEB_BROWSER=0
@@ -2358,6 +3714,36 @@ target_compile_definitions(test_render_decoder PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── bench_proxy_seek (tool, NOT a ctest test) ────────────────────────────────
+# Seek-latency + GOP-boundary accuracy benchmark for preview proxy files through
+# the live-preview RenderVideoDecoder. Needs a GPU and real proxy files:
+#   bench_proxy_seek <proxy.mov> [<proxy.mov> ...]
+add_executable(bench_proxy_seek
+    test/bench_proxy_seek.cpp
+)
+target_link_libraries(bench_proxy_seek PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    d3d11
+    dxgi
+    ${FFMPEG_LIBRARIES}
+)
+target_include_directories(bench_proxy_seek PRIVATE
+    ${FFMPEG_INCLUDE_DIRS}
+)
+target_link_directories(bench_proxy_seek PRIVATE
+    ${FFMPEG_LIBRARY_DIRS}
+)
+target_compile_definitions(bench_proxy_seek PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_animation_manager ───────────────────────────────────────────────────
 # Verifies the slide visual return system: latch-at-target, captured baseline,
 # Instant / SmoothReverse return, NextSlideNote toggle/consume, TV ramp-UP.
@@ -2386,6 +3772,162 @@ target_compile_definitions(test_animation_manager PRIVATE
     JUCE_DIRECTSOUND=0
     JUCE_USE_WINDOWS_MEDIA_FORMAT=0
     JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_export_snapshot ─────────────────────────────────────────────────────
+# The frozen timeline copy export reads (spec Ruling 7, model/TimelineSnapshot.h):
+# complete, independent of live edits, never calls back into MixEngine, and the
+# shared event builder gives identical events from it. Set
+# XLETH_EXPORT_SNAPSHOT_PROJECT (a project directory) to time the copy on a real
+# project against the 200 ms budget. Output prefix: [ExportSnapshot].
+add_executable(test_export_snapshot
+    test/test_export_snapshot.cpp
+)
+
+target_link_libraries(test_export_snapshot PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_include_directories(test_export_snapshot PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_compile_definitions(test_export_snapshot PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_lens_roam ───────────────────────────────────────────────────────────
+# Lens + Roam P1 (model/LensRoam.h): identity defaults, JSON round-trip of
+# clips/tracks/sources incl. stored keys, tolerant loading, the v7 -> v8
+# migration through ProjectManager (old project = Stretch everywhere, new
+# content = Cover), and the immutable snapshot every render request copies
+# from (identity in -> identity snapshot for every track). Pure CPU.
+add_executable(test_lens_roam
+    test/test_lens_roam.cpp
+)
+
+target_link_libraries(test_lens_roam PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_include_directories(test_lens_roam PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_compile_definitions(test_lens_roam PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_clones ──────────────────────────────────────────────────────────────
+# Clones (docs/XLETH_CLONE_SPEC.md, model/Clone.h): voice assignment rules,
+# JSON, event routing to Voice clones, Trail snapshot entries, the collector
+# (Voice cells, Idle, Trails at the delayed time, draw order, tint, mute
+# independence) and the edit commands. Pure CPU.
+add_executable(test_clones
+    test/test_clones.cpp
+)
+
+target_link_libraries(test_clones PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_include_directories(test_clones PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_compile_definitions(test_clones PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_color_grade ─────────────────────────────────────────────────────────
+# Color Grade (model/ColorGrade.h): neutral = no pass, curve monotonicity, the
+# baked transfer against the direct math, level order, owners and independence,
+# one undo step per action incl. bulk apply, save/load at all four levels through
+# ProjectManager, the snapshot every render request copies from, .cube LUT
+# import, and the Auto helper on synthetic aged footage. Pure CPU.
+add_executable(test_color_grade
+    test/test_color_grade.cpp
+)
+
+target_link_libraries(test_color_grade PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_include_directories(test_color_grade PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_compile_definitions(test_color_grade PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_key_curve ───────────────────────────────────────────────────────────
+# The shared keyframe curve engine (model/KeyCurve.h, Lens + Roam P7): empty
+# keys = base, Hold/Linear/EaseOut, Head/Body/Tail anchor mapping for every
+# note length 30..3840 under Squash and Cut, keys on zone boundaries, and no
+# allocation while evaluating. Header-only, pure CPU, no JUCE.
+add_executable(test_key_curve
+    test/test_key_curve.cpp
+)
+
+target_include_directories(test_key_curve PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
 # ── test_param_track ─────────────────────────────────────────────────────────
@@ -2432,7 +3974,86 @@ target_link_libraries(test_compositor PRIVATE
     dxgi
 )
 
+# main() holds dozens of CellFrameRequests (each carries a mask frame, motion samples
+# and a parent chain): the default 1 MB stack is exhausted by one more test block.
+target_link_options(test_compositor PRIVATE /STACK:8388608)
+
 target_compile_definitions(test_compositor PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_color_grade_gpu ─────────────────────────────────────────────────────
+# Color Grade on a real D3D11 device, through GridCompositor: the shader against
+# the CPU reference (applyBakedGrade) to one 8-bit step, neutral = bit-identical,
+# level order incl. Master, Master over empty areas, exact bypass, two
+# compositors (preview / export) byte-identical, LUT, alpha, texture eviction.
+add_executable(test_color_grade_gpu
+    test/test_color_grade_gpu.cpp
+)
+
+target_link_libraries(test_color_grade_gpu PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    d3d11
+    dxgi
+)
+
+target_compile_definitions(test_color_grade_gpu PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_lens_roam_verify ─────────────────────────────────────────────────
+# Lens + Roam P12 verification: live vs export parity per feature, zero added
+# render-path allocations, 8x8 / 2,000-note stress timings (reported only).
+add_executable(test_lens_roam_verify
+    test/test_lens_roam_verify.cpp
+)
+
+target_link_libraries(test_lens_roam_verify PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    d3d11
+    dxgi
+)
+
+target_compile_definitions(test_lens_roam_verify PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_visual_echo ─────────────────────────────────────────────────────────
+# Visual Echo end-to-end: tap gain/orientation math, ring mechanics, and the
+# timing claim that matters — that a tap shows the frame from D frames ago,
+# measured by encoding the frame number into the composited pixels.
+add_executable(test_visual_echo
+    test/test_visual_echo.cpp
+)
+
+target_link_libraries(test_visual_echo PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    d3d11
+    dxgi
+)
+
+target_compile_definitions(test_visual_echo PRIVATE
     JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
     JUCE_USE_CURL=0
     JUCE_WEB_BROWSER=0
@@ -2456,6 +4077,58 @@ target_link_libraries(test_snapshot_transition PRIVATE
 )
 
 target_compile_definitions(test_snapshot_transition PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_landing_render ──────────────────────────────────────────────────────
+# Landing on a real D3D11 device (docs/XLETH_LANDING_SPEC.md §9): the carry
+# geometry, the pixel-identical seam at the pin, preview==export determinism
+# through LandingRenderer (the helper both seams call), carried tracks across
+# Push / crossfade, hold-last-frame through the extra collects, the perf floor.
+add_executable(test_landing_render
+    test/test_landing_render.cpp
+)
+
+target_link_libraries(test_landing_render PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    d3d11
+    dxgi
+)
+
+target_compile_definitions(test_landing_render PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_landing_floor ───────────────────────────────────────────────────────
+# The Landing perf floor as a cross-build probe (spec ruling 9): a fixed
+# project with cues and NO landings, one hash per frame, written against the
+# pre-feature API only so the same file also builds on the commit before
+# Landings. docs/XLETH_LANDING_VERIFY.md records the two digests matching.
+add_executable(test_landing_floor
+    test/test_landing_floor.cpp
+)
+
+target_link_libraries(test_landing_floor PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    d3d11
+    dxgi
+)
+
+target_compile_definitions(test_landing_floor PRIVATE
     JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
     JUCE_USE_CURL=0
     JUCE_WEB_BROWSER=0
@@ -2592,6 +4265,13 @@ target_link_directories(test_real_render PRIVATE
     ${FFMPEG_LIBRARY_DIRS}
 )
 
+# main() holds Timeline + SampleBank + MixEngine as stack locals; together they
+# overflow the 1 MB default on this toolchain before the first fprintf runs
+# (0xC00000FD, reported by ctest as SEGFAULT with no output at all). 16 MB.
+if(MSVC)
+    target_link_options(test_real_render PRIVATE /STACK:16777216)
+endif()
+
 target_compile_definitions(test_real_render PRIVATE
     JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
     JUCE_USE_CURL=0
@@ -2616,7 +4296,10 @@ endif()
 
 set(XLETH_ENGINE_TESTS
     test_timeline
+    test_landing
+    test_grid_rect_math
     test_loop_region
+    test_transport_race
     test_render_scope
     test_tail_render
     test_video_flip_resolver
@@ -2625,10 +4308,15 @@ set(XLETH_ENGINE_TESTS
     test_lfo_parameter_modulation
     test_lfo_modulation_engine
     test_canvas_fit
+    test_presentation_clock_smoother
+    test_correction_curve
+    test_autotune_render
     test_video_flip_applier
     test_flip_determinism
+    test_video_event_builder
     test_flip_orientation_golden
     test_project
+    test_regenerable_files
     test_undo
     test_effect_chain_commands
     test_track_routing
@@ -2657,6 +4345,12 @@ set(XLETH_ENGINE_TESTS
     test_tdpsola
     test_loop_analysis
     test_loop_optimizer
+    test_pitch_shift_dsp
+    test_pitch_shifter_effect
+    test_source_transform_table
+    test_clip_fx_transform
+    test_pattern_fx_transpose
+    test_clip_fx_perf_gate
     test_auto_loop_policy
     test_midi_importer
     test_fsc_score_parser
@@ -2664,12 +4358,27 @@ set(XLETH_ENGINE_TESTS
     test_chain_effect_identity
     test_pdc_stage1
     test_device_watchdog
+    test_source_player_unload
+    test_sampler_set_handoff
+    test_automation_runtime_lifetime
+    test_source_transform_stamp_aba
+    test_automation_plan_rebind
+    test_automation_plan_snapshot
+    test_timeline_read_lifetime
+    test_sample_bank_lifetime
+    test_load_while_playing
     test_distortion
     test_phanjer
     test_reverb
+    test_amp
     test_uniflange
     test_limiter
     test_apex
+    test_smart_balance
+    test_glue_compressor
+    test_opto_compressor
+    test_fet_compressor
+    test_varimu_compressor
     test_xlethfilter
     test_xlethfilter_analog
     test_xlethfilter_mod
@@ -2682,9 +4391,21 @@ set(XLETH_ENGINE_TESTS
     test_render_decoder
     test_animation_manager
     test_param_track
+    test_lens_roam
+    test_clones
+    test_color_grade
+    test_key_curve
+    test_export_snapshot
+    test_render_clock
     test_automation_clips
+    test_sandbox
     test_compositor
+    test_color_grade_gpu
+    test_lens_roam_verify
+    test_visual_echo
     test_snapshot_transition
+    test_landing_render
+    test_landing_floor
     test_muxer
     test_hw_detect
     test_offline_render
@@ -2705,3 +4426,64 @@ foreach(_xleth_test IN LISTS XLETH_ENGINE_TESTS)
         )
     endif()
 endforeach()
+
+# test_mix runs with the audio helper threads off. Its [RT 1] checks read
+# per-plugin telemetry, which MixEngine only records when a track's chain runs
+# on the callback thread; with helpers on, a helper often takes the chain and
+# "pluginCallCount > 0" over 8 blocks failed about 3 runs in 40.
+#
+# test_mix_parallel is the same binary with helpers forced ON, so the routing,
+# send, sidechain, PDC and tail assertions still run through the parallel track
+# scheduler on any machine. There the three per-plugin checks fall back to what
+# is guaranteed on any thread (the chain ran and was never skipped). The two
+# share temp directories, hence the lock.
+set_tests_properties(test_mix PROPERTIES
+    ENVIRONMENT "XLETH_HW_AUDIO_WORKERS=0"
+    RESOURCE_LOCK test_mix_tempdirs
+)
+add_test(NAME test_mix_parallel
+    COMMAND test_mix
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..
+)
+set_tests_properties(test_mix_parallel PROPERTIES
+    ENVIRONMENT "XLETH_HW_AUDIO_WORKERS=4"
+    RESOURCE_LOCK test_mix_tempdirs
+)
+if(EXISTS "${_VCPKG_INSTALLED}/bin")
+    set_tests_properties(test_mix_parallel PROPERTIES
+        ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_VCPKG_INSTALLED}/bin"
+    )
+endif()
+
+# Live-vs-export timing repro for Pitch-Shifter tracks under PDC. Tool-only:
+# loads a machine-local project copy, so it is not registered with ctest.
+add_executable(xleth_pitch_pdc_timing_repro
+    tools/xleth_pitch_pdc_timing_repro.cpp
+)
+target_link_libraries(xleth_pitch_pdc_timing_repro PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+    winmm
+)
+target_include_directories(xleth_pitch_pdc_timing_repro PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_definitions(xleth_pitch_pdc_timing_repro PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+    NOMINMAX
+)
+target_link_options(xleth_pitch_pdc_timing_repro PRIVATE /STACK:33554432)

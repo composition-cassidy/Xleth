@@ -2,10 +2,11 @@
 
 // ClipCompanionFxBuilder — single shared producer of ClipCompanionFxSnapshot.
 //
-// Both the export pipeline (FrameCollector) and the realtime OpenGL preview
-// path (SyncManager → VideoCompositor) feed the snapshot to their respective
-// per-pixel kernels. To avoid two truths drifting apart, both call this
-// builder, which enforces the gating rules:
+// FrameCollector feeds the snapshot to the GridCompositor per-pixel kernels on
+// both the preview and the export pass. It was written as the single producer
+// so those two could not drift apart, and it stays the single producer now that
+// the separate OpenGL preview path is gone (Issue 10). It enforces the gating
+// rules:
 //
 //   - timing must be active
 //   - swirl populated only when vibrato is active AND vibratoSwirlEnabled

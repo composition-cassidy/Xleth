@@ -2,6 +2,7 @@
 
 #include "ProxyTranscoder.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <iostream>
 #include <utility>
@@ -15,10 +16,11 @@ namespace fs = std::filesystem;
 class ProxyManager::Job : public juce::ThreadPoolJob
 {
 public:
-    Job(Request req, ProxyManager* owner)
+    Job(Request req, ProxyManager* owner, int epoch)
         : juce::ThreadPoolJob("ProxyTranscode")
         , req_(std::move(req))
         , owner_(owner)
+        , epoch_(epoch)
     {}
 
     JobStatus runJob() override
@@ -28,35 +30,40 @@ public:
         r.outputPath = req_.outputPath;
         r.startTime  = req_.startTime;
         r.endTime    = req_.endTime;
+        r.migration  = req_.migration;
 
         std::cout << "[Proxy] region=" << req_.regionId
                   << " transcode started ["
                   << req_.startTime << ", " << req_.endTime << ") "
                   << req_.targetW << "x" << req_.targetH << "\n";
 
-        // Respect juce-requested early exit — aborts started via
-        // pool_->removeAllJobs(true, ...) call shouldExit() = true and cause
-        // transcodeRange() to keep running; we cannot preempt ffmpeg mid-run.
-        // The pool's interruptTimeout will block up to the timeout, then kill.
+        // Respect juce-requested early exit — pool_->removeAllJobs(true, ...)
+        // (cancelAll / shutdown) sets shouldExit(). The transcode polls it once
+        // per frame through the cancel predicate, so a running job returns
+        // promptly and discards its partial .tmp.
         if (shouldExit())
         {
-            owner_->publishResult(std::move(r));   // ok=false default
+            owner_->publishResult(std::move(r), epoch_);   // ok=false default
             return jobHasFinished;
         }
 
         bool ok = ProxyTranscoder::transcodeRange(
             req_.inputPath, req_.outputPath,
             req_.startTime, req_.endTime,
-            req_.targetW,   req_.targetH);
+            req_.targetW,   req_.targetH,
+            /*progressCallback=*/nullptr,
+            req_.codec,
+            [this] { return shouldExit(); });
 
         r.ok = ok;
-        owner_->publishResult(std::move(r));
+        owner_->publishResult(std::move(r), epoch_);
         return jobHasFinished;
     }
 
 private:
     Request       req_;
     ProxyManager* owner_;
+    int           epoch_;
 };
 
 // ─── ProxyManager::PosterJob ─────────────────────────────────────────────────
@@ -111,10 +118,11 @@ private:
 class ProxyManager::SourcePreviewJob : public juce::ThreadPoolJob
 {
 public:
-    SourcePreviewJob(SourcePreviewRequest req, ProxyManager* owner)
+    SourcePreviewJob(SourcePreviewRequest req, ProxyManager* owner, int epoch)
         : juce::ThreadPoolJob("SourcePreviewProxy")
         , req_(std::move(req))
         , owner_(owner)
+        , epoch_(epoch)
     {}
 
     JobStatus runJob() override
@@ -123,32 +131,41 @@ public:
         r.sourceId    = req_.sourceId;
         r.outputPath  = req_.outputPath;
         r.proxyHeight = req_.proxyHeight;
+        r.migration   = req_.migration;
 
         std::cout << "[SourceProxy] source=" << req_.sourceId
-                  << " whole-source preview proxy started ("
-                  << req_.proxyHeight << "p) -> " << req_.outputPath << "\n";
+                  << (req_.migration ? " codec MIGRATION"
+                                     : req_.rebuild ? " whole-source preview proxy REBUILD"
+                                                    : " whole-source preview proxy")
+                  << " started (" << req_.proxyHeight << "p, "
+                  << ProxyTranscoder::codecTag(req_.codec) << ") -> "
+                  << req_.outputPath << "\n";
 
         if (shouldExit())
         {
-            owner_->publishSourcePreviewResult(std::move(r));   // ok=false default
+            owner_->publishSourcePreviewResult(std::move(r), epoch_);   // ok=false default
             return jobHasFinished;
         }
 
         const int     sourceId = req_.sourceId;
+        const int     epoch    = epoch_;
         ProxyManager* owner    = owner_;
         r.ok = ProxyTranscoder::transcodeSourcePreview(
             req_.inputPath, req_.outputPath, req_.proxyHeight,
             /*highBitDepth=*/false,   // preview is always 8-bit
-            [owner, sourceId](float p) {
-                owner->publishSourcePreviewProgress(sourceId, p);
-            });
-        owner_->publishSourcePreviewResult(std::move(r));
+            [owner, sourceId, epoch](float p) {
+                owner->publishSourcePreviewProgress(sourceId, p, epoch);
+            },
+            req_.codec,
+            [this] { return shouldExit(); });
+        owner_->publishSourcePreviewResult(std::move(r), epoch_);
         return jobHasFinished;
     }
 
 private:
     SourcePreviewRequest req_;
     ProxyManager*        owner_;
+    int                  epoch_;
 };
 
 // ─── ProxyManager ────────────────────────────────────────────────────────────
@@ -182,22 +199,32 @@ void ProxyManager::enqueue(const Request& req)
         r.outputPath = req.outputPath;
         r.startTime  = req.startTime;
         r.endTime    = req.endTime;
+        r.migration  = req.migration;
         std::cout << "[Proxy] region=" << req.regionId
                   << " already on disk, skipping transcode ("
                   << req.outputPath << ")\n";
         // Count the region in the session total; publishResult bumps completed_
         // to match, so pending stays balanced (opening an already-proxied
         // project reports pending==0 throughout).
+        int epoch = 0;
         {
             std::lock_guard<std::mutex> lk(resultMtx_);
             ++total_;
+            if (req.migration) ++migrationTotal_;
+            if (req.rebuild && rebuildingRegions_.insert(req.regionId).second) ++rebuildTotal_;
+            epoch = epoch_;
         }
-        publishResult(std::move(r));
+        publishResult(std::move(r), epoch);
         return;
     }
 
+    int epoch = 0;
     {
         std::lock_guard<std::mutex> lk(resultMtx_);
+        // Tag the region as part of the rebuild batch BEFORE the dedup below: when
+        // a job for it is already running (enqueued unflagged by the video
+        // thread's lazy path), that job's result then completes the tag.
+        if (req.rebuild && rebuildingRegions_.insert(req.regionId).second) ++rebuildTotal_;
         if (inFlight_.count(req.regionId) > 0)
         {
             // Another transcode is already running for this regionId.
@@ -211,17 +238,28 @@ void ProxyManager::enqueue(const Request& req)
         // A real transcode is being scheduled — count it. publishResult bumps
         // completed_ when the worker finishes (or on early-exit abort).
         ++total_;
+        if (req.migration) ++migrationTotal_;
+        epoch = epoch_;
     }
 
     // addJob with takeOwnership=true means the pool deletes the job after run.
-    pool_->addJob(new Job(req, this), /*takeOwnership=*/true);
+    pool_->addJob(new Job(req, this, epoch), /*takeOwnership=*/true);
 }
 
-void ProxyManager::publishResult(Result&& r)
+void ProxyManager::publishResult(Result&& r, int epoch)
 {
     std::lock_guard<std::mutex> lk(resultMtx_);
+    if (epoch != epoch_) return;   // scheduled before cancelAll(): stale project
     inFlight_.erase(r.regionId);
     ++completed_;   // matches the total_ bump from enqueue (real or on-disk)
+    if (r.migration) {
+        ++migrationCompleted_;
+        if (!r.ok) ++migrationFailed_;
+    }
+    if (rebuildingRegions_.erase(r.regionId) > 0) {
+        ++rebuildCompleted_;
+        if (!r.ok) ++rebuildFailed_;
+    }
     finished_.push_back(std::move(r));
 }
 
@@ -318,35 +356,60 @@ void ProxyManager::enqueueSourcePreview(const SourcePreviewRequest& req)
         r.ok          = true;
         r.outputPath  = req.outputPath;
         r.proxyHeight = req.proxyHeight;
+        r.migration   = req.migration;
         std::cout << "[SourceProxy] source=" << req.sourceId
                   << " preview proxy already on disk, skipping transcode ("
                   << req.outputPath << ")\n";
-        publishSourcePreviewResult(std::move(r));
+        int epoch = 0;
+        {
+            std::lock_guard<std::mutex> lk(resultMtx_);
+            if (req.migration) { ++migrationTotal_; migratingSources_.insert(req.sourceId); }
+            if (req.rebuild && rebuildingSources_.insert(req.sourceId).second) ++rebuildTotal_;
+            epoch = epoch_;
+        }
+        publishSourcePreviewResult(std::move(r), epoch);
         return;
     }
 
+    int epoch = 0;
     {
         std::lock_guard<std::mutex> lk(resultMtx_);
+        // Tag before the dedup (see enqueue()): a running unflagged job for this
+        // source still completes the tag.
+        if (req.rebuild && rebuildingSources_.insert(req.sourceId).second) ++rebuildTotal_;
         if (inFlightSourcePreview_.count(req.sourceId) > 0)
             return;   // a preview-proxy transcode is already running for this source
         inFlightSourcePreview_.insert(req.sourceId);
         sourcePreviewProgress_[req.sourceId] = 0.0f;
+        if (req.migration) { ++migrationTotal_; migratingSources_.insert(req.sourceId); }
+        epoch = epoch_;
     }
 
-    pool_->addJob(new SourcePreviewJob(req, this), /*takeOwnership=*/true);
+    pool_->addJob(new SourcePreviewJob(req, this, epoch), /*takeOwnership=*/true);
 }
 
-void ProxyManager::publishSourcePreviewProgress(int sourceId, float progress)
+void ProxyManager::publishSourcePreviewProgress(int sourceId, float progress, int epoch)
 {
     std::lock_guard<std::mutex> lk(resultMtx_);
+    if (epoch != epoch_) return;
     sourcePreviewProgress_[sourceId] = progress;
 }
 
-void ProxyManager::publishSourcePreviewResult(SourcePreviewResult&& r)
+void ProxyManager::publishSourcePreviewResult(SourcePreviewResult&& r, int epoch)
 {
     std::lock_guard<std::mutex> lk(resultMtx_);
+    if (epoch != epoch_) return;   // scheduled before cancelAll(): stale project
     inFlightSourcePreview_.erase(r.sourceId);
     sourcePreviewProgress_.erase(r.sourceId);
+    if (r.migration) {
+        migratingSources_.erase(r.sourceId);
+        ++migrationCompleted_;
+        if (!r.ok) ++migrationFailed_;
+    }
+    if (rebuildingSources_.erase(r.sourceId) > 0) {
+        ++rebuildCompleted_;
+        if (!r.ok) ++rebuildFailed_;
+    }
     finishedSourcePreview_.push_back(std::move(r));
 }
 
@@ -368,6 +431,86 @@ ProxyManager::SourcePreviewStatus ProxyManager::sourcePreviewStatus(int sourceId
     auto it = sourcePreviewProgress_.find(sourceId);
     if (it != sourcePreviewProgress_.end()) s.progress = it->second;
     return s;
+}
+
+ProxyManager::MigrationStatus ProxyManager::batchStatusLocked(
+    int total, int completed, int failed,
+    const std::unordered_set<int>& liveSources) const
+{
+    MigrationStatus m;
+    m.total     = total;
+    m.completed = completed;
+    m.failed    = failed;
+    if (m.total > 0) {
+        double done = m.completed;
+        for (int id : liveSources) {
+            auto it = sourcePreviewProgress_.find(id);
+            if (it != sourcePreviewProgress_.end()) done += it->second;
+        }
+        m.progress = static_cast<float>(std::min(1.0, done / m.total));
+    }
+    return m;
+}
+
+ProxyManager::MigrationStatus ProxyManager::getMigrationStatus() const
+{
+    std::lock_guard<std::mutex> lk(resultMtx_);
+    return batchStatusLocked(migrationTotal_, migrationCompleted_, migrationFailed_,
+                             migratingSources_);
+}
+
+ProxyManager::RebuildStatus ProxyManager::getRebuildStatus() const
+{
+    std::lock_guard<std::mutex> lk(resultMtx_);
+    return batchStatusLocked(rebuildTotal_, rebuildCompleted_, rebuildFailed_,
+                             rebuildingSources_);
+}
+
+bool ProxyManager::hasActiveJobs() const
+{
+    std::lock_guard<std::mutex> lk(resultMtx_);
+    return !inFlight_.empty() || !inFlightPosters_.empty() || !inFlightSourcePreview_.empty();
+}
+
+void ProxyManager::cancelAll()
+{
+    if (shutdown_ || !pool_) return;
+
+    // Bump the epoch FIRST so anything a job publishes from here on (its
+    // cancelled ok=false result, a last progress tick) is dropped instead of
+    // being drained into the next project.
+    {
+        std::lock_guard<std::mutex> lk(resultMtx_);
+        ++epoch_;
+    }
+
+    // Removes queued jobs and signals running ones (shouldExit → the transcode's
+    // per-frame cancel poll), then waits for them to return. With cancellation
+    // that is one frame's decode+encode, not the rest of the source.
+    if (!pool_->removeAllJobs(/*interruptRunningJobs=*/true, /*timeOutMs=*/10000))
+        std::cerr << "[Proxy] cancelAll: a job did not stop within 10 s\n";
+
+    std::lock_guard<std::mutex> lk(resultMtx_);
+    finished_.clear();
+    inFlight_.clear();
+    total_     = 0;
+    completed_ = 0;
+    finishedPosters_.clear();
+    inFlightPosters_.clear();
+    finishedSourcePreview_.clear();
+    inFlightSourcePreview_.clear();
+    sourcePreviewProgress_.clear();
+    migrationTotal_     = 0;
+    migrationCompleted_ = 0;
+    migrationFailed_    = 0;
+    migratingSources_.clear();
+    rebuildTotal_       = 0;
+    rebuildCompleted_   = 0;
+    rebuildFailed_      = 0;
+    rebuildingRegions_.clear();
+    rebuildingSources_.clear();
+
+    std::cout << "[Proxy] cancelAll: pending proxy work abandoned (project change)\n";
 }
 
 void ProxyManager::shutdown()
@@ -395,6 +538,15 @@ void ProxyManager::shutdown()
     finishedSourcePreview_.clear();
     inFlightSourcePreview_.clear();
     sourcePreviewProgress_.clear();
+    migrationTotal_     = 0;
+    migrationCompleted_ = 0;
+    migrationFailed_    = 0;
+    migratingSources_.clear();
+    rebuildTotal_       = 0;
+    rebuildCompleted_   = 0;
+    rebuildFailed_      = 0;
+    rebuildingRegions_.clear();
+    rebuildingSources_.clear();
 
     std::cout << "[Proxy] ProxyManager shut down\n";
 }

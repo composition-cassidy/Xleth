@@ -1,9 +1,15 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react'
-import { Repeat } from 'lucide-react'
 import useLoopRegionStore, { loopMinLengthTicks } from '../../stores/loopRegionStore.js'
 import {
   PPQ, snapBeatToGrid, beatsToTicks,
 } from '../../constants/timeline.js'
+import styles from './LoopRegionBar.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcRepeat = iconComponent('repeat')
+
+// The overlay the ruler hosts the bar in (TimelineView mounts it).
+export const loopRegionOverlayClassName = styles.overlay
 
 // Vegas-style draggable loop/render region bar rendered in the timeline ruler.
 //
@@ -189,42 +195,46 @@ const LoopRegionBar = forwardRef(function LoopRegionBar({
 
   // Fully off-screen → don't render the body (handles would have no anchor).
   const active = view.loopEnabled
-  const className = `loop-region-bar${active ? ' loop-region-bar--active' : ' loop-region-bar--inert'}`
+  const className = `loop-region-bar ${styles.bar}${active ? ' loop-region-bar--active' : ' loop-region-bar--inert'}`
 
   return (
     <div
       ref={rootRef}
       className={className}
+      data-armed={active ? 'true' : 'false'}
       style={{
         // transform/width are written by applyView() — per animator frame.
         height: `${BAR_HEIGHT}px`,
       }}
     >
       <div
-        className="loop-region-bar__edge loop-region-bar__edge--left"
+        className={`loop-region-bar__edge loop-region-bar__edge--left ${styles.edge}`}
         style={{ width: `${EDGE_PX}px` }}
         onMouseDown={(e) => beginDrag('left', e)}
-        title="Drag to set loop start"
+        data-hint="Loop start" data-hint-mods="Drag: set it · Snaps to the grid · Alt: free"
       />
       <div
-        className="loop-region-bar__body"
+        className={`loop-region-bar__body ${styles.body}`}
         onMouseDown={(e) => beginDrag('body', e)}
-        title="Drag to move loop region"
+        data-hint="Loop region" data-hint-mods="Drag: move it, its length stays · Snaps to the grid · Alt: free"
       />
       <div
-        className="loop-region-bar__edge loop-region-bar__edge--right"
+        className={`loop-region-bar__edge loop-region-bar__edge--right ${styles.edge}`}
         style={{ width: `${EDGE_PX}px` }}
         onMouseDown={(e) => beginDrag('right', e)}
-        title="Drag to set loop end"
+        data-hint="Loop end" data-hint-mods="Drag: set it · Snaps to the grid · Alt: free"
       />
       <button
         type="button"
-        className="loop-region-bar__toggle"
+        className={`loop-region-bar__toggle ${styles.toggle}`}
         onMouseDown={(e) => e.stopPropagation()}
         onClick={toggleEnabled}
-        title={active ? 'Loop armed — click to disarm' : 'Loop disarmed — click to arm'}
+        aria-pressed={active}
+        aria-label="Loop region"
+        data-hint={active ? 'Loop armed' : 'Loop not armed'}
+        data-hint-mods="Click: arm or disarm"
       >
-        <Repeat size={9} />
+        <IcRepeat size={14} aria-hidden="true" />
       </button>
     </div>
   )

@@ -1,0 +1,51 @@
+/* Tiled shell layout (ui/DESIGN.md section 8). Kit layer: beats every legacy rule
+ * that is not !important. */
+@layer kit {
+  /* Every pixel of the work area belongs to a region. The docked layer is opaque
+   * (the ramp's ground, g0), so neither a gap between regions nor a splitter can
+   * show anything behind it. The workspace backdrop modes are gone (Phase 7). */
+  .dockedLayer {
+    background: var(--ui-g0);
+  }
+
+  /* The column that holds the top row, the arrangement and the detail dock. It is
+   * the sample picker sheet's and the folded top row's positioning context. */
+  .centerColumn {
+    position: relative;
+  }
+
+  /* The arrangement's home. It has no stored size: it takes whatever the edge
+   * regions leave, so a region that collapses or closes hands its space here. */
+  .center {
+    flex: 1 1 auto;
+    flex-direction: row;
+    min-width: 0;
+    min-height: 0;
+    background: var(--ui-g0);
+  }
+
+  /* Preview + Inspector. Its height comes from the shell layout
+   * (layout/shellLayout.ts): never under 200px, never so tall that the
+   * arrangement loses its rows. It does not flex-shrink. */
+  .top {
+    flex: 0 0 auto;
+  }
+
+  /* Folded to the strip (window too short for all three regions): the row is
+   * either out of the layout entirely or, when peeked, a 200px sheet that floats
+   * over the arrangement just below the strip. It is a floating surface, so it
+   * alone carries the hard offset shadow. */
+  .regionHidden {
+    display: none;
+  }
+
+  .topSheet {
+    position: absolute;
+    top: var(--panel-header-h);
+    left: 0;
+    right: 0;
+    z-index: calc(var(--xleth-z-window-dock-splitter, 35) + 1);
+    box-shadow: var(--ui-shadow-float);
+    border-bottom: 1px solid var(--ui-boundary);
+  }
+}

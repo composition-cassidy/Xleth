@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Link2 } from 'lucide-react'
 import { timelineEvents } from '../../timelineEvents.js'
-import { XlethIconButton } from '../common/XlethButton.jsx'
-import XlethSelect from '../common/XlethSelect.jsx'
+import { IconButton, NumberBox, Select, THIN_SPACE } from '../../ui-kit'
+import styles from './VideoCanvasSettingsPopover.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcLink = iconComponent('link')
 
 // ── Project canvas presets ────────────────────────────────────────────────────
 // Mirrors GridSettingsPanel.jsx's ASPECT_PRESETS/RESOLUTION_PRESETS exactly —
@@ -87,7 +89,7 @@ export default function VideoCanvasSettingsPopover({ layout, setLayout, onClose,
       const btn = triggerRef?.current
       if (pop && pop.contains(e.target)) return
       if (btn && btn.contains(e.target)) return
-      if (e.target?.closest?.('.xleth-select-popup')) return
+      if (e.target?.closest?.('[role="listbox"]')) return
       onClose()
     }
     function onKeyDown(e) {
@@ -179,69 +181,92 @@ export default function VideoCanvasSettingsPopover({ layout, setLayout, onClose,
     notify()
   }, [])
 
+  // A pixel size: an even integer in range, typed or dragged; committed once.
+  const dimProps = (max) => ({
+    min: CANVAS_MIN,
+    max,
+    step: 2,
+    quantize: (v) => normCanvasDim(v, max),
+    format: (v) => `${Math.round(v)}${THIN_SPACE}px`,
+    parse: (text) => { const n = parseFloat(String(text).replace(',', '.')); return Number.isFinite(n) ? n : null },
+    width: 84,
+  })
+
   return (
-    <div className="tl-display-popover" ref={popoverRef}>
-      <div className="gsp-canvas-controls">
-        <div className="gsp-canvas-row">
-          <span className="gsp-canvas-label">Aspect</span>
-          <XlethSelect
+    <div className={`tl-display-popover ${styles.popover}`} ref={popoverRef} role="group" aria-label="Project canvas">
+      <div className={`gsp-canvas-controls ${styles.controls}`}>
+        <div className={`gsp-canvas-row ${styles.row}`}>
+          <span className={styles.label}>Aspect</span>
+          <Select
+            size="sm"
             className="gsp-canvas-select"
             value={canvasAspect}
             options={ASPECT_PRESETS.map(a => ({ value: a.id, label: a.label }))}
             onChange={handleAspectChange}
             ariaLabel="Project aspect ratio"
+            hint="Aspect ratio of the project canvas"
           />
         </div>
 
-        <div className="gsp-canvas-row">
-          <span className="gsp-canvas-label">Size</span>
-          <XlethSelect
+        <div className={`gsp-canvas-row ${styles.row}`}>
+          <span className={styles.label}>Size</span>
+          <Select
+            size="sm"
             className="gsp-canvas-select"
             value={showSizeInputs ? 'custom' : resId}
             options={[
-              ...resList.map(r => ({ value: `${r.width}x${r.height}`, label: `${r.label} (${r.width}×${r.height})` })),
-              { value: 'custom', label: 'Custom…' },
+              ...resList.map(r => ({ value: `${r.width}x${r.height}`, label: `${r.label} (${r.width}\u00d7${r.height})` })),
+              { value: 'custom', label: 'Custom\u2026' },
             ]}
             onChange={handleResolutionChange}
             ariaLabel="Project base resolution"
+            hint="Base resolution of the project canvas"
           />
         </div>
 
         {showSizeInputs && (
-          <div className="gsp-canvas-row gsp-canvas-size">
-            <input
+          <div className={`gsp-canvas-row gsp-canvas-size ${styles.sizeRow}`}>
+            <NumberBox
               className="gsp-dim-input"
-              type="number" min={CANVAS_MIN} max={CANVAS_MAX_W} step={2}
+              label="Width"
+              caption="W"
               value={canvasW}
-              onChange={(e) => handleCanvasDimChange('w', e.target.value)}
+              {...dimProps(CANVAS_MAX_W)}
+              onCommit={(v) => handleCanvasDimChange('w', v)}
+              hint="Canvas width"
             />
-            <XlethIconButton
-              type="button"
-              className={`gsp-link-btn${dimsLocked ? ' active' : ''}`}
-              active={dimsLocked}
+            <IconButton
+              size="sm"
+              className="gsp-link-btn"
+              pressed={dimsLocked}
               onClick={handleToggleLock}
-              title={dimsLocked ? 'Aspect locked — width/height stay in ratio' : 'Aspect unlocked — free ratio'}
-              aria-label={dimsLocked ? 'Unlock aspect ratio' : 'Lock aspect ratio'}
+              label={dimsLocked ? 'Unlock aspect ratio' : 'Lock aspect ratio'}
+              hint={dimsLocked ? 'Aspect locked: width and height stay in ratio' : 'Aspect unlocked: free ratio'}
             >
-              <Link2 aria-hidden="true" />
-            </XlethIconButton>
-            <input
+              <IcLink aria-hidden="true" />
+            </IconButton>
+            <NumberBox
               className="gsp-dim-input"
-              type="number" min={CANVAS_MIN} max={CANVAS_MAX_H} step={2}
+              label="Height"
+              caption="H"
               value={canvasH}
-              onChange={(e) => handleCanvasDimChange('h', e.target.value)}
+              {...dimProps(CANVAS_MAX_H)}
+              onCommit={(v) => handleCanvasDimChange('h', v)}
+              hint="Canvas height"
             />
           </div>
         )}
 
-        <div className="gsp-canvas-row">
-          <span className="gsp-canvas-label">FPS</span>
-          <XlethSelect
+        <div className={`gsp-canvas-row ${styles.row}`}>
+          <span className={styles.label}>Frame rate</span>
+          <Select
+            size="sm"
             className="gsp-canvas-select"
             value={previewFps}
             options={fpsOptions}
             onChange={handleFpsChange}
             ariaLabel="Project frame rate"
+            hint="Preview and export frame rate"
           />
         </div>
       </div>

@@ -27,10 +27,10 @@ import { fitGraphViewport } from '../../../fxgraph/graphViewport.js';
 import {
   EnvelopeAdvancedControls,
   EnvelopeAhdsrGraph,
-  EnvelopeNumberField,
   EnvelopeEditor,
   EnvelopeNodeBody,
-  EnvelopeRangeControl,
+  EnvelopeTensionBox,
+  EnvelopeTimeBox,
   buildEnvelopeGraphModel,
   buildEnvelopePreviewPoints,
   describeEnvelopeAhdsr,
@@ -40,6 +40,7 @@ import {
   readEnvelopeNodeData,
 } from './EnvelopeEditor';
 import {
+  LfoEditor,
   LfoNodeBody,
   formatLfoParameterCount,
   readLfoNodeData,
@@ -135,6 +136,18 @@ function findElementByClass(element: React.ReactElement, className: string): Rea
   return null;
 }
 
+// Every element in the tree (children of function-component calls included) that matches.
+function findAll(element: React.ReactElement, predicate: (el: React.ReactElement) => boolean): React.ReactElement[] {
+  const found: React.ReactElement[] = [];
+  const visit = (node: React.ReactNode) => {
+    if (!React.isValidElement(node)) return;
+    if (predicate(node as React.ReactElement)) found.push(node as React.ReactElement);
+    React.Children.forEach((node.props as { children?: React.ReactNode }).children, visit);
+  };
+  visit(element);
+  return found;
+}
+
 function makeClosestElement(
   attributes: Record<string, string | null>,
   closestBySelector: Record<string, unknown> = {},
@@ -159,8 +172,8 @@ describe('GraphStatePreview', () => {
     );
 
     expect(html).toContain('Read-only persisted FX graph preview');
-    expect(html).toContain('Track Input');
-    expect(html).toContain('Track Output');
+    expect(html).toContain('Track input');
+    expect(html).toContain('Track output');
     expect(countAttribute(html, 'data-edge-type="audio"')).toBe(1);
     expect(html).toContain('data-read-only="true"');
     expect(countText(html, 'Persisted graphState. Linear routing is enabled for supported paths.')).toBe(1);
@@ -185,10 +198,10 @@ describe('GraphStatePreview', () => {
       />,
     );
 
-    expect(html.indexOf('Track Input')).toBeLessThan(html.indexOf('Xleth EQ'));
+    expect(html.indexOf('Track input')).toBeLessThan(html.indexOf('Xleth EQ'));
     expect(html.indexOf('Xleth EQ')).toBeLessThan(html.indexOf('Delay'));
     expect(html.indexOf('Delay')).toBeLessThan(html.indexOf('Reverb'));
-    expect(html.indexOf('Reverb')).toBeLessThan(html.indexOf('Track Output'));
+    expect(html.indexOf('Reverb')).toBeLessThan(html.indexOf('Track output'));
     expect(countAttribute(html, 'data-edge-type="audio"')).toBe(4);
     expect(countAttribute(html, 'data-node-type="trackOutput"')).toBe(1);
     expect(html).toContain('data-preview-scroll-stage="true"');
@@ -255,7 +268,7 @@ describe('GraphStatePreview', () => {
     );
 
     expect(html).toContain('Delay');
-    expect(html).toContain('Bypassed');
+    expect(html).toContain('>Off<');
   });
 
   it('offers a power toggle on effect nodes when bypass editing is enabled', () => {
@@ -272,11 +285,13 @@ describe('GraphStatePreview', () => {
 
     // A bypassed node must carry the affordance that clears the state — the badge
     // alone left a converted chain's bypassed effects stuck off.
-    expect(html).toContain('aria-label="Enable Delay"');
+    // The activator is the device frame's: named "<device> on", pressed while the effect runs.
+    expect(html).toContain('aria-label="Delay on"');
+    expect(html).toContain('aria-pressed="false"');
     expect(html).toContain('data-bypassed="true"');
   });
 
-  it('labels the power toggle as Bypass on an active effect and omits it in read-only preview', () => {
+  it('names the activator after the device, pressed while it runs, and omits it in read-only preview', () => {
     const nodes = [
       inputNode(),
       effectNode('delay', 'Delay', 0, { x: 260, y: 0 }, { bypass: false }),
@@ -287,7 +302,8 @@ describe('GraphStatePreview', () => {
     );
     const readOnly = renderToStaticMarkup(<GraphStatePreview graphState={graphState(nodes, [])} />);
 
-    expect(editable).toContain('aria-label="Bypass Delay"');
+    expect(editable).toContain('aria-label="Delay on"');
+    expect(editable).toContain('aria-pressed="true"');
     expect(editable).not.toContain('data-bypassed="true"');
     expect(readOnly).not.toContain('xleth-graph-state-preview__node-power');
   });
@@ -373,8 +389,8 @@ describe('GraphStatePreview', () => {
     expect(html).toContain('data-node-type="macro"');
     expect(html).toContain('xleth-graph-state-preview__node--macro');
     expect(html).toContain('Energy');
-    expect(html).toContain('37%');
-    expect(html).toContain('type="range"');
+    expect(html).toContain('37\u2009%');
+    expect(html).toContain('role="slider"');
     expect(html).toContain('data-control-output="true"');
     expect(html).toContain('data-control-port-id="macro:macro-a:controlOut"');
     expect(html).toContain('data-control-port-type="macro-output"');
@@ -406,7 +422,8 @@ describe('GraphStatePreview', () => {
     });
 
     const slider = findElementByClass(element, 'xleth-graph-state-preview__macro-slider')!;
-    slider.props.onPointerUp({ currentTarget: { value: '0.75' } });
+    // The box edits in percent and commits once; the graph stores 0 to 1.
+    slider.props.onCommit(75);
     const label = findElementByClass(element, 'xleth-graph-state-preview__macro-label')!;
     label.props.onBlur({ currentTarget: { value: 'Drive' } });
 
@@ -463,9 +480,8 @@ describe('GraphStatePreview', () => {
     const before = JSON.stringify(emptyGraphState);
     const html = renderToStaticMarkup(<GraphStatePreview graphState={emptyGraphState} />);
 
-    expect(html).toContain('Empty FX Graph');
-    expect(html).toContain('Track Input');
-    expect(html).toContain('Track Output');
+    expect(html).toContain('Track input');
+    expect(html).toContain('Track output');
     expect(html).toContain('data-preview-scroll-stage="true"');
     expect(countAttribute(html, 'data-edge-type=')).toBe(0);
     expect(JSON.stringify(emptyGraphState)).toBe(before);
@@ -479,9 +495,9 @@ describe('GraphStatePreview', () => {
     ], []));
 
     expect(model.nodes.map((node) => node.label)).toEqual([
-      'Track Input',
+      'Track input',
       'Compressor',
-      'Track Output',
+      'Track output',
     ]);
     expect(model.nodes.every((node) => Number.isFinite(node.x) && Number.isFinite(node.y))).toBe(true);
     expect(model.nodes[0].x).toBeLessThan(model.nodes[1].x);
@@ -726,7 +742,7 @@ describe('GraphStatePreview', () => {
     expect(loadingHtml).toContain('Loading parameters...');
     expect(errorHtml).toContain('This plugin is unavailable. Parameters cannot be read.');
     expect(emptyHtml).toContain('This effect exposes no parameters.');
-    expect(listHtml).toContain('Expose Parameter');
+    expect(listHtml).toContain('Expose parameter');
     expect(listHtml).toContain('Search parameters');
     expect(listHtml).toContain('Feedback');
     expect(listHtml).not.toContain('Mix');
@@ -1023,7 +1039,7 @@ describe('GraphStatePreview', () => {
     // Edge delete is hidden until hover/focus via CSS, but the control must stay
     // in the DOM and remain a labelled, keyboard-reachable button.
     expect(html).toContain('xleth-graph-state-preview__disconnect');
-    expect(html).toContain('aria-label="Disconnect Audio cable: Track Input to Track Output"');
+    expect(html).toContain('aria-label="Disconnect Audio cable: Track input to Track output"');
   });
 
   // ── FXG.4-e/f Macro -> Parameter links ────────────────────────────────────
@@ -1298,7 +1314,7 @@ describe('GraphStatePreview', () => {
 // ---------------------------------------------------------------------------
 
 describe('GraphStatePreview node context menu', () => {
-  it('renders a plain Remove-only menu for envelope and lfo nodes (no Edit, no Expose Parameter)', () => {
+  it('renders a plain Remove-only menu for envelope and lfo nodes (no Edit, no Expose parameter)', () => {
     const envNode = buildGraphStatePreviewModel(envelopeGraph())
       .nodes.find((candidate) => candidate.id === 'env-a')!;
     const lfoNode = buildGraphStatePreviewModel(lfoGraph())
@@ -1314,7 +1330,7 @@ describe('GraphStatePreview node context menu', () => {
     for (const html of [envHtml, lfoHtml]) {
       expect(html).toContain('>Remove<');
       expect(html).not.toContain('>Edit<');
-      expect(html).not.toContain('Expose Parameter');
+      expect(html).not.toContain('Expose parameter');
     }
   });
 
@@ -1440,8 +1456,8 @@ describe('FXG.4-g ParameterEdgeMappingEditor', () => {
         onClose={vi.fn()}
       />,
     );
-    expect(html).toContain('curve-tab--active');
-    expect(html).toMatch(/curve-tab--active[^>]*>Linear/);
+    // The curve type is a kit SegmentedControl: the selected segment is aria-checked.
+    expect(html).toMatch(/aria-checked="true"[^>]*>[^<]*Linear/);
   });
 
   it('marks Bezier tab active for a bezier mapping', () => {
@@ -1457,7 +1473,7 @@ describe('FXG.4-g ParameterEdgeMappingEditor', () => {
         onClose={vi.fn()}
       />,
     );
-    expect(html).toMatch(/curve-tab--active[^>]*>Bezier/);
+    expect(html).toMatch(/aria-checked="true"[^>]*>[^<]*Bezier/);
   });
 
   it('renders the bezier SVG with control point circles for a bezier mapping', () => {
@@ -1507,9 +1523,9 @@ describe('FXG.4-g ParameterEdgeMappingEditor', () => {
       />,
     );
     expect(html).toContain('mapping-editor-preview');
-    expect(html).toContain('0%:');
-    expect(html).toContain('50%:');
-    expect(html).toContain('100%:');
+    expect(html).toContain('At 0 %:');
+    expect(html).toContain('At 50 %:');
+    expect(html).toContain('At 100 %:');
   });
 
   it('renders a close button', () => {
@@ -1691,7 +1707,7 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
     expect(html).toContain('data-node-type="envelope"');
     expect(html).toContain('xleth-graph-state-preview__node--envelope');
     expect(html).toContain('Pluck Env');
-    expect(html).toContain('Envelope Modulator');
+    expect(html).toContain('Envelope modulator');
     // The retired per-voice identity is gone.
     expect(html).not.toContain('Per-Voice Envelope');
   });
@@ -1704,8 +1720,8 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
       />,
     );
     expect(html).toContain('AHDSR');
-    expect(html).toContain('A 10 ms');
-    expect(html).toContain('S 70%');
+    expect(html).toContain('A 10.0\u2009ms');
+    expect(html).toContain('S 70\u2009%');
     expect(html).toContain('0 params');
     // EVC-R2-r3 — the Notes/Clips/Notes+Clips source pill and the Restart/Legato pill are gone.
     expect(html).not.toContain('Notes + Clips');
@@ -1717,15 +1733,15 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
     expect(html).not.toContain('Legato (mono)');
   });
 
-  it('surfaces a Slide pill only when includeSlideNotes is enabled', () => {
+  it('says so in the footer only when includeSlideNotes is enabled', () => {
     const off = renderToStaticMarkup(
       <GraphStatePreview graphState={envelopeGraph({ includeSlideNotes: false })} onUpdateEnvelope={vi.fn()} />,
     );
     const on = renderToStaticMarkup(
       <GraphStatePreview graphState={envelopeGraph({ includeSlideNotes: true })} onUpdateEnvelope={vi.fn()} />,
     );
-    expect(off).not.toContain('>Slide<');
-    expect(on).toContain('>Slide<');
+    expect(off).not.toContain('Slide notes');
+    expect(on).toContain('Slide notes');
   });
 
   it('summarizes outgoing envelope parameter connections compactly', () => {
@@ -1863,27 +1879,34 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
     expect(readOnlyHtml).not.toContain('aria-label="Attack ms"');
   });
 
-  it('expanded edit mode shows DAW-style controls and editable graph handles', () => {
+  it('the editor sheet holds the editable graph and kit controls for times, curve and trigger', () => {
     const html = renderToStaticMarkup(
-      <EnvelopeNodeBody
-        nodeId="env-a"
-        data={readEnvelopeNodeData({})}
-        onChange={vi.fn()}
-        defaultExpanded
-      />,
+      <EnvelopeEditor nodeId="env-a" data={readEnvelopeNodeData({})} onChange={vi.fn()} />,
     );
     expect(html).toContain('xleth-graph-state-preview__envelope-editor');
     expect(html).toContain('Editable AHDSR envelope graph');
     expect(html).toContain('Attack handle');
     expect(html).toContain('Sustain handle');
     expect(html).toContain('Release handle');
-    expect(html).toContain('aria-label="Attack ms slider"');
-    expect(html).toContain('aria-label="Sustain level slider"');
+    for (const section of ['Times', 'Curve', 'Trigger']) expect(html).toContain(`>${section}<`);
+    for (const label of ['Attack', 'Hold', 'Decay', 'Release', 'Sustain']) expect(html).toContain(label);
+    // No native range or number inputs: every number is a kit NumberBox.
+    expect(html).not.toContain('type="range"');
+    expect(html).not.toContain('type="number"');
     // EVC-R4 — the node-level Amount master scale was removed: modulation depth is now a
     // per-connection control on the Envelope -> Parameter edge, so there is no second
-    // "how much" slider on the node.
-    expect(html).not.toContain('aria-label="Amount slider"');
+    // "how much" control on the node.
     expect(html).not.toContain('>Amount<');
+  });
+
+  it('on the node, Edit opens the sheet and nothing of the editor is in the node itself', () => {
+    const html = renderToStaticMarkup(
+      <EnvelopeNodeBody nodeId="env-a" data={readEnvelopeNodeData({})} onChange={vi.fn()} />,
+    );
+    expect(html).toContain('Edit Envelope envelope');
+    expect(html).toContain('Envelope AHDSR graph');
+    expect(html).not.toContain('Editable AHDSR envelope graph');
+    expect(html).not.toContain('Attack handle');
   });
 
   it('read-only/no-callback mode does not expose editing controls even if expanded is requested', () => {
@@ -1908,93 +1931,48 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
 
   it('commits an Attack edit through the envelope update callback', () => {
     const onChange = vi.fn();
-    const element = EnvelopeNumberField({
-      label: 'Attack',
-      fieldKey: 'attackMs',
-      value: 10,
-      min: 0,
-      step: 1,
-      ariaLabel: 'Attack ms',
-      onChange,
-    });
-    const input = findElementByClass(element, 'xleth-graph-state-preview__envelope-input')!;
-    input.props.onBlur({ currentTarget: { value: '25' } });
+    const box = EnvelopeTimeBox({ label: 'Attack', fieldKey: 'attackMs', value: 10, onChange });
+    box.props.onCommit(25);
     expect(onChange).toHaveBeenCalledWith({ attackMs: 25 });
   });
 
-  it('slider controls commit attack, hold, decay, sustain, and release on release, not per tick', () => {
+  it('each box commits once on release with the patch the old slider sent, not per tick', () => {
     const cases = [
-      ['Attack', 'attackMs', 10, 250, 'Attack ms slider'],
-      ['Hold', 'holdMs', 0, 125, 'Hold ms slider'],
-      ['Decay', 'decayMs', 120, 300, 'Decay ms slider'],
-      ['Sustain', 'sustain', 0.7, 0.4, 'Sustain level slider'],
-      ['Release', 'releaseMs', 200, 450, 'Release ms slider'],
+      ['attackMs', 10, 250],
+      ['holdMs', 0, 125],
+      ['decayMs', 120, 300],
+      ['releaseMs', 200, 450],
     ] as const;
-    for (const [label, fieldKey, value, next, ariaLabel] of cases) {
+    for (const [fieldKey, value, next] of cases) {
       const onChange = vi.fn();
-      const element = EnvelopeRangeControl({
-        label,
-        fieldKey,
-        value,
-        min: fieldKey.endsWith('Ms') ? 0 : 0,
-        max: fieldKey.endsWith('Ms') ? undefined : 1,
-        step: fieldKey.endsWith('Ms') ? 1 : 0.01,
-        rangeMin: 0,
-        rangeMax: fieldKey.endsWith('Ms') ? 5000 : 1,
-        displayValue: String(value),
-        ariaLabel: ariaLabel.replace(' slider', ''),
-        onChange,
-      });
-      const slider = findElementByAriaLabel(element, ariaLabel)!;
-      // The slider is uncontrolled — no onChange fires per tick, so nothing is
-      // committed until the gesture ends (pointerup / blur / keyup).
-      expect(slider.props.onChange).toBeUndefined();
-      slider.props.onPointerUp({ currentTarget: { value: String(next) } });
+      const box = EnvelopeTimeBox({ label: fieldKey, fieldKey, value, onChange });
+      // A NumberBox previews locally while it drags and calls onCommit once on release; it has no
+      // per-tick write to the store at all.
+      expect(box.props.onChange).toBeUndefined();
+      box.props.onCommit(next);
       expect(onChange).toHaveBeenCalledTimes(1);
       expect(onChange).toHaveBeenCalledWith({ [fieldKey]: next });
     }
+    // Sustain is edited in percent and stored 0..1.
+    const onChange = vi.fn();
+    const editor = EnvelopeEditor({ nodeId: 'env-a', data: readEnvelopeNodeData({ sustain: 0.7 }), onChange });
+    const sustain = findAll(editor, (el) => el.props.label === 'Sustain' && typeof el.props.onCommit === 'function')[0];
+    expect(sustain.props.value).toBe(70);
+    sustain.props.onCommit(40);
+    expect(onChange).toHaveBeenCalledWith({ sustain: 0.4 });
   });
 
-  it('keeps above-range millisecond values in the numeric field while capping the slider view', () => {
+  it('keeps a stored time inside the box, capping only what is beyond the 10 s drag range', () => {
     const onChange = vi.fn();
-    const element = EnvelopeRangeControl({
-      label: 'Attack',
-      fieldKey: 'attackMs',
-      value: 9000,
-      min: 0,
-      step: 1,
-      rangeMin: 0,
-      rangeMax: 5000,
-      displayValue: '9000 ms',
-      ariaLabel: 'Attack ms',
-      onChange,
-    });
-    const slider = findElementByAriaLabel(element, 'Attack ms slider')!;
-    const input = findElementByAriaLabel(element, 'Attack ms')!;
-    expect(slider.props.defaultValue).toBe(5000);
-    expect(input.props.defaultValue).toBe(9000);
+    expect(EnvelopeTimeBox({ label: 'Attack', fieldKey: 'attackMs', value: 9000, onChange }).props.value).toBe(9000);
+    expect(EnvelopeTimeBox({ label: 'Attack', fieldKey: 'attackMs', value: 20000, onChange }).props.value).toBe(10000);
   });
 
-  it('uses an uncontrolled input and skips committing non-numeric text', () => {
-    // The input is uncontrolled (defaultValue), so React never resets the field
-    // mid-type — typing "1." is never destroyed. On blur, only a genuinely
-    // non-numeric value (NaN) is skipped so the node data is never corrupted.
-    const onChange = vi.fn();
-    const element = EnvelopeNumberField({
-      label: 'Decay',
-      fieldKey: 'decayMs',
-      value: 120,
-      ariaLabel: 'Decay ms',
-      onChange,
-    });
-    const input = findElementByClass(element, 'xleth-graph-state-preview__envelope-input')!;
-    expect(input.props.defaultValue).toBe(120);
-    expect(input.props.value).toBeUndefined();
-    input.props.onBlur({ currentTarget: { value: 'abc' } });
-    input.props.onBlur({ currentTarget: { value: '-' } });
-    expect(onChange).not.toHaveBeenCalled();
-    input.props.onBlur({ currentTarget: { value: '15.5' } });
-    expect(onChange).toHaveBeenCalledWith({ decayMs: 15.5 });
+  it('shows times and amounts the way every device does, through formatValue', () => {
+    const box = EnvelopeTimeBox({ label: 'Decay', fieldKey: 'decayMs', value: 120, onChange: vi.fn() });
+    expect(box.props.unit).toBe('ms');
+    expect(box.props.min).toBe(0);
+    expect(box.props.defaultValue).toBe(readEnvelopeNodeData({}).decayMs);
   });
 
   it('clamps Sustain through the shared normalization path', () => {
@@ -2029,34 +2007,32 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
     expect(html).not.toContain('Mono glide ms');
   });
 
-  it('renders an Include slide notes checkbox in the expanded editor', () => {
+  it('renders an Include slide notes toggle in the editor', () => {
     const html = renderToStaticMarkup(
       <EnvelopeEditor nodeId="env-a" data={readEnvelopeNodeData({})} onChange={vi.fn()} />,
     );
     expect(html).toContain('Include slide notes');
-    expect(html).toContain('aria-label="Include slide notes"');
-    expect(html).toContain('type="checkbox"');
+    expect(html).toContain('aria-pressed="false"');
+    expect(html).not.toContain('type="checkbox"');
   });
 
-  it('Include slide notes checkbox updates envelope data through the callback', () => {
+  it('Include slide notes toggle updates envelope data through the callback', () => {
     const onChange = vi.fn();
-    const element = IncludeSlideNotesControl({
+    const toggle = IncludeSlideNotesControl({
       data: readEnvelopeNodeData({ includeSlideNotes: false }),
       onChange,
     });
-    const checkbox = findElementByAriaLabel(element, 'Include slide notes')!;
-    expect(checkbox.props.checked).toBe(false);
-    checkbox.props.onChange({ currentTarget: { checked: true } });
+    expect(toggle.props.on).toBe(false);
+    toggle.props.onChange(true);
     expect(onChange).toHaveBeenCalledWith({ includeSlideNotes: true });
   });
 
-  it('reflects an enabled includeSlideNotes as a checked box', () => {
-    const element = IncludeSlideNotesControl({
+  it('reflects an enabled includeSlideNotes as an on toggle', () => {
+    const toggle = IncludeSlideNotesControl({
       data: readEnvelopeNodeData({ includeSlideNotes: true }),
       onChange: vi.fn(),
     });
-    const checkbox = findElementByAriaLabel(element, 'Include slide notes')!;
-    expect(checkbox.props.checked).toBe(true);
+    expect(toggle.props.on).toBe(true);
   });
 
   it('read-only mode (no onChange) does not expose the Include slide notes checkbox', () => {
@@ -2067,19 +2043,18 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
     expect(html).not.toContain('xleth-graph-state-preview__envelope-editor');
   });
 
-  it('advanced disclosure hides and shows tension controls', () => {
-    const collapsed = renderToStaticMarkup(
+  it('shows the three curve tensions in the editor and commits each on release', () => {
+    const html = renderToStaticMarkup(
       <EnvelopeEditor nodeId="env-a" data={readEnvelopeNodeData({})} onChange={vi.fn()} />,
     );
-    const expanded = renderToStaticMarkup(
-      <EnvelopeEditor nodeId="env-a" data={readEnvelopeNodeData({})} onChange={vi.fn()} defaultAdvancedOpen />,
-    );
-    expect(collapsed).toContain('Toggle envelope advanced controls');
-    expect(collapsed).not.toContain('Attack tension slider');
-    expect(expanded).toContain('Envelope advanced controls');
-    expect(expanded).toContain('Attack tension slider');
-    expect(expanded).toContain('Decay tension slider');
-    expect(expanded).toContain('Release tension slider');
+    expect(html).toContain('>Curve<');
+    expect(html).not.toContain('Toggle envelope advanced controls');
+    const onChange = vi.fn();
+    for (const [fieldKey, next] of [['attackTension', -0.5], ['decayTension', 0.25], ['releaseTension', 0.75]] as const) {
+      const box = EnvelopeTensionBox({ label: fieldKey, fieldKey, value: 0, onChange });
+      box.props.onCommit(next);
+      expect(onChange).toHaveBeenLastCalledWith({ [fieldKey]: next });
+    }
   });
 
   it('builds illustrative A/H/D/S/R preview points with rise, plateaus, and fall', () => {
@@ -2146,9 +2121,9 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
 
   it('summarizes AHDSR purely from node data', () => {
     const summary = describeEnvelopeAhdsr(readEnvelopeNodeData({ attackMs: 5, decayMs: 60, sustain: 0.4 }));
-    expect(summary).toContain('A 5 ms');
-    expect(summary).toContain('D 60 ms');
-    expect(summary).toContain('S 40%');
+    expect(summary).toContain('A 5.0\u2009ms');
+    expect(summary).toContain('D 60.0\u2009ms');
+    expect(summary).toContain('S 40\u2009%');
   });
 
   it('still renders effect and macro nodes alongside envelope nodes', () => {
@@ -2221,7 +2196,7 @@ describe('GraphStatePreview lfo nodes', () => {
     expect(html).toContain('data-node-type="lfo"');
     expect(html).toContain('xleth-graph-state-preview__node--lfo');
     expect(html).toContain('Tremolo');
-    expect(html).toContain('LFO Modulator');
+    expect(html).toContain('LFO modulator');
   });
 
   it('renders the rate/params summary', () => {
@@ -2231,7 +2206,7 @@ describe('GraphStatePreview lfo nodes', () => {
         onUpdateLfo={vi.fn()}
       />,
     );
-    expect(html).toContain('Free 80 ms');
+    expect(html).toContain('Free 80.0\u2009ms');
     expect(html).toContain('0 params');
   });
 
@@ -2386,14 +2361,9 @@ describe('GraphStatePreview lfo nodes', () => {
     expect(readOnlyHtml).not.toContain('xleth-graph-state-preview__lfo-editor');
   });
 
-  it('edit toggle: expanded edit mode shows the shape graph, presets, and rate controls', () => {
+  it('the editor sheet shows the shape graph, presets and rate controls', () => {
     const html = renderToStaticMarkup(
-      <LfoNodeBody
-        nodeId="lfo-a"
-        data={readLfoNodeData({})}
-        onChange={vi.fn()}
-        defaultExpanded
-      />,
+      <LfoEditor nodeId="lfo-a" data={readLfoNodeData({})} onChange={vi.fn()} />,
     );
     expect(html).toContain('xleth-graph-state-preview__lfo-editor');
     expect(html).toContain('Editable LFO waveform graph');
@@ -2402,6 +2372,8 @@ describe('GraphStatePreview lfo nodes', () => {
     expect(html).toContain('>Sine<');
     expect(html).toContain('>Triangle<');
     expect(html).toContain('>Square<');
+    expect(html).toContain('Phase');
+    expect(html).not.toContain('type="range"');
   });
 
   it('read-only/no-callback mode does not expose editing controls even if expanded is requested', () => {
@@ -2490,31 +2462,29 @@ describe('EVC-R4 ParameterEdgeMappingEditor — modulation vs range', () => {
 
   it('renders Base and Depth controls for a modulation edge, and no target range', () => {
     const html = render(makeModulationEdge());
-    expect(html).toContain('aria-label="Modulation base"');
-    expect(html).toContain('aria-label="Modulation depth"');
+    expect(html).toContain('aria-label="Base"');
+    expect(html).toContain('aria-label="Depth"');
     expect(html).toContain('>Base<');
     expect(html).toContain('>Depth<');
-    expect(html).not.toContain('aria-label="Target min"');
-    expect(html).not.toContain('aria-label="Target max"');
-    expect(html).not.toContain('Output Range');
+    expect(html).not.toContain('aria-label="Min"');
+    expect(html).not.toContain('aria-label="Max"');
+    expect(html).not.toContain('Output range');
   });
 
   it('renders the target range for a range (Macro) edge, and no base/depth', () => {
     const html = render(makeParameterEdge());
-    expect(html).toContain('aria-label="Target min"');
-    expect(html).toContain('aria-label="Target max"');
-    expect(html).toContain('Output Range');
-    expect(html).not.toContain('aria-label="Modulation base"');
-    expect(html).not.toContain('aria-label="Modulation depth"');
+    expect(html).toContain('aria-label="Min"');
+    expect(html).toContain('aria-label="Max"');
+    expect(html).toContain('Output range');
+    expect(html).not.toContain('aria-label="Base"');
+    expect(html).not.toContain('aria-label="Depth"');
   });
 
-  it('gives the Depth slider a BIPOLAR -1..1 range so inversion is reachable', () => {
+  it('gives the Depth box a BIPOLAR range so inversion is reachable', () => {
     const html = render(makeModulationEdge({ depth: -0.5 }));
-    expect(html).toMatch(/aria-label="Modulation depth"[^>]*/);
-    // The depth slider/number inputs are the only ones with min="-1".
-    expect(html).toContain('min="-1"');
-    // Base stays unipolar.
-    expect(html).toMatch(/type="range" min="0" max="1"[^>]*aria-label="Modulation base"/);
+    // Depth is a bipolar kit NumberBox (-100 to 100 %, stored -1 to 1); Base stays unipolar.
+    expect(html).toMatch(/aria-label="Depth"[^>]*aria-valuemin="-100"|aria-valuemin="-100"[^>]*aria-label="Depth"/);
+    expect(html).toMatch(/aria-label="Base"[^>]*aria-valuemin="0"|aria-valuemin="0"[^>]*aria-label="Base"/);
   });
 
   it('explains the model in the editor instead of leaving two bare scales', () => {
@@ -2525,17 +2495,17 @@ describe('EVC-R4 ParameterEdgeMappingEditor — modulation vs range', () => {
   it("the preview's 0% row is the base value — idle means base, visibly", () => {
     // base 0.4, depth 0.5 -> 40% / 65% / 90%.
     const html = render(makeModulationEdge());
-    expect(html).toContain('40%');
-    expect(html).toContain('65%');
-    expect(html).toContain('90%');
+    expect(html).toContain('40\u2009%');
+    expect(html).toContain('65\u2009%');
+    expect(html).toContain('90\u2009%');
   });
 
   it('shows a negative depth sweeping downward from base', () => {
     // base 0.8, depth -0.6 -> 80% / 50% / 20%.
     const html = render(makeModulationEdge({ base: 0.8, depth: -0.6 }));
-    expect(html).toContain('80%');
-    expect(html).toContain('50%');
-    expect(html).toContain('20%');
+    expect(html).toContain('80\u2009%');
+    expect(html).toContain('50\u2009%');
+    expect(html).toContain('20\u2009%');
   });
 
   // Regression lock: the plan's design decision #4 validation found
@@ -2571,17 +2541,17 @@ describe('EVC-R4 ParameterEdgeMappingEditor — modulation vs range', () => {
       />,
     );
     expect(html).toContain('Wobble LFO');
-    expect(html).toContain('aria-label="Modulation base"');
-    expect(html).toContain('aria-label="Modulation depth"');
+    expect(html).toContain('aria-label="Base"');
+    expect(html).toContain('aria-label="Depth"');
     expect(html).toContain('>Base<');
     expect(html).toContain('>Depth<');
-    expect(html).not.toContain('aria-label="Target min"');
-    expect(html).not.toContain('aria-label="Target max"');
-    expect(html).not.toContain('Output Range');
+    expect(html).not.toContain('aria-label="Min"');
+    expect(html).not.toContain('aria-label="Max"');
+    expect(html).not.toContain('Output range');
     // Same base/depth-anchored preview math as the envelope case (80% / 50% / 20%).
-    expect(html).toContain('80%');
-    expect(html).toContain('50%');
-    expect(html).toContain('20%');
+    expect(html).toContain('80\u2009%');
+    expect(html).toContain('50\u2009%');
+    expect(html).toContain('20\u2009%');
   });
 
   // The editor's commit contract (patch shape, clamping, kind preservation) is proven at the
@@ -2863,7 +2833,7 @@ describe('FXG.5 unbounded free node placement', () => {
         onViewportChange={vi.fn()}
       />,
     );
-    const canvasMatch = html.match(/xleth-graph-state-preview__canvas"[^>]*style="([^"]*)"/);
+    const canvasMatch = html.match(/xleth-graph-state-preview__canvas[^"]*"[^>]*style="([^"]*)"/);
     expect(canvasMatch).not.toBeNull();
     const canvasStyle = canvasMatch?.[1] ?? '';
     expect(canvasStyle).toContain('transform:');
@@ -2953,11 +2923,10 @@ describe('GraphStatePreview sidechain input (FXG-SC.6B)', () => {
     );
     expect(html).toContain('data-node-type="sidechainInput"');
     expect(html).toContain('xleth-graph-state-preview__node--sidechain-input');
-    expect(html).toContain('Sidechain Input');
+    expect(html).toContain('Sidechain input');
     expect(html).toContain('xleth-graph-state-preview__sidechain-source-select');
-    // Eligible source names appear as options; the selected source (3) is the value.
+    // The selected source (3) is the value; the other options are in the Select's popup.
     expect(html).toContain('Kick');
-    expect(html).toContain('Snare');
   });
 
   it('renders the sidechainOut output handle on the Sidechain Input node', () => {
@@ -3068,11 +3037,12 @@ describe('GraphStatePreview sidechain input (FXG-SC.6B)', () => {
       sidechainSources: SIDECHAIN_SOURCES,
       onSetSidechainSource,
     });
-    const select = findElementByAriaLabel(element, 'Sidechain Input source track');
+    const select = findElementByClass(element, 'xleth-graph-state-preview__sidechain-source-select');
     expect(select).not.toBeNull();
-    select!.props.onChange({ currentTarget: { value: '4' } });
+    expect(select!.props.ariaLabel).toBe('Sidechain Input source track');
+    select!.props.onChange('4');
     expect(onSetSidechainSource).toHaveBeenCalledWith('sc', 4);
-    select!.props.onChange({ currentTarget: { value: '' } });
+    select!.props.onChange('');
     expect(onSetSidechainSource).toHaveBeenCalledWith('sc', null);
   });
 

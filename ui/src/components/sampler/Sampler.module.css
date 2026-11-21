@@ -1,0 +1,963 @@
+/* Sampler. Neutral surfaces only; colour is the slot identity (tab stripe, slot
+ * bar edge, waveform), value fills, selection and the parameter-signal ring.
+ *
+ * The Sampler is a window of its own (800x640 by default). Its layout answers to
+ * the panel's own box, not the viewport: tall, it stacks (slots, slot bar, view
+ * tabs, body, audition); in a short wide box (the detail dock) the view tabs
+ * join the slot row and the body's parts sit side by side. */
+@layer kit {
+  .root {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 100%;
+    min-height: 0;
+    container: sampler / size;
+    background: var(--ui-g1);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .shell {
+    display: grid;
+    flex: 1 1 auto;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: var(--panel-header-h) auto var(--panel-header-h) minmax(0, 1fr) var(--panel-header-h);
+    grid-template-areas:
+      "slots patch"
+      "bar   bar"
+      "views views"
+      "body  body"
+      "aud   aud";
+    min-width: 0;
+    min-height: 0;
+  }
+
+  /* ── Row 1: the slots (layers) and the patch ──────────────────────────── */
+  .slotRow {
+    grid-area: slots;
+    display: flex;
+    min-width: 0;
+    background: var(--ui-g2);
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  /* ── Row 3: the view tabs, directly over the body they switch ─────────── */
+  .views {
+    grid-area: views;
+    min-width: 0;
+    background: var(--ui-g2);
+  }
+
+  .slotStrip {
+    display: flex;
+    flex: 1 1 auto;
+    align-items: stretch;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+  }
+
+  .slotStrip[data-drop] {
+    outline: 1px dashed var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  .slotTab {
+    position: relative;
+    box-sizing: border-box;
+    display: inline-flex;
+    flex: 0 1 auto;
+    align-items: center;
+    gap: var(--space-1);
+    min-width: 64px;
+    max-width: 176px;
+    padding: 0 var(--space-2);
+    border-right: 1px solid var(--ui-g4);
+    color: var(--ui-ink-2);
+    font-weight: var(--weight-medium);
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+    outline: none;
+  }
+
+  /* Identity stripe: the slot's colour, the same one the waveform is drawn in. */
+  .slotTab::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: var(--slot-color);
+  }
+
+  .slotTab:hover {
+    background: var(--ui-g3);
+    color: var(--ui-ink);
+  }
+
+  .slotTab[data-selected] {
+    background: var(--ui-g1);
+    color: var(--ui-ink);
+    font-weight: var(--weight-semibold);
+  }
+
+  .slotTab[data-selected]::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -1px;
+    height: 2px;
+    background: var(--ui-ink);
+  }
+
+  .slotTab:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -2px;
+  }
+
+  .slotTab[data-drop] {
+    outline: 1px dashed var(--ui-select);
+    outline-offset: -2px;
+  }
+
+  .slotTab[data-silent] .slotName,
+  .slotTab[data-silent] .slotIndex {
+    opacity: var(--ui-mute-opacity);
+  }
+
+  .slotIndex {
+    flex: none;
+    color: var(--ui-ink-2);
+  }
+
+  .slotName {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .slotSilent {
+    flex: none;
+    width: 12px;
+    height: 12px;
+    color: var(--ui-ink-2);
+  }
+
+  .slotAdd {
+    flex: none;
+    align-self: center;
+    margin: 0 var(--space-1);
+  }
+
+  .slotCount {
+    flex: none;
+    align-self: center;
+    padding-right: var(--space-2);
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+  }
+
+  .textInput {
+    box-sizing: border-box;
+    min-width: 0;
+    height: var(--ctl-h-sm);
+    padding: 0 var(--space-1);
+    border: 1px solid var(--ui-select);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g0);
+    color: var(--ui-ink);
+    font: inherit;
+    outline: none;
+  }
+
+  .slotTab .textInput {
+    width: 112px;
+    height: 20px;
+  }
+
+  .patch {
+    grid-area: patch;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 0 var(--space-2);
+    border-left: 1px solid var(--ui-g4);
+    border-bottom: 1px solid var(--ui-g4);
+    background: var(--ui-g2);
+  }
+
+  .patchSelect {
+    width: 148px;
+  }
+
+  .patchName {
+    width: 148px;
+  }
+
+  .patchStatus {
+    padding-left: var(--space-1);
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+  }
+
+  /* ── Row 2: the selected slot's level and pitch, in every view ────────── */
+  .slotBar {
+    grid-area: bar;
+    box-sizing: border-box;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1);
+    min-width: 0;
+    min-height: var(--ctl-h-lg);
+    padding: var(--space-1) var(--space-2);
+    /* The slot's identity colour: the same one as its tab stripe and waveform. */
+    border-left: 2px solid var(--slot-color);
+    border-bottom: 1px solid var(--ui-g4);
+    background: var(--ui-g1);
+  }
+
+  /* Value boxes share the row: each starts at its own width and grows a little. */
+  .slotBar > [role="slider"] {
+    flex: 1 1 var(--box-w, 84px);
+    width: auto;
+    min-width: 72px;
+    max-width: 148px;
+  }
+
+  .barGap {
+    flex: none;
+    align-self: stretch;
+    width: 1px;
+    margin: 2px var(--space-1);
+    background: var(--ui-g4);
+  }
+
+  /* ── Body ─────────────────────────────────────────────────────────────── */
+  .body {
+    grid-area: body;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  /* Sample view: the waveform takes what the window has left over the sections. */
+  .main {
+    box-sizing: border-box;
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+    min-height: 0;
+    padding: var(--space-1);
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-width: thin;
+  }
+
+  /* The recessed hero well, on neutral g0. */
+  .well {
+    box-sizing: border-box;
+    display: flex;
+    flex: 1 1 160px;
+    flex-direction: column;
+    min-height: 132px;
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g0);
+  }
+
+  .wellHead {
+    box-sizing: border-box;
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+    height: 26px;
+    padding: 0 2px 0 var(--space-2);
+    border-bottom: 1px solid var(--ui-g4);
+    background: var(--ui-g2);
+    white-space: nowrap;
+  }
+
+  .swatch {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    background: var(--slot-color);
+  }
+
+  .wellName {
+    flex: 0 1 auto;
+    min-width: 48px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-weight: var(--weight-medium);
+  }
+
+  .wellMeta,
+  .zoomReadout,
+  .caption {
+    flex: none;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+  }
+
+  .zoomReadout {
+    min-width: 44px;
+    padding: 0 var(--space-1);
+    text-align: right;
+  }
+
+  .flags,
+  .wellTools {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .spacer {
+    flex: 1 1 auto;
+  }
+
+  /* The canvas sizes itself from this box (ResizeObserver) and is taken out of
+   * flow, so it can never push the box it measures. */
+  .canvasHost {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .canvasHost > canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    display: block;
+  }
+
+  /* Titled sections in rows. A row wraps when the window is narrow, so nothing
+   * ever scrolls sideways. */
+  .sections {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+  }
+
+  .sectionRow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1);
+    min-width: 0;
+  }
+
+  .sectionRow > .section {
+    flex: 1 1 auto;
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g1);
+  }
+
+  /* Section bodies: one padding rhythm everywhere. */
+  .sectionRow > .section > div:last-child {
+    padding: var(--space-2) var(--space-3);
+  }
+
+  /* Header actions (a status word, Auto, On) never touch each other. */
+  .sectionRow [role="heading"] > span:last-child,
+  .envBox [role="heading"] > span:last-child {
+    gap: var(--space-2);
+  }
+
+  /* Knobs share their section's width evenly; at least 4px apart when tight. */
+  .knobRow {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-1);
+  }
+
+  .sectionRow .knobRow {
+    align-self: stretch;
+    justify-content: space-evenly;
+  }
+
+  .loopBody {
+    display: flex;
+    align-self: stretch;
+    align-items: center;
+    justify-content: space-evenly;
+    gap: var(--space-3);
+  }
+
+  .loopBody > .knobRow {
+    flex: 1 1 auto;
+  }
+
+  .loopSide {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-2);
+  }
+
+  .grid2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-1) var(--space-2);
+  }
+
+  .fill {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .prepRow {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .prepAlgo {
+    flex: none;
+    width: 124px;
+  }
+
+  /* A named dropdown (FieldSelect): label left, Select right. Stacked fields line up. */
+  .field {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .fieldLabel {
+    min-width: 64px;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    white-space: nowrap;
+  }
+
+  .fieldSelect {
+    width: var(--field-w, 112px);
+  }
+
+  /* ── Envelope view ────────────────────────────────────────────────────── */
+  .envelope {
+    box-sizing: border-box;
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    padding: var(--space-1);
+  }
+
+  .envBox {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g1);
+  }
+
+  .envEmpty {
+    padding: var(--space-3);
+  }
+
+  /* ── Playback view ────────────────────────────────────────────────────── */
+  .playback {
+    box-sizing: border-box;
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+    min-height: 0;
+    padding: var(--space-1);
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-width: thin;
+  }
+
+  .playback .section[data-section="arp"] {
+    flex-grow: 2;
+  }
+
+  .stack {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-3);
+  }
+
+  .inline {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .arpBody {
+    display: flex;
+    align-items: center;
+    gap: var(--space-5);
+  }
+
+  .arpRate {
+    width: 64px;
+  }
+
+  .mangleBody {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-2);
+  }
+
+  .mangleRow {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .mangleIndex {
+    flex: none;
+    width: 16px;
+    color: var(--ui-ink-2);
+    text-align: center;
+  }
+
+  .mangleMode {
+    width: 136px;
+  }
+
+  .infoRow {
+    box-sizing: border-box;
+    display: flex;
+    flex: none;
+    margin-top: auto;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+    height: var(--ctl-h-md);
+    padding: 0 var(--space-2);
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g1);
+    white-space: nowrap;
+  }
+
+  .infoRow > .caption:first-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .previewSelect {
+    width: 136px;
+  }
+
+  /* ── Audition bar (every view) ────────────────────────────────────────── */
+  .audition {
+    grid-area: aud;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+    height: var(--panel-header-h);
+    padding: 0 var(--space-2);
+    border-top: 1px solid var(--ui-g4);
+    background: var(--ui-g2);
+    white-space: nowrap;
+  }
+
+  .auditionState {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    color: var(--ui-ink-2);
+    font-weight: var(--weight-medium);
+  }
+
+  /* Hollow at rest, filled while a key is held: shape, not just colour. */
+  .auditionDot {
+    width: 8px;
+    height: 8px;
+    border: 1px solid var(--ui-boundary);
+    border-radius: 50%;
+  }
+
+  .auditionState[data-on] {
+    color: var(--ui-ink);
+  }
+
+  .auditionState[data-on] .auditionDot {
+    border-color: var(--ui-value);
+    background: var(--ui-value);
+  }
+
+  .auditionRange {
+    color: var(--ui-ink);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Modulation view ──────────────────────────────────────────────────── */
+  .modulation {
+    box-sizing: border-box;
+    display: grid;
+    flex: 1 1 auto;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(96px, 22%);
+    gap: var(--space-1);
+    min-height: 0;
+    padding: var(--space-1);
+  }
+
+  .modulation > .routes {
+    width: auto;
+    min-height: 0;
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g1);
+  }
+
+  .modulation > .routes > div:last-child {
+    align-items: stretch;
+    justify-content: flex-start;
+    gap: var(--space-1);
+    padding: var(--space-1);
+  }
+
+  .routeList {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 2px;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+  }
+
+  .routeRow {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 2px;
+    min-height: var(--row-h);
+  }
+
+  .routeName {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .routeSrc {
+    font-weight: var(--weight-semibold);
+  }
+
+  .routePol {
+    min-width: var(--hit-min);
+    padding: 0;
+    justify-content: center;
+  }
+
+  .routeAdd {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 2px;
+    padding-top: var(--space-1);
+    border-top: 1px solid var(--ui-g4);
+  }
+
+  .routeAddSrc {
+    width: 84px;
+  }
+
+  .routeAddTgt {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .modRight {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g1);
+  }
+
+  .sourceStrip {
+    box-sizing: border-box;
+    display: flex;
+    flex: none;
+    align-items: stretch;
+    height: var(--ctl-h-md);
+    padding: 0 var(--space-1);
+    border-bottom: 1px solid var(--ui-g4);
+    background: var(--ui-g2);
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+  }
+
+  .sourceStrip > button {
+    align-self: center;
+  }
+
+  .stripGap {
+    flex: none;
+    width: 1px;
+    margin: var(--space-1) var(--space-2);
+    background: var(--ui-g4);
+  }
+
+  .sourceTabWrap {
+    position: relative;
+    display: flex;
+    flex: none;
+    align-items: center;
+  }
+
+  .sourceTab {
+    position: relative;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    height: 100%;
+    min-width: var(--hit-min);
+    padding: 0 var(--space-2);
+    color: var(--ui-ink-2);
+    font-weight: var(--weight-medium);
+    white-space: nowrap;
+    cursor: grab;
+    user-select: none;
+    touch-action: none;
+    outline: none;
+  }
+
+  .sourceTab:hover {
+    background: var(--ui-g3);
+    color: var(--ui-ink);
+  }
+
+  .sourceTab[data-selected] {
+    background: var(--ui-g1);
+    color: var(--ui-ink);
+    font-weight: var(--weight-semibold);
+  }
+
+  .sourceTab[data-selected]::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -1px;
+    height: 2px;
+    background: var(--ui-ink);
+  }
+
+  .sourceTab:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -2px;
+  }
+
+  /* How many controls this source drives: a number, not a coloured dot. */
+  .sourceCount {
+    min-width: 14px;
+    padding: 0 3px;
+    border: 1px solid var(--ui-signal-parameter);
+    border-radius: var(--ui-radius-1);
+    color: var(--ui-ink);
+    font-size: var(--type-11);
+    line-height: 14px;
+    text-align: center;
+  }
+
+  .sourceRemove {
+    margin-right: var(--space-1);
+  }
+
+  .editor {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: var(--space-2);
+    min-width: 0;
+    min-height: 0;
+    padding: var(--space-2) var(--space-3);
+  }
+
+  .editor > .knobRow {
+    gap: var(--space-4);
+  }
+
+  .editorHead {
+    display: flex;
+    flex: none;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: var(--space-3);
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+
+  /* The recessed g0 well every modulation canvas draws in. */
+  .editorWell {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 96px;
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g0);
+    overflow: hidden;
+  }
+
+  .editorWell > canvas,
+  .timeWell > canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+  }
+
+  /* The LFO's to-scale strip under its shape: a fixed height, so the shape gets the rest. */
+  .timeWell {
+    position: relative;
+    flex: none;
+    height: 64px;
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g0);
+    overflow: hidden;
+  }
+
+  .curveWell {
+    max-width: 480px;
+  }
+
+  /* A column of small fields at the end of a knob row. */
+  .sideCol {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: center;
+    gap: var(--space-1);
+    align-self: center;
+  }
+
+  .rateBox {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    gap: var(--space-1);
+    align-self: center;
+    padding-right: var(--space-1);
+  }
+
+  /* The source label that follows the pointer during drag-to-route: a floating
+   * surface, so it carries the hard offset shadow. */
+  .dragGhost {
+    position: fixed;
+    z-index: var(--xleth-z-popover, 10000);
+    padding: 2px var(--space-2);
+    border: 1px solid var(--ui-signal-parameter);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g2);
+    box-shadow: var(--ui-shadow-float);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    pointer-events: none;
+    transform: translate(12px, 12px);
+    white-space: nowrap;
+  }
+
+  .dragGhost[data-over] {
+    background: var(--ui-g3);
+    outline: 1px solid var(--ui-signal-parameter);
+  }
+
+  /* A short, wide box: the detail dock, or a window dragged flat. The view tabs
+   * join the slot row, and each view's parts sit side by side instead of stacked. */
+  @container sampler (max-height: 540px) and (min-width: 900px) {
+    .shell {
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      grid-template-rows: var(--panel-header-h) auto minmax(0, 1fr) var(--panel-header-h);
+      grid-template-areas:
+        "slots patch views"
+        "bar   bar   bar"
+        "body  body  body"
+        "aud   aud   aud";
+    }
+
+    .views {
+      border-left: 1px solid var(--ui-g4);
+    }
+
+    .main {
+      display: grid;
+      grid-template-columns: minmax(240px, 1fr) minmax(0, min(784px, 60%));
+      overflow: hidden;
+    }
+
+    .well {
+      min-height: 0;
+    }
+
+    .main > .sections {
+      min-height: 0;
+      overflow-x: hidden;
+      overflow-y: auto;
+      scrollbar-width: thin;
+    }
+
+    .playback > .sections {
+      flex-direction: row;
+    }
+
+    /* The per-note effects row keeps its own width (its rows do not wrap); the
+     * Voice, Glide and Arpeggiator sections share what is left and wrap if short. */
+    .playback > .sections > .sectionRow:first-child {
+      flex: 1 1 0;
+    }
+
+    .playback > .sections > .sectionRow:last-child {
+      flex: none;
+      min-width: 40%;
+    }
+
+    .modulation {
+      grid-template-columns: 344px minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1fr);
+    }
+
+    .modulation > .routes {
+      grid-column: 1;
+      grid-row: 1;
+    }
+
+    .modulation > .modRight {
+      grid-column: 2;
+      grid-row: 1;
+    }
+  }
+}

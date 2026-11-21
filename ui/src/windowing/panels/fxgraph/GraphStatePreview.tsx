@@ -33,6 +33,34 @@ import {
   type LfoNodeData,
   type LfoNodePatch,
 } from './LfoEditor';
+import {
+  EmptyState,
+  Icon,
+  IconButton,
+  NumberBox,
+  Select,
+  SegmentedControl,
+  Toggle,
+  formatValue,
+  type GlyphName,
+  type SelectOption,
+} from '../../../ui-kit';
+import { DEVICE_NAMES } from '../../../components/devices/deviceNames.js';
+import nodeStyles from './GraphNode.module.css';
+import menuStyles from './GraphMenus.module.css';
+import GraphMinimap from './GraphMinimap';
+import { SheetFrame, clampSheetPoint } from './ModulatorSheet';
+import modStyles from './ModulatorEditors.module.css';
+import GraphAddMenu, { buildGraphAddMenuItems, type GraphEffectSelection } from './GraphAddMenu';
+import canvasStyles from './GraphCanvas.module.css';
+import { iconComponent } from '../../../ui-kit/icons';
+
+const IcBezierCurve = iconComponent('bezier-curve');
+const IcCheck = iconComponent('check');
+const IcCheckFill = iconComponent('check', 'fill');
+const IcFrameCorners = iconComponent('frame-corners');
+const IcPower = iconComponent('power');
+const IcX = iconComponent('x');
 
 // FXG.4-g — Bezier mapping editor types.
 type BezierPoint = { x: number; y: number };
@@ -258,7 +286,9 @@ interface GraphStatePreviewProps {
   notice?: string | null;
   onNodePositionChange?: (nodeId: string, position: { x: number; y: number }) => void;
   onViewportChange?: (viewport: GraphStateViewport) => void;
-  onAddEffectNode?: (position?: { x: number; y: number }) => void;
+  // Choosing a plugin in the shared effect picker creates the node: the selection and, when it
+  // came from a right-click, the graph position to place it at.
+  onAddEffectNode?: (selection: GraphEffectSelection, position?: { x: number; y: number }) => void;
   onAddMacroNode?: (position?: { x: number; y: number }) => void;
   // EVC.3 — envelope node add/edit affordances (graph mode only).
   onAddEnvelopeNode?: (position?: { x: number; y: number }) => void;
@@ -314,15 +344,22 @@ const EMPTY_VST_PLUGINS: VstPluginMeta[] = [];
 
 const NODE_WIDTH = 148;
 const NODE_HEIGHT = 74;
+// The terminals (Track input and output) are a title bar and the port row.
+const TERMINAL_HEIGHT = 48;
+// Every in and out port sits on one row this far below the node's top (title bar 26 plus
+// half the 22px port row), so a port label, its handle and the cable's end line up whatever
+// the node's height.
+const PORT_ROW_Y = 37;
 // EVC-R3 — envelope nodes are compact by default. The expanded editor can grow
 // visually, but this estimate keeps normal graph layouts dense.
 const ENVELOPE_NODE_WIDTH = 236;
-const ENVELOPE_NODE_CONTENT_HEIGHT = 112;
+// Display 56, summary 28 (two lines), Edit row 24, the gaps and the foot padding.
+const ENVELOPE_NODE_CONTENT_HEIGHT = 128;
 // LFO nodes are compact by default like Envelope. The expanded editor (shape
 // graph + preset row + rate controls) can grow visually, but this estimate
 // keeps normal graph layouts dense.
 const LFO_NODE_WIDTH = 236;
-const LFO_NODE_CONTENT_HEIGHT = 132;
+const LFO_NODE_CONTENT_HEIGHT = 114;
 const PARAMETER_PORT_ROW_HEIGHT = 18;
 const PARAMETER_PORT_SECTION_TOP = 8;
 const PARAMETER_PORT_SECTION_BOTTOM = 10;
@@ -336,6 +373,12 @@ const DEFAULT_VIEWPORT: GraphStateViewport = Object.freeze({ x: 0, y: 0, zoom: 1
 // Continuous zoom sensitivity: Math.exp(-deltaY * k).
 // k=0.001 → ~10% per standard 100px wheel notch; trackpad frames are tiny so feel smooth.
 const WHEEL_ZOOM_SENSITIVITY = 0.001;
+// One minor grid cell, in graph pixels; a major line every five.
+const GRID_CELL_PX = 24;
+// Below this the minor lines would sit closer than 8px and are left out.
+const GRID_MINOR_MIN_PX = 8;
+// Hint for the minimap: show it once a node is this far outside the window.
+const MINIMAP_MARGIN_PX = 4;
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
@@ -510,11 +553,11 @@ function resolveNodeText(node: GraphStateNode): ResolvedNodeText {
   };
 
   if (type === 'trackInput') {
-    return { ...base, label: 'Track Input' };
+    return { ...base, label: 'Track input' };
   }
 
   if (type === 'trackOutput') {
-    return { ...base, label: 'Track Output' };
+    return { ...base, label: 'Track output' };
   }
 
   if (type === 'effect') {
@@ -570,7 +613,7 @@ function resolveNodeText(node: GraphStateNode): ResolvedNodeText {
     return {
       ...base,
       label: envelope.label,
-      secondaryText: 'Envelope Modulator',
+      secondaryText: 'Envelope modulator',
       envelope,
     };
   }
@@ -585,7 +628,7 @@ function resolveNodeText(node: GraphStateNode): ResolvedNodeText {
     return {
       ...base,
       label: lfo.label,
-      secondaryText: 'LFO Modulator',
+      secondaryText: 'LFO modulator',
       lfo,
     };
   }
@@ -638,7 +681,7 @@ function makeVirtualAnchorNode(
     x,
     y: FALLBACK_NODE_Y,
     width: NODE_WIDTH,
-    height: NODE_HEIGHT,
+    height: TERMINAL_HEIGHT,
     graphX: x - PREVIEW_PADDING_X,
     graphY: FALLBACK_NODE_Y,
     envelopeParameterEdgeCount: 0,
@@ -736,7 +779,9 @@ function normalizePositionedNodes(nodes: GraphStateNode[], options: PreviewModel
       x: position.x + PREVIEW_PADDING_X,
       y: position.y + PREVIEW_PADDING_Y,
       width: nodeWidthForType(previewType),
-      height: nodeHeightForText(text),
+      height: previewType === 'trackInput' || previewType === 'trackOutput'
+        ? TERMINAL_HEIGHT
+        : nodeHeightForText(text),
       graphX: position.x,
       graphY: position.y,
       envelopeParameterEdgeCount: 0,
@@ -790,14 +835,14 @@ function applyLfoParameterEdgeCounts(nodes: PositionedNode[], edges: GraphStateE
 function edgeEndpoints(source: PositionedNode, target: PositionedNode) {
   return {
     sourceX: source.type === 'trackOutput' ? source.x : source.x + source.width,
-    sourceY: source.y + source.height / 2,
+    sourceY: source.y + PORT_ROW_Y,
     targetX: target.type === 'trackInput' ? target.x + target.width : target.x,
-    targetY: target.y + target.height / 2,
+    targetY: target.y + PORT_ROW_Y,
   };
 }
 
 function nodeOutPoint(node: PositionedNode) {
-  return { x: node.x + node.width, y: node.y + node.height / 2 };
+  return { x: node.x + node.width, y: node.y + PORT_ROW_Y };
 }
 
 // FXG-connect-reach — the audio "in" side anchor, mirroring edgeEndpoints'
@@ -807,7 +852,7 @@ function nodeOutPoint(node: PositionedNode) {
 function nodeInPoint(node: PositionedNode) {
   return {
     x: node.type === 'trackInput' ? node.x + node.width : node.x,
-    y: node.y + node.height / 2,
+    y: node.y + PORT_ROW_Y,
   };
 }
 
@@ -923,7 +968,7 @@ function parameterPortAnchor(node: PositionedNode, parameterId: string | null) {
   const count = ports.length;
   const index = parameterId ? ports.findIndex((port) => port.parameterId === parameterId) : -1;
   if (count === 0 || index < 0) {
-    return { x: node.x, y: node.y + node.height / 2 };
+    return { x: node.x, y: node.y + PORT_ROW_Y };
   }
   const sectionTop = node.y + NODE_HEIGHT + PARAMETER_PORT_SECTION_TOP;
   const rowsTop = sectionTop + PARAMETER_PORT_SECTION_HEADER;
@@ -1212,96 +1257,10 @@ export function computeNodeDragPosition(
   };
 }
 
-// Track Input / Track Output are routing terminals, not modules you configure,
-// so they drop the card treatment entirely and render as a jack glyph: a block
-// arrow with a return loop, pointing into the chain for the input and out of it
-// for the output. Traced from ui/in.svg and ui/out.svg. Everything paints in
-// `currentColor` so the glyph inherits the node's themed text color, and the
-// in/out word rides inside the arrowhead in the app's own font (text-anchor
-// middle keeps it centered whatever font the theme resolves to).
-function TrackIoGlyph({ direction }: { direction: 'in' | 'out' }) {
-  const isIn = direction === 'in';
-  // The source artwork's own viewBox (0 0 W 476ish) is NOT centered on the
-  // glyph's content — the return-loop swirl leaves ~94 units of dead space
-  // above the arrow and almost none below, so the visual center of the icon
-  // sits at ~59% of the box height, not 50%. Centering that box in the node
-  // (as flex alignment does) would leave the cable's actual attachment point
-  // — the arrow's tip, a fixed y=274.42 in both source files — sitting above
-  // the connection dot instead of on it. Cropping the viewBox to 406 units
-  // tall, symmetric around y=274.42, re-centers the tip without touching a
-  // single path/polygon coordinate (a viewBox crop is a pure pan, not a
-  // rescale, when only one axis's range changes).
-  return (
-    <svg
-      className="xleth-graph-state-preview__io-glyph"
-      viewBox={isIn ? '0 71.42 424.82 406' : '0 71.42 443.5 406'}
-      role="presentation"
-      aria-hidden="true"
-      focusable="false"
-    >
-      <polygon
-        fill="currentColor"
-        points={isIn
-          ? '0 230.22 202.33 221.56 195.04 117.2 391.44 274.42 207.8 440.29 207.8 340.04 0 323.18 0 230.22'
-          : '52.06 230.22 254.38 221.56 247.09 117.2 443.5 274.42 259.85 440.29 259.85 340.04 52.06 323.18 52.06 230.22'}
-      />
-      <path
-        fill="none"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeMiterlimit={10}
-        strokeWidth={18}
-        d={isIn
-          ? 'M195.72,94.07c120.75-15.18,221.83,82.66,220.08,188.94-1.65,100.28-94.59,191.35-208.74,183.63'
-          : 'M229.1,93.02C108.36,77.84,7.27,175.68,9.02,281.95c1.65,100.28,94.59,191.35,208.74,183.63'}
-      />
-      <text
-        className="xleth-graph-state-preview__io-glyph-text"
-        x={isIn ? 272 : 305}
-        y={311.07}
-        textAnchor="middle"
-        fontSize={133.01}
-      >
-        {direction}
-      </text>
-    </svg>
-  );
-}
-
-// The standard power mark (a broken ring around a vertical stem), painted in
-// currentColor so the button's own themed state drives it.
-function PowerGlyph() {
-  return (
-    <svg
-      className="xleth-graph-state-preview__power-glyph"
-      viewBox="0 0 16 16"
-      role="presentation"
-      aria-hidden="true"
-      focusable="false"
-    >
-      <path
-        fill="none"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeWidth={1.8}
-        d="M5.1 4.4a4.6 4.6 0 1 0 5.8 0"
-      />
-      <line
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeWidth={1.8}
-        x1={8}
-        y1={2.2}
-        x2={8}
-        y2={7.6}
-      />
-    </svg>
-  );
-}
-
 export function GraphStatePreviewNode({
   node,
   dragging,
+  selected = false,
   connectEnabled,
   connectParameterEnabled = false,
   connectEnvelopeParameterEnabled = false,
@@ -1333,6 +1292,8 @@ export function GraphStatePreviewNode({
 }: {
   node: PositionedNode;
   dragging: boolean;
+  // The node is the selection: a 1px --ui-select outline.
+  selected?: boolean;
   connectEnabled: boolean;
   connectParameterEnabled?: boolean;
   connectEnvelopeParameterEnabled?: boolean;
@@ -1434,20 +1395,61 @@ export function GraphStatePreviewNode({
     typeof onNodeContextMenu === 'function';
   const canDoubleClickEdit =
     node.type === 'effect' && node.editable && !node.virtual && typeof onEdit === 'function';
-  const isTrackIo = node.type === 'trackInput' || node.type === 'trackOutput';
   // The author tag in an effect node's footer: 'XLETH' for a stock effect, the
   // scanned plugin's own vendor for a third party, nothing when neither resolves.
   const vendorTag = node.type === 'effect'
     ? resolveEffectVendorTag(node.pluginId, vstPlugins)
     : null;
   const macroPercent = node.macroValue == null ? null : Math.round(node.macroValue * 100);
-  const commitMacroValue = (event: React.SyntheticEvent<HTMLInputElement>) => {
-    const nextValue = Number(event.currentTarget.value);
-    if (Number.isFinite(nextValue)) onMacroValueCommit?.(node.id, nextValue);
-  };
   const commitMacroLabel = (event: React.SyntheticEvent<HTMLInputElement>) => {
     onMacroRenameCommit?.(node.id, event.currentTarget.value);
   };
+
+  // The one name shown for an effect is the device's own (the Devices tab and its pop-out use
+  // it); a canonical default label of the other nodes is shown in sentence case.
+  const displayName = node.type === 'effect'
+    ? (DEVICE_NAMES[node.pluginId ?? ''] ?? node.label)
+    : node.label === 'Sidechain Input' ? 'Sidechain input' : node.label;
+  const glyphName: GlyphName = node.type === 'trackInput'
+    ? 'nodeInput'
+    : node.type === 'trackOutput'
+      ? 'nodeOutput'
+      : node.type === 'macro'
+        ? 'nodeMacro'
+        : node.type === 'envelope'
+          ? 'nodeEnvelope'
+          : node.type === 'lfo'
+            ? 'nodeLfo'
+            : node.type === 'sidechainInput' ? 'nodeSidechain' : 'nodeEffect';
+  const hasAudioIn = node.type !== 'trackInput' && !isControlSource && !isSidechainInput;
+  const hasOut = node.type !== 'trackOutput';
+  const outLabel = isSidechainInput ? 'Key out' : isControlSource ? 'Parameter out' : 'Audio out';
+  const outSignal = isSidechainInput ? 'sidechain' : isControlSource ? 'parameter' : 'audio';
+  const sidechainName = isSidechainInput
+    ? (() => {
+        const sid = node.sidechainSourceTrackId;
+        if (sid == null) return 'No source';
+        return sidechainSources.find((s) => s.sourceTrackId === sid)?.name ?? null;
+      })()
+    : null;
+  const sidechainOptions: SelectOption<string>[] = isSidechainInput
+    ? [
+        { value: '', label: 'No source' },
+        ...(node.sidechainSourceTrackId != null
+          && !sidechainSources.some((s) => s.sourceTrackId === node.sidechainSourceTrackId)
+          ? [{ value: String(node.sidechainSourceTrackId), label: `Track ${node.sidechainSourceTrackId} (missing)` }]
+          : []),
+        ...sidechainSources.map((source) => ({ value: String(source.sourceTrackId), label: source.name })),
+      ]
+    : [];
+  const stop = (event: React.SyntheticEvent) => event.stopPropagation();
+  // Everything under the title bar that says what the node is: its kind, or its author.
+  const metaText = isSidechainInput
+    ? (sidechainName == null
+      ? 'Source missing'
+      : sidechainName === 'No source' ? 'No source' : `Keyed by: ${sidechainName}`)
+    : node.secondaryText ?? vendorTag;
+  const shownBadges = node.badges.filter((badge) => badge !== 'Bypassed');
 
   return (
     <div
@@ -1461,16 +1463,19 @@ export function GraphStatePreviewNode({
         hoveredAudioTarget ? 'xleth-graph-state-preview__node--audio-drop-target' : '',
         connectGuidance === 'valid' ? 'xleth-graph-state-preview__node--connect-valid-target' : '',
         connectGuidance === 'invalid' ? 'xleth-graph-state-preview__node--connect-invalid-target' : '',
+        nodeStyles.node,
       ].filter(Boolean).join(' ')}
       data-node-id={node.id}
       data-node-type={node.type}
+      data-selected={selected ? 'true' : undefined}
+      data-dragging={dragging ? 'true' : undefined}
       data-bypassed={node.type === 'effect' && node.bypassed ? 'true' : undefined}
       data-parameter-drop-node={hoveredParameterPortId ? 'true' : undefined}
       data-audio-drop-node={hoveredAudioTarget ? 'true' : undefined}
       data-connect-guidance={connectGuidance ?? undefined}
       data-preview-virtual={node.virtual ? 'true' : undefined}
       role="listitem"
-      aria-label={node.label}
+      aria-label={displayName}
       aria-grabbed={onPointerDown ? dragging : undefined}
       style={style}
       onPointerDown={onPointerDown ? (event) => onPointerDown(event, node) : undefined}
@@ -1480,14 +1485,16 @@ export function GraphStatePreviewNode({
       onContextMenu={canOpenContextMenu ? (event) => onNodeContextMenu?.(event, node) : undefined}
       onDoubleClick={canDoubleClickEdit ? (event) => { event.stopPropagation(); onEdit?.(node.id); } : undefined}
     >
-      {node.type !== 'trackInput' && node.type !== 'macro' && !isEnvelope && !isLfo && !isSidechainInput && (
+      {hasAudioIn && (
         <span
-          className="xleth-graph-state-preview__handle xleth-graph-state-preview__handle--in"
+          className={`xleth-graph-state-preview__handle xleth-graph-state-preview__handle--in ${nodeStyles.handle}`}
           data-audio-port-type="audio-input"
+          data-side="in"
+          data-signal="audio"
           aria-hidden="true"
         />
       )}
-      {node.type !== 'trackOutput' && !isSidechainInput && (
+      {hasOut && !isSidechainInput && (
         interactiveOut ? (
           <span
             className={[
@@ -1496,7 +1503,10 @@ export function GraphStatePreviewNode({
               'xleth-graph-state-preview__handle--connect-source',
               isControlSource ? 'xleth-graph-state-preview__handle--control-out' : '',
               isControlSource ? 'xleth-graph-state-preview__handle--connect-parameter-source' : '',
+              nodeStyles.handle,
             ].filter(Boolean).join(' ')}
+            data-side="out"
+            data-signal={outSignal}
             data-connect-source="true"
             data-connect-source-kind={controlSourceKind ?? 'audio'}
             data-control-output={isControlSource ? 'true' : undefined}
@@ -1516,7 +1526,10 @@ export function GraphStatePreviewNode({
               'xleth-graph-state-preview__handle',
               'xleth-graph-state-preview__handle--out',
               isControlSource ? 'xleth-graph-state-preview__handle--control-out' : '',
+              nodeStyles.handle,
             ].filter(Boolean).join(' ')}
+            data-side="out"
+            data-signal={outSignal}
             data-control-output={isControlSource ? 'true' : undefined}
             data-control-port-id={isControlSource ? `${controlSourceKind}:${node.id}:controlOut` : undefined}
             data-control-port-type={isControlSource ? `${controlSourceKind}-output` : undefined}
@@ -1535,7 +1548,10 @@ export function GraphStatePreviewNode({
               'xleth-graph-state-preview__handle--out',
               'xleth-graph-state-preview__handle--connect-source',
               'xleth-graph-state-preview__handle--sidechain-out',
+              nodeStyles.handle,
             ].join(' ')}
+            data-side="out"
+            data-signal="sidechain"
             data-connect-source="true"
             data-connect-source-kind="sidechain"
             data-sidechain-output="true"
@@ -1553,7 +1569,10 @@ export function GraphStatePreviewNode({
               'xleth-graph-state-preview__handle',
               'xleth-graph-state-preview__handle--out',
               'xleth-graph-state-preview__handle--sidechain-out',
+              nodeStyles.handle,
             ].join(' ')}
+            data-side="out"
+            data-signal="sidechain"
             data-sidechain-output="true"
             data-sidechain-port-id={`sidechain:${node.id}:sidechainOut`}
             data-sidechain-port-type="sidechain-output"
@@ -1561,130 +1580,92 @@ export function GraphStatePreviewNode({
           />
         )
       )}
-      {/* Effect power toggle. Bypass is otherwise a one-way trip in graph mode: a
-          chain converted with bypassed effects renders a "Bypassed" badge with no
-          affordance to clear it. Mirrors the Mixer Chain module's bypass button. */}
-      {node.type === 'effect' && !node.virtual && typeof onToggleBypass === 'function' && (
-        <button
-          className={[
-            'xleth-graph-state-preview__node-power',
-            node.bypassed ? 'xleth-graph-state-preview__node-power--bypassed' : '',
-          ].filter(Boolean).join(' ')}
-          type="button"
-          aria-pressed={node.bypassed}
-          aria-label={node.bypassed ? `Enable ${node.label}` : `Bypass ${node.label}`}
-          title={node.bypassed ? 'Enable' : 'Bypass'}
-          // The node body is a drag handle and a double-click editor target; neither
-          // should fire when the toggle is what was hit.
-          onPointerDown={(event) => event.stopPropagation()}
-          onDoubleClick={(event) => event.stopPropagation()}
-          onClick={(event) => {
-            event.stopPropagation();
-            onToggleBypass(node.id, !node.bypassed);
-          }}
-        >
-          <PowerGlyph />
-        </button>
+
+      <div className={nodeStyles.titlebar}>
+        <Icon name={glyphName} size={16} className={nodeStyles.glyph} data-node-glyph={glyphName} />
+        {node.type === 'macro' && typeof onMacroRenameCommit === 'function' ? (
+          <input
+            className={`xleth-graph-state-preview__macro-label ${nodeStyles.renameField}`}
+            type="text"
+            aria-label={`Rename ${node.label}`}
+            defaultValue={node.label}
+            onPointerDown={stop}
+            onBlur={commitMacroLabel}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.currentTarget.blur();
+              } else if (event.key === 'Escape') {
+                event.currentTarget.value = node.label;
+                event.currentTarget.blur();
+              }
+            }}
+          />
+        ) : (
+          <span className={`xleth-graph-state-preview__node-title ${nodeStyles.name}`}>{displayName}</span>
+        )}
+        {node.type === 'effect' && node.bypassed && <span className={nodeStyles.off}>Off</span>}
+        {/* The activator: the effect's bypass, a power Toggle that is the inverted chip while the
+            effect runs (the device frame's own control). Absent in the read-only preview. */}
+        {node.type === 'effect' && !node.virtual && typeof onToggleBypass === 'function' && (
+          <Toggle
+            size="sm"
+            className={`xleth-graph-state-preview__node-power ${nodeStyles.activator}`}
+            on={!node.bypassed}
+            onChange={(on) => onToggleBypass(node.id, !on)}
+            aria-label={`${displayName} on`}
+            hint={node.bypassed
+              ? `${displayName} is off (bypassed). Click to turn it on.`
+              : `${displayName} is on. Click to bypass it.`}
+            glyph={<IcPower aria-hidden="true" />}
+            // The node body is a drag handle and a double-click editor target; neither
+            // should fire when the activator is what was hit.
+            onPointerDown={stop}
+            onDoubleClick={stop}
+          />
+        )}
+      </div>
+
+      <div className={nodeStyles.portRow}>
+        {hasAudioIn && <span className={nodeStyles.portLabel} data-side="in">Audio in</span>}
+        {hasOut && <span className={nodeStyles.portLabel} data-side="out">{outLabel}</span>}
+      </div>
+
+      {node.type !== 'trackInput' && node.type !== 'trackOutput' && (
+        <div className={nodeStyles.meta}>
+          {metaText && (
+            <span
+              className={`${nodeStyles.metaText} ${vendorTag && !node.secondaryText ? 'xleth-graph-state-preview__node-vendor' : 'xleth-graph-state-preview__node-secondary'}`}
+              title={metaText}
+            >
+              {metaText}
+            </span>
+          )}
+          {shownBadges.map((badge) => (
+            <span className={`xleth-graph-state-preview__badge ${nodeStyles.badge}`} key={badge}>
+              {badge}
+            </span>
+          ))}
+        </div>
       )}
-      {node.type === 'macro' && typeof onMacroRenameCommit === 'function' ? (
-        <input
-          className="xleth-graph-state-preview__macro-label"
-          type="text"
-          aria-label={`Rename ${node.label}`}
-          defaultValue={node.label}
-          onPointerDown={(event) => event.stopPropagation()}
-          onBlur={commitMacroLabel}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') {
-              event.currentTarget.blur();
-            } else if (event.key === 'Escape') {
-              event.currentTarget.value = node.label;
-              event.currentTarget.blur();
-            }
-          }}
-        />
-      ) : (
-        <>
-          {isTrackIo && <TrackIoGlyph direction={node.type === 'trackInput' ? 'in' : 'out'} />}
-          {/* The glyph already reads "in"/"out", so on a terminal the title is
-              kept for assistive tech and visually clipped rather than removed. */}
-          <span
-            className={[
-              'xleth-graph-state-preview__node-title',
-              isTrackIo ? 'xleth-graph-state-preview__node-title--io' : '',
-            ].filter(Boolean).join(' ')}
-          >
-            {node.label}
-          </span>
-        </>
-      )}
-      {/* FXG-SC.6D — sidechainInput secondary text uses a resolved track name from
-          sidechainSources (available in the component) rather than the raw id from the
-          model (which only knows the persisted number). Other node types render their
-          model-computed secondaryText unchanged. */}
-      {(isSidechainInput
-        ? (() => {
-            const sid = node.sidechainSourceTrackId;
-            if (sid == null) return 'No source';
-            const found = sidechainSources.find((s) => s.sourceTrackId === sid);
-            return found ? `Keyed by: ${found.name}` : 'Source missing';
-          })()
-        : node.secondaryText) && (
-        <span className="xleth-graph-state-preview__node-secondary">
-          {isSidechainInput
-            ? (() => {
-                const sid = node.sidechainSourceTrackId;
-                if (sid == null) return 'No source';
-                const found = sidechainSources.find((s) => s.sourceTrackId === sid);
-                return found ? `Keyed by: ${found.name}` : 'Source missing';
-              })()
-            : node.secondaryText}
-        </span>
-      )}
-      {/* The effect's author, sitting at the foot of the name block: 'XLETH' on a
-          stock effect, the plugin's own vendor on a third party. It takes the row
-          the echoed pluginId used to occupy, so the node's height is unchanged. */}
-      {vendorTag && (
-        <span className="xleth-graph-state-preview__node-vendor" title={vendorTag}>
-          {vendorTag}
-        </span>
-      )}
+
       {/* FXG-SC.6B — Sidechain Input source selector. Lists "No source" plus eligible
           live tracks. A persisted-but-missing source id is shown as an extra stale
           option so the saved intent stays visible. Selecting commits the source. */}
       {isSidechainInput && (
-        <span className="xleth-graph-state-preview__sidechain-source">
-          <span className="xleth-graph-state-preview__sidechain-source-label" id={`sidechain-source-label-${node.id}`}>
-            Source
-          </span>
+        <span className={nodeStyles.sourceField} onPointerDown={stop} onDoubleClick={stop}>
+          <span id={`sidechain-source-label-${node.id}`}>Source</span>
           {typeof onSetSidechainSource === 'function' ? (
-            <select
+            <Select<string>
+              size="sm"
               className="xleth-graph-state-preview__sidechain-source-select"
-              aria-labelledby={`sidechain-source-label-${node.id}`}
-              aria-label={`${node.label} source track`}
-              value={node.sidechainSourceTrackId == null ? '' : String(node.sidechainSourceTrackId)}
+              ariaLabel={`${node.label} source track`}
               data-sidechain-source-track={node.sidechainSourceTrackId == null ? '' : String(node.sidechainSourceTrackId)}
-              onPointerDown={(event) => event.stopPropagation()}
-              onChange={(event) => {
-                const raw = event.currentTarget.value;
-                onSetSidechainSource(node.id, raw === '' ? null : Number(raw));
-              }}
-            >
-              <option value="">No source</option>
-              {node.sidechainSourceTrackId != null &&
-                !sidechainSources.some((s) => s.sourceTrackId === node.sidechainSourceTrackId) && (
-                  <option value={String(node.sidechainSourceTrackId)}>
-                    {`Track ${node.sidechainSourceTrackId} (missing)`}
-                  </option>
-                )}
-              {sidechainSources.map((source) => (
-                <option key={source.sourceTrackId} value={String(source.sourceTrackId)}>
-                  {source.name}
-                </option>
-              ))}
-            </select>
+              value={node.sidechainSourceTrackId == null ? '' : String(node.sidechainSourceTrackId)}
+              options={sidechainOptions}
+              onChange={(raw) => onSetSidechainSource(node.id, raw === '' ? null : Number(raw))}
+            />
           ) : (
-            <span className="xleth-graph-state-preview__sidechain-source-static">
+            <span className={`xleth-graph-state-preview__sidechain-source-static ${nodeStyles.sourceStatic}`}>
               {/* FXG-SC.6D — resolve track name from sidechainSources; fall back to
                   "Track N (missing)" for a stale saved source id. */}
               {node.sidechainSourceTrackId == null
@@ -1719,50 +1700,37 @@ export function GraphStatePreviewNode({
           }
         />
       )}
-      {node.type === 'macro' && node.macroValue != null && (
-        <span className="xleth-graph-state-preview__macro-control">
-          <span className="xleth-graph-state-preview__macro-value">
-            {macroPercent}%
-          </span>
-          <input
+      {node.type === 'macro' && macroPercent != null && (
+        <span
+          className={`xleth-graph-state-preview__macro-control ${nodeStyles.macroControl}`}
+          onPointerDown={stop}
+          onDoubleClick={stop}
+        >
+          <NumberBox
             className="xleth-graph-state-preview__macro-slider"
-            type="range"
-            min="0"
-            max="1"
-            step="0.01"
-            defaultValue={node.macroValue}
-            aria-label={`${node.label} macro value`}
-            onPointerDown={(event) => event.stopPropagation()}
-            onPointerUp={commitMacroValue}
-            onBlur={commitMacroValue}
-            onKeyUp={(event) => {
-              if (
-                event.key === 'Enter' ||
-                event.key.startsWith('Arrow') ||
-                event.key === 'Home' ||
-                event.key === 'End'
-              ) {
-                commitMacroValue(event);
-              }
-            }}
+            label={`${node.label} macro value`}
+            hideLabel
+            width={124}
+            value={macroPercent}
+            defaultValue={0}
+            min={0}
+            max={100}
+            step={1}
+            unit="%"
+            onCommit={(next) => onMacroValueCommit?.(node.id, next / 100)}
           />
         </span>
       )}
-      {node.badges.length > 0 && (
-        <span className="xleth-graph-state-preview__badges">
-          {node.badges.map((badge) => (
-            <span className="xleth-graph-state-preview__badge" key={badge}>
-              {badge}
-            </span>
-          ))}
-        </span>
-      )}
       {node.parameterPorts.length > 0 && (
-        <span className="xleth-graph-state-preview__parameter-section">
-          <span className="xleth-graph-state-preview__parameter-section-label">
+        <span className={`xleth-graph-state-preview__parameter-section ${nodeStyles.section}`}>
+          <span className={`xleth-graph-state-preview__parameter-section-label ${nodeStyles.sectionLabel}`}>
             Parameters
           </span>
-          <span className="xleth-graph-state-preview__parameter-ports" role="list" aria-label={`${node.label} parameter inputs`}>
+          <span
+            className={`xleth-graph-state-preview__parameter-ports ${nodeStyles.ports}`}
+            role="list"
+            aria-label={`${node.label} parameter inputs`}
+          >
             {node.parameterPorts.map((port) => {
               const portId = `gpp:${node.id}:${port.parameterId}`;
               const hovered = hoveredParameterPortId === portId;
@@ -1771,6 +1739,7 @@ export function GraphStatePreviewNode({
                   className={[
                     'xleth-graph-state-preview__parameter-port',
                     hovered ? 'xleth-graph-state-preview__parameter-port--hovered' : '',
+                    nodeStyles.port,
                   ].filter(Boolean).join(' ')}
                   role="listitem"
                   key={port.parameterId}
@@ -1781,8 +1750,12 @@ export function GraphStatePreviewNode({
                   data-parameter-port-type="parameter-input"
                   data-drop-target-hovered={hovered ? 'true' : undefined}
                 >
-                  <span className="xleth-graph-state-preview__parameter-port-dot" aria-hidden="true" />
-                  <span className="xleth-graph-state-preview__parameter-port-label">
+                  <span
+                    className={`xleth-graph-state-preview__parameter-port-dot ${nodeStyles.portMark}`}
+                    data-signal="parameter"
+                    aria-hidden="true"
+                  />
+                  <span className={`xleth-graph-state-preview__parameter-port-label ${nodeStyles.portLabelText}`}>
                     {port.nameSnapshot}
                   </span>
                 </span>
@@ -1794,11 +1767,12 @@ export function GraphStatePreviewNode({
       {/* Sidechain key target port. Distinct from audio
           and parameter ports; only accepts a sidechainInput.sidechainOut drop. */}
       {node.type === 'effect' && node.sidechainTarget && (
-        <span className="xleth-graph-state-preview__sidechain-section">
+        <span className={`xleth-graph-state-preview__sidechain-section ${nodeStyles.keySection}`}>
           <span
             className={[
               'xleth-graph-state-preview__sidechain-port',
               hoveredSidechainPort ? 'xleth-graph-state-preview__sidechain-port--hovered' : '',
+              nodeStyles.port,
             ].filter(Boolean).join(' ')}
             role="listitem"
             title="Sidechain key input"
@@ -1807,8 +1781,12 @@ export function GraphStatePreviewNode({
             data-sidechain-port-type="sidechain-input"
             data-drop-target-hovered={hoveredSidechainPort ? 'true' : undefined}
           >
-            <span className="xleth-graph-state-preview__sidechain-port-dot" aria-hidden="true" />
-            <span className="xleth-graph-state-preview__sidechain-port-label">Sidechain</span>
+            <span
+              className={`xleth-graph-state-preview__sidechain-port-dot ${nodeStyles.portMark}`}
+              data-signal="sidechain"
+              aria-hidden="true"
+            />
+            <span className={`xleth-graph-state-preview__sidechain-port-label ${nodeStyles.portLabelText}`}>Sidechain key</span>
           </span>
         </span>
       )}
@@ -1816,9 +1794,44 @@ export function GraphStatePreviewNode({
   );
 }
 
-// FXG.4-g — bezier SVG canvas dimensions.
-const BEZ_W = 220;
-const BEZ_H = 110;
+// FXG.4-g — bezier SVG canvas dimensions (the sheet's 304px of body width).
+const BEZ_W = 304;
+const BEZ_H = 120;
+
+const pct = (value: number) => Math.round(value * 100);
+
+function MappingPercentBox({
+  label,
+  value,
+  min,
+  max,
+  bipolar = false,
+  defaultValue,
+  onCommit,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  bipolar?: boolean;
+  defaultValue: number;
+  onCommit: (next: number) => void;
+}) {
+  return (
+    <NumberBox
+      label={label}
+      width={96}
+      value={pct(value)}
+      defaultValue={pct(defaultValue)}
+      min={min}
+      max={max}
+      bipolar={bipolar}
+      step={1}
+      unit="%"
+      onCommit={(next) => onCommit(next / 100)}
+    />
+  );
+}
 
 export function ParameterEdgeMappingEditor({
   edgeId,
@@ -1873,7 +1886,7 @@ export function ParameterEdgeMappingEditor({
   const preview0 = evaluateParameterMapping(edge.mapping, 0);
   const preview50 = evaluateParameterMapping(edge.mapping, 0.5);
   const preview100 = evaluateParameterMapping(edge.mapping, 1);
-  const fmtPct = (v: number | null) => v == null ? '—' : `${Math.round(v * 100)}%`;
+  const fmtPct = (v: number | null) => v == null ? '—' : formatValue(Math.round(v * 100), '%');
 
   const handleStartDrag = (which: 1 | 2) => (event: React.PointerEvent<SVGCircleElement>) => {
     event.stopPropagation();
@@ -1912,199 +1925,177 @@ export function ParameterEdgeMappingEditor({
   };
 
   return (
-    <div
-      className="xleth-graph-state-preview__mapping-editor"
-      role="dialog"
-      aria-label={`Edit mapping: ${sourceLabel} to ${targetLabel}`}
-      style={{ left: x, top: y }}
-      onPointerDown={(e) => e.stopPropagation()}
-      onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}
-      data-mapping-editor-id={edgeId}
+    <SheetFrame
+      title={`${sourceLabel} → ${targetLabel}`}
+      ariaLabel={`Edit mapping: ${sourceLabel} to ${targetLabel}`}
+      glyph="nodeMacro"
+      initialPosition={typeof window === 'undefined'
+        ? { x, y }
+        : clampSheetPoint({ x, y }, { width: window.innerWidth, height: window.innerHeight })}
+      onClose={onClose}
+      closeClassName="xleth-graph-state-preview__mapping-editor-close"
+      dataAttributes={{ 'data-mapping-editor-id': edgeId }}
     >
-      <div className="xleth-graph-state-preview__mapping-editor-header">
-        <span className="xleth-graph-state-preview__mapping-editor-title" title={`${sourceLabel} → ${targetLabel}`}>
-          {sourceLabel} <span aria-hidden="true">→</span> {targetLabel}
-        </span>
-        <button
-          className="xleth-graph-state-preview__mapping-editor-close"
-          type="button"
-          aria-label="Close mapping editor"
-          onClick={onClose}
-        >×</button>
-      </div>
-
-      <label className="xleth-graph-state-preview__mapping-editor-enabled">
-        <input
-          type="checkbox"
-          defaultChecked={mapping.enabled}
-          onChange={(e) => onUpdate(edgeId, { enabled: e.target.checked })}
-        />
-        Enabled
-      </label>
-
-      {/* EVC-R4 — the output section depends on the mapping kind. A modulation edge
-          (Envelope) edits Base + signed Depth; a range edge (Macro) keeps the absolute
-          Min/Max output range. There is deliberately no second, unlabelled scale on the
-          Envelope node any more: Depth is the only one. */}
-      {isModulation ? (
-        <div className="xleth-graph-state-preview__mapping-editor-section">
-          <div className="xleth-graph-state-preview__mapping-editor-section-title">Modulation</div>
-          <div className="xleth-graph-state-preview__mapping-editor-hint">
-            Value = Base + Depth × envelope. Base is the parameter&apos;s own setting; the
-            envelope only offsets it.
-          </div>
-          <div className="xleth-graph-state-preview__mapping-editor-range-row xleth-graph-state-preview__mapping-editor-range-row--modulation">
-            <span className="xleth-graph-state-preview__mapping-editor-range-label">Base</span>
-            <input
-              className="xleth-graph-state-preview__mapping-editor-range-slider"
-              type="range" min="0" max="1" step="0.01" defaultValue={mapping.base}
-              aria-label="Modulation base"
-              onPointerUp={(e) => onUpdate(edgeId, { base: parseFloat((e.target as HTMLInputElement).value) })}
-            />
-            <input
-              className="xleth-graph-state-preview__mapping-editor-range-num"
-              type="number" min="0" max="1" step="0.01" defaultValue={mapping.base}
-              aria-label="Modulation base value"
-              onBlur={(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) onUpdate(edgeId, { base: clampUnit(v) }); }}
-            />
-          </div>
-          <div className="xleth-graph-state-preview__mapping-editor-range-row xleth-graph-state-preview__mapping-editor-range-row--modulation">
-            <span className="xleth-graph-state-preview__mapping-editor-range-label">Depth</span>
-            <input
-              className="xleth-graph-state-preview__mapping-editor-range-slider"
-              type="range" min="-1" max="1" step="0.01" defaultValue={mapping.depth}
-              aria-label="Modulation depth"
-              onPointerUp={(e) => onUpdate(edgeId, { depth: parseFloat((e.target as HTMLInputElement).value) })}
-            />
-            <input
-              className="xleth-graph-state-preview__mapping-editor-range-num"
-              type="number" min="-1" max="1" step="0.01" defaultValue={mapping.depth}
-              aria-label="Modulation depth value"
-              onBlur={(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) onUpdate(edgeId, { depth: clampSignedUnit(v) }); }}
-            />
-          </div>
-        </div>
-      ) : (
-        <div className="xleth-graph-state-preview__mapping-editor-section">
-          <div className="xleth-graph-state-preview__mapping-editor-section-title">Output Range</div>
-          <div className="xleth-graph-state-preview__mapping-editor-range-row">
-            <span className="xleth-graph-state-preview__mapping-editor-range-label">Min</span>
-            <input
-              className="xleth-graph-state-preview__mapping-editor-range-slider"
-              type="range" min="0" max="1" step="0.01" defaultValue={mapping.targetMin}
-              aria-label="Target min"
-              onPointerUp={(e) => onUpdate(edgeId, { targetMin: parseFloat((e.target as HTMLInputElement).value) })}
-            />
-            <input
-              className="xleth-graph-state-preview__mapping-editor-range-num"
-              type="number" min="0" max="1" step="0.01" defaultValue={mapping.targetMin}
-              aria-label="Target min value"
-              onBlur={(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) onUpdate(edgeId, { targetMin: clampUnit(v) }); }}
-            />
-          </div>
-          <div className="xleth-graph-state-preview__mapping-editor-range-row">
-            <span className="xleth-graph-state-preview__mapping-editor-range-label">Max</span>
-            <input
-              className="xleth-graph-state-preview__mapping-editor-range-slider"
-              type="range" min="0" max="1" step="0.01" defaultValue={mapping.targetMax}
-              aria-label="Target max"
-              onPointerUp={(e) => onUpdate(edgeId, { targetMax: parseFloat((e.target as HTMLInputElement).value) })}
-            />
-            <input
-              className="xleth-graph-state-preview__mapping-editor-range-num"
-              type="number" min="0" max="1" step="0.01" defaultValue={mapping.targetMax}
-              aria-label="Target max value"
-              onBlur={(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) onUpdate(edgeId, { targetMax: clampUnit(v) }); }}
-            />
-          </div>
-        </div>
-      )}
-
-      <div className="xleth-graph-state-preview__mapping-editor-section">
-        <div className="xleth-graph-state-preview__mapping-editor-section-title">Curve</div>
-        <div className="xleth-graph-state-preview__mapping-editor-curve-tabs" role="group" aria-label="Curve type">
-          <button
-            className={`xleth-graph-state-preview__mapping-editor-curve-tab${!isBezier ? ' xleth-graph-state-preview__mapping-editor-curve-tab--active' : ''}`}
-            type="button"
-            aria-pressed={!isBezier}
-            onClick={() => onUpdate(edgeId, { curve: { type: 'linear' } })}
-          >Linear</button>
-          <button
-            className={`xleth-graph-state-preview__mapping-editor-curve-tab${isBezier ? ' xleth-graph-state-preview__mapping-editor-curve-tab--active' : ''}`}
-            type="button"
-            aria-pressed={isBezier}
-            onClick={() => { if (!isBezier) onUpdate(edgeId, { curve: createDefaultBezierCurve() }); }}
-          >Bezier</button>
+      <div className={`xleth-graph-state-preview__mapping-editor ${modStyles.editor}`}>
+        <div className={modStyles.row}>
+          <Toggle
+            size="sm"
+            on={mapping.enabled}
+            glyph={<IcCheckFill aria-hidden="true" />}
+            onChange={(next) => onUpdate(edgeId, { enabled: next })}
+          >
+            Enabled
+          </Toggle>
         </div>
 
-        <svg
-          ref={svgRef}
-          className="xleth-graph-state-preview__mapping-editor-bezier-svg"
-          width={BEZ_W}
-          height={BEZ_H}
-          aria-label="Curve editor"
-          role="img"
-          onPointerMove={isBezier ? handleDragMove : undefined}
-          onPointerUp={isBezier ? handleDragEnd : undefined}
-          onPointerCancel={isBezier ? handleDragEnd : undefined}
+        {/* EVC-R4 — the output section depends on the mapping kind. A modulation edge
+            (Envelope, LFO) edits Base + signed Depth; a range edge (Macro) keeps the absolute
+            Min/Max output range. There is deliberately no second, unlabelled scale on the
+            source node: Depth is the only one. */}
+        {isModulation ? (
+          <section className={modStyles.section} aria-label="Modulation">
+            <div className={modStyles.sectionTitle}>Modulation</div>
+            <div className={`xleth-graph-state-preview__mapping-editor-hint ${modStyles.note}`}>
+              Value = Base + Depth × source. Base is the parameter&apos;s own setting; the
+              source only offsets it.
+            </div>
+            <div className={modStyles.grid}>
+              <MappingPercentBox
+                label="Base"
+                value={mapping.base}
+                min={0}
+                max={100}
+                defaultValue={0}
+                onCommit={(next) => onUpdate(edgeId, { base: clampUnit(next) })}
+              />
+              <MappingPercentBox
+                label="Depth"
+                value={mapping.depth}
+                min={-100}
+                max={100}
+                bipolar
+                defaultValue={1}
+                onCommit={(next) => onUpdate(edgeId, { depth: clampSignedUnit(next) })}
+              />
+            </div>
+          </section>
+        ) : (
+          <section className={modStyles.section} aria-label="Output range">
+            <div className={modStyles.sectionTitle}>Output range</div>
+            <div className={modStyles.grid}>
+              <MappingPercentBox
+                label="Min"
+                value={mapping.targetMin}
+                min={0}
+                max={100}
+                defaultValue={0}
+                onCommit={(next) => onUpdate(edgeId, { targetMin: clampUnit(next) })}
+              />
+              <MappingPercentBox
+                label="Max"
+                value={mapping.targetMax}
+                min={0}
+                max={100}
+                defaultValue={1}
+                onCommit={(next) => onUpdate(edgeId, { targetMax: clampUnit(next) })}
+              />
+            </div>
+          </section>
+        )}
+
+        <section className={modStyles.section} aria-label="Curve">
+          <div className={modStyles.sectionTitle}>Curve</div>
+          <SegmentedControl<string>
+            size="sm"
+            label="Curve type"
+            value={isBezier ? 'bezier' : 'linear'}
+            options={[
+              { value: 'linear', label: 'Linear' },
+              { value: 'bezier', label: 'Bezier' },
+            ]}
+            onChange={(kind) => {
+              if (kind === 'linear') onUpdate(edgeId, { curve: { type: 'linear' } });
+              else if (!isBezier) onUpdate(edgeId, { curve: createDefaultBezierCurve() });
+            }}
+          />
+
+          <span className={`${modStyles.display} ${modStyles.displayEditor}`}>
+            <svg
+              ref={svgRef}
+              className={`xleth-graph-state-preview__mapping-editor-bezier-svg ${modStyles.graph}`}
+              width={BEZ_W}
+              height={BEZ_H}
+              aria-label="Curve editor"
+              role="img"
+              onPointerMove={isBezier ? handleDragMove : undefined}
+              onPointerUp={isBezier ? handleDragEnd : undefined}
+              onPointerCancel={isBezier ? handleDragEnd : undefined}
+            >
+              {/* Grid */}
+              {[0.25, 0.5, 0.75].map((q) => (
+                <React.Fragment key={q}>
+                  <line x1={BEZ_W * q} y1="0" x2={BEZ_W * q} y2={BEZ_H} className={`xleth-graph-state-preview__mapping-editor-bezier-grid ${modStyles.bezGrid}`} />
+                  <line x1="0" y1={BEZ_H * q} x2={BEZ_W} y2={BEZ_H * q} className={`xleth-graph-state-preview__mapping-editor-bezier-grid ${modStyles.bezGrid}`} />
+                </React.Fragment>
+              ))}
+              {/* Curve path */}
+              <path d={bezierPathD} className={`xleth-graph-state-preview__mapping-editor-bezier-path ${modStyles.bezPath}`} />
+              {/* Control handles (bezier only) */}
+              {isBezier && displayPoints && (
+                <>
+                  <line x1="0" y1={BEZ_H} x2={cp1svgX} y2={cp1svgY} className={`xleth-graph-state-preview__mapping-editor-bezier-handle-line ${modStyles.bezHandleLine}`} />
+                  <line x1={BEZ_W} y1="0" x2={cp2svgX} y2={cp2svgY} className={`xleth-graph-state-preview__mapping-editor-bezier-handle-line ${modStyles.bezHandleLine}`} />
+                  <circle
+                    cx={cp1svgX} cy={cp1svgY} r={11}
+                    className={`xleth-graph-state-preview__mapping-editor-bezier-cp ${modStyles.bezHit}`}
+                    aria-label="Control point 1 (drag to shape curve)"
+                    onPointerDown={handleStartDrag(1)}
+                  />
+                  <circle cx={cp1svgX} cy={cp1svgY} r={4} className={modStyles.bezCp} aria-hidden="true" />
+                  <circle
+                    cx={cp2svgX} cy={cp2svgY} r={11}
+                    className={`xleth-graph-state-preview__mapping-editor-bezier-cp ${modStyles.bezHit}`}
+                    aria-label="Control point 2 (drag to shape curve)"
+                    onPointerDown={handleStartDrag(2)}
+                  />
+                  <circle cx={cp2svgX} cy={cp2svgY} r={4} className={modStyles.bezCp} aria-hidden="true" />
+                </>
+              )}
+              {/* Fixed endpoint markers */}
+              <circle cx="0" cy={BEZ_H} r={3} className={`xleth-graph-state-preview__mapping-editor-bezier-endpoint ${modStyles.bezEnd}`} />
+              <circle cx={BEZ_W} cy="0" r={3} className={`xleth-graph-state-preview__mapping-editor-bezier-endpoint ${modStyles.bezEnd}`} />
+            </svg>
+          </span>
+        </section>
+
+        {/* Resulting parameter value at three source positions. For a modulation edge the 0%
+            row IS the base value, which is the clearest possible statement of "idle = base". */}
+        <div
+          className={`xleth-graph-state-preview__mapping-editor-preview ${modStyles.previewRow}`}
+          aria-label={isModulation ? 'Modulation preview' : 'Mapping preview'}
         >
-          {/* Grid */}
-          <line x1={BEZ_W * 0.25} y1="0" x2={BEZ_W * 0.25} y2={BEZ_H} className="xleth-graph-state-preview__mapping-editor-bezier-grid" />
-          <line x1={BEZ_W * 0.5}  y1="0" x2={BEZ_W * 0.5}  y2={BEZ_H} className="xleth-graph-state-preview__mapping-editor-bezier-grid" />
-          <line x1={BEZ_W * 0.75} y1="0" x2={BEZ_W * 0.75} y2={BEZ_H} className="xleth-graph-state-preview__mapping-editor-bezier-grid" />
-          <line x1="0" y1={BEZ_H * 0.25} x2={BEZ_W} y2={BEZ_H * 0.25} className="xleth-graph-state-preview__mapping-editor-bezier-grid" />
-          <line x1="0" y1={BEZ_H * 0.5}  x2={BEZ_W} y2={BEZ_H * 0.5}  className="xleth-graph-state-preview__mapping-editor-bezier-grid" />
-          <line x1="0" y1={BEZ_H * 0.75} x2={BEZ_W} y2={BEZ_H * 0.75} className="xleth-graph-state-preview__mapping-editor-bezier-grid" />
-          {/* Curve path */}
-          <path d={bezierPathD} className="xleth-graph-state-preview__mapping-editor-bezier-path" />
-          {/* Control handles (bezier only) */}
-          {isBezier && displayPoints && (
-            <>
-              <line x1="0" y1={BEZ_H} x2={cp1svgX} y2={cp1svgY} className="xleth-graph-state-preview__mapping-editor-bezier-handle-line" />
-              <line x1={BEZ_W} y1="0" x2={cp2svgX} y2={cp2svgY} className="xleth-graph-state-preview__mapping-editor-bezier-handle-line" />
-              <circle
-                cx={cp1svgX} cy={cp1svgY} r={6}
-                className="xleth-graph-state-preview__mapping-editor-bezier-cp"
-                aria-label="Control point 1 (drag to shape curve)"
-                style={{ cursor: 'grab' }}
-                onPointerDown={handleStartDrag(1)}
-              />
-              <circle
-                cx={cp2svgX} cy={cp2svgY} r={6}
-                className="xleth-graph-state-preview__mapping-editor-bezier-cp"
-                aria-label="Control point 2 (drag to shape curve)"
-                style={{ cursor: 'grab' }}
-                onPointerDown={handleStartDrag(2)}
-              />
-            </>
-          )}
-          {/* Fixed endpoint markers */}
-          <circle cx="0" cy={BEZ_H} r={3} className="xleth-graph-state-preview__mapping-editor-bezier-endpoint" />
-          <circle cx={BEZ_W} cy="0" r={3} className="xleth-graph-state-preview__mapping-editor-bezier-endpoint" />
-        </svg>
+          {([['At 0', preview0.value], ['At 50', preview50.value], ['At 100', preview100.value]] as const).map(([label, v]) => (
+            <span className={`xleth-graph-state-preview__mapping-editor-preview-item ${modStyles.previewItem}`} key={label}>
+              <span className={`xleth-graph-state-preview__mapping-editor-preview-label ${modStyles.note}`}>{`${label} %:`}</span>
+              {fmtPct(v)}
+            </span>
+          ))}
+        </div>
       </div>
-
-      {/* Resulting parameter value at three source positions. For a modulation edge the 0%
-          row IS the base value, which is the clearest possible statement of "idle = base". */}
-      <div
-        className="xleth-graph-state-preview__mapping-editor-preview"
-        aria-label={isModulation ? 'Modulation preview' : 'Mapping preview'}
-      >
-        <span className="xleth-graph-state-preview__mapping-editor-preview-item">
-          <span className="xleth-graph-state-preview__mapping-editor-preview-label">0%:</span>
-          {fmtPct(preview0.value)}
-        </span>
-        <span className="xleth-graph-state-preview__mapping-editor-preview-item">
-          <span className="xleth-graph-state-preview__mapping-editor-preview-label">50%:</span>
-          {fmtPct(preview50.value)}
-        </span>
-        <span className="xleth-graph-state-preview__mapping-editor-preview-item">
-          <span className="xleth-graph-state-preview__mapping-editor-preview-label">100%:</span>
-          {fmtPct(preview100.value)}
-        </span>
-      </div>
-    </div>
+    </SheetFrame>
   );
+}
+
+// Keeps the menu inside the window: its top-left is where the right-click was, moved up or left
+// only as far as it needs to fit (the menu is 280px wide and at most as tall as the window).
+const NODE_MENU_WIDTH = 280;
+const NODE_MENU_EST_HEIGHT = 360;
+function menuPosition(x: number, y: number): React.CSSProperties {
+  if (typeof window === 'undefined') return { left: x, top: y };
+  return {
+    left: Math.max(8, Math.min(x, window.innerWidth - NODE_MENU_WIDTH - 8)),
+    top: Math.max(8, Math.min(y, window.innerHeight - NODE_MENU_EST_HEIGHT)),
+  };
 }
 
 export function filterExposeParameterDescriptors(
@@ -2165,16 +2156,16 @@ export function GraphParameterContextMenu({
     const laneVisible = macroAutomation?.exists ? macroAutomation.visible : false;
     return (
       <div
-        className="xleth-graph-state-preview__context-menu"
+        className={`xleth-graph-state-preview__context-menu ${menuStyles.menu}`}
         role="menu"
         aria-label={`${node.label} node menu`}
-        style={{ left: x, top: y }}
+        style={menuPosition(x, y)}
         onPointerDown={(event) => event.stopPropagation()}
         onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }}
       >
-        <div className="xleth-graph-state-preview__context-title">{node.label}</div>
+        <div className={`xleth-graph-state-preview__context-title ${menuStyles.title}`}>{node.label}</div>
         <button
-          className="xleth-graph-state-preview__context-item"
+          className={`xleth-graph-state-preview__context-item ${menuStyles.item}`}
           type="button"
           role="menuitem"
           disabled={!canRemove}
@@ -2182,36 +2173,36 @@ export function GraphParameterContextMenu({
         >
           Remove
         </button>
-        <div className="xleth-graph-state-preview__context-section">
-          <div className="xleth-graph-state-preview__context-section-title">
+        <div className={`xleth-graph-state-preview__context-section ${menuStyles.section}`}>
+          <div className={`xleth-graph-state-preview__context-section-title ${menuStyles.sectionTitle}`}>
             Automation
           </div>
           <button
-            className="xleth-graph-state-preview__context-item"
+            className={`xleth-graph-state-preview__context-item ${menuStyles.item}`}
             type="button"
             role="menuitemcheckbox"
             aria-checked={laneVisible}
             disabled={!onShowAutomationLane && !onHideAutomationLane}
             onClick={laneVisible ? onHideAutomationLane : onShowAutomationLane}
           >
-            <span className="xleth-graph-state-preview__parameter-check" aria-hidden="true">
-              {laneVisible ? 'On' : ''}
+            <span className={`xleth-graph-state-preview__parameter-check ${menuStyles.check}`} aria-hidden="true">
+              {laneVisible ? <IcCheck size={14} /> : null}
             </span>
-            <span className="xleth-graph-state-preview__parameter-name">
-              {laneVisible ? 'Hide Automation Lane' : 'Show Automation Lane'}
+            <span className={`xleth-graph-state-preview__parameter-name ${menuStyles.name}`}>
+              {laneVisible ? 'Hide automation lane' : 'Show automation lane'}
             </span>
           </button>
           <button
-            className="xleth-graph-state-preview__context-item"
+            className={`xleth-graph-state-preview__context-item ${menuStyles.item}`}
             type="button"
             role="menuitem"
             disabled={!onCreateAutomationClip}
             onClick={onCreateAutomationClip}
           >
-            Create Automation Clip
+            Create automation clip
           </button>
           {macroAutomation?.exists && (
-            <div className="xleth-graph-state-preview__context-empty">
+            <div className={`xleth-graph-state-preview__context-empty ${menuStyles.empty}`}>
               {macroAutomation.clipCount === 1
                 ? '1 automation clip'
                 : `${macroAutomation.clipCount} automation clips`}
@@ -2229,16 +2220,16 @@ export function GraphParameterContextMenu({
   if (node.type === 'envelope' || node.type === 'lfo') {
     return (
       <div
-        className="xleth-graph-state-preview__context-menu"
+        className={`xleth-graph-state-preview__context-menu ${menuStyles.menu}`}
         role="menu"
         aria-label={`${node.label} node menu`}
-        style={{ left: x, top: y }}
+        style={menuPosition(x, y)}
         onPointerDown={(event) => event.stopPropagation()}
         onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }}
       >
-        <div className="xleth-graph-state-preview__context-title">{node.label}</div>
+        <div className={`xleth-graph-state-preview__context-title ${menuStyles.title}`}>{node.label}</div>
         <button
-          className="xleth-graph-state-preview__context-item"
+          className={`xleth-graph-state-preview__context-item ${menuStyles.item}`}
           type="button"
           role="menuitem"
           disabled={!canRemove}
@@ -2267,19 +2258,19 @@ export function GraphParameterContextMenu({
 
   return (
     <div
-      className="xleth-graph-state-preview__context-menu"
+      className={`xleth-graph-state-preview__context-menu ${menuStyles.menu}`}
       role="menu"
       aria-label={`${node.label} node menu`}
-      style={{ left: x, top: y }}
+      style={menuPosition(x, y)}
       onPointerDown={(event) => event.stopPropagation()}
       onContextMenu={(event) => {
         event.preventDefault();
         event.stopPropagation();
       }}
     >
-      <div className="xleth-graph-state-preview__context-title">{node.label}</div>
+      <div className={`xleth-graph-state-preview__context-title ${menuStyles.title}`}>{node.label}</div>
       <button
-        className="xleth-graph-state-preview__context-item"
+        className={`xleth-graph-state-preview__context-item ${menuStyles.item}`}
         type="button"
         role="menuitem"
         disabled={!canEdit || !node.editable}
@@ -2288,7 +2279,7 @@ export function GraphParameterContextMenu({
         Edit
       </button>
       <button
-        className="xleth-graph-state-preview__context-item"
+        className={`xleth-graph-state-preview__context-item ${menuStyles.item}`}
         type="button"
         role="menuitemcheckbox"
         aria-checked={node.bypassed}
@@ -2298,7 +2289,7 @@ export function GraphParameterContextMenu({
         {node.bypassed ? 'Enable' : 'Bypass'}
       </button>
       <button
-        className="xleth-graph-state-preview__context-item"
+        className={`xleth-graph-state-preview__context-item ${menuStyles.item}`}
         type="button"
         role="menuitem"
         disabled={!canRemove}
@@ -2307,13 +2298,13 @@ export function GraphParameterContextMenu({
         Remove
       </button>
 
-      <div className="xleth-graph-state-preview__context-section">
-        <div className="xleth-graph-state-preview__context-section-title">
-          Expose Parameter
+      <div className={`xleth-graph-state-preview__context-section ${menuStyles.section}`}>
+        <div className={`xleth-graph-state-preview__context-section-title ${menuStyles.sectionTitle}`}>
+          Expose parameter
         </div>
         {showSearch && (
           <input
-            className="xleth-graph-state-preview__parameter-search"
+            className={`xleth-graph-state-preview__parameter-search ${menuStyles.search}`}
             type="search"
             aria-label="Search parameters"
             placeholder="Search parameters"
@@ -2322,36 +2313,36 @@ export function GraphParameterContextMenu({
           />
         )}
         {loading && (
-          <div className="xleth-graph-state-preview__context-empty" role="status">
+          <div className={`xleth-graph-state-preview__context-empty ${menuStyles.empty}`} role="status">
             Loading parameters...
           </div>
         )}
         {!loading && result?.ok === false && (
-          <div className="xleth-graph-state-preview__context-empty" role="alert">
+          <div className={`xleth-graph-state-preview__context-empty ${menuStyles.empty}`} role="alert">
             {describeParamFailure(result.reason)}
           </div>
         )}
         {!loading && result?.ok && visibleParameterCount === 0 && search.length === 0 && (
-          <div className="xleth-graph-state-preview__context-empty">
+          <div className={`xleth-graph-state-preview__context-empty ${menuStyles.empty}`}>
             This effect exposes no parameters.
           </div>
         )}
         {!loading && result?.ok && visibleParameterCount === 0 && search.length > 0 && (
-          <div className="xleth-graph-state-preview__context-empty">
+          <div className={`xleth-graph-state-preview__context-empty ${menuStyles.empty}`}>
             No parameters match.
           </div>
         )}
         {!loading && result?.ok && visibleParameterCount > 0 && (
-          <div className="xleth-graph-state-preview__parameter-list" role="group" aria-label="Exposed Parameters">
+          <div className={`xleth-graph-state-preview__parameter-list ${menuStyles.list}`} role="group" aria-label="Exposed Parameters">
             {parameterGroups.map((group) => (
               <div
-                className="xleth-graph-state-preview__parameter-group"
+                className={`xleth-graph-state-preview__parameter-group ${menuStyles.group}`}
                 role="group"
                 aria-label={group.groupLabel ?? 'Parameters'}
                 key={group.groupLabel ?? 'parameters'}
               >
                 {group.groupLabel && (
-                  <div className="xleth-graph-state-preview__parameter-group-title">
+                  <div className={`xleth-graph-state-preview__parameter-group-title ${menuStyles.groupTitle}`}>
                     {group.groupLabel}
                   </div>
                 )}
@@ -2361,7 +2352,7 @@ export function GraphParameterContextMenu({
                   const exposed = exposedIds.has(parameter.parameterId);
                   return (
                     <button
-                      className={`xleth-graph-state-preview__parameter-item${exposed ? ' xleth-graph-state-preview__parameter-item--exposed' : ''}`}
+                      className={`xleth-graph-state-preview__parameter-item${exposed ? ' xleth-graph-state-preview__parameter-item--exposed' : ''} ${menuStyles.item}`}
                       type="button"
                       role="menuitemcheckbox"
                       aria-checked={exposed}
@@ -2373,14 +2364,14 @@ export function GraphParameterContextMenu({
                       title={parameter.name || item.label}
                       onClick={() => onToggleParameter?.(parameter)}
                     >
-                      <span className="xleth-graph-state-preview__parameter-check" aria-hidden="true">
-                        {exposed ? 'On' : ''}
+                      <span className={`xleth-graph-state-preview__parameter-check ${menuStyles.check}`} aria-hidden="true">
+                        {exposed ? <IcCheck size={14} /> : null}
                       </span>
-                      <span className="xleth-graph-state-preview__parameter-name">
+                      <span className={`xleth-graph-state-preview__parameter-name ${menuStyles.name}`}>
                         {item.label}
                       </span>
                       {!writable && (
-                        <span className="xleth-graph-state-preview__parameter-state">
+                        <span className={`xleth-graph-state-preview__parameter-state ${menuStyles.state}`}>
                           Read-only
                         </span>
                       )}
@@ -2407,73 +2398,6 @@ export function GraphParameterContextMenu({
 // `pointer-events: auto`, so a generic menu portaled here renders but never
 // receives clicks. Modulators are a grouped section, not a hover submenu —
 // nothing to hover-target and no second positioning system to maintain.
-export interface GraphCanvasAddMenuAction {
-  key: string;
-  label: string;
-  disabled?: boolean;
-  title?: string;
-  onSelect: () => void;
-}
-
-export function GraphCanvasAddMenu({
-  x,
-  y,
-  pluginAction = null,
-  modulatorActions = [],
-}: {
-  x: number;
-  y: number;
-  pluginAction?: GraphCanvasAddMenuAction | null;
-  modulatorActions?: GraphCanvasAddMenuAction[];
-}) {
-  return (
-    <div
-      className="xleth-graph-state-preview__context-menu xleth-graph-state-preview__add-menu"
-      role="menu"
-      aria-label="Add graph node"
-      style={{ left: x, top: y }}
-      onPointerDown={(event) => event.stopPropagation()}
-      onContextMenu={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-      }}
-    >
-      {pluginAction && (
-        <button
-          className="xleth-graph-state-preview__context-item"
-          type="button"
-          role="menuitem"
-          disabled={pluginAction.disabled}
-          title={pluginAction.title}
-          onClick={pluginAction.onSelect}
-        >
-          {pluginAction.label}
-        </button>
-      )}
-      {modulatorActions.length > 0 && (
-        <div className="xleth-graph-state-preview__context-section">
-          <div className="xleth-graph-state-preview__context-section-title">
-            Add Modulator
-          </div>
-          {modulatorActions.map((action) => (
-            <button
-              className="xleth-graph-state-preview__context-item"
-              type="button"
-              role="menuitem"
-              key={action.key}
-              disabled={action.disabled}
-              title={action.title}
-              onClick={action.onSelect}
-            >
-              {action.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 export default function GraphStatePreview({
   graphState = null,
   notice = 'Persisted graphState. Linear routing is enabled for supported paths.',
@@ -2617,7 +2541,58 @@ export default function GraphStatePreview({
   const canvasStyle: React.CSSProperties = {
     transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
   };
-  const hasHeader = notice != null || model.empty;
+  // The grid follows pan and zoom through custom properties only (see GraphCanvas.module.css).
+  const gridStep = GRID_CELL_PX * viewport.zoom;
+  const viewportStyle = {
+    '--grid-x': `${viewport.x}px`,
+    '--grid-y': `${viewport.y}px`,
+    '--grid-step': `${gridStep}px`,
+  } as React.CSSProperties;
+
+  // The viewport's size, for the minimap's visible-window outline and its show rule.
+  const [viewSize, setViewSize] = React.useState<{ width: number; height: number } | null>(null);
+  React.useEffect(() => {
+    const element = viewportRef.current;
+    if (!element || typeof ResizeObserver === 'undefined') return undefined;
+    const measure = () => {
+      const rect = element.getBoundingClientRect();
+      setViewSize((prev) => (
+        prev && prev.width === rect.width && prev.height === rect.height
+          ? prev
+          : { width: rect.width, height: rect.height }
+      ));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  // Cable hover and selection. Hover is ignored while a node drags or a cable is being drawn.
+  const [hoveredEdgeId, setHoveredEdgeId] = React.useState<string | null>(null);
+  const [selectedEdgeId, setSelectedEdgeId] = React.useState<string | null>(null);
+  // One selection at a time: a node or a cable.
+  const [selectedNodeId, setSelectedNodeId] = React.useState<string | null>(null);
+  const hoverClearTimerRef = React.useRef<number | null>(null);
+  const hoverEdge = React.useCallback((edgeId: string) => {
+    if (hoverClearTimerRef.current != null) {
+      window.clearTimeout(hoverClearTimerRef.current);
+      hoverClearTimerRef.current = null;
+    }
+    setHoveredEdgeId(edgeId);
+  }, []);
+  // A short grace period, so the pointer can travel from the cable to its buttons.
+  const unhoverEdge = React.useCallback(() => {
+    if (hoverClearTimerRef.current != null) window.clearTimeout(hoverClearTimerRef.current);
+    hoverClearTimerRef.current = window.setTimeout(() => {
+      hoverClearTimerRef.current = null;
+      setHoveredEdgeId(null);
+    }, 160);
+  }, []);
+  React.useEffect(() => () => {
+    if (hoverClearTimerRef.current != null) window.clearTimeout(hoverClearTimerRef.current);
+  }, []);
+  const hasHeader = notice != null;
   const canDragNodes = typeof onNodePositionChange === 'function' || typeof onSpliceNodeIntoEdge === 'function';
   const canEditViewport = typeof onViewportChange === 'function';
   const canAddNode = typeof onAddEffectNode === 'function';
@@ -2679,34 +2654,37 @@ export default function GraphStatePreview({
     add?.(position);
   }, [addMenu?.graphPosition, closeAddMenu]);
 
-  // Outside-click / Escape close for the add menu. Mirrors the node context
-  // menu's effect below; the shared `__context-menu` class is what marks a
-  // click as "inside a menu".
-  React.useEffect(() => {
-    if (!addMenu) return undefined;
+  // The structural empty state: only the two terminals are in the graph. Its one action opens
+  // the same add menu, under the button, placing the node at the middle of the view.
+  const nothingBetweenTerminals = model.nodes.every(
+    (node) => node.type === 'trackInput' || node.type === 'trackOutput',
+  );
+  const emptyStateRef = React.useRef<HTMLDivElement | null>(null);
+  const openAddMenuFromEmptyState = React.useCallback(() => {
+    const anchor = emptyStateRef.current?.getBoundingClientRect();
+    const view = viewportRef.current?.getBoundingClientRect();
+    const z = viewport.zoom || 1;
+    const graphPosition = view
+      ? {
+          x: (view.width / 2 - viewport.x) / z - PREVIEW_PADDING_X - NODE_WIDTH / 2,
+          y: (view.height / 2 - viewport.y) / z - PREVIEW_PADDING_Y - NODE_HEIGHT / 2,
+        }
+      : { x: 0, y: 0 };
+    closeContextMenu();
+    menuOpenViewportRef.current = viewport;
+    setAddMenu({
+      x: anchor ? anchor.left + 8 : 0,
+      y: anchor ? anchor.bottom : 0,
+      graphPosition,
+    });
+  }, [closeContextMenu, viewport]);
 
-    const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target;
-      if (
-        typeof Element !== 'undefined' &&
-        target instanceof Element &&
-        target.closest('.xleth-graph-state-preview__context-menu')
-      ) {
-        return;
-      }
-      closeAddMenu();
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeAddMenu();
-    };
-
-    document.addEventListener('pointerdown', handlePointerDown);
-    document.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.removeEventListener('pointerdown', handlePointerDown);
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [addMenu, closeAddMenu]);
+  // Choosing an effect in the shared picker adds it where the menu was opened.
+  const addEffectFromMenu = React.useCallback((selection: GraphEffectSelection) => {
+    const position = addMenu?.graphPosition;
+    closeAddMenu();
+    onAddEffectNode?.(selection, position);
+  }, [addMenu?.graphPosition, closeAddMenu, onAddEffectNode]);
 
   // Pan/zoom invalidates a menu's screen anchor (and the add menu's graph-space
   // spawn point), so either menu closes as soon as the viewport it opened under
@@ -2928,6 +2906,8 @@ export default function GraphStatePreview({
     // When Space is held the viewport pan handler takes over; let the event bubble.
     if (spaceDownRef.current) return;
 
+    setSelectedNodeId(node.id);
+    setSelectedEdgeId(null);
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -2990,6 +2970,8 @@ export default function GraphStatePreview({
     const isMiddle = event.button === 1;
     const isLeft   = event.button === 0;
     if (!isLeft && !isMiddle) return;
+    setSelectedEdgeId(null);
+    setSelectedNodeId(null);
 
     // Left-click without Space: skip if pointer is over a node (node drag takes over).
     // Middle-click or Space+left always pans regardless of target.
@@ -3308,6 +3290,35 @@ export default function GraphStatePreview({
     }
   }, [onConnectMacroToParameter, onConnectEnvelopeToParameter, onConnectLfoToParameter, onConnectSidechain, onConnectNodes, resetConnect]);
 
+  // A selected cable that has since been removed is no longer selected.
+  const activeSelectedEdgeId = selectedEdgeId != null && model.edges.some((edge) => edge.id === selectedEdgeId)
+    ? selectedEdgeId
+    : null;
+  const cableGestureActive = draggingNodeId != null || connectingFromNodeId != null;
+  const activeSelectedNodeId = selectedNodeId != null && model.nodes.some((node) => node.id === selectedNodeId)
+    ? selectedNodeId
+    : null;
+
+  // The minimap shows once any node lies outside the visible window.
+  const graphExceedsView = React.useMemo(() => {
+    if (!viewSize || model.empty) return false;
+    const z = viewport.zoom || 1;
+    const left = -viewport.x / z + MINIMAP_MARGIN_PX;
+    const top = -viewport.y / z + MINIMAP_MARGIN_PX;
+    const right = (viewSize.width - viewport.x) / z - MINIMAP_MARGIN_PX;
+    const bottom = (viewSize.height - viewport.y) / z - MINIMAP_MARGIN_PX;
+    return model.nodes.some((node) => (
+      !node.virtual
+      && (node.x < left || node.y < top || node.x + node.width > right || node.y + node.height > bottom)
+    ));
+  }, [model.empty, model.nodes, viewSize, viewport.x, viewport.y, viewport.zoom]);
+  const minimapEdges = React.useMemo(
+    () => (Array.isArray(graphState?.edges) ? graphState.edges : [])
+      .filter((edge) => edge.type === 'audio' || edge.type === 'parameter' || edge.type === 'sidechain')
+      .map((edge) => ({ sourceNodeId: edge.sourceNodeId, targetNodeId: edge.targetNodeId, type: edge.type })),
+    [graphState?.edges],
+  );
+
   const connectingNode = connectingFromNodeId
     ? model.nodes.find((node) => node.id === connectingFromNodeId)
     : undefined;
@@ -3352,27 +3363,27 @@ export default function GraphStatePreview({
 
   return (
     <section
-      className="xleth-graph-state-preview"
+      className={`xleth-graph-state-preview ${canvasStyles.preview}`}
+      data-fx-graph-preview="true"
       aria-label={canEditViewport ? 'Persisted FX graph workspace' : 'Read-only persisted FX graph preview'}
       data-read-only="true"
       data-draggable-nodes={canDragNodes ? 'true' : undefined}
       data-workspace-active={canEditViewport ? 'true' : undefined}
     >
       {hasHeader && (
-        <div className="xleth-graph-state-preview__chrome">
+        <div className={`xleth-graph-state-preview__chrome ${canvasStyles.chrome}`}>
           <div className="xleth-graph-state-preview__header">
             {notice != null && (
-              <p className="xleth-graph-state-preview__notice">{notice}</p>
-            )}
-            {model.empty && (
-              <p className="xleth-graph-state-preview__empty-title">Empty FX Graph</p>
+              <p className={`xleth-graph-state-preview__notice ${canvasStyles.notice}`}>{notice}</p>
             )}
           </div>
         </div>
       )}
       <div
-        className="xleth-graph-state-preview__viewport"
+        className={`xleth-graph-state-preview__viewport ${canvasStyles.viewport}`}
         ref={viewportRef}
+        style={viewportStyle}
+        data-grid-minor={gridStep >= GRID_MINOR_MIN_PX ? undefined : 'false'}
         data-pannable={canEditViewport ? 'true' : undefined}
         data-panning={panning ? 'true' : undefined}
         onPointerDown={canEditViewport ? handleViewportPointerDown : undefined}
@@ -3383,9 +3394,9 @@ export default function GraphStatePreview({
         onContextMenu={canAddAnything ? handleCanvasContextMenu : undefined}
         onDoubleClick={canEditViewport ? handleCanvasDoubleClick : undefined}
       >
-        <div className="xleth-graph-state-preview__stage" data-preview-scroll-stage="true">
+        <div className={`xleth-graph-state-preview__stage ${canvasStyles.stage}`} data-preview-scroll-stage="true">
           <div
-            className="xleth-graph-state-preview__canvas"
+            className={`xleth-graph-state-preview__canvas ${canvasStyles.canvas}`}
             ref={canvasRef}
             style={canvasStyle}
             data-node-dragging={draggingNodeId != null ? 'true' : undefined}
@@ -3394,39 +3405,64 @@ export default function GraphStatePreview({
             data-parameter-drop-target={hoveredParameterTarget?.portId ?? undefined}
           >
             <svg
-              className="xleth-graph-state-preview__edges"
+              className={`xleth-graph-state-preview__edges ${canvasStyles.edges}`}
               role="img"
               aria-label="Static graph cables"
             >
               {model.edges.map((edge) => (
-                <path
-                  className={[
-                    'xleth-graph-state-preview__edge',
-                    `xleth-graph-state-preview__edge--${edge.type}`,
-                    edge.id === spliceTargetEdgeId ? 'xleth-graph-state-preview__edge--splice-target' : '',
-                  ].filter(Boolean).join(' ')}
-                  data-edge-id={edge.id}
-                  data-edge-type={edge.type}
-                  data-splice-target={edge.id === spliceTargetEdgeId ? 'true' : undefined}
-                  key={edge.id}
-                  d={edge.path}
-                  aria-label={edge.label}
-                />
+                <React.Fragment key={edge.id}>
+                  {edge.id === activeSelectedEdgeId && (
+                    <path className={canvasStyles.halo} d={edge.path} aria-hidden="true" />
+                  )}
+                  <path
+                    className={[
+                      'xleth-graph-state-preview__edge',
+                      `xleth-graph-state-preview__edge--${edge.type}`,
+                      edge.id === spliceTargetEdgeId ? 'xleth-graph-state-preview__edge--splice-target' : '',
+                      canvasStyles.cable,
+                    ].filter(Boolean).join(' ')}
+                    data-edge-id={edge.id}
+                    data-edge-type={edge.type}
+                    data-splice-target={edge.id === spliceTargetEdgeId ? 'true' : undefined}
+                    data-hovered={edge.id === hoveredEdgeId && !cableGestureActive ? 'true' : undefined}
+                    data-selected={edge.id === activeSelectedEdgeId ? 'true' : undefined}
+                    d={edge.path}
+                    aria-label={edge.label}
+                  />
+                  {canDisconnect && (
+                    <path
+                      className={canvasStyles.hit}
+                      data-edge-hit-for={edge.id}
+                      d={edge.path}
+                      aria-hidden="true"
+                      onPointerEnter={cableGestureActive ? undefined : () => hoverEdge(edge.id)}
+                      onPointerLeave={unhoverEdge}
+                      onPointerDown={(event) => {
+                        if (event.button !== 0) return;
+                        // Picking a cable must not start a pan.
+                        event.stopPropagation();
+                        setSelectedEdgeId(edge.id);
+                        setSelectedNodeId(null);
+                      }}
+                    />
+                  )}
+                </React.Fragment>
               ))}
               {connectLinePath && (
                 <path
-                  className="xleth-graph-state-preview__edge xleth-graph-state-preview__edge--connecting"
+                  className={`xleth-graph-state-preview__edge xleth-graph-state-preview__edge--connecting ${canvasStyles.connecting}`}
                   d={connectLinePath}
                   aria-hidden="true"
                 />
               )}
             </svg>
-            <div className="xleth-graph-state-preview__nodes" role="list">
+            <div className={`xleth-graph-state-preview__nodes ${canvasStyles.nodes}`} role="list">
               {model.nodes.map((node) => (
                 <GraphStatePreviewNode
                   key={node.id}
                   node={node}
                   dragging={draggingNodeId === node.id}
+                  selected={node.id === activeSelectedNodeId}
                   connectEnabled={canConnect}
                   connectParameterEnabled={canConnectParameters}
                   connectEnvelopeParameterEnabled={canConnectEnvelopeParameters}
@@ -3463,59 +3499,71 @@ export default function GraphStatePreview({
               ))}
             </div>
             {(canDisconnect || canEditMappings) && (
-              <div className="xleth-graph-state-preview__overlay" aria-label="Graph cable controls">
+              <div className={`xleth-graph-state-preview__overlay ${canvasStyles.overlay}`} aria-label="Graph cable controls">
                 {model.edges
                   .filter((edge) => edge.type === 'audio' || edge.type === 'parameter' || edge.type === 'sidechain')
-                  .map((edge) => (
-                    <React.Fragment key={edge.id}>
-                      {canDisconnect && (
-                        <button
-                          className={`xleth-graph-state-preview__disconnect xleth-graph-state-preview__disconnect--${edge.type}`}
-                          type="button"
-                          style={{ left: edge.midX, top: edge.midY }}
-                          data-edge-id={edge.id}
-                          data-edge-type={edge.type}
-                          aria-label={`Disconnect ${edge.label}`}
-                          onPointerDown={(event) => event.stopPropagation()}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            onDisconnectEdge?.(edge.id);
-                          }}
-                        >
-                          {'×'}
-                        </button>
-                      )}
-                      {edge.type === 'parameter' && canEditMappings && (
-                        <button
-                          className={[
-                            'xleth-graph-state-preview__disconnect',
-                            'xleth-graph-state-preview__disconnect--parameter',
-                            'xleth-graph-state-preview__edge-edit',
-                            mappingEditorState?.edgeId === edge.id
-                              ? 'xleth-graph-state-preview__edge-edit--open'
-                              : '',
-                          ].filter(Boolean).join(' ')}
-                          type="button"
-                          style={{ left: edge.midX - 22, top: edge.midY }}
-                          data-edge-id={edge.id}
-                          data-edge-type={edge.type}
-                          aria-label={`Edit mapping for ${edge.label}`}
-                          aria-pressed={mappingEditorState?.edgeId === edge.id}
-                          onPointerDown={(event) => event.stopPropagation()}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setMappingEditorState((prev) =>
-                              prev?.edgeId === edge.id
-                                ? null
-                                : { edgeId: edge.id, x: event.clientX + 12, y: event.clientY - 20 },
-                            );
-                          }}
-                        >
-                          {'~'}
-                        </button>
-                      )}
-                    </React.Fragment>
-                  ))}
+                  .map((edge) => {
+                    const buttonsActive = !cableGestureActive
+                      && (edge.id === hoveredEdgeId || edge.id === activeSelectedEdgeId);
+                    return (
+                      <React.Fragment key={edge.id}>
+                        {canDisconnect && (
+                          <button
+                            className={`xleth-graph-state-preview__disconnect xleth-graph-state-preview__disconnect--${edge.type} ${canvasStyles.cableButton}`}
+                            type="button"
+                            style={{ left: edge.midX, top: edge.midY }}
+                            data-edge-id={edge.id}
+                            data-edge-type={edge.type}
+                            data-active={buttonsActive ? 'true' : undefined}
+                            aria-label={`Disconnect ${edge.label}`}
+                            onPointerEnter={() => hoverEdge(edge.id)}
+                            onPointerLeave={unhoverEdge}
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onDisconnectEdge?.(edge.id);
+                            }}
+                          >
+                            <IcX size={14} aria-hidden="true" />
+                          </button>
+                        )}
+                        {edge.type === 'parameter' && canEditMappings && (
+                          <button
+                            className={[
+                              'xleth-graph-state-preview__disconnect',
+                              'xleth-graph-state-preview__disconnect--parameter',
+                              'xleth-graph-state-preview__edge-edit',
+                              mappingEditorState?.edgeId === edge.id
+                                ? 'xleth-graph-state-preview__edge-edit--open'
+                                : '',
+                              canvasStyles.cableButton,
+                            ].filter(Boolean).join(' ')}
+                            type="button"
+                            style={{ left: edge.midX - 26, top: edge.midY }}
+                            data-edge-id={edge.id}
+                            data-edge-type={edge.type}
+                            data-active={buttonsActive ? 'true' : undefined}
+                            data-open={mappingEditorState?.edgeId === edge.id ? 'true' : undefined}
+                            aria-label={`Edit mapping for ${edge.label}`}
+                            aria-pressed={mappingEditorState?.edgeId === edge.id}
+                            onPointerEnter={() => hoverEdge(edge.id)}
+                            onPointerLeave={unhoverEdge}
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setMappingEditorState((prev) =>
+                                prev?.edgeId === edge.id
+                                  ? null
+                                  : { edgeId: edge.id, x: event.clientX + 12, y: event.clientY - 20 },
+                              );
+                            }}
+                          >
+                            <IcBezierCurve size={14} aria-hidden="true" />
+                          </button>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
               </div>
             )}
           </div>
@@ -3562,40 +3610,37 @@ export default function GraphStatePreview({
             // Same containing-block trap as the node context menu above — portal
             // past the floating panel's transformed frame so the menu's
             // clientX/clientY coordinates resolve against the viewport.
-            <GraphCanvasAddMenu
+            <GraphAddMenu
               x={addMenu.x}
               y={addMenu.y}
-              pluginAction={canAddNode ? {
-                key: 'plugin',
-                label: 'Add Plugin',
-                onSelect: () => runAddMenuAction(onAddEffectNode),
-              } : null}
-              modulatorActions={[
-                ...(canAddMacro ? [{
-                  key: 'macro',
-                  label: 'Macro',
-                  onSelect: () => runAddMenuAction(onAddMacroNode),
-                }] : []),
-                ...(canAddEnvelope ? [{
-                  key: 'envelope',
-                  label: 'Envelope',
-                  onSelect: () => runAddMenuAction(onAddEnvelopeNode),
-                }] : []),
-                ...(canAddLfo ? [{
-                  key: 'lfo',
-                  label: 'LFO',
-                  onSelect: () => runAddMenuAction(onAddLfoNode),
-                }] : []),
-                ...(canAddSidechainInput ? [{
-                  key: 'sidechainInput',
-                  label: 'Sidechain Input',
-                  disabled: hasSidechainInputNode,
-                  title: hasSidechainInputNode
-                    ? 'This graph already has a Sidechain Input node'
-                    : 'Add a Sidechain Input node',
-                  onSelect: () => runAddMenuAction(onAddSidechainInput),
-                }] : []),
-              ]}
+              onClose={closeAddMenu}
+              items={buildGraphAddMenuItems({
+                vstPlugins,
+                onAddEffect: canAddNode ? addEffectFromMenu : null,
+                modulators: [
+                  ...(canAddMacro ? [{
+                    key: 'macro',
+                    label: 'Macro',
+                    onSelect: () => runAddMenuAction(onAddMacroNode),
+                  }] : []),
+                  ...(canAddEnvelope ? [{
+                    key: 'envelope',
+                    label: 'Envelope',
+                    onSelect: () => runAddMenuAction(onAddEnvelopeNode),
+                  }] : []),
+                  ...(canAddLfo ? [{
+                    key: 'lfo',
+                    label: 'LFO',
+                    onSelect: () => runAddMenuAction(onAddLfoNode),
+                  }] : []),
+                  ...(canAddSidechainInput ? [{
+                    key: 'sidechainInput',
+                    label: 'Sidechain input',
+                    disabled: hasSidechainInputNode,
+                    onSelect: () => runAddMenuAction(onAddSidechainInput),
+                  }] : []),
+                ],
+              })}
             />,
             document.body,
           )}
@@ -3630,6 +3675,46 @@ export default function GraphStatePreview({
             );
           })()}
         </div>
+        {canEditViewport && !model.empty && (
+          <div
+            className={canvasStyles.controls}
+            onPointerDown={(event) => event.stopPropagation()}
+            onWheel={(event) => event.stopPropagation()}
+            onContextMenu={(event) => event.stopPropagation()}
+            onDoubleClick={(event) => event.stopPropagation()}
+          >
+            <IconButton label="Fit graph to view" size="sm" onClick={handleFitView}>
+              <IcFrameCorners size={14} aria-hidden="true" />
+            </IconButton>
+            <span className={canvasStyles.zoomReadout} aria-label="Zoom">
+              {formatValue(viewport.zoom * 100, '%')}
+            </span>
+          </div>
+        )}
+        {canAddAnything && nothingBetweenTerminals && (
+          <div
+            className={canvasStyles.emptyState}
+            ref={emptyStateRef}
+            onPointerDown={(event) => event.stopPropagation()}
+            onDoubleClick={(event) => event.stopPropagation()}
+            onContextMenu={(event) => event.stopPropagation()}
+          >
+            <EmptyState
+              message="Nothing between Track input and Track output yet."
+              actionLabel="Add node"
+              onAction={openAddMenuFromEmptyState}
+            />
+          </div>
+        )}
+        {canEditViewport && viewSize && graphExceedsView && onViewportChange && (
+          <GraphMinimap
+            nodes={model.nodes}
+            edges={minimapEdges}
+            viewport={{ x: viewport.x, y: viewport.y, zoom: viewport.zoom }}
+            viewSize={viewSize}
+            onViewportChange={onViewportChange}
+          />
+        )}
       </div>
     </section>
   );

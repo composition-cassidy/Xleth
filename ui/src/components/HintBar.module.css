@@ -1,0 +1,35 @@
+/* Hint bar (ui/DESIGN.md sections 7-8): names the hovered control and its
+ * modifiers. Documentation lives here, not in tooltips. */
+@layer kit {
+  .bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    height: var(--shell-hintbar-h);
+    min-width: 0;
+    padding: 0 var(--space-3);
+    overflow: hidden;
+    background: var(--ui-g2);
+    border-top: 1px solid var(--ui-g4);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+    line-height: var(--shell-hintbar-h);
+    white-space: nowrap;
+  }
+
+  .hint {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--ui-ink-2);
+    text-overflow: ellipsis;
+  }
+
+  .mods {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--ui-ink-3);
+    text-overflow: ellipsis;
+  }
+}

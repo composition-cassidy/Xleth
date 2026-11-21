@@ -7,22 +7,19 @@
 // The plugin registry itself lives in the engine worker; these are pass-throughs.
 
 const { ipcMain, dialog } = require('electron');
-const { callWorker } = require('./worker');
 let getWin = () => null;
 
 
 function init(deps) {
-  const { safeHandler } = deps;  if (deps && typeof deps.getWin === 'function') getWin = deps.getWin;
+  if (deps && typeof deps.getWin === 'function') getWin = deps.getWin;
 
   // ── VST3 plugin scanner ───────────────────────────────────────────────────────
 
-  // scanPlugins stays hand-written: it reshapes its argument
-  // (paths && paths.length ? [paths] : []) before forwarding, which a generic
-  // manifest pass-through cannot express. The scan-progress/scanned/failed
-  // queries, the plugin-editor window methods, the missing-plugin helpers, and
-  // crash recovery all migrated to the RPC manifest (ui/rpc-manifest.js).
-  ipcMain.handle('xleth:audio:scanPlugins',
-    safeHandler((_, paths) => callWorker('audio_scanPlugins', paths && paths.length ? [paths] : [])));
+  // The whole scan surface (scanPlugins / cancelPluginScan / getScanProgress /
+  // getScannedPlugins / getFailedPlugins / retryFailedPlugins /
+  // get+setPluginSearchPaths), the plugin-editor window methods, the
+  // missing-plugin helpers, and crash recovery are RPC-manifest pass-throughs
+  // (ui/rpc-manifest.js). Search paths are engine-owned since P1.
 
   // addVstSearchPath owns a native Electron directory picker, not an engine
   // call, so it stays hand-written (the established xleth:dialog:* pattern).

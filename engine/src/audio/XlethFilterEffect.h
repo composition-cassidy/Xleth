@@ -918,6 +918,24 @@ public:
         return slots_[slotIndex].effQ.load(std::memory_order_relaxed);
     }
 
+    // True once the audio thread has composed this slot at least once, i.e. the
+    // getSlotEffective* readings mean something.
+    bool getSlotTelemetryValid(int slotIndex) const
+    {
+        if (slotIndex < 0 || slotIndex >= kMaxSlots) return false;
+        return slots_[slotIndex].effValid.load(std::memory_order_relaxed);
+    }
+
+    // One lane's RAW source value: -1..+1 for an LFO, 0..1 for an Envelope or a
+    // follower, 0 for an inert lane.  Unlike getLaneEnvelope this is signed, so
+    // an LFO's own swing can be animated from it.
+    float getLaneSource(int slotIndex, int lane) const
+    {
+        if (slotIndex < 0 || slotIndex >= kMaxSlots) return 0.0f;
+        if (lane < 0 || lane >= xleth_filter::kMaxModsPerSlot) return 0.0f;
+        return slots_[slotIndex].lanes[lane].srcOut.load(std::memory_order_relaxed);
+    }
+
     // One lane's modulator output in [0,1] — the follower's envelope for a Dyn
     // lane, the ADSR value for an Env lane, 0 for anything inert.
     float getLaneEnvelope(int slotIndex, int lane) const
@@ -1015,6 +1033,7 @@ public:
                 // Read-only telemetry.
                 m["env"]         = ln.envOut.load(std::memory_order_relaxed);
                 m["accent"]      = ln.accentOut.load(std::memory_order_relaxed);
+                m["src"]         = ln.srcOut.load(std::memory_order_relaxed);
                 mods.push_back(std::move(m));
             }
             s["mods"] = std::move(mods);
@@ -1022,6 +1041,11 @@ public:
             // Read-only slot telemetry (see getSlotEffectiveCutoff).
             s["eff_cutoff"]  = slots_[i].effCutoffHz.load(std::memory_order_relaxed);
             s["eff_q"]       = slots_[i].effQ.load(std::memory_order_relaxed);
+            s["eff_gain"]    = slots_[i].effGainDb.load(std::memory_order_relaxed);
+            s["eff_morph"]   = slots_[i].effMorph.load(std::memory_order_relaxed);
+            s["eff_drive"]   = slots_[i].effDriveDb.load(std::memory_order_relaxed);
+            s["eff_mix"]     = slots_[i].effMix.load(std::memory_order_relaxed);
+            s["eff_valid"]   = slots_[i].effValid.load(std::memory_order_relaxed);
             s["dyn_env"]     = getSlotDynamicEnvelope(i);
             s["dyn_accent"]  = getSlotAccentCharge(i);
             arr.push_back(std::move(s));
@@ -1034,7 +1058,17 @@ public:
     // frequencies from 20 Hz to 20 kHz.  Coefficients are derived on the fly
     // from the current APVTS values, so the curve is correct even with no audio
     // flowing.  Drive is a nonlinearity and is (necessarily) not modelled.
-    void getResponseCurve(float* outBuf, int outSize) const
+    //
+    // `live` swaps the five modulatable curve inputs (cutoff, Q, gain, morph,
+    // mix) for the slot's EFFECTIVE telemetry, so the curve is where the filter
+    // actually is this instant rather than where its knobs are parked — that is
+    // what makes the panel's graph move with an LFO.  A slot whose telemetry has
+    // never been written falls back to its parameters, so a curve requested
+    // before any audio has flowed is still the right curve.  Self-oscillation is
+    // deliberately NOT taken from the telemetry: the DSP decides it from the
+    // user's own Q (see updateSlotBlock), and reading it back from a modulated Q
+    // would make the drawn curve claim an oscillation the filter is not doing.
+    void getResponseCurve(float* outBuf, int outSize, bool live = false) const
     {
         const int    n     = std::min(outSize, kResponseSize);
         const int    count = slotCount_.load(std::memory_order_relaxed);
@@ -1074,11 +1108,24 @@ public:
             const auto type  = clampType(static_cast<int>(std::lround(readParam(i, "type"))));
             const int  slope = std::clamp(
                 static_cast<int>(std::lround(readParam(i, "slope"))), 0, kNumSlopes - 1);
-            const double cut   = readParam(i, "cutoff");
-            const double q     = readParam(i, "q");
-            const double gain  = readParam(i, "gain");
-            const double morph = readParam(i, "morph");
-            L.mix = std::clamp(static_cast<double>(readParam(i, "mix")), 0.0, 1.0);
+            const double baseQ = readParam(i, "q");
+            const bool   useEff = live
+                && slots_[i].effValid.load(std::memory_order_relaxed);
+
+            const double cut   = useEff
+                ? slots_[i].effCutoffHz.load(std::memory_order_relaxed)
+                : readParam(i, "cutoff");
+            const double q     = useEff
+                ? slots_[i].effQ.load(std::memory_order_relaxed) : baseQ;
+            const double gain  = useEff
+                ? slots_[i].effGainDb.load(std::memory_order_relaxed)
+                : readParam(i, "gain");
+            const double morph = useEff
+                ? slots_[i].effMorph.load(std::memory_order_relaxed)
+                : readParam(i, "morph");
+            L.mix = std::clamp(static_cast<double>(useEff
+                ? slots_[i].effMix.load(std::memory_order_relaxed)
+                : readParam(i, "mix")), 0.0, 1.0);
 
             L.core     = coreFor(type);
             L.onePole  = usesOnePole(type, slope);
@@ -1087,7 +1134,7 @@ public:
             L.stages   = L.onePole ? 1 : stageCountFor(type, slope);
 
             const double fc      = resolveTypeCutoff(type, cut, sr);
-            const bool   selfOsc = (q >= kSelfOscQ);
+            const bool   selfOsc = (baseQ >= kSelfOscQ);
 
             if (L.core == SlotCore::Ladder)
             {
@@ -1247,6 +1294,72 @@ public:
             const double mag = std::abs(H);
             outBuf[i] = static_cast<float>(20.0 * std::log10(std::max(mag, 1e-12)));
         }
+    }
+
+    // ── Live state (main thread, polled) ─────────────────────────────────────
+    // One flat Float32 payload holding everything the panel needs to ANIMATE:
+    // the per-slot effective knob positions, every lane's current source value,
+    // and the live response curve — in a single RPC, because the panel polls
+    // this at frame rate and three round trips per frame is three times the cost
+    // of one.  Layout (all floats, fixed offsets, never reordered):
+    //
+    //   [0]                 format version (1)
+    //   [1]                 live slot count
+    //   [2]                 sample rate
+    //   [3]                 reserved (0)
+    //   kLiveHeaderFloats + slot * kLiveSlotStride + ...
+    //     +0 cutoff Hz   +1 Q          +2 gain dB   +3 morph
+    //     +4 drive dB    +5 mix        +6 valid     +7 reserved
+    //     +8 + 2*lane    lane source value (-1..+1 LFO, 0..1 env/follower)
+    //     +9 + 2*lane    lane 303 accent charge (0..1)
+    //   kLiveCurveOffset .. +kResponseSize   response curve in dB, live values
+    //
+    // Slots past the live count are zeroed rather than omitted, so the stride is
+    // constant and the reader never needs the count to find a slot.
+    static constexpr int kLiveHeaderFloats = 4;
+    static constexpr int kLiveSlotStride   = 8 + xleth_filter::kMaxModsPerSlot * 2;
+    static constexpr int kLiveLaneOffset   = 8;
+    static constexpr int kLiveCurveOffset  = kLiveHeaderFloats + kMaxSlots * kLiveSlotStride;
+    static constexpr int kLiveStateFloats  = kLiveCurveOffset + kResponseSize;
+
+    void getLiveState(float* out, int outSize) const
+    {
+        if (out == nullptr || outSize <= 0) return;
+        const int n = std::min(outSize, kLiveStateFloats);
+        std::fill(out, out + n, 0.0f);
+
+        const int count = slotCount_.load(std::memory_order_relaxed);
+
+        if (n > 0) out[0] = 1.0f;
+        if (n > 1) out[1] = static_cast<float>(count);
+        if (n > 2) out[2] = static_cast<float>(sampleRate_.load(std::memory_order_relaxed));
+
+        for (int i = 0; i < count && i < kMaxSlots; ++i)
+        {
+            const int base = kLiveHeaderFloats + i * kLiveSlotStride;
+            if (base + kLiveSlotStride > n) break;
+
+            const auto& sl = slots_[i];
+            out[base + 0] = sl.effCutoffHz.load(std::memory_order_relaxed);
+            out[base + 1] = sl.effQ       .load(std::memory_order_relaxed);
+            out[base + 2] = sl.effGainDb  .load(std::memory_order_relaxed);
+            out[base + 3] = sl.effMorph   .load(std::memory_order_relaxed);
+            out[base + 4] = sl.effDriveDb .load(std::memory_order_relaxed);
+            out[base + 5] = sl.effMix     .load(std::memory_order_relaxed);
+            out[base + 6] = sl.effValid   .load(std::memory_order_relaxed) ? 1.0f : 0.0f;
+
+            for (int j = 0; j < xleth_filter::kMaxModsPerSlot; ++j)
+            {
+                const auto& ln = sl.lanes[j];
+                out[base + kLiveLaneOffset + j * 2 + 0] =
+                    ln.srcOut   .load(std::memory_order_relaxed);
+                out[base + kLiveLaneOffset + j * 2 + 1] =
+                    ln.accentOut.load(std::memory_order_relaxed);
+            }
+        }
+
+        if (n > kLiveCurveOffset)
+            getResponseCurve(out + kLiveCurveOffset, n - kLiveCurveOffset, /*live=*/true);
     }
 
     // ── Tail ────────────────────────────────────────────────────────────────
@@ -2200,6 +2313,12 @@ private:
         // Per-lane telemetry (audio thread stores, any thread loads).
         std::atomic<float> envOut{0.0f};
         std::atomic<float> accentOut{0.0f};
+        // This lane's RAW source value at the end of the block, before depth,
+        // gate and the destination fold: -1..+1 for an LFO, 0..1 for an Envelope
+        // or a follower.  envOut deliberately stays unipolar-only (it is what
+        // getSlotDynamicEnvelope summarises); srcOut is the signed one the panel
+        // animates a modulator's own readout from.
+        std::atomic<float> srcOut{0.0f};
 
         void clear() noexcept
         {
@@ -2209,6 +2328,7 @@ private:
             dyn.clear();
             envOut.store(0.0f, std::memory_order_relaxed);
             accentOut.store(0.0f, std::memory_order_relaxed);
+            srcOut.store(0.0f, std::memory_order_relaxed);
         }
 
         void skipSmoothers(int n)
@@ -2237,8 +2357,22 @@ private:
         bool anyDynActive = false;
 
         // Telemetry (audio thread stores, any thread loads).
+        // The EFFECTIVE value of every modulatable knob after the slot's lanes
+        // have composed into it and the sum was clamped — i.e. what the SVF is
+        // actually running at.  All six are needed, not just cutoff/Q: an LFO on
+        // MORPH or on MIX moves the response curve exactly as visibly as one on
+        // cutoff does, and the panel draws that curve from these.
         std::atomic<float> effCutoffHz{0.0f};
         std::atomic<float> effQ{0.0f};
+        std::atomic<float> effGainDb{0.0f};
+        std::atomic<float> effMorph{0.0f};
+        std::atomic<float> effDriveDb{0.0f};
+        std::atomic<float> effMix{1.0f};
+        // False until the audio thread has composed this slot at least once.
+        // Zero is a legal value for gain/morph/mix, so "has it ever run?" cannot
+        // be inferred from the numbers — and a curve drawn from never-written
+        // telemetry would show a muted slot that is really wide open.
+        std::atomic<bool>  effValid{false};
 
         StageRT  stages[kMaxStages];
         LadderRT ladder;   // moog24 / acid303
@@ -2295,6 +2429,10 @@ private:
             dGate = 0.0f;
             for (auto& ln : lanes) ln.clear();
             anyDynActive = false;
+            // A slot that has faded out and been cleared has no live position to
+            // report; dropping the flag makes the panel fall back to the plain
+            // parameter values rather than freeze on the last modulated frame.
+            effValid.store(false, std::memory_order_relaxed);
         }
 
         void skipSmoothers(int n)
@@ -2529,8 +2667,12 @@ private:
                     const double cp0 = static_cast<double>(blockStartSample)     / sr * hz + phaseOff;
                     const double cp1 = static_cast<double>(blockStartSample + n) / sr * hz + phaseOff;
 
-                    const double c0 = d0 * g0 * xleth_filter::evalLfoShape(wave, cp0);
-                    const double c1 = d1 * g1 * xleth_filter::evalLfoShape(wave, cp1);
+                    const double s0 = xleth_filter::evalLfoShape(wave, cp0);
+                    const double s1 = xleth_filter::evalLfoShape(wave, cp1);
+                    ln.srcOut.store(static_cast<float>(s1), std::memory_order_relaxed);
+
+                    const double c0 = d0 * g0 * s0;
+                    const double c1 = d1 * g1 * s1;
                     applyModToDest(dest, c0, c1, sr, cutA, cutB, qA, qB,
                                    gn0, gn1, mp0, mp1, dr0, dr1, mx0, mx1);
                     break;
@@ -2555,6 +2697,7 @@ private:
                         ? xleth::envmod::evaluateEnvelopeAdsr(eshS, gate, blockStartSample + n) : 0.0;
 
                     ln.envOut.store(static_cast<float>(e1), std::memory_order_relaxed);
+                    ln.srcOut.store(static_cast<float>(e1), std::memory_order_relaxed);
 
                     applyModToDest(dest, d0 * g0 * e0, d1 * g1 * e1, sr,
                                    cutA, cutB, qA, qB,
@@ -2590,6 +2733,7 @@ private:
                     const double accent = std::clamp(static_cast<double>(D.accent), 0.0, 1.0);
                     ln.envOut.store(static_cast<float>(e), std::memory_order_relaxed);
                     ln.accentOut.store(static_cast<float>(accent), std::memory_order_relaxed);
+                    ln.srcOut.store(static_cast<float>(e), std::memory_order_relaxed);
 
                     if (dest == xleth_filter::ModDest::Cutoff)
                     {
@@ -2643,6 +2787,14 @@ private:
                              std::memory_order_relaxed);
         sl.effQ.store(static_cast<float>(std::clamp(qB, kMinQ, kMaxQ)),
                       std::memory_order_relaxed);
+        // The other four modulatable knobs, in their own units, exactly as the
+        // coefficient math below is about to consume them.  applyModToDest has
+        // already clamped each to its parameter range.
+        sl.effGainDb .store(static_cast<float>(gn1), std::memory_order_relaxed);
+        sl.effMorph  .store(static_cast<float>(mp1), std::memory_order_relaxed);
+        sl.effDriveDb.store(static_cast<float>(dr1), std::memory_order_relaxed);
+        sl.effMix    .store(static_cast<float>(mx1), std::memory_order_relaxed);
+        sl.effValid  .store(true, std::memory_order_relaxed);
 
         if (sl.core == SlotCore::Ladder)
         {

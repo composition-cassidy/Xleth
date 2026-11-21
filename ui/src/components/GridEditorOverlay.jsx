@@ -1,8 +1,15 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { X, Magnet } from 'lucide-react'
+import { pickLabelInk } from '../ui-kit/colorMath'
+import { tokenValue } from '../theming/tokenValue.ts'
+import useGridEditStore from '../stores/useGridEditStore.js'
+import useTrackIdentityColors from './inspector/useTrackIdentityColors.js'
+import styles from './GridEditorOverlay.module.css'
 import { timelineEvents } from '../timelineEvents.js'
 import ContextMenu from './ContextMenu.jsx'
 import { activeDragTrackId, setActiveDragTrackId } from './gridEditorDragState.js'
+import { iconComponent } from '../ui-kit/icons'
+
+const IcX = iconComponent('x')
 
 const DEFAULT_LAYOUT = {
   columns: 3, rows: 3, slots: [],
@@ -22,6 +29,11 @@ const VALID_SUBDIVISION_FACTORS = [1, 2, 4, 8]
 // (which brings it to front). Anything above starts a drag-move.
 const CLICK_VS_DRAG_THRESHOLD_PX = 4
 
+// Where a cell's name chip sits relative to the pointer, so it never hides the
+// spot being pointed at.
+const LABEL_OFFSET_X = 12
+const LABEL_OFFSET_Y = 14
+
 // Snap a fine-grid value to the nearest sub-step. When snap is on, step is
 // (SUB_UNITS / factor) of the dragged track. When off, step is 1 fine-unit.
 function snapFine(rawFine, factor, snapOn, axisFineCap) {
@@ -40,7 +52,8 @@ export default function GridEditorOverlay() {
   const [moveState, setMoveState] = useState(null)
   // dragGhost — preview rect under the cursor while dragging from the dock.
   const [dragGhost, setDragGhost] = useState(null) // { gridX, gridY, spanX, spanY }
-  const [snapEnabled, setSnapEnabled] = useState(true)
+  // Snap is shown and toggled in the Preview's Edit Grid row (GridEditToolbar).
+  const snapEnabled = useGridEditStore((s) => s.snapEnabled)
   const rootRef = useRef(null)
 
   // ── Fetch layout + tracks ────────────────────────────────────────────────
@@ -76,6 +89,17 @@ export default function GridEditorOverlay() {
   }, [fetchLayout, fetchTracks])
 
   const notify = () => timelineEvents.dispatchEvent(new Event('timeline-grid-changed'))
+
+  // Each cell is outlined in its track's identity colour (the same colour as
+  // its arrangement lane); its name chip uses the automatic label ink.
+  const identity = useTrackIdentityColors(tracks)
+  const labelInks = useMemo(() => {
+    const light = tokenValue('--ui-ink') || '#E6E6E6'
+    const dark = tokenValue('--ui-g1') || '#1B1B1B'
+    const out = {}
+    for (const [id, hex] of Object.entries(identity)) out[id] = pickLabelInk(hex, light, dark).ink
+    return out
+  }, [identity])
 
   // Lookup helpers
   const tracksById = useMemo(() => {
@@ -408,15 +432,25 @@ export default function GridEditorOverlay() {
     }
   }, [resizeState, layout, totalFineX, totalFineY])
 
-  const fsLayers = layout.fullscreenLayers ?? []
-  const behindLayers = fsLayers
-    .filter(l => l.placement === 'behind')
-    .map(l => ({ ...l, track: tracksById.get(l.trackId) }))
-    .filter(x => x.track)
-  const frontLayers = fsLayers
-    .filter(l => l.placement === 'front')
-    .map(l => ({ ...l, track: tracksById.get(l.trackId) }))
-    .filter(x => x.track)
+  // ── Name chip follows the pointer inside its own cell ────────────────────
+  // Set straight on the slot element (CSS custom properties + data-hover), not
+  // through React state: a pointermove must not re-render the overlay. The chip
+  // sits just below-right of the pointer and is clamped to stay inside the cell.
+  const followLabel = useCallback((e) => {
+    const slotEl = e.currentTarget
+    const label = slotEl.querySelector(':scope > .grid-editor-cell-label')
+    if (!label) return
+    const r = slotEl.getBoundingClientRect()
+    const x = Math.max(2, Math.min(e.clientX - r.left + LABEL_OFFSET_X, r.width - label.offsetWidth - 2))
+    const y = Math.max(2, Math.min(e.clientY - r.top + LABEL_OFFSET_Y, r.height - label.offsetHeight - 2))
+    slotEl.style.setProperty('--label-x', `${x}px`)
+    slotEl.style.setProperty('--label-y', `${y}px`)
+    slotEl.setAttribute('data-hover', '')
+  }, [])
+
+  const hideLabel = useCallback((e) => {
+    e.currentTarget.removeAttribute('data-hover')
+  }, [])
 
   // Build context-menu items for an assigned slot (right-click).
   const buildContextItems = (slot) => {
@@ -435,7 +469,8 @@ export default function GridEditorOverlay() {
       },
       { type: 'separator' },
       ...VALID_SUBDIVISION_FACTORS.map(f => ({
-        label: `${f === currentFactor ? '✓ ' : '   '}Subdivision: ${f}×`,
+        label: `Subdivision: ${f}×`,
+        checked: f === currentFactor,
         onClick: () => handleSetSubdivision(slot.trackId, f),
       })),
     ]
@@ -498,8 +533,10 @@ export default function GridEditorOverlay() {
         return (
           <div
             key={`slot-${slot.trackId}`}
-            className={`grid-editor-slot assigned ${isMoving ? 'moving' : ''}`}
+            className={`grid-editor-slot assigned ${styles.slot} ${isMoving ? 'moving' : ''}`}
             style={{
+              '--cell-color': identity[slot.trackId],
+              '--cell-ink': labelInks[slot.trackId],
               left:   `${left}%`,
               top:    `${top}%`,
               width:  `${width}%`,
@@ -507,9 +544,13 @@ export default function GridEditorOverlay() {
             }}
             onContextMenu={(e) => handleSlotContextMenu(e, slot)}
             onPointerDown={(e) => handleSlotPointerDown(e, slot)}
-            onPointerMove={handleSlotPointerMove}
+            onPointerEnter={followLabel}
+            onPointerMove={(e) => { followLabel(e); handleSlotPointerMove(e) }}
+            onPointerLeave={hideLabel}
             onPointerUp={handleSlotPointerUp}
             onPointerCancel={handleSlotPointerCancel}
+            role="group"
+            aria-label={track?.name ?? `Track ${slot.trackId}`}
           >
             {factor > 1 && (
               <div
@@ -520,7 +561,7 @@ export default function GridEditorOverlay() {
                 }}
               />
             )}
-            <span className="grid-editor-cell-label">
+            <span className={`grid-editor-cell-label ${styles.label}`}>
               {track?.name ?? `Track ${slot.trackId}`}
               {factor > 1 && (
                 <span className="grid-editor-cell-factor">{factor}×</span>
@@ -532,7 +573,7 @@ export default function GridEditorOverlay() {
               onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => { e.stopPropagation(); handleRemove(slot.trackId) }}
             >
-              <X size={12} />
+              <IcX size={14} />
             </button>
             {/* Resize handles. Snap step = (SUB_UNITS / track.subdivisionFactor). */}
             <div
@@ -567,14 +608,8 @@ export default function GridEditorOverlay() {
         />
       )}
 
-      {/* ── Fullscreen layer badges ───────────────────────────────────── */}
-      {(behindLayers.length > 0 || frontLayers.length > 0) && (
-        <div className="grid-editor-badges">
-          <span className="grid-editor-badge grid-editor-badge-fs-summary">
-            Fullscreen · {behindLayers.length} Behind · {frontLayers.length} Front
-          </span>
-        </div>
-      )}
+      {/* Fullscreen layer counts are shown in the Edit Grid row (GridEditToolbar),
+          not over the picture where they covered the cells' name chips. */}
 
       {/* ── Right-click context menu on an assigned slot ──────────────── */}
       {contextMenu && (
@@ -585,20 +620,6 @@ export default function GridEditorOverlay() {
           onClose={() => setContextMenu(null)}
         />
       )}
-
-      {/* ── Toolbar (snap toggle) ──────────────────────────────────────── */}
-      <div className="grid-editor-toolbar">
-        <button
-          className={`grid-editor-snap-btn ${snapEnabled ? 'on' : 'off'}`}
-          onClick={() => setSnapEnabled(s => !s)}
-          title={snapEnabled
-            ? 'Snap on — placements align to each track\'s subdivision sub-step. Click to disable.'
-            : 'Snap off — free 1-unit positioning. Click to enable.'}
-        >
-          <Magnet size={13} />
-          <span>Snap: {snapEnabled ? 'on' : 'off'}</span>
-        </button>
-      </div>
 
     </div>
   )

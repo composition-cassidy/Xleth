@@ -1,6 +1,12 @@
+import { IconButton } from '../../ui-kit'
 import type { TokenDef } from '../tokens/catalog'
 import { DERIVED_FORMULA_TOKEN_NAMES_SET } from '../tokens/catalog'
 import ColorPicker from './ColorPicker'
+import styles from './ThemeEditor.module.css'
+import { iconComponent } from '../../ui-kit/icons';
+
+const IcLinkBreakReg = iconComponent('link-break', 'regular');
+const IcLinkReg = iconComponent('link', 'regular');
 
 interface Props {
   token: TokenDef
@@ -21,40 +27,45 @@ export default function TokenRow({ token, resolvedValue, isDetached, isReadOnly,
   const shortName = token.name.replace(/^--theme-/, '')
 
   return (
-    <div className={`token-row ${isDetached ? 'token-row--detached' : ''}`}>
+    <div className={styles.tokenRow} data-detached={isDetached || undefined}>
       {isColor && (
         <div
-          className="token-row-swatch"
+          className={styles.swatch}
           style={{ background: resolvedValue || 'transparent' }}
           title={resolvedValue}
+          aria-hidden="true"
         />
       )}
 
-      <div className="token-row-name" title={token.name}>
+      <div className={styles.tokenName} title={token.name}>
         {shortName}
       </div>
 
-      <div className="token-row-control">
+      <div className={styles.tokenControl}>
         {canPickColor ? (
           <ColorPicker
+            label={`${shortName} colour`}
             value={resolvedValue}
             onChange={v => onTokenChange(token.name, v)}
           />
         ) : (
-          <span className="token-row-value-text" title={resolvedValue}>
+          <span className={styles.tokenValue} title={resolvedValue}>
             {resolvedValue || '—'}
           </span>
         )}
       </div>
 
       {showDetachToggle && (
-        <button
-          className={`token-row-detach ${isDetached ? 'token-row-detach--on' : ''}`}
-          title={isDetached ? 'Re-attach to derivation formula' : 'Detach — use explicit override'}
+        <IconButton
+          size="sm"
+          variant="ghost"
+          pressed={isDetached}
+          label={isDetached ? `Re-attach ${shortName} to its derivation formula` : `Detach ${shortName} and use an explicit override`}
+          hint={isDetached ? 'Re-attach to derivation formula' : 'Detach and use an explicit override'}
           onClick={() => onDetachToggle(token.name)}
         >
-          {isDetached ? '⚡' : '⊙'}
-        </button>
+          {isDetached ? <IcLinkBreakReg aria-hidden="true" /> : <IcLinkReg aria-hidden="true" />}
+        </IconButton>
       )}
     </div>
   )

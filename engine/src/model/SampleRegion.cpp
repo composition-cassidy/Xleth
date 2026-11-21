@@ -6,7 +6,8 @@ void to_json(nlohmann::json& j, const SampleRegion::Syllable& s) {
         {"startTime", s.startTime},
         {"endTime",   s.endTime},
         {"number",    s.number},
-        {"text",      s.text}
+        {"text",      s.text},
+        {"quickOffsetPercent", s.quickOffsetPercent}
     };
 }
 
@@ -15,6 +16,8 @@ void from_json(const nlohmann::json& j, SampleRegion::Syllable& s) {
     j.at("endTime").get_to(s.endTime);
     j.at("number").get_to(s.number);
     j.at("text").get_to(s.text);
+    // Absent in projects saved before Quick Notation remembered offsets.
+    s.quickOffsetPercent = j.value("quickOffsetPercent", 50.0);
 }
 
 // ─── SampleSlot ───────────────────────────────────────────────────────────────
@@ -180,11 +183,17 @@ void to_json(nlohmann::json& j, const SampleRegion& r) {
     // key (that is how schema-2 projects load), but a round trip through this
     // engine should be byte-stable rather than dropping the key when empty.
     j["modulation"] = r.modulation;
+    // Color grade: written only when it is not the default, so a project that
+    // never grades this region keeps the file it always had.
+    if (!r.colorGrade.isDefault())
+        j["colorGrade"] = xleth::grade::colorGradeToJson(r.colorGrade);
 }
 
 void from_json(const nlohmann::json& j, SampleRegion& r) {
     j.at("id").get_to(r.id);
     j.at("sourceId").get_to(r.sourceId);
+    r.colorGrade = j.contains("colorGrade")
+        ? xleth::grade::colorGradeFromJson(j.at("colorGrade")) : ColorGrade{};
     j.at("name").get_to(r.name);
     r.label = stringToSampleLabel(j.at("label").get<std::string>());
     j.at("customLabelName").get_to(r.customLabelName);

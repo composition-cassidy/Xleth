@@ -10,6 +10,7 @@
 #include "commands/TimelineCommands.h"
 #include "commands/UndoManager.h"
 #include "audio/LoopTrap.h"
+#include "render/RenderClock.h"
 
 #include <iostream>
 
@@ -210,6 +211,9 @@ static void testPlaybackTrap() {
         int64_t pos = E - 100;          // 100 samples before end
         int64_t np = advance(pos, N, armed, S, E, true);
         // overshoot = (E-100+256) - E = 156 → wraps to S + 156.
+        // NOTE: this is loopAdvance in isolation. Callers must NOT hand it a
+        // block that straddles the seam — the carried overshoot then names a
+        // range [S, S+156) that no render covers. Split first: see testSeamSplit.
         CHECK(np == S + 156, "wrap carries overshoot remainder (S+156)");
         CHECK(armed, "stays armed after wrap");
         CHECK(np >= S && np < E, "wrapped position inside region");
@@ -260,12 +264,200 @@ static void testPlaybackTrap() {
     }
 }
 
+// ─── 5. Seam split — the wrap must not skip the head of the region ────────────
+//
+// Regression guard for "pattern notes on the loop-start tick never sound".
+// loopAdvance carries the overshoot across the seam, so a caller that renders a
+// whole device buffer and wraps afterwards resumes at (S + overshoot) and never
+// renders [S, S + overshoot). loopSamplesUntilWrap exists to split the buffer at
+// the seam so that gap cannot open.
+
+static void testSeamSplit() {
+    std::cout << "[5] seam split — no sample of the region goes unrendered\n";
+
+    // Loop length deliberately NOT a multiple of the buffer size, so every lap
+    // produces a non-zero overshoot — exactly the case that dropped notes.
+    const int64_t S = 1000, E = 4321;   // len 3321, buffer 256 → overshoot != 0
+    const int     N = 256;
+    const int     kBuffers = 200;
+
+    // ── Split render loop, mirroring AudioEngine::audioDeviceIOCallback ──────
+    {
+        bool    armed         = xleth::loopArmOnEvent(false, false, S, S, E, true);
+        int64_t pos           = S;
+        int64_t totalRendered = 0;
+        int64_t prevEnd       = -1;
+        int     seams         = 0;
+        int     laps          = 0;
+        int     hitsOnS       = 0;
+        bool    chunkInRange  = true;
+        bool    contiguous    = true;
+        bool    stayedInside  = true;
+
+        CHECK(armed, "starting on the loop start arms the trap");
+
+        for (int buf = 0; buf < kBuffers; ++buf) {
+            int remaining = N;
+            while (remaining > 0) {
+                const int chunk =
+                    xleth::loopSamplesUntilWrap(pos, remaining, armed, S, E, true);
+                if (chunk < 1 || chunk > remaining) { chunkInRange = false; break; }
+
+                const int64_t winStart = pos;
+                const int64_t winEnd   = pos + chunk;
+
+                // A note sitting exactly on the loop start must fall inside a
+                // rendered window — this is the user-visible symptom.
+                if (winStart <= S && S < winEnd) ++hitsOnS;
+                if (winStart < S || winEnd > E)  stayedInside = false;
+
+                if (prevEnd >= 0 && winStart != prevEnd) {
+                    // The ONLY permitted discontinuity is the seam itself, and
+                    // it must be exactly E → S (no overshoot carried across).
+                    if (prevEnd == E && winStart == S) ++seams;
+                    else                               contiguous = false;
+                }
+
+                prevEnd        = winEnd;
+                totalRendered += chunk;
+
+                const int64_t next = xleth::loopAdvance(pos, chunk, armed, S, E, true);
+                if (next < pos) ++laps;      // counted independently of `seams`
+                pos = next;
+                remaining -= chunk;
+            }
+        }
+
+        CHECK(chunkInRange, "chunk is always in [1, remaining] (no stall, no overrun)");
+        CHECK(totalRendered == int64_t(kBuffers) * N,
+              "every requested sample is rendered exactly once");
+        CHECK(contiguous, "the only discontinuity is the seam, and it is exactly E -> S");
+        CHECK(stayedInside, "no sub-block renders outside [S, E) once armed");
+        CHECK(laps > 0, "the simulation actually crossed the seam");
+        CHECK(seams == laps, "every lap produced an exact E -> S seam");
+        // The user-visible symptom, stated against the lap count so it cannot
+        // pass vacuously when the split is removed (laps still happen; the
+        // rendered windows just stop covering S).
+        CHECK(hitsOnS == laps + 1,
+              "the loop-start sample is rendered on the first pass and on every lap");
+    }
+
+    // ── Contrast: the un-split, block-granular wrap (the bug) ────────────────
+    {
+        bool    armed  = true;
+        int64_t pos    = S;
+        int     laps   = 0;
+        int     gapped = 0;
+
+        for (int buf = 0; buf < kBuffers; ++buf) {
+            const int64_t np = xleth::loopAdvance(pos, N, armed, S, E, true);
+            if (np < pos) {           // wrapped this buffer
+                ++laps;
+                // np > S means [S, np) was rendered by no buffer at all.
+                if (np > S) ++gapped;
+            }
+            pos = np;
+        }
+
+        CHECK(laps > 0, "un-split simulation crossed the seam");
+        CHECK(gapped == laps,
+              "un-split wrap skips the head of the region on EVERY lap (the bug)");
+    }
+
+    // Degenerate window shorter than one buffer still yields forward progress.
+    {
+        const int64_t s2 = 100, e2 = 164;   // 64 samples, buffer 256
+        bool    armed = true;
+        int64_t pos   = s2;
+        bool    progresses = true;
+        for (int i = 0; i < 32; ++i) {
+            const int chunk = xleth::loopSamplesUntilWrap(pos, N, armed, s2, e2, true);
+            if (chunk < 1 || chunk > N) { progresses = false; break; }
+            pos = xleth::loopAdvance(pos, chunk, armed, s2, e2, true);
+        }
+        CHECK(progresses, "sub-buffer-length region: chunk stays in [1, N] (no stall)");
+    }
+
+    // No wrap this block → the full request is returned untouched.
+    {
+        CHECK(xleth::loopSamplesUntilWrap(S, N, true, S, E, true) == N,
+              "block that does not reach the seam is not split");
+        CHECK(xleth::loopSamplesUntilWrap(E - N, N, true, S, E, true) == N,
+              "block ending exactly ON the seam is not split (wrap lands on S anyway)");
+        CHECK(xleth::loopSamplesUntilWrap(E - 100, N, true, S, E, true) == 100,
+              "block crossing the seam splits at the seam");
+        CHECK(xleth::loopSamplesUntilWrap(100, N, false, S, E, false) == N,
+              "trap disabled → never split");
+        CHECK(xleth::loopSamplesUntilWrap(100, N, false, S, S, true) == N,
+              "degenerate window → never split");
+        CHECK(xleth::loopSamplesUntilWrap(9000, N, false, S, E, true) == N,
+              "playing past the region (never armed) → never split");
+    }
+}
+
+// ─── 6. Loop bounds and note dispatch must share one tick->sample domain ──────
+//
+// Transport's bounds come from RenderClock::ppqToSample on the LoopRegion ticks;
+// MixEngine::triggerPatternNotes resolves a note tick the same way and then
+// applies a half-open [bufferStart, bufferEnd) sample-membership filter. If the
+// two use different rounding, a note ON the loop-start tick can resolve one
+// sample BEFORE loopStartSamples — and is then dropped on every lap even with a
+// perfectly split seam. Both sides must use AV_ROUND_ZERO.
+
+static void testBoundRoundingMatchesNoteDispatch() {
+    std::cout << "[6] loop bounds share the note-dispatch tick->sample rounding\n";
+
+    const int     srs[]   = {44100, 48000};
+    const double  bpms[]  = {120.0, 140.0, 128.0, 174.0, 93.5};
+    const int64_t ticks[] = {0, 960, 2400, 3840, 7680, 15360, 61440};
+
+    bool boundEverPastNote = false;   // the failure the old rounding produced
+    bool zeroAlwaysMatches = true;
+
+    for (int sr : srs)
+        for (double bpm : bpms)
+            for (int64_t t : ticks) {
+                // What MixEngine::triggerPatternNotes computes for a note here.
+                const int64_t noteSample =
+                    RenderClock::ppqToSample(t, sr, bpm, AV_ROUND_ZERO);
+                // What syncTransportLoopFromTimeline now publishes as the bound.
+                const int64_t boundZero =
+                    RenderClock::ppqToSample(t, sr, bpm, AV_ROUND_ZERO);
+                // What it used to publish (RenderClock's half-away default).
+                const int64_t boundHalfAway = RenderClock::ppqToSample(t, sr, bpm);
+
+                if (boundZero != noteSample)    zeroAlwaysMatches = false;
+                if (boundHalfAway > noteSample) boundEverPastNote = true;
+            }
+
+    CHECK(zeroAlwaysMatches,
+          "AV_ROUND_ZERO bound == note sample for every tick/bpm/rate tested");
+    CHECK(boundEverPastNote,
+          "half-away rounding DID push the bound past the note (this test has teeth)");
+
+    // The invariant that actually matters, stated directly: a note on the
+    // loop-start tick must not resolve before the loop-start sample, or the
+    // half-open membership filter discards it.
+    {
+        const int     sr  = 48000;
+        const double  bpm = 93.5;
+        const int64_t startTick = 15360;   // bar 5 @ 960 PPQ
+        const int64_t S = RenderClock::ppqToSample(startTick, sr, bpm, AV_ROUND_ZERO);
+        const int64_t noteSample =
+            RenderClock::ppqToSample(startTick, sr, bpm, AV_ROUND_ZERO);
+        CHECK(noteSample >= S, "note on the loop-start tick is not before loopStartSamples");
+        CHECK(noteSample == S, "note on the loop-start tick lands exactly on the seam");
+    }
+}
+
 int main() {
     std::cout << "── test_loop_region ──────────────────────────────────────\n";
     testNormalization();
     testMutationLayer();
     testRenderScopedDerived();
     testPlaybackTrap();
+    testSeamSplit();
+    testBoundRoundingMatchesNoteDispatch();
 
     std::cout << "──────────────────────────────────────────────────────────\n";
     std::cout << "Passed: " << g_passed << "  Failed: " << g_failed << "\n";

@@ -1,141 +1,166 @@
-import ModEnvPreview from './ModEnvPreview.jsx'
-import { ModKnob, Seg, NoteSelect, Field } from './ModControls.jsx'
+import { useCallback } from 'react'
+import { Knob, NumberBox } from '../../../ui-kit'
+import FieldSelect from '../FieldSelect.jsx'
+import { ModKnob, ModNumberBox } from '../kitMod.jsx'
+import { formatSigned2, formatTime, noteValueCodec, noteValueLabel, parseOffset } from '../samplerFormat.js'
+import EnvCanvas from './EnvCanvas.jsx'
+import SpanSelect from './SpanSelect.jsx'
+import { useBoxSize } from './useBoxSize.js'
 import {
-  modTimeSeconds,
+  NOTE_VALUES, modTimeSeconds,
   STAGE_DELAY, STAGE_ATTACK, STAGE_HOLD, STAGE_DECAY, STAGE_RELEASE,
 } from './modConstants.js'
+import { nearestNoteValue, useModSpanStore } from './modTime.js'
 import { TARGET_ENV_STAGE_TIME, TARGET_SRC_AMOUNT } from './modTargets.js'
+import styles from '../Sampler.module.css'
 
-// ── ENV editor ───────────────────────────────────────────────────────────────
-// DAHDSR with a per-envelope ms/BPM toggle and per-segment tension, above a
-// live read-only shape preview. `preview(patch)` mutates the config locally
-// (drag), `commit()` sends it to the engine (mouseup / discrete change).
+// ── Env editor ───────────────────────────────────────────────────────────────
+// DAHDSR with a per-envelope ms / note-value switch and per-segment curve. The
+// display is drawn to scale on a time ruler and is itself the editor (drag a
+// point for its stage time, the decay point also for sustain, a diamond for the
+// curve); the knobs and boxes are the same values, typed or nudged.
+// `preview(patch)` mutates the config locally while dragging; `commit()` sends it
+// to the engine (release / discrete change).
 
-const STAGE_FIELDS = [
-  { key: 'delay', label: 'DEL', stage: STAGE_DELAY },
-  { key: 'attack', label: 'ATK', stage: STAGE_ATTACK },
-  { key: 'hold', label: 'HLD', stage: STAGE_HOLD },
-  { key: 'decay', label: 'DEC', stage: STAGE_DECAY },
+const STAGES = [
+  { key: 'delay', label: 'Delay', stage: STAGE_DELAY },
+  { key: 'attack', label: 'Attack', stage: STAGE_ATTACK },
+  { key: 'hold', label: 'Hold', stage: STAGE_HOLD },
+  { key: 'decay', label: 'Decay', stage: STAGE_DECAY },
 ]
+const NOTE_CODEC = noteValueCodec(NOTE_VALUES)
+const round = (v) => Math.round(v)
+const curve = (v) => Number(v.toFixed(3))
+const noteText = (t) => {
+  const nv = NOTE_VALUES.find((n) => n.v === (t?.noteValue ?? 0))
+  return nv ? noteValueLabel(nv.l) : 'Off'
+}
 
-// Sustain is deliberately absent from the registrations below: it is a LEVEL,
-// not a time, and the engine rejects a route to it.
-export default function EnvEditor({ env, color, bpm, preview, commit, source = null }) {
+export default function EnvEditor({ env, color, bpm, preview, commit, source = null, label = 'Env' }) {
   const sync = !!env.tempoSync
+  const [wellRef, size] = useBoxSize()
+  const span = useModSpanStore((s) => s.span)
 
-  // Cross-modulation registrations for this envelope's own parameters. Stage
-  // times are exponential-law targets in milliseconds, so they need no scaling;
-  // OUT is a percent knob over a 0..1 parameter.
-  const stageReg = (stage) =>
-    (source == null ? null : { target: TARGET_ENV_STAGE_TIME, index: source, stage, scale: 1 })
-
-  // Patch one nested ModTime field (ms in Hz mode, noteValue in BPM mode).
-  const setTimeLive = (key, patch) => preview({ [key]: { ...env[key], ...patch } })
-  const setTimeFinal = (key, patch) => { preview({ [key]: { ...env[key], ...patch } }); commit() }
+  // Stage times are exponential-law targets in milliseconds (no scaling); Out is a
+  // percent control over a 0..1 parameter. Sustain is a LEVEL: the engine rejects
+  // a route to it, so it is not registered.
+  const stageReg = (stage) => (source == null ? null : { target: TARGET_ENV_STAGE_TIME, index: source, stage, scale: 1 })
+  const live = (key, patch) => preview({ [key]: { ...env[key], ...patch } })
+  const done = (key, patch) => { preview({ [key]: { ...env[key], ...patch } }); commit() }
 
   const secOf = (key) => modTimeSeconds(env[key], sync, bpm)
-  const previewEnv = {
-    delaySec: secOf('delay'),
-    attackSec: secOf('attack'),
-    holdSec: secOf('hold'),
-    decaySec: secOf('decay'),
-    releaseSec: secOf('release'),
+  const shape = {
+    delaySec: secOf('delay'), attackSec: secOf('attack'), holdSec: secOf('hold'),
+    decaySec: secOf('decay'), releaseSec: secOf('release'),
     sustain: (env.sustainPct ?? 100) / 100,
     attackTension: env.attackTension || 0,
     decayTension: env.decayTension || 0,
     releaseTension: env.releaseTension || 0,
   }
 
-  const renderTime = (key, label, stage) => {
-    if (sync) {
-      return (
-        <Field key={key} label={label}>
-          <NoteSelect val={env[key]?.noteValue ?? 0} set={(v) => setTimeFinal(key, { noteValue: v })} />
-        </Field>
-      )
+  // A drag on the display, as a config patch in this envelope's own time unit.
+  const onCanvasDrag = useCallback((change) => {
+    const patch = {}
+    if (change.stage) {
+      patch[change.stage] = sync
+        ? { ...env[change.stage], noteValue: nearestNoteValue(change.sec, bpm, env[change.stage] || {}) }
+        : { ...env[change.stage], ms: Math.round(change.sec * 1000) }
     }
-    return (
-      <ModKnob
-        key={key}
-        label={label}
-        modTarget={stageReg(stage)}
-        value={env[key]?.ms ?? 0}
-        min={0} max={5000} defaultValue={0}
-        size={40}
-        color={color}
-        formatValue={(v) => `${Math.round(v)}`}
-        onLiveChange={(v) => setTimeLive(key, { ms: Math.round(v) })}
-        onCommit={(v) => setTimeFinal(key, { ms: Math.round(v) })}
-      />
-    )
-  }
+    if (change.sustain != null) patch.sustainPct = Math.round(change.sustain * 100)
+    if (change.field) patch[change.field] = change.tension
+    preview(patch)
+  }, [env, sync, bpm, preview])
+
+  const stageText = useCallback(
+    (key) => (sync ? noteText(env[key]) : formatTime(env[key]?.ms ?? 0)),
+    [env, sync],
+  )
+
+  const time = ({ key, label: name, stage }) => (sync ? (
+    <Knob
+      key={key} label={name} codec={NOTE_CODEC} defaultValue={0}
+      value={env[key]?.noteValue ?? 0}
+      onChange={(v) => live(key, { noteValue: round(v) })}
+      onCommit={(v) => done(key, { noteValue: round(v) })}
+      hint={`${name}, as a note value at the project tempo`}
+      data-env-stage={key}
+    />
+  ) : (
+    <ModKnob
+      key={key} label={name} unit="ms" min={0} max={5000} defaultValue={0} quantize={round}
+      modTarget={stageReg(stage)}
+      value={env[key]?.ms ?? 0}
+      onChange={(v) => live(key, { ms: round(v) })}
+      onCommit={(v) => done(key, { ms: round(v) })}
+      hint={`${name} time`}
+      data-env-stage={key}
+    />
+  ))
+
+  const curveBox = (field, name) => (
+    <NumberBox
+      key={field} label={name} width={148} min={-1} max={1} step={0.01} defaultValue={0} bipolar
+      format={formatSigned2} parse={parseOffset}
+      value={env[field] || 0}
+      onChange={(v) => preview({ [field]: curve(v) })}
+      onCommit={(v) => { preview({ [field]: curve(v) }); commit() }}
+      hint={`${name}: bends the segment. Negative is fast-then-slow, positive slow-then-fast, 0 is linear.`}
+      data-env-field={field}
+    />
+  )
 
   return (
-    <div className="sampler-mod-editor">
-      <div className="sampler-mod-editor-head">
-        <Seg
-          sm
-          opts={[{ v: false, l: 'ms' }, { v: true, l: 'BPM' }]}
-          val={sync}
-          set={(v) => { preview({ tempoSync: v }); commit() }}
-          title="Envelope times in milliseconds or tempo-synced note values"
+    <div className={styles.editor} data-editor="env">
+      <div className={styles.editorHead}>
+        <SpanSelect />
+        <FieldSelect
+          label="Times in" width={124} value={sync ? 'sync' : 'ms'}
+          options={[{ value: 'ms', label: 'Milliseconds' }, { value: 'sync', label: 'Note values' }]}
+          onChange={(v) => { preview({ tempoSync: v === 'sync' }); commit() }}
+          hint="Stage times in milliseconds, or as note values at the project tempo"
+          data-env-field="tempoSync"
         />
-        <div className="sampler-mod-head-spacer" />
-        <ModKnob
-          label="OUT"
+        <span className={styles.spacer} />
+        <ModNumberBox
+          label="Out" width={96} min={0} max={100} unit="%" quantize={round} defaultValue={100}
           modTarget={source == null ? null : { target: TARGET_SRC_AMOUNT, index: source, stage: 0, scale: 0.01 }}
           value={(env.outputAmount ?? 1) * 100}
-          min={0} max={100} defaultValue={100}
-          size={34}
-          color={color}
-          formatValue={(v) => `${Math.round(v)}%`}
-          onLiveChange={(v) => preview({ outputAmount: Math.round(v) / 100 })}
-          onCommit={(v) => { preview({ outputAmount: Math.round(v) / 100 }); commit() }}
+          onChange={(v) => preview({ outputAmount: round(v) / 100 })}
+          onCommit={(v) => { preview({ outputAmount: round(v) / 100 }); commit() }}
+          hint="Output: scales everything this envelope drives"
+          data-env-field="outputAmount"
         />
       </div>
-
-      <div className="sampler-mod-graph-well">
-        <ModEnvPreview env={previewEnv} color={color} width={460} height={120} />
+      <div
+        className={styles.editorWell}
+        ref={wellRef}
+        data-hint={`${label}, to scale: the ruler is time from the note start, the hatched band is the sustain (as long as the key is held), then time from the release`}
+        data-hint-mods="Drag a point: stage time (the decay point also sets sustain) · Drag a diamond: curve"
+      >
+        <EnvCanvas
+          env={shape} color={color} width={size.width} height={size.height}
+          span={span} sync={sync} bpm={bpm} label={label}
+          stageText={stageText} onDrag={onCanvasDrag} onDragEnd={commit}
+        />
       </div>
-
-      <div className="sampler-mod-knob-row">
-        {STAGE_FIELDS.map((s) => renderTime(s.key, s.label, s.stage))}
-        <ModKnob
-          label="SUS"
+      <div className={styles.knobRow}>
+        {STAGES.map(time)}
+        <Knob
+          label="Sustain" unit="%" min={0} max={100} defaultValue={100} quantize={round}
           value={env.sustainPct ?? 100}
-          min={0} max={100} defaultValue={100}
-          size={40}
-          color={color}
-          formatValue={(v) => `${Math.round(v)}%`}
-          onLiveChange={(v) => preview({ sustainPct: Math.round(v) })}
-          onCommit={(v) => { preview({ sustainPct: Math.round(v) }); commit() }}
+          onChange={(v) => preview({ sustainPct: round(v) })}
+          onCommit={(v) => { preview({ sustainPct: round(v) }); commit() }}
+          hint="Sustain level while a note is held"
+          data-env-stage="sustain"
         />
-        {renderTime('release', 'REL', STAGE_RELEASE)}
-      </div>
-
-      <div className="sampler-mod-knob-row sampler-mod-knob-row--tension">
-        <ModKnob
-          label="ATK T" value={env.attackTension || 0} min={-1} max={1} defaultValue={0}
-          size={28} dragRange={120} capStyle="soft-disk" color="var(--theme-accent)"
-          formatValue={(v) => v.toFixed(2)}
-          onLiveChange={(v) => preview({ attackTension: Number(v.toFixed(3)) })}
-          onCommit={(v) => { preview({ attackTension: Number(v.toFixed(3)) }); commit() }}
-        />
-        <ModKnob
-          label="DEC T" value={env.decayTension || 0} min={-1} max={1} defaultValue={0}
-          size={28} dragRange={120} capStyle="soft-disk" color="var(--theme-accent)"
-          formatValue={(v) => v.toFixed(2)}
-          onLiveChange={(v) => preview({ decayTension: Number(v.toFixed(3)) })}
-          onCommit={(v) => { preview({ decayTension: Number(v.toFixed(3)) }); commit() }}
-        />
-        <ModKnob
-          label="REL T" value={env.releaseTension || 0} min={-1} max={1} defaultValue={0}
-          size={28} dragRange={120} capStyle="soft-disk" color="var(--theme-accent)"
-          formatValue={(v) => v.toFixed(2)}
-          onLiveChange={(v) => preview({ releaseTension: Number(v.toFixed(3)) })}
-          onCommit={(v) => { preview({ releaseTension: Number(v.toFixed(3)) }); commit() }}
-        />
-        <span className="sampler-mod-tension-caption">Tension</span>
+        {time({ key: 'release', label: 'Release', stage: STAGE_RELEASE })}
+        <span className={styles.spacer} />
+        {/* The typed twin of the diamonds on the display. */}
+        <div className={styles.sideCol} role="group" aria-label="Segment curves">
+          {curveBox('attackTension', 'Attack curve')}
+          {curveBox('decayTension', 'Decay curve')}
+          {curveBox('releaseTension', 'Release curve')}
+        </div>
       </div>
     </div>
   )

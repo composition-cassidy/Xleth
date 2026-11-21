@@ -7,6 +7,7 @@
 #include "dsp/WSOLA.h"
 #include "model/TimelineTypes.h"
 #include "XlethDebug.h"
+#include "HardwareTier.h"
 
 #define XXH_INLINE_ALL
 #include "xxhash.h"
@@ -95,7 +96,9 @@ private:
 // ─── Construction ────────────────────────────────────────────────────────────
 
 SlotBakeCache::SlotBakeCache(size_t maxBytes)
-    : pool_(std::make_unique<juce::ThreadPool>(kThreads))
+    // kThreads (2) on small machines; up to 4 workers from 12 logical cores
+    // (HardwareTier::backgroundWorkers — never more than a quarter of the CPU).
+    : pool_(std::make_unique<juce::ThreadPool>(xleth::hw::backgroundWorkers(kThreads, 4)))
     , maxBytes_(maxBytes)
 {}
 

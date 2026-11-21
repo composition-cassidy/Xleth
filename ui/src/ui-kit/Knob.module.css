@@ -1,0 +1,158 @@
+/* Knob (ui/DESIGN.md sections 4, 5, 7). Flat: no glow, no shadow, no gradient.
+ * The whole cell is the hit area; every state is visible at rest. */
+@layer kit {
+  .cell {
+    box-sizing: border-box;
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    width: var(--knob-w, 56px);
+    min-width: var(--hit-min);
+    min-height: var(--hit-min);
+    padding: var(--space-1) 0;
+    border-radius: var(--ui-radius-1);
+    font-family: var(--ui-font);
+    font-variant-numeric: tabular-nums;
+    color: var(--ui-ink);
+    cursor: ns-resize;
+    -webkit-app-region: no-drag;
+    touch-action: none;
+    user-select: none;
+    outline: none;
+  }
+
+  .label {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--type-11);
+    font-weight: var(--weight-regular);
+    line-height: 14px;
+    color: var(--ui-ink-2);
+  }
+
+  .dial {
+    flex: none;
+    display: block;
+  }
+
+  .track {
+    fill: none;
+    stroke: var(--ui-boundary);
+    stroke-width: 1.5;
+    stroke-linecap: butt;
+  }
+
+  .arc {
+    fill: none;
+    stroke: var(--ui-value);
+    stroke-width: 2.5;
+    stroke-linecap: butt;
+  }
+
+  .pointer {
+    stroke: var(--ui-ink);
+    stroke-width: 2;
+    stroke-linecap: butt;
+  }
+
+  .zero {
+    stroke: var(--ui-ink-2);
+    stroke-width: 1.5;
+  }
+
+  /* Minimal dial: a flat disc (a control, so g3) and the pointer; nothing else. */
+  .body {
+    fill: var(--ui-g3);
+    stroke: var(--ui-boundary);
+    stroke-width: 1;
+  }
+
+  /* No readout to take the value colour while dragging, so the pointer does. */
+  .cell[data-minimal]:is([data-dragging="true"], [data-state="active"]) .pointer {
+    stroke: var(--ui-value);
+  }
+
+  /* No value under the dial: the dial is centred in the hit area, and the typing field
+   * (double-click) is drawn over it rather than growing the cell. */
+  .cell[data-no-value] {
+    position: relative;
+    justify-content: center;
+  }
+
+  .cell[data-no-value] .input {
+    position: absolute;
+    top: 50%;
+    right: 1px;
+    left: 1px;
+    width: auto;
+    transform: translateY(-50%);
+  }
+
+  .value {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--type-12);
+    font-weight: var(--weight-medium);
+    line-height: 16px;
+    color: var(--ui-ink);
+  }
+
+  .input {
+    box-sizing: border-box;
+    width: calc(100% - var(--space-1));
+    height: 18px;
+    padding: 0 2px;
+    border: 1px solid var(--ui-select);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g0);
+    color: var(--ui-ink);
+    font: inherit;
+    font-size: var(--type-12);
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    outline: none;
+  }
+
+  .input[aria-invalid="true"] {
+    border-color: var(--ui-rec);
+  }
+
+  .cell:is(:hover, [data-state="hover"]) .label {
+    color: var(--ui-ink);
+  }
+
+  .cell:is(:focus-visible, [data-state="focus"]) {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 0;
+  }
+
+  /* Active = being dragged: the readout takes the value colour, nothing moves. */
+  .cell:is([data-dragging="true"], [data-state="active"]) .value {
+    color: var(--ui-value);
+  }
+
+  .cell[data-disabled] {
+    opacity: var(--ui-mute-opacity);
+    cursor: default;
+    pointer-events: none;
+  }
+
+  /* Modulation: the routed range as an inner arc in the parameter-signal colour. */
+  .mod {
+    fill: none;
+    stroke: var(--ui-signal-parameter);
+    stroke-width: 2;
+    stroke-linecap: butt;
+  }
+
+  /* A modulation source is being dragged over this knob: it is a drop target. */
+  .cell[data-mod-highlight] {
+    outline: 1px dashed var(--ui-signal-parameter);
+    outline-offset: 0;
+  }
+}

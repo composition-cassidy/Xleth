@@ -1,0 +1,21 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "compressor",
+  "name": "Pitch Sample Leveler",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "threshold": -22,
+      "ratio": 4,
+      "attack": 10,
+      "release": 60,
+      "knee": 8,
+      "makeup": 4,
+      "mix": 100,
+      "mix_linked": 1,
+      "detect_mode": 0,
+      "lookahead": 0
+    }
+  }
+}

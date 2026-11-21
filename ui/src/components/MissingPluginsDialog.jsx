@@ -1,13 +1,26 @@
 import { useState, useCallback } from 'react'
+import { Button, Dialog, DialogList, DialogListItem, DialogText } from '../ui-kit'
 
 // ── MissingPluginsDialog ─────────────────────────────────────────────────────
 // Shown after project load when one or more VST3 plugins could not be found.
 // Each row has a Retry button (re-scan + resolve) and a Remove button.
 // Footer has "Ignore All" (close) and "Remove All Missing" actions.
 //
+// A row whose missingReason is 'quarantined' (P2: the plugin crashed XLETH's
+// engine while loading) is not missing at all — Retry first takes it out of
+// quarantine (audio.unquarantinePlugin), which retries every placeholder of it.
+//
 // Props:
-//   plugins  – array of { trackId, nodeId, pluginId, pluginName, pluginVendor, filePath }
+//   plugins  – array of { trackId, nodeId, pluginId, pluginName, pluginVendor, filePath,
+//                         missingReason?, pluginFormat?, uniqueId?, deprecatedUid? }
 //   onClose  – called when the dialog should be dismissed (no more missing plugins or user ignores)
+
+function isSamePlugin(a, b) {
+  return a.missingReason === 'quarantined'
+    && a.pluginFormat === b.pluginFormat
+    && a.uniqueId === b.uniqueId
+    && a.deprecatedUid === b.deprecatedUid
+}
 
 export default function MissingPluginsDialog({ plugins: initialPlugins, onClose }) {
   const [plugins, setPlugins] = useState(initialPlugins ?? [])
@@ -17,9 +30,23 @@ export default function MissingPluginsDialog({ plugins: initialPlugins, onClose 
   const trackLabel = (trackId) =>
     trackId === -1 ? 'Master' : `Track ${trackId + 1}`
 
-  const handleRetry = useCallback(async (trackId, nodeId) => {
+  const handleRetry = useCallback(async (trackId, nodeId, plugin) => {
     setRetrying(prev => ({ ...prev, [nodeId]: true }))
     try {
+      if (plugin?.missingReason === 'quarantined') {
+        const result = await window.xleth?.audio?.unquarantinePlugin?.(
+          plugin.pluginFormat, plugin.uniqueId, plugin.deprecatedUid)
+        if (result?.ok) {
+          // Every placeholder of this plugin was retried; drop the resolved ones
+          // and mark the rest as plain missing (no longer quarantined).
+          const raw = await window.xleth?.audio?.getMissingPlugins?.()
+          const still = new Set((raw ? JSON.parse(raw) : []).map((m) => `${m.trackId}:${m.nodeId}`))
+          setPlugins(prev => prev
+            .filter(p => !(isSamePlugin(p, plugin) && !still.has(`${p.trackId}:${p.nodeId}`)))
+            .map(p => (isSamePlugin(p, plugin) ? { ...p, missingReason: 'missing' } : p)))
+        }
+        return
+      }
       const result = await window.xleth?.audio?.retryMissingPlugin?.(trackId, nodeId)
       if (result?.success) {
         setPlugins(prev => prev.filter(p => p.nodeId !== nodeId))
@@ -68,70 +95,55 @@ export default function MissingPluginsDialog({ plugins: initialPlugins, onClose 
   }
 
   return (
-    <div className="export-dialog-backdrop missing-plugins-backdrop">
-      <div className="export-dialog missing-plugins-dialog">
+    <Dialog
+      title="Missing plugins"
+      width="lg"
+      dismissable={false}
+      actions={
+        <>
+          <Button size="lg" onClick={onClose} disabled={removing}>Ignore all</Button>
+          <Button size="lg" variant="danger" onClick={handleRemoveAll} disabled={removing}>
+            {removing ? 'Removing…' : 'Remove all missing'}
+          </Button>
+        </>
+      }
+    >
+      <DialogText>
+        The following plugins could not be loaded. Audio will pass through without processing
+        until they are resolved.
+      </DialogText>
 
-        <div className="export-dialog-header">
-          <span className="export-dialog-title">Missing Plugins</span>
-        </div>
-
-        <div className="export-dialog-body missing-plugins-body">
-          <p className="missing-plugins-desc">
-            The following plugins could not be loaded. Audio will pass through without processing
-            until they are resolved.
-          </p>
-
-          <div className="missing-plugins-list">
-            {plugins.map((p) => (
-              <div key={`${p.trackId}-${p.nodeId}`} className="missing-plugin-row">
-                <div className="missing-plugin-info">
-                  <span className="missing-plugin-name">{p.pluginName || p.pluginId}</span>
-                  {p.pluginVendor && (
-                    <span className="missing-plugin-vendor">{p.pluginVendor}</span>
-                  )}
-                  <span className="missing-plugin-chain">{trackLabel(p.trackId)}</span>
-                </div>
-                <div className="missing-plugin-actions">
-                  <button
-                    className="missing-plugin-btn"
-                    onClick={() => handleRetry(p.trackId, p.nodeId)}
-                    disabled={retrying[p.nodeId]}
-                    title="Try to load plugin again"
-                  >
-                    {retrying[p.nodeId] ? '…' : 'Retry'}
-                  </button>
-                  <button
-                    className="missing-plugin-btn missing-plugin-btn-remove"
-                    onClick={() => handleRemove(p.trackId, p.nodeId)}
-                    disabled={retrying[p.nodeId]}
-                    title="Remove this placeholder from the chain"
-                  >
-                    Remove
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="export-dialog-footer">
-          <button
-            className="export-dialog-footer button"
-            onClick={onClose}
-            disabled={removing}
+      <DialogList label="Missing plugins">
+        {plugins.map((p) => (
+          <DialogListItem
+            key={`${p.trackId}-${p.nodeId}`}
+            label={p.pluginName || p.pluginId}
+            detail={[
+              p.missingReason === 'quarantined' ? "Quarantined: it crashed XLETH's engine while loading" : null,
+              p.pluginVendor,
+              trackLabel(p.trackId),
+            ].filter(Boolean).join(' · ')}
           >
-            Ignore All
-          </button>
-          <button
-            className="export-dialog-footer button export-btn-danger"
-            onClick={handleRemoveAll}
-            disabled={removing}
-          >
-            {removing ? 'Removing…' : 'Remove All Missing'}
-          </button>
-        </div>
-
-      </div>
-    </div>
+            <Button
+              size="sm"
+              onClick={() => handleRetry(p.trackId, p.nodeId, p)}
+              disabled={retrying[p.nodeId]}
+              title="Try to load plugin again"
+            >
+              {retrying[p.nodeId] ? '…' : 'Retry'}
+            </Button>
+            <Button
+              size="sm"
+              variant="danger"
+              onClick={() => handleRemove(p.trackId, p.nodeId)}
+              disabled={retrying[p.nodeId]}
+              title="Remove this placeholder from the chain"
+            >
+              Remove
+            </Button>
+          </DialogListItem>
+        ))}
+      </DialogList>
+    </Dialog>
   )
 }

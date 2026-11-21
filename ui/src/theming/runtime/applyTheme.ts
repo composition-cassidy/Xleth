@@ -11,7 +11,8 @@
 // dynamically — updating one base token cascades to every downstream token
 // without us having to re-materialize them.
 
-import { BASE_DEFAULTS, BASE_TOKEN_NAMES, type BaseTokens } from '../tokens/base';
+import { BASE_TOKEN_NAMES, type BaseTokens } from '../tokens/base';
+import { RAMPS, inferRamp, isRampName, type RampName } from '../tokens/neutralRamp';
 import { deriveTheme } from '../tokens/derivation';
 import { TOKENS, TOKENS_BY_NAME } from '../tokens/catalog';
 import { compileTokenValue } from '../schema/gradientCompiler';
@@ -22,6 +23,8 @@ export interface ResolvedTheme {
   values: Record<string, string>;
   /** The resolved base tokens, after theme overrides. */
   base: BaseTokens;
+  /** The neutral ramp the theme's ui-* steps came from (named, or inferred). */
+  ramp: RampName;
 }
 
 /**
@@ -33,15 +36,21 @@ export function resolveTheme(theme: ThemeFile): ResolvedTheme {
   const tokens = (theme.tokens ?? {}) as Record<string, TokenValue>;
   const detached = theme.derivationDetached ?? [];
 
-  // 1. Base tokens.
-  const base: BaseTokens = { ...BASE_DEFAULTS };
+  // 1. Ramp, then base tokens. A base the theme omits comes from its ramp row, so
+  //    a bare `{ accent }` theme lands on the neutral ramp rather than the old
+  //    blue-grey anchors (tokens/base.ts keeps those only for derivation tests).
+  const surfaceOverride = tokens['--theme-bg-surface'];
+  const ramp: RampName = isRampName(theme.ramp)
+    ? theme.ramp
+    : inferRamp(typeof surfaceOverride === 'string' ? surfaceOverride : undefined);
+  const base: BaseTokens = { ...RAMPS[ramp].base };
   for (const name of BASE_TOKEN_NAMES) {
     const override = tokens[name];
     if (typeof override === 'string') base[name] = override;
   }
 
   // 2. Derived-formula tokens via deriveTheme (skips detached).
-  const derived = deriveTheme(base, detached);
+  const derived = deriveTheme(base, detached, ramp);
 
   // 3. Assemble full map from the catalog.
   const values: Record<string, string> = {};
@@ -70,7 +79,7 @@ export function resolveTheme(theme: ThemeFile): ResolvedTheme {
     values[name] = compileTokenValue(value);
   }
 
-  return { values, base };
+  return { values, base, ramp };
 }
 
 /**

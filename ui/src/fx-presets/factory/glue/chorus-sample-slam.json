@@ -1,0 +1,20 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "glue",
+  "name": "Chorus Sample Slam",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "threshold": -22,
+      "makeup": 5,
+      "ratio": 2,
+      "attack": 2,
+      "release": 1,
+      "topology": 1,
+      "sc_hpf_on": 0,
+      "sc_hpf_freq": 100,
+      "color": 1
+    }
+  }
+}

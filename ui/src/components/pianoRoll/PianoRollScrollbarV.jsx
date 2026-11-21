@@ -1,6 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef } from 'react'
+import styles from './PianoRoll.module.css'
 
-const SCROLLBAR_WIDTH = 20
+const SCROLLBAR_WIDTH = 14
 const MIN_THUMB_SIZE = 24
 
 // The thumb tracks the animator's per-frame scrollY (and per-frame content
@@ -93,20 +94,17 @@ const PianoRollScrollbarV = forwardRef(function PianoRollScrollbarV({
   return (
     <div
       ref={trackRef}
-      className="piano-roll-scrollbar-v"
+      className={styles.vscroll}
       onMouseDown={handleTrackClick}
-      style={{ width: SCROLLBAR_WIDTH, height: viewportHeight }}
+      data-hint="Pitch scroll"
+      data-hint-mods="Drag: scroll · Click: page · Wheel: scroll"
     >
       {hasOverflow && (
         <div
           ref={thumbRef}
-          className="piano-roll-scrollbar-thumb"
+          className={styles.thumb}
           onMouseDown={handleThumbMouseDown}
-          style={{
-            top: thumbTop,
-            height: thumbSize,
-            width: SCROLLBAR_WIDTH - 2,
-          }}
+          style={{ top: thumbTop, height: thumbSize }}
         />
       )}
     </div>

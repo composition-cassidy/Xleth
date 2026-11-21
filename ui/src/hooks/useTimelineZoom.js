@@ -16,11 +16,19 @@ export default function useTimelineZoom(onCommit) {
   const onCommitRef = useRef(onCommit)
   onCommitRef.current = onCommit
 
+  // Zoom-out floor. Starts at the static MIN_PPB; callers that know the song
+  // length replace it with the "whole song fits" zoom (see
+  // components/timeline/zoomFit.js) via setMinPpb.
+  const minPpbRef = useRef(MIN_PPB)
+  const setMinPpb = useCallback((min) => {
+    if (min > 0) minPpbRef.current = Math.min(MAX_PPB, min)
+  }, [])
+
   const settleTimerRef = useRef(null)
   useEffect(() => () => clearTimeout(settleTimerRef.current), [])
 
   const applyZoom = useCallback((ppb) => {
-    const clamped = Math.max(MIN_PPB, Math.min(MAX_PPB, ppb))
+    const clamped = Math.max(minPpbRef.current, Math.min(MAX_PPB, ppb))
     pixelsPerBeatRef.current = clamped
 
     if (onCommitRef.current) {
@@ -43,12 +51,18 @@ export default function useTimelineZoom(onCommit) {
     return clamped
   }, [])
 
-  // Zoom centered on a cursor beat position.
-  // deltaY > 0 = zoom out, deltaY < 0 = zoom in (matches wheel convention)
-  const zoomAtCursor = useCallback((deltaY, cursorBeat, scrollOffsetRef, applyScroll) => {
+  // Zoom centered on a cursor beat position, `steps` wheel notches at a time
+  // (positive = zoom in; see wheelZoomSteps in components/timeline/zoomFit.js).
+  //
+  // `boundFor(newPpb)` MUST refresh the scroll clamp for the NEW zoom before
+  // the anchored scroll is applied. Clamping against the previous zoom's bound
+  // lets a zoom-out near the song's end park scroll past the end. The next
+  // notch then yanks it back, and that back-and-forth was the Video tab's
+  // zoom-out stammer.
+  const zoomAtCursor = useCallback((steps, cursorBeat, scrollOffsetRef, applyScroll, boundFor) => {
     const oldPpb = pixelsPerBeatRef.current
-    const factor = deltaY > 0 ? 1 / ZOOM_FACTOR : ZOOM_FACTOR
-    const newPpb = applyZoom(oldPpb * factor)
+    const newPpb = applyZoom(oldPpb * ZOOM_FACTOR ** steps)
+    boundFor?.(newPpb)
 
     // Keep the beat under the cursor at the same pixel position
     // cursorPixel = (cursorBeat - scrollOffset) * oldPpb
@@ -60,5 +74,5 @@ export default function useTimelineZoom(onCommit) {
     return newPpb
   }, [applyZoom])
 
-  return { pixelsPerBeat, pixelsPerBeatRef, applyZoom, zoomAtCursor }
+  return { pixelsPerBeat, pixelsPerBeatRef, minPpbRef, setMinPpb, applyZoom, zoomAtCursor }
 }

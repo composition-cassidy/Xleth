@@ -1,0 +1,313 @@
+/* Motion (ui/DESIGN.md section 27). The ONLY stylesheet that gives motion a duration, a curve
+ * or a distance. Everything else names a CHANNEL token (`var(--mo-*)`) or a RECIPE attribute
+ * (`data-mo="pop"`), and the tier decides what that means. `ui-kit/__tests__/motion.test.ts`
+ * fails the suite for a literal time in any kit or module stylesheet.
+ *
+ * Three tiers, chosen in Settings > Appearance > Motion (stores/motionStore.js writes
+ * `data-motion-tier` on <html>):
+ *
+ *   flat    Tier 1. Every channel is 0 ms: instant cuts. Also the value before the setting has
+ *           loaded, in tests and in the render harness, so a missing attribute is never motion.
+ *   smooth  Tier 2. Transitional motion that explains or softens: hover colour, dialogs,
+ *           mouse-opened popovers, toasts. Nothing in the edit loop and nothing opened from the
+ *           keyboard moves. Nothing is longer than 240 ms.
+ *   lively  Tier 3. The edit loop joins in (context menus, tabs, toggles, panel reveals, inserts),
+ *           floating surfaces overshoot a little, lists cascade, buttons press. Nothing is longer
+ *           than 400 ms.
+ *
+ * What NO tier touches (the DAW Floor):
+ *   class A  information drawn from engine state: playhead, meters, GR traces, spectra, scopes.
+ *            They are canvas, on engine time, never eased here.
+ *   class B  direct manipulation: clip / note / fader / knob / splitter drags and snapping are
+ *            1:1 with the pointer. No channel below is ever applied to a value or a position
+ *            under the cursor.
+ * Only transform, opacity, colour and outline are animated: never width, height or position.
+ */
+
+/* ── Channels ─────────────────────────────────────────────────────────────── */
+@layer tokens {
+  :root {
+    /* Curves. No ease-in anywhere; linear only for real progress. */
+    --mo-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+    --mo-ease-pop: var(--mo-ease-out);   /* floating surfaces; lively adds a small overshoot */
+
+    /* Tier 1, flat: the default. Durations. */
+    --mo-hover-in: 0ms;    /* colour change as the pointer arrives on a control */
+    --mo-hover-out: 0ms;   /* ...and as it leaves */
+    --mo-state: 0ms;       /* on / off / selected colour change (toggles, tabs, segments) */
+    --mo-press: 0ms;       /* press-in of a kit button */
+    --mo-popover: 0ms;     /* mouse-opened menus, selects, popovers, floating windows: in */
+    --mo-context: 0ms;     /* right-click menus: in (right-click is a verb) */
+    --mo-dialog: 0ms;      /* modal dialogs and their scrim: in */
+    --mo-toast: 0ms;       /* status toast: in */
+    --mo-page: 0ms;        /* an occasional content swap (a settings page) */
+    --mo-edit: 0ms;        /* structure in the edit loop: dock tabs, panel reveals, folds, inserts */
+    --mo-kbd: 0ms;         /* any surface opened from the keyboard */
+    --mo-exit: 0ms;        /* every exit; always shorter than its enter */
+    --mo-focus: 0ms;       /* the focus ring settling onto a control */
+    --mo-item: 0ms;        /* one row of a cascading list */
+    --mo-stagger: 0ms;     /* delay between cascading rows */
+    --mo-ambient: paused;  /* indeterminate loops (spinners): paused = a static, labelled state */
+    --mo-loop: 900ms;      /* one turn of a spinner (only seen while --mo-ambient is running) */
+    --mo-loop-slow: 1200ms; /* one pass of the indeterminate progress segment */
+
+    /* Tier 1, flat. Amounts. */
+    --mo-pop-from: 1;        /* start scale of a popover */
+    --mo-dialog-from: 1;     /* start scale of a dialog */
+    --mo-insert-from: 1;     /* start scale of an inserted device / strip / row */
+    --mo-glyph-from: 1;      /* start scale of a swapped glyph (play / stop) */
+    --mo-exit-to: 1;         /* end scale of an exit */
+    --mo-press-scale: none;  /* `scale` of a pressed kit button */
+    --mo-rise: 0px;          /* travel of dialogs, pages and revealed panels */
+    --mo-shift: 0px;         /* travel of the toast */
+    --mo-item-rise: 0px;     /* travel of one cascading row */
+    --mo-focus-from: 0px;    /* extra outline offset the focus ring starts from */
+  }
+
+  /* Tier 2, smooth: the sanctioned set (anti-daw-ui-slop 6.2 / 6.3). */
+  :root[data-motion-tier="smooth"] {
+    --mo-hover-in: 120ms;
+    --mo-popover: 200ms;
+    --mo-dialog: 240ms;
+    --mo-toast: 200ms;
+    --mo-page: 150ms;
+    --mo-exit: 150ms;
+    --mo-ambient: running;
+
+    --mo-pop-from: 0.96;
+    --mo-dialog-from: 0.98;
+    --mo-exit-to: 0.98;
+    --mo-shift: 4px;
+  }
+
+  /* Tier 3, lively: everything transitional, with character. */
+  :root[data-motion-tier="lively"] {
+    --mo-ease-pop: cubic-bezier(0.34, 1.45, 0.64, 1);
+
+    --mo-hover-in: 90ms;
+    --mo-hover-out: 240ms;
+    --mo-state: 160ms;
+    --mo-press: 110ms;
+    --mo-popover: 280ms;
+    --mo-context: 200ms;
+    --mo-dialog: 360ms;
+    --mo-toast: 320ms;
+    --mo-page: 260ms;
+    --mo-edit: 220ms;
+    --mo-kbd: 140ms;
+    --mo-exit: 190ms;
+    --mo-focus: 220ms;
+    --mo-item: 220ms;
+    --mo-stagger: 22ms;
+    --mo-ambient: running;
+
+    --mo-pop-from: 0.9;
+    --mo-dialog-from: 0.94;
+    --mo-insert-from: 0.96;
+    --mo-glyph-from: 0.6;
+    --mo-exit-to: 0.95;
+    --mo-press-scale: 0.96;
+    --mo-rise: 10px;
+    --mo-shift: 14px;
+    --mo-item-rise: 6px;
+    --mo-focus-from: 3px;
+  }
+}
+
+/* ── App-wide defaults: the lowest layer, so any component rule replaces them ─ */
+@layer reset {
+  /* Colour feedback on every interactive element. Colour and outline only: never opacity (an
+   * engine-driven dim must not fade) and never geometry. `scale` is listed so the kit press
+   * (Button.module.css) has a duration; it is `none` everywhere else.
+   *
+   * Which duration applies is decided by the state being ENTERED:
+   *   resting           hover-out  (smooth: 0, so nothing off the pointer ever fades)
+   *   resting + state   state      (a toggle flipped from the keyboard; smooth: 0)
+   *   hovered           hover-in
+   *   pressed           0          (a press is always instant) */
+  :where(button, a, summary, select, textarea, input:not([type="range"]), [role="button"], [role="tab"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="option"], [role="radio"], [role="checkbox"], [role="switch"], [role="treeitem"]) {
+    transition-property: background-color, border-color, color, outline-color, scale;
+    transition-duration: var(--mo-hover-out), var(--mo-hover-out), var(--mo-hover-out), var(--mo-hover-out), var(--mo-press);
+    transition-timing-function: var(--mo-ease-out);
+  }
+
+  :where(button, a, summary, select, textarea, input:not([type="range"]), [role="button"], [role="tab"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="option"], [role="radio"], [role="checkbox"], [role="switch"], [role="treeitem"]):where([aria-pressed], [aria-selected], [aria-checked], [aria-expanded], [data-selected], [data-checked], [data-on], [type="checkbox"], [type="radio"]) {
+    transition-duration: var(--mo-state), var(--mo-state), var(--mo-state), var(--mo-state), var(--mo-press);
+  }
+
+  :where(button, a, summary, select, textarea, input:not([type="range"]), [role="button"], [role="tab"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="option"], [role="radio"], [role="checkbox"], [role="switch"], [role="treeitem"]):where(:hover) {
+    transition-duration: var(--mo-hover-in), var(--mo-hover-in), var(--mo-hover-in), var(--mo-hover-in), var(--mo-press);
+  }
+
+  :where(button, a, summary, select, textarea, input:not([type="range"]), [role="button"], [role="tab"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="option"], [role="radio"], [role="checkbox"], [role="switch"], [role="treeitem"]):where(:active) {
+    transition-duration: 0ms, 0ms, 0ms, 0ms, var(--mo-press);
+  }
+
+  /* The focus ring settles onto the control (lively only: --mo-focus is 0 elsewhere). Outline
+   * is paint, not layout. */
+  :where(:focus-visible) {
+    animation: mo-focus-in var(--mo-focus) var(--mo-ease-out) backwards;
+  }
+
+  /* A DOM element that shows ENGINE state (a clip LED, a playing marker): class A. It opts out
+   * of every transition in every tier. */
+  [data-mo-live] {
+    transition-duration: 0s !important;
+    animation-duration: 0s !important;
+  }
+
+  /* Tier 1 is a promise: no animation at all, the pre-rebuild sheets and inline styles
+   * included. (`!important` in the lowest layer outranks every other layer's.) */
+  :root[data-motion-tier="flat"] *,
+  :root[data-motion-tier="flat"] *::before,
+  :root[data-motion-tier="flat"] *::after {
+    transition-duration: 0s !important;
+    transition-delay: 0s !important;
+    animation-duration: 0s !important;
+    animation-delay: 0s !important;
+    animation-iteration-count: 1 !important;
+  }
+
+  /* A surface on its way out (ui-kit/motion.ts, ghostExit): no enter recipe may restart on it. */
+  [data-mo-ghost],
+  [data-mo-ghost] * {
+    animation: none !important;
+    pointer-events: none !important;
+  }
+}
+
+/* ── Recipes: `data-mo="…"` on the element that enters ───────────────────────
+ * Enter animations run once, on mount, from the keyframe to the element's own resting style
+ * (`backwards` fill, no `forwards`: nothing lingers, and a 0 ms channel is a no-op). Exits are
+ * ui-kit/motion.ts. */
+@layer kit {
+  @keyframes mo-focus-in {
+    from { outline-offset: var(--mo-focus-from); }
+  }
+
+  @keyframes mo-fade-in {
+    from { opacity: 0; }
+  }
+
+  /* `translate` and `scale` are the individual transform properties: they compose with whatever
+   * `transform` the element already carries instead of replacing it. */
+  @keyframes mo-scale-in {
+    from {
+      opacity: 0;
+      translate: var(--mo-from-x, 0px) var(--mo-from-y, 0px);
+      scale: var(--mo-from-scale, 1);
+    }
+  }
+
+  /* Opacity is left alone: a glyph swap must never blank the control. */
+  @keyframes mo-glyph-in {
+    from { scale: var(--mo-glyph-from); }
+  }
+
+  /* The `from` offsets are custom properties, and custom properties inherit: reset them on every
+   * recipe element so a dialog's scale never leaks into a page or a popover inside it. */
+  [data-mo] {
+    --mo-from-x: 0px;
+    --mo-from-y: 0px;
+    --mo-from-scale: 1;
+  }
+
+  /* Mouse-opened floating surfaces: menus, selects, device menus, popovers, floating windows.
+   * They grow out of their anchor (`--mo-origin`, set by the component), never from scale(0). */
+  [data-mo="pop"],
+  [data-mo="context"] {
+    --mo-from-scale: var(--mo-pop-from);
+    transform-origin: var(--mo-origin, top left);
+    animation: mo-scale-in var(--mo-popover) var(--mo-ease-pop) backwards;
+  }
+
+  /* Right-click menus are in the edit loop: their own channel (0 until lively). */
+  [data-mo="context"] {
+    animation-duration: var(--mo-context);
+  }
+
+  /* Modal dialog: the scrim fades, the panel stays centred and settles. */
+  [data-mo="scrim"] {
+    animation: mo-fade-in var(--mo-dialog) var(--mo-ease-out) backwards;
+  }
+
+  [data-mo="dialog"] {
+    --mo-from-scale: var(--mo-dialog-from);
+    --mo-from-y: var(--mo-rise);
+    animation: mo-scale-in var(--mo-dialog) var(--mo-ease-pop) backwards;
+  }
+
+  /* A floating window is placed with its own transform, which a scale would drag across the
+   * screen: it only fades. */
+  [data-mo="window"] {
+    animation: mo-fade-in var(--mo-popover) var(--mo-ease-out) backwards;
+  }
+
+  /* A sheet that drops from the edge it hangs from (sample picker, folded top row). */
+  [data-mo="sheet"] {
+    --mo-from-y: calc(var(--mo-rise) * -1);
+    animation: mo-scale-in var(--mo-popover) var(--mo-ease-out) backwards;
+  }
+
+  /* Status toast. */
+  [data-mo="toast"] {
+    --mo-from-y: var(--mo-shift);
+    animation: mo-scale-in var(--mo-toast) var(--mo-ease-pop) backwards;
+  }
+
+  /* An occasional content swap (settings page, theme editor): a fade, plus a rise in lively. */
+  [data-mo="page"] {
+    --mo-from-y: var(--mo-rise);
+    animation: mo-scale-in var(--mo-page) var(--mo-ease-out) backwards;
+  }
+
+  /* Edit-loop structure: a region, dock panel or folded body that appears. `data-mo-from`
+   * names the edge it belongs to. */
+  [data-mo="reveal"] {
+    --mo-from-y: var(--mo-rise);
+    animation: mo-scale-in var(--mo-edit) var(--mo-ease-out) backwards;
+  }
+
+  [data-mo="reveal"][data-mo-from="top"] { --mo-from-y: calc(var(--mo-rise) * -1); }
+  [data-mo="reveal"][data-mo-from="left"] { --mo-from-y: 0px; --mo-from-x: calc(var(--mo-rise) * -1); }
+  [data-mo="reveal"][data-mo-from="right"] { --mo-from-y: 0px; --mo-from-x: var(--mo-rise); }
+  [data-mo="reveal"][data-mo-from="none"] { --mo-from-y: 0px; }
+
+  /* An item added to a list that was already on screen: device, strip, row. No overshoot. */
+  [data-mo="insert"] {
+    --mo-from-scale: var(--mo-insert-from);
+    animation: mo-scale-in var(--mo-edit) var(--mo-ease-out) backwards;
+  }
+
+  /* A glyph that replaces another in place (play / stop, fold chevron). */
+  [data-mo="glyph"] {
+    animation: mo-glyph-in var(--mo-state) var(--mo-ease-pop) backwards;
+  }
+
+  /* Opened from the keyboard: its own channel (0 until lively, then short), and no cascade. */
+  [data-mo][data-mo-kbd] {
+    animation-duration: var(--mo-kbd);
+  }
+
+  /* Cascade: the rows of a menu or listbox follow the surface in (lively only: --mo-item and
+   * --mo-stagger are 0 elsewhere). Capped at 12 steps so a long list never waits. */
+  :is([data-mo="pop"], [data-mo="context"]):not([data-mo-kbd]) > :is([role^="menuitem"], [role="option"]) {
+    --mo-from-x: 0px;
+    --mo-from-y: calc(var(--mo-item-rise) * -1);
+    --mo-from-scale: 1;
+    animation: mo-scale-in var(--mo-item) var(--mo-ease-out) backwards;
+    animation-delay: calc(var(--mo-stagger) * var(--mo-i, 12));
+  }
+
+  :is([data-mo="pop"], [data-mo="context"]) > :nth-child(1) { --mo-i: 1; }
+  :is([data-mo="pop"], [data-mo="context"]) > :nth-child(2) { --mo-i: 2; }
+  :is([data-mo="pop"], [data-mo="context"]) > :nth-child(3) { --mo-i: 3; }
+  :is([data-mo="pop"], [data-mo="context"]) > :nth-child(4) { --mo-i: 4; }
+  :is([data-mo="pop"], [data-mo="context"]) > :nth-child(5) { --mo-i: 5; }
+  :is([data-mo="pop"], [data-mo="context"]) > :nth-child(6) { --mo-i: 6; }
+  :is([data-mo="pop"], [data-mo="context"]) > :nth-child(7) { --mo-i: 7; }
+  :is([data-mo="pop"], [data-mo="context"]) > :nth-child(8) { --mo-i: 8; }
+  :is([data-mo="pop"], [data-mo="context"]) > :nth-child(9) { --mo-i: 9; }
+  :is([data-mo="pop"], [data-mo="context"]) > :nth-child(10) { --mo-i: 10; }
+  :is([data-mo="pop"], [data-mo="context"]) > :nth-child(11) { --mo-i: 11; }
+}

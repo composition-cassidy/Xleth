@@ -3,6 +3,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <nlohmann/json.hpp>
 
+#include <atomic>
 #include <memory>
 #include <cstdint>
 #include <set>
@@ -13,6 +14,9 @@
 class AudioGraph;
 class PluginRegistry;
 class XlethEffectBase;
+
+// Defined in AudioGraph.h; held here only by shared_ptr, so incomplete is fine.
+namespace xleth::audio { struct GraphRealtimeView; }
 
 // ─── EffectChainManager ─────────────────────────────────────────────────────
 // Thin wrapper around AudioGraph.  Preserves the original linear-chain API
@@ -265,6 +269,8 @@ public:
     // Returns the plugin file path (PluginDescription::fileOrIdentifier) for a
     // VST node.  Returns empty string for stock effects or if nodeId not found.
     juce::String getPluginFilePath(int nodeId) const;
+    // Full PluginDescription of a VST node (editor host INIT v2). False for stock.
+    bool getPluginDescription(int nodeId, juce::PluginDescription& out) const;
 
     // ── Missing-plugin support ──────────────────────────────────────────
     bool isNodeMissing(int nodeId) const;
@@ -287,10 +293,33 @@ public:
     void processBlock(juce::AudioBuffer<float>& buffer, int numSamples,
                       juce::MidiBuffer& midi);
 
+    // ── Lock-free realtime view (Finding 9) ─────────────────────────────
+    // The audio thread reads chain contents through an immutable snapshot
+    // instead of the live node model, so it never has to hold MixEngine's
+    // chainsMutex_. See the RealtimeView note at the top of AudioGraph.h.
+    //
+    // realtimeView() is the audio-thread accessor (one atomic load, never
+    // null). refreshRealtimeView() is the message-thread republish, called by
+    // MixEngine::publishChainSnapshotLocked() after every chain mutation.
+    using RealtimeView = xleth::audio::GraphRealtimeView;
+    std::shared_ptr<const RealtimeView> realtimeView() const noexcept;
+    void refreshRealtimeView();
+
     // ── Sidechain key injection (Prompt 4C+4D groundwork) ───────────────
     // True iff this chain currently owns a sidechain-capable node (and therefore
     // a SidechainSourceProcessor wired to it). Main thread.
     bool hasSidechainCapableNode() const;
+
+    // Message thread, allocation-free. Forwards to
+    // AudioGraph::visitEffectsInChainOrder — see there for the order contract.
+    // The signature matches AudioGraph::EffectVisitor (not named here because
+    // this header only forward-declares AudioGraph).
+    void visitEffectsInChainOrder(void* context,
+                                  void (*visit)(void* context, int nodeId,
+                                                XlethEffectBase* effect)) const;
+
+    // AudioGraph::graphSerial(); 0 when the chain has no graph. Message thread.
+    std::uint64_t graphSerial() const noexcept;
 
     // Borrow this block's per-target key audio for the chain's sidechain source
     // node. No-op when the chain has no sidechain source. MixEngine calls these
@@ -313,6 +342,55 @@ public:
     // Reset all processors in the chain. Intended for transport jumps.
     void resetProcessors();
 
+    // ── Off-thread reset handshake ──────────────────────────────────────
+    // AudioProcessor::reset() is not realtime-safe in general (VST3 plugins
+    // allocate; an unprimed Pitch Shifter primes its vendored shifter), so
+    // live playback never runs one of THOSE from the audio callback. A
+    // non-realtime worker resets them instead (a whole chain after a stop;
+    // after a jump, only what resetOnAudioThread below left), and this claim
+    // keeps that reset from ever overlapping the chain's own processing.
+    // Dekker-style: each side publishes its flag (seq_cst), then reads the
+    // other's, so at most one side proceeds.
+    //
+    //   Audio thread: if (beginRealtimeUse()) { ...use chain...; endRealtimeUse(); }
+    //                 else the chain is mid-reset — leave it alone this block.
+    //   Worker:       tryResetProcessorsOffThread() returns false when the audio
+    //                 thread was inside the chain; retry. Caller holds the
+    //                 owner's chains lock (no concurrent chain mutation).
+    bool beginRealtimeUse() noexcept;
+    void endRealtimeUse() noexcept;
+    bool tryResetProcessorsOffThread();
+
+    // ── Transport-jump reset (seek, loop wrap, play after an audition) ───
+    // A jump resets the PDC compensation delay lines inline, in the jump
+    // block, so the chain has to restart in that same block: reset any later
+    // and a latent effect (the Pitch Shifter's ~200 ms pipeline) first plays
+    // pre-jump audio out of its pipeline, then drops the post-jump audio it
+    // absorbed before the reset landed - misaligned against every
+    // compensated track, differently on every lap of a loop.
+    //
+    //   Audio thread: resetOnAudioThread() in the jump block. Claims the
+    //                 chain, resets every node that can reset realtime safely
+    //                 (AudioGraph::resetProcessorsOnAudioThread), and flags
+    //                 the rest. Returns false when the worker has work left.
+    //   Worker:       tryResetDeferredOffThread() resets only what was left
+    //                 (VST3 nodes, effects that declined) - never a node the
+    //                 audio thread already reset, which would re-open the
+    //                 misalignment. If the audio thread could not claim the
+    //                 chain at all (worker inside it), the whole chain is reset
+    //                 here instead. Same claim contract and return value as
+    //                 tryResetProcessorsOffThread; true when nothing is pending.
+    bool resetOnAudioThread() noexcept;
+    bool tryResetDeferredOffThread();
+
+    // The expensive half of a reset, run by the worker BEFORE claiming, while
+    // the audio thread keeps processing the chain: effects prime whatever
+    // their reset() would otherwise build inline (the Pitch Shifter's spare
+    // shifter), so the claimed reset is a swap and the chain is silent for
+    // microseconds instead of the ~30 ms an inline prime took. Same caller
+    // contract as tryResetProcessorsOffThread (owner's chains lock held).
+    void primeDeferredReset();
+
     // Returns the maximum getTailLengthSeconds() across all effect nodes.
     double getMaxTailLengthSeconds() const;
 
@@ -321,12 +399,23 @@ public:
     std::uint64_t getLatencyEpoch() const;
     void refreshLatencyDiagnostics();
 
+    // [PDCNotify] See AudioGraph::servicePendingLatencyChange. Non-realtime;
+    // caller holds the owner's chains lock.
+    bool hasPendingLatencyChange() const;
+    bool servicePendingLatencyChange();
+
     int addProcessorForTesting(const std::string& pluginId,
                                std::unique_ptr<juce::AudioProcessor> proc,
                                int position);
 
 private:
     std::unique_ptr<AudioGraph> graph_;
+
+    std::atomic<bool> realtimeInUse_   { false };
+    std::atomic<bool> resetInProgress_ { false };
+    // Set by the audio thread's jump reset for tryResetDeferredOffThread.
+    std::atomic<bool> deferredResetPending_ { false };   // some nodes were left
+    std::atomic<bool> fullResetPending_     { false };   // the claim failed
 
     // Graph-owned effect instances: stable effectInstanceId → APG uid.
     // Session-only at runtime. Serialized additively on graph-owned nodes so a

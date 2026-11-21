@@ -3,12 +3,16 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <nlohmann/json.hpp>
 
+#include "audio/LatencyChangeSignal.h"
+#include "audio/SourceTransformCapability.h"
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_map>
 
@@ -74,12 +78,91 @@ public:
 
     const std::string& getPluginId() const { return pluginId_; }
 
+    // ── [PDCNotify] Latency-change notification ────────────────────────────
+    // HIDES juce::AudioProcessor::setLatencySamples, which is non-virtual. Every
+    // stock effect publishes latency with an unqualified setLatencySamples(...)
+    // call from its own member functions, so name lookup lands here first and no
+    // subclass needed editing. Same value, same JUCE publish; the only addition is
+    // that an ACTUAL change raises the owning graph's LatencyChangeSignal, so the
+    // chain's PDC is recomputed even when the change did not come through an
+    // AudioGraph owner path (see LatencyChangeSignal.h).
+    //
+    // Threads: called from non-realtime paths only (prepare/release, state
+    // restore, onParameterValueChanged, onBypassChanged, band edits) - on the
+    // RPC thread or MixEngine's applier thread. The addition is a shared_ptr
+    // atomic load plus raise() (atomics only): no lock the audio thread takes, no
+    // allocation, no logging.
+    void setLatencySamples(int newLatency)
+    {
+        const int before = juce::AudioProcessor::getLatencySamples();
+        juce::AudioProcessor::setLatencySamples(newLatency);
+        if (juce::AudioProcessor::getLatencySamples() == before)
+            return;
+
+        latencyChangeNotifyCount_.fetch_add(1, std::memory_order_relaxed);
+        if (auto signal = latencyChangeSignal_.load(std::memory_order_acquire))
+            signal->raise();
+    }
+
+    // Owner side. AudioGraph attaches its signal while it computes PDC (so every
+    // node it accounts for is subscribed) and detaches on destroy(). Idempotent.
+    void attachLatencyChangeSignal(
+        const std::shared_ptr<xleth::audio::LatencyChangeSignal>& signal)
+    {
+        if (latencyChangeSignal_.load(std::memory_order_acquire) != signal)
+            latencyChangeSignal_.store(signal, std::memory_order_release);
+    }
+
+    void detachLatencyChangeSignal()
+    {
+        latencyChangeSignal_.store(nullptr, std::memory_order_release);
+    }
+
+    // Diagnostics/tests: number of published latency CHANGES since construction.
+    std::uint64_t getLatencyChangeNotifyCount() const noexcept
+    {
+        return latencyChangeNotifyCount_.load(std::memory_order_relaxed);
+    }
+
     // ── External sidechain capability (Prompt 5A) ───────────────────────────
     // Internal truth used by the engine to decide which stock effects may have a
     // sidechain key bus enabled when a route targets them. Only the stock
     // compressor overrides this; every other stock effect stays false, so they
     // never receive a second input bus (no behavior change).
     virtual bool supportsExternalSidechain() const { return false; }
+
+    // ── Source transform capability (Pitch Shifter Clip mode) ───────────────
+    // Runtime-discovered, NEVER persisted — mirrors supportsExternalSidechain().
+    // An effect that wants the audio feeding its TRACK re-rendered offline
+    // (rather than processing it in processEffect) describes that render here.
+    // MixEngine walks every chain on the message thread, asks each node, and
+    // publishes a per-track table (see SourceTransformTable.h).
+    //
+    // provideSourceTransform: fill `out` from current parameter state and
+    // return true ONLY when the transform is active. A false return means "no
+    // transform", whatever was written into `out`. MESSAGE THREAD.
+    virtual bool provideSourceTransform(xleth::SourceTransform& /*out*/) const { return false; }
+
+    // Monotonic counter that advances whenever anything provideSourceTransform
+    // reads may have changed. The engine re-queries a node only when this moves
+    // (or the node set/order/bypass changed), so an effect that overrides
+    // provideSourceTransform MUST override this too. Readable from any thread.
+    virtual std::uint64_t sourceTransformEpoch() const { return 0; }
+
+    // The dry/wet blend a source-transform provider asks for over the NEXT
+    // `numSamples` samples, as the smoothed value at the block start and the
+    // value the smoother will reach at its end (it moves linearly in between
+    // for a Linear smoother). Returns false for an effect that is not a
+    // source-transform provider.
+    //
+    // AUDIO THREAD, read-only, allocation- and lock-free. Called by MixEngine's
+    // clip loop, which runs BEFORE the chain processes this block, so it sees
+    // the target the previous block pushed: at most one block of lag, and the
+    // smoother itself is never advanced here.
+    virtual bool sourceTransformMixRamp(int /*numSamples*/, float& /*start*/, float& /*end*/) const noexcept
+    {
+        return false;
+    }
 
     // True iff this effect declared the optional second input bus at construction.
     bool hasSidechainInputBus() const { return getBusCount(true) > 1; }
@@ -180,6 +263,48 @@ public:
     // Audio-thread only.  Bypasses APG MIDI routing (no MIDI connections exist
     // in the graph); effects read onset events from this pointer instead.
     static void setCurrentMidiBuffer(juce::MidiBuffer* buf) { sCurrentMidi_ = buf; }
+
+    // ── Every track's MidiBuffer this block (set by MixEngine) ──────────────
+    // The per-track onset buffers above are filled for ALL tracks before any chain
+    // runs, so an effect can read another track's notes for the same block (the
+    // Szkrezh "Keys" source). MixEngine publishes the table right after filling the
+    // buffers and clears it when the block ends; outside that window
+    // findTrackMidi() returns nullptr. Audio thread only, never stored.
+    struct TrackMidiRef
+    {
+        int                     trackId = 0;
+        const juce::MidiBuffer* midi    = nullptr;
+    };
+
+    static void setTrackMidiDirectory(const TrackMidiRef* refs, int count) noexcept
+    {
+        sTrackMidiRefs_  = refs;
+        sTrackMidiCount_ = refs != nullptr ? count : 0;
+    }
+
+    static const juce::MidiBuffer* findTrackMidi(int trackId) noexcept
+    {
+        for (int i = 0; i < sTrackMidiCount_; ++i)
+            if (sTrackMidiRefs_[i].trackId == trackId)
+                return sTrackMidiRefs_[i].midi;
+        return nullptr;
+    }
+
+    // ── Tail hold (audio thread) ────────────────────────────────────────────
+    // MixEngine stops running a track's chain once its content has ended and the
+    // chain output has stayed under -60 dB for 50 ms. An effect whose output can be
+    // silent for longer than that while it still holds material it WILL play (a
+    // granular echo whose next grain has not reached the audio yet) raises this
+    // during processEffect; MixEngine clears it before the chain runs and reads it
+    // after, and a raised flag counts that block as not silent. The drain's 30 s
+    // hard cap still applies.
+    static void raiseTailHold() noexcept { sTailHold_ = true; }
+    static bool takeTailHold() noexcept
+    {
+        const bool held = sTailHold_;
+        sTailHold_ = false;
+        return held;
+    }
 
     // ── Smoothing registration ───────────────────────────────────────────────
     // Call from the subclass constructor (after the base constructor has run).
@@ -618,9 +743,39 @@ public:
 
     void reset() override
     {
-        bypassMix_ = bypassed_.load(std::memory_order_relaxed) ? 1.0f : 0.0f;
+        resetBypassRamp();
         resetEffect();
     }
+
+    // The audio-thread reset. Live playback calls this in the SAME block that
+    // clears the PDC compensation delay lines (seek, loop wrap, play after an
+    // audition), so the effect's pipeline restarts in step with the delay that
+    // compensates it on every other track. Deferred to the worker instead, the
+    // reset lands blocks late: the effect plays pre-jump audio out of its
+    // pipeline, then throws away the post-jump audio it absorbed meanwhile.
+    //
+    // Must be realtime safe: no allocation, no lock, bounded time. Return false
+    // to decline (nothing reset); the chain's worker then resets this effect
+    // off the audio thread, late. Default: reset(). Every stock effect's reset
+    // is a state clear, and test_effect_audio_thread_reset holds each one to it.
+    virtual bool resetOnAudioThread() noexcept
+    {
+        reset();
+        return true;
+    }
+
+    // Set by AudioGraph when resetOnAudioThread() declined; the worker's
+    // deferred pass takes it and resets this effect.
+    void markDeferredReset() noexcept { deferredReset_.store(true, std::memory_order_release); }
+    bool takeDeferredReset() noexcept { return deferredReset_.exchange(false, std::memory_order_acq_rel); }
+
+    // The expensive half of a two-phase reset. Live playback resets a chain
+    // under EffectChainManager's realtime claim, and the chain renders silence
+    // for as long as that takes; this runs first, OFF the audio thread and
+    // WITHOUT the claim, so processBlock may be running concurrently. Build
+    // here whatever reset() would otherwise build inline, touching nothing
+    // processBlock touches, and leave reset() a cheap swap. Default: nothing.
+    virtual void primeDeferredReset() {}
 
 protected:
     // Exposed so subclass can attach listeners or access params directly.
@@ -633,7 +788,21 @@ protected:
         return sTransportPos_.load(std::memory_order_relaxed);
     }
 
+    // What reset() does besides resetEffect(): snap the bypass crossfade to
+    // the current bypass state. For a resetOnAudioThread() override.
+    void resetBypassRamp() noexcept
+    {
+        bypassMix_ = bypassed_.load(std::memory_order_relaxed) ? 1.0f : 0.0f;
+    }
+
 private:
+    std::atomic<bool> deferredReset_ { false };
+
+    // [PDCNotify] Owner's signal (null until an AudioGraph accounts for this
+    // node). Shared so a raise() after the graph is gone is still safe.
+    std::atomic<std::shared_ptr<xleth::audio::LatencyChangeSignal>> latencyChangeSignal_;
+    std::atomic<std::uint64_t> latencyChangeNotifyCount_ { 0 };
+
     // ── Bus construction ──────────────────────────────────────────────────────
     // All Xleth effects are stereo-in / stereo-out. When `withSidechainInput` is
     // set, a SECOND stereo input bus ("Sidechain") is declared but left DISABLED
@@ -819,6 +988,11 @@ private:
     // ── Per-block MidiBuffer pointer (audio-thread only, single-threaded) ──
     static inline juce::MidiBuffer* sCurrentMidi_ = nullptr;
     static inline thread_local RealtimeTimingContext sRealtimeTimingContext_ {};
+
+    // ── Per-block track MIDI table and tail-hold flag (audio thread) ──────────
+    static inline thread_local const TrackMidiRef* sTrackMidiRefs_  = nullptr;
+    static inline thread_local int                 sTrackMidiCount_ = 0;
+    static inline thread_local bool                sTailHold_       = false;
 
     // ── Data members ─────────────────────────────────────────────────────────
     std::string       pluginId_;

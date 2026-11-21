@@ -1,0 +1,84 @@
+/* Floating panel chrome (ui/DESIGN.md sections 1 and 5). Docked panels have no
+ * titlebar at all: their region (dock tab, layout) is their title. */
+@layer kit {
+  /* A popped-out window is a floating surface: hard offset shadow, no glow. */
+  .frame {
+    border: 1px solid var(--ui-g4);
+    border-radius: var(--ui-radius-0);
+    box-shadow: var(--ui-shadow-float);
+  }
+
+  /* Focus is a 1px selection outline on the frame: no accent bar, no underline. */
+  .frame:global(.is-focused) {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  .titlebar {
+    height: var(--panel-header-h);
+    min-height: var(--panel-header-h);
+    background: var(--ui-g2);
+    border-bottom: 1px solid var(--ui-g4);
+    box-shadow: none;
+    color: var(--ui-ink-2);
+  }
+
+  .titlebar:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  .title {
+    flex: 0 1 auto;
+    min-width: 0;
+    padding: 0 var(--space-2) 0 var(--space-3);
+    overflow: hidden;
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    font-weight: var(--weight-medium);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    height: 100%;
+    padding: 0 2px 0 0;
+  }
+
+  /* Every window control: a 24x24 hit area, glyph 13px. */
+  .control {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--hit-min);
+    min-width: var(--hit-min);
+    height: var(--hit-min);
+    padding: 0;
+    border: 0;
+    border-radius: var(--ui-radius-1);
+    background: transparent;
+    box-shadow: none;
+    color: var(--ui-ink-2);
+  }
+
+  .control svg {
+    width: var(--type-13);
+    height: var(--type-13);
+  }
+
+  .control:hover,
+  .control:active {
+    background: var(--ui-g3);
+    box-shadow: none;
+    color: var(--ui-ink);
+  }
+
+  .control:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+}

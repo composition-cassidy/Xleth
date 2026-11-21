@@ -29,6 +29,8 @@ export const RESONANCE_SUPPRESSOR_MANIFEST = {
 
     delta:        { kind: 'discrete',   min: 0,    max: 1,     defaultValue: 0,     format: 'raw',        label: 'Delta' },
     processing_mode: { kind: 'discrete', min: 0,   max: 1,     defaultValue: 0,     format: 'raw',        label: 'Processing Mode' },
+    // 0 = Classic, 1 = New (ResonanceCore). Read only in High Quality. Appended last in the engine layout.
+    hq_engine:    { kind: 'discrete',   min: 0,    max: 1,     defaultValue: 0,     format: 'raw',        label: 'HQ Engine' },
     quality:      { kind: 'discrete',   min: 0,    max: 2,     defaultValue: 1,     format: 'raw',        label: 'Quality' },
 
     stereo_link:  { kind: 'continuous', min: 0,    max: 100,   defaultValue: 100,   format: 'pct0',       label: 'Stereo Link' },
@@ -108,8 +110,9 @@ export const RESONANCE_SUPPRESSOR_MANIFEST = {
   // Match the slots XlethResonanceSuppressorEffect actually writes:
   //   slot 0 = input peak L
   //   slot 1 = input peak R
-  //   slot 2 = gain-reduction activity in [0,1]
-  meterSlots: ['PEAK_L', 'PEAK_R', 'GAIN_REDUCTION'],
+  //   slot 2 = gain-reduction activity in [0,1] (mean of the largest cuts / 24 dB)
+  //   slot 3 = largest band cut in dB (New engine only; 0 otherwise)
+  meterSlots: ['PEAK_L', 'PEAK_R', 'GAIN_REDUCTION', 'MAX_BAND_CUT_DB'],
 
   // ── Visualization source keys ────────────────────────────────────────────
   // Painters live in runtime/visualizers/resonancePainter.js; the canvas is

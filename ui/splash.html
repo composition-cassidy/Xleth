@@ -1,54 +1,531 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
+<meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy"
-  content="default-src 'none'; img-src file: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+  content="default-src 'none'; img-src 'self' file: data:; style-src 'unsafe-inline'; font-src 'self' file:; script-src 'unsafe-inline';">
+<title>XLETH — Splash Screen</title>
+<!--
+  XLETH SPLASH SCREEN
+  ===================
+  A glass of soda. The top half is the workspace's own neutral surface
+  (ui/DESIGN.md section 3) carrying the wordmark; the bottom half is the
+  drink: two flat wave layers that drift against each other, bubbles rising
+  through it, fizz spitting off the surface. A droplet mascot hops along the
+  progress ruler inside the liquid to wherever startup has got to. The
+  mascot is the playhead, so the hop carries real data: it lands on the
+  current position and the ruler fills in behind it.
+
+  Flat fills only: no gradients, glow or blur. Everything that moves is
+  transform/opacity. With Windows "Show animations" off the scene holds
+  still and progress is still shown.
+
+  The mascot, liquid and bubbles are original vector drawings made for this
+  file (inline SVG / CSS, no image assets). The mascot is a tribute to the
+  avatar Adubuyrus used; it is drawn from scratch, not traced.
+
+  This window renders before ThemeProvider exists, so the tokens below are a
+  frozen copy of the workspace dark defaults. Components only reference
+  var(--*); no colour literal appears outside :root. Offline-safe: bundled
+  Barlow (assets/fonts/Barlow) with system fallbacks, no external requests;
+  xleth.svg must sit beside this file.
+
+  [INTEGRATE] points are marked in the script.
+-->
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --g0: #141414;
+    --g1: #1b1b1b;
+    --g4: #3a3a3a;
+    --boundary: #747474;
+    --ink: #e6e6e6;
+    --ink-2: #b4b4b4;
+    --ink-3: #929292;   /* dimmest text allowed: 5.5:1 on g1 */
+    --value: #33ced6;   /* default accent */
+    --backdrop: #050505; /* browser-preview backdrop only; the real window is the card */
+    /* scene: the soda */
+    --soda-deep: #1c3b5e;   /* the drink itself (front wave) */
+    --soda-mid: #2b527c;    /* the far wave, showing over the near one */
+    --soda-crest: #5c8fc4;  /* surface line, fizz above the surface */
+    --soda-bubble: #456f9e; /* bubbles inside the drink: kept quiet, text sits over them */
+    --soda-tick: #456a94;   /* ruler step lines inside the drink */
+    /* mascot */
+    --m-body: #2a8fd8;
+    --m-line: #0a2f55;
+    --m-gloss: #ffffff;
+    --m-lens: #b65ee0;
+    --m-glint: #e2b6f5;
+    --font: "Barlow", "Inter", "Noto Sans", "Segoe UI", system-ui, sans-serif;
+    --splash-w: 640px;
+    --splash-h: 400px;
+    --pad: 40px;
+  }
+
+  /* assets/fonts/ sits beside this file (ui/), same packaging tier as welcome.html.
+     Only the weights this window uses: 400 (body) and 500 (.tagline). */
+  @font-face {
+    font-family: "Barlow";
+    src: url("assets/fonts/Barlow/Barlow-Regular.ttf") format("truetype");
+    font-weight: 400;
+  }
+  @font-face {
+    font-family: "Barlow";
+    src: url("assets/fonts/Barlow/Barlow-Medium.ttf") format("truetype");
+    font-weight: 500;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
   html, body {
-    width: 100%; height: 100%;
-    background: #0D0F13;
+    height: 100%;
+    background: var(--backdrop);
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--font);
+    font-variant-numeric: tabular-nums;
+    user-select: none;
+  }
+
+  .splash {
+    position: relative;
+    width: var(--splash-w); height: var(--splash-h);
     overflow: hidden;
-    user-select: none; -webkit-user-select: none;
-    font-family: "Inter", "Noto Sans", "Segoe UI", system-ui, sans-serif;
+    background: var(--g1);
+    /* a frameless window has no edge of its own against a dark desktop */
+    border: 1px solid var(--g4);
+    display: flex; flex-direction: column;
+    padding: var(--pad);
   }
-  body {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    transition: opacity 300ms ease;
+
+  /* ---- identity ---- */
+  /* xleth.svg has ~38% empty headroom in its viewBox; the crop box trims it
+     so the wordmark sits tight. Width drives height. */
+  .logo-crop { width: 260px; height: 86px; overflow: hidden; }
+  .logo-crop img {
+    width: 260px; display: block; margin-top: -52px;
+    /* SVG paths carry no fill and render black; force the white wordmark. */
+    filter: brightness(0) invert(1);
   }
-  body.fade-out { opacity: 0; }
-  #logo { max-width: 420px; max-height: 220px; object-fit: contain; margin-bottom: 28px; }
-  #status { font-size: 13px; color: #4AE3D0; letter-spacing: 0.02em; height: 18px; text-align: center; }
-  #progress-bar {
-    position: fixed; bottom: 0; left: 0; right: 0;
-    height: 2px; background: transparent; overflow: hidden;
+  .tagline { margin-top: 12px; font-size: 13px; font-weight: 500; color: var(--ink); }
+  .dedication { margin-top: 4px; font-size: 12px; color: var(--ink-3); }
+  .version {
+    position: absolute; top: var(--pad); right: var(--pad);
+    font-size: 11px; color: var(--ink-3);
   }
-  #progress-sweep {
-    position: absolute; top: 0; height: 100%; width: 40%;
-    background: rgba(74, 227, 208, 0.4);
-    animation: sweep 1.6s ease-in-out infinite;
+
+  /* ---- scene: the soda ---- */
+  /* Back to front: fizz leaving the surface, far wave, near wave, bubbles
+     inside the drink. Each wave path is three periods wide and drifts by
+     exactly one period, so the loops have no seam; the two drift in opposite
+     directions at different speeds, and the whole surface sloshes a few px.
+     Paths and bubbles are generated by the script (drawSea, fizz). */
+  .spray-layer, .sea, .fizz-layer { position: absolute; left: 0; pointer-events: none; }
+  .spray-layer, .fizz-layer { top: 0; width: 100%; height: 100%; }
+
+  .sea {
+    top: 200px; width: 100%; height: 200px;
+    animation: sea-slosh 4.6s ease-in-out infinite alternate;
   }
-  @keyframes sweep { 0% { left: -40%; } 100% { left: 100%; } }
+  .sea svg { position: absolute; left: 0; top: 0; width: 960px; height: 210px; }
+  .sea-back { fill: var(--soda-mid); animation: sea-drift-back 26s linear infinite; }
+  .sea-front { fill: var(--soda-deep); animation: sea-drift 16s linear infinite; }
+  .sea-crest {
+    fill: none; stroke: var(--soda-crest); stroke-width: 1.5;
+    stroke-linecap: round; stroke-linejoin: round;
+  }
+  @keyframes sea-slosh { from { transform: translateY(-3px); } to { transform: translateY(3px); } }
+  @keyframes sea-drift { to { transform: translateX(-320px); } }
+  @keyframes sea-drift-back { from { transform: translateX(-320px); } to { transform: translateX(0); } }
+
+  /* One bubble = an outer box that travels and an inner ring that sways.
+     --rise / --dur / --delay / --sway are set per bubble by the script. */
+  .bub {
+    position: absolute; opacity: 0;
+    animation: bub-rise var(--dur) linear var(--delay) infinite;
+  }
+  .bub i {
+    display: block; width: 100%; height: 100%;
+    border: 1.5px solid var(--soda-bubble); border-radius: 50%;
+    animation: bub-sway var(--sway) ease-in-out infinite alternate;
+  }
+  .spray-layer .bub {
+    animation-name: bub-spray;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  .spray-layer .bub i { border-color: var(--soda-crest); }
+  @keyframes bub-rise {
+    0%   { transform: translateY(0); opacity: 0; }
+    8%   { opacity: 1; }
+    86%  { opacity: 1; }
+    100% { transform: translateY(var(--rise)); opacity: 0; }
+  }
+  @keyframes bub-spray {
+    0%   { transform: translateY(0) scale(0.4); opacity: 0; }
+    10%  { opacity: 1; }
+    60%  { opacity: 1; }
+    100% { transform: translateY(var(--rise)) scale(1); opacity: 0; }
+  }
+  @keyframes bub-sway { from { transform: translateX(-3px); } to { transform: translateX(3px); } }
+
+  /* ---- boot status: the ruler, then its label ---- */
+  .boot { position: relative; margin-top: auto; }
+
+  /* The progress bar as a ruler: a bar line every 8 divisions, a beat line
+     every division, and a baseline that fills in behind the mascot. Real
+     progress, not decoration. It stands in the drink. */
+  .ruler {
+    position: relative;
+    height: 20px;
+    --divisions: 32;
+    /* inside the drink: bar lines and baseline step up to --ink-3 to hold
+       3:1 on --soda-deep; step lines stay faint */
+    background:
+      linear-gradient(var(--ink-3), var(--ink-3)) left bottom / 100% 1px no-repeat,
+      linear-gradient(to right, var(--ink-3) 1px, transparent 1px) left bottom / calc(100% / 4) 12px repeat-x,
+      linear-gradient(to right, var(--soda-tick) 1px, transparent 1px) left bottom / calc(100% / var(--divisions)) 6px repeat-x;
+    border-right: 1px solid var(--ink-3);
+  }
+  .ruler-fill {
+    position: absolute; left: 0; bottom: 0;
+    height: 2px; width: 0;
+    background: var(--value);
+  }
+
+  /* The mascot. .hopper carries position (x along the ruler, lift off it);
+     .hopper-body carries the squash, stretch and lean, pivoting on its feet.
+     Both are driven per frame by the script. */
+  .hopper {
+    position: absolute; left: 0; bottom: 0;
+    width: 56px; height: 59.5px; margin-left: -28px;
+    pointer-events: none;
+    will-change: transform;
+  }
+  .hopper-body {
+    display: block; width: 56px; height: 59.5px;
+    transform-origin: 50% 100%;
+    will-change: transform;
+  }
+  .hopper-lines {
+    position: absolute; right: calc(100% + 4px); top: 17px;
+    width: 22px; height: 27px;
+    opacity: 0;
+  }
+  .hopper-lines path { fill: none; stroke: var(--ink-2); stroke-width: 1.5; stroke-linecap: round; }
+
+  /* the couple of bubbles the mascot kicks up where it lands */
+  .puff {
+    position: absolute; left: 0; bottom: 2px;
+    width: 7px; height: 7px; margin-left: -3.5px;
+    border: 1.5px solid var(--soda-crest); border-radius: 50%;
+    opacity: 0; pointer-events: none;
+  }
+
+  .m-body  { fill: var(--m-body); stroke: var(--m-line); stroke-width: 2; stroke-linejoin: round; }
+  .m-gloss { fill: none; stroke: var(--m-gloss); stroke-width: 3; stroke-linecap: round; opacity: 0.9; }
+  .m-lens  { fill: var(--m-lens); stroke: var(--m-line); stroke-width: 1.8; }
+  .m-glint { fill: none; stroke: var(--m-glint); stroke-width: 1.6; stroke-linecap: round; }
+  .m-frame { fill: none; stroke: var(--m-line); stroke-width: 1.8; stroke-linecap: round; }
+  .m-smile { fill: none; stroke: var(--m-gloss); stroke-width: 1.6; stroke-linecap: round; }
+
+  .status-row {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+    margin-top: 10px;
+  }
+  .status-text {
+    font-size: 12px; color: var(--ink);
+    min-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .status-pct { flex: none; font-size: 12px; color: var(--ink-2); }
+
+  /* Windows "Show animations" off: the drink holds still with no bubbles
+     (a .bub rests at opacity 0) and the mascot simply stands at the current
+     position (the script skips the hop loop). */
+  @media (prefers-reduced-motion: reduce) {
+    .sea, .sea svg, .bub, .bub i { animation: none; }
+  }
 </style>
 </head>
 <body>
-  <img id="logo" src="" alt="" onerror="this.style.display='none'">
-  <div id="status">Starting…</div>
-  <div id="progress-bar"><div id="progress-sweep"></div></div>
-  <script>
-    const statusEl = document.getElementById('status');
-    if (window.splashIpc) {
-      window.splashIpc.on('splash:status', (_event, msg) => { statusEl.textContent = msg; });
-    } else {
-      const msgs = ['Initializing audio engine…','Registering codecs…','Starting compositor…','Loading workspace…'];
-      let i = 0;
-      const cycle = () => { statusEl.textContent = msgs[i++ % msgs.length]; setTimeout(cycle, 800); };
-      setTimeout(cycle, 800);
+
+  <div class="splash" id="splash">
+    <div class="spray-layer" id="sprayLayer" aria-hidden="true"></div>
+    <div class="sea" aria-hidden="true">
+      <svg class="sea-back" viewBox="0 0 960 210"><path id="seaBack"/></svg>
+      <svg class="sea-front" viewBox="0 0 960 210"><path id="seaFront"/><path class="sea-crest" id="seaCrest"/></svg>
+    </div>
+    <div class="fizz-layer" id="fizzLayer" aria-hidden="true"></div>
+
+    <div class="logo-crop">
+      <!-- xleth.svg sits beside this HTML file -->
+      <img src="xleth.svg" alt="XLETH">
+    </div>
+    <div class="tagline">The YTPMVer's DAW</div>
+    <div class="dedication">In honor of Adubuyrus</div>
+    <div class="version" id="versionLabel">Version 1.2.2-beta 64-bit</div>
+
+    <div class="boot">
+      <div class="ruler" id="ruler" role="progressbar" aria-label="Startup progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div class="ruler-fill" id="rulerFill"></div>
+        <i class="puff"></i><i class="puff"></i><i class="puff"></i><i class="puff"></i>
+        <div class="hopper" id="hopper" aria-hidden="true">
+          <svg class="hopper-lines" id="hopperLines" viewBox="0 0 18 22">
+            <path d="M2 3H16"/>
+            <path d="M0 11H13"/>
+            <path d="M5 19H15"/>
+          </svg>
+          <svg class="hopper-body" id="hopperBody" viewBox="0 0 48 51">
+            <path class="m-body" d="M29 2.5C27.5 11 5.5 17.5 5.5 30.5A18.5 18.5 0 0 0 42.5 30.5C42.5 19.5 33.5 13.5 29 2.5Z"/>
+            <path class="m-gloss" d="M11.5 23.5C13 18.5 17.5 15 22.5 13"/>
+            <path class="m-frame" d="M9.7 30.2L6.2 28.9M38.3 30.2L41.8 28.9M22.6 30.4Q24 28.6 25.4 30.4"/>
+            <circle class="m-lens" cx="16.2" cy="31" r="6.6"/>
+            <circle class="m-lens" cx="31.8" cy="31" r="6.6"/>
+            <path class="m-glint" d="M13.6 33.4L18.2 28.2M29.2 33.4L33.8 28.2"/>
+            <path class="m-smile" d="M19.5 42Q24 45 28.5 42"/>
+          </svg>
+        </div>
+      </div>
+      <div class="status-row">
+        <div class="status-text" id="statusText" role="status" aria-live="polite">Starting&hellip;</div>
+        <div class="status-pct" id="statusPct">0 %</div>
+      </div>
+    </div>
+  </div>
+
+<script>
+  /*
+    [INTEGRATE] Version auto-alignment with build-portable.bat.
+    build-portable.bat already passes the typed version to electron-builder
+    via --config.extraMetadata.version=%XLETH_VERSION%, so the packaged
+    app's app.getVersion() IS the version Krasen typed. electron-main just
+    forwards it to this window via the `v` query param.
+  */
+  const versionLabel = document.getElementById('versionLabel');
+  const versionParam = new URLSearchParams(window.location.search).get('v');
+  versionLabel.textContent = 'Version ' + (versionParam || '1.2.2-beta') + ' 64-bit';
+
+  const statusText = document.getElementById('statusText');
+  const statusPct = document.getElementById('statusPct');
+  const ruler = document.getElementById('ruler');
+  const rulerFill = document.getElementById('rulerFill');
+  const hopper = document.getElementById('hopper');
+  const hopperBody = document.getElementById('hopperBody');
+  const hopperLines = document.getElementById('hopperLines');
+
+  // ---- the soda -----------------------------------------------------
+  // Each surface is a few harmonics of one 320px period: irregular enough
+  // to read as liquid, periodic so the CSS drift (one period per loop)
+  // never shows a seam. Coordinates are in the 960x210 wave SVGs.
+  (function drawSea() {
+    const PERIOD = 320, W = 960, H = 210;
+    function surface(mid, harmonics) {
+      let d = '';
+      for (let x = 0; x <= W; x += 4) {
+        const a = 2 * Math.PI * x / PERIOD;
+        let y = mid;
+        for (let n = 0; n < harmonics.length; n++) y += harmonics[n][0] * Math.sin((n + 1) * a + harmonics[n][1]);
+        d += (x ? 'L' : 'M') + x + ' ' + y.toFixed(2);
+      }
+      return d;
     }
-  </script>
+    const closed = (d) => d + 'L' + W + ' ' + H + 'L0 ' + H + 'Z';
+    const front = surface(22, [[11, 0], [5, 1.1], [2.5, 2.4]]);
+    document.getElementById('seaFront').setAttribute('d', closed(front));
+    document.getElementById('seaCrest').setAttribute('d', front);
+    document.getElementById('seaBack').setAttribute('d', closed(surface(13, [[8, 2.2], [4, 0.3]])));
+  })();
+
+  // Bubbles. Seeded, so the scene is the same every launch; negative delays,
+  // so it is already fizzing on the first frame instead of starting empty.
+  (function fizz() {
+    let seed = 0x50da;
+    const rnd = () => {
+      seed = seed + 0x6D2B79F5 | 0;
+      let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+    const between = (a, b) => a + (b - a) * rnd();
+    function bubble(layer, x, top, size, rise, dur) {
+      const b = document.createElement('div');
+      b.className = 'bub';
+      b.style.cssText =
+        'left:' + x.toFixed(1) + 'px;top:' + top.toFixed(1) + 'px;' +
+        'width:' + size.toFixed(1) + 'px;height:' + size.toFixed(1) + 'px;' +
+        '--rise:' + (-rise).toFixed(1) + 'px;--dur:' + dur.toFixed(2) + 's;' +
+        '--delay:' + (-between(0, dur)).toFixed(2) + 's;--sway:' + between(1.1, 2.2).toFixed(2) + 's';
+      b.appendChild(document.createElement('i'));
+      layer.appendChild(b);
+    }
+    // Inside the drink: from under the bottom edge up to just below the
+    // lowest the surface ever gets (trough 240 + slosh 3), so none of them
+    // is ever drawn over the neutral half.
+    const fizzLayer = document.getElementById('fizzLayer');
+    const RISING = 18;
+    for (let i = 0; i < RISING; i++) {
+      const size = between(4, 11);
+      bubble(fizzLayer, 10 + (i + rnd()) / RISING * 612, 404, size, 404 - between(246, 264), between(3.2, 6.4));
+    }
+    // Leaving the surface: these start hidden behind the liquid and come out
+    // of it wherever the wave happens to be. Kept right of the tagline block.
+    const sprayLayer = document.getElementById('sprayLayer');
+    const SPRAY = 7;
+    for (let i = 0; i < SPRAY; i++) {
+      const size = i === 3 ? 20 : between(5, 12);
+      bubble(sprayLayer, 215 + (i + rnd()) / SPRAY * 390, 246, size, between(64, 118), between(2.4, 4));
+    }
+  })();
+
+  // ---- the mascot -----------------------------------------------------
+  // It only ever stands where it last landed. A progress update is covered
+  // in one to three hops; between updates it hops on the spot, so a slow
+  // startup stage still reads as alive. Positions are in percent of the
+  // ruler so the 100 % landing is exact.
+  const HOP_MS = 280;        // one travelling hop
+  const IDLE_MS = 600;       // one hop on the spot
+  const HOP_HEIGHT = 24;     // px, travelling
+  const IDLE_HEIGHT = 6;     // px, on the spot
+  const STRIDE_PX = 48;      // preferred distance per hop
+  const MAX_HOPS = 3;        // any update lands within MAX_HOPS * HOP_MS
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const puffs = Array.from(document.querySelectorAll('.puff'));
+  let puffTurn = 0;
+  function puff(pct) {
+    const x = ruler.clientWidth * pct / 100;
+    for (let i = 0; i < 2; i++) {
+      const side = i ? 1 : -1;
+      puffs[puffTurn++ % puffs.length].animate([
+        { transform: 'translate(' + (x + side * 9).toFixed(1) + 'px,0) scale(0.5)', opacity: 0.9 },
+        { transform: 'translate(' + (x + side * 20).toFixed(1) + 'px,' + (-22 - 10 * i) + 'px) scale(1)', opacity: 0 },
+      ], { duration: 460 + 120 * i, easing: 'cubic-bezier(0.23, 1, 0.32, 1)' });
+    }
+  }
+
+  let target = 0;   // real startup progress
+  let landed = 0;   // where the mascot last touched down
+  let hop = null;   // the hop in flight
+
+  function pose(pct, lift, squash, air, lean, lines) {
+    const x = ruler.clientWidth * pct / 100;
+    hopper.style.transform = 'translate(' + x.toFixed(2) + 'px,' + (-lift).toFixed(2) + 'px)';
+    hopperBody.style.transform =
+      'rotate(' + lean.toFixed(2) + 'deg) scale(' +
+      (1 + 0.12 * squash - 0.04 * air).toFixed(3) + ',' +
+      (1 - 0.16 * squash + 0.06 * air).toFixed(3) + ')';
+    hopperLines.style.opacity = lines.toFixed(2);
+    rulerFill.style.width = x.toFixed(2) + 'px';
+  }
+
+  function nextHop(now) {
+    const gapPx = (target - landed) / 100 * ruler.clientWidth;
+    if (gapPx < 1) {
+      return { from: landed, to: landed, t0: now, dur: IDLE_MS, height: IDLE_HEIGHT, lift0: 0, travelling: false };
+    }
+    const hops = target >= 100 ? 1 : Math.min(MAX_HOPS, Math.ceil(gapPx / STRIDE_PX));
+    return {
+      from: landed, to: landed + (target - landed) / hops,
+      t0: now, dur: HOP_MS, height: HOP_HEIGHT, lift0: 0, travelling: true,
+    };
+  }
+
+  // Where the hop in flight is right now: percent along the ruler, px of lift.
+  function hopState(now) {
+    const t = Math.max(0, Math.min(1, (now - hop.t0) / hop.dur));
+    return {
+      t,
+      pct: hop.from + (hop.to - hop.from) * t,
+      lift: hop.lift0 * (1 - t) + 4 * hop.height * t * (1 - t),
+    };
+  }
+
+  function frame(now) {
+    if (!hop) hop = nextHop(now);
+    if (now - hop.t0 >= hop.dur) {
+      landed = hop.to;
+      if (hop.travelling) puff(landed);
+      hop = nextHop(now);
+    }
+    const s = hopState(now);
+    const size = hop.height / HOP_HEIGHT;
+    // squash on the ground contact at each end; a hop that began mid-air
+    // (lift0 > 0, the final leap) has no take-off to squash for
+    const contact = hop.lift0 > 0 ? 1 - s.t : Math.min(s.t, 1 - s.t);
+    const squash = Math.max(0, 1 - contact / 0.2) * size;
+    const air = Math.sin(Math.PI * s.t);
+    pose(
+      s.pct, s.lift, squash, air * size,
+      hop.travelling ? 6 * Math.sin(2 * Math.PI * s.t) : 0,
+      hop.travelling ? air : 0,
+    );
+    requestAnimationFrame(frame);
+  }
+
+  function setStatus(message) { statusText.textContent = message; }
+  function setProgress(percent) {
+    const p = Math.max(0, Math.min(100, percent));
+    // thin space before the unit, per the workspace value format
+    statusPct.textContent = Math.round(p) + ' %';
+    ruler.setAttribute('aria-valuenow', String(Math.round(p)));
+
+    if (reduceMotion) {
+      target = landed = p;
+      pose(p, 0, 0, 0, 0, 0);
+      return;
+    }
+    if (p < landed) {
+      // progress restarted (a reused splash, or the demo loop): stand at the
+      // new position rather than hopping backwards
+      landed = p;
+      hop = null;
+    } else if (p >= 100 && hop && target < 100) {
+      // The window closes shortly after 100 %, so don't finish the hop in
+      // flight first: turn it into one last leap from wherever it is now.
+      const now = performance.now();
+      const s = hopState(now);
+      landed = s.pct;
+      hop = { from: s.pct, to: 100, t0: now, dur: HOP_MS, height: HOP_HEIGHT, lift0: s.lift, travelling: true };
+    }
+    target = p;
+  }
+
+  if (reduceMotion) pose(0, 0, 0, 0, 0, 0);
+  else requestAnimationFrame(frame);
+
+  // Public surface of the splash window. electron-main drives this with real
+  // startup milestones through splash-preload.js (see window.splashStatus
+  // calls wired to the 'splash:status' IPC channel).
+  window.splashStatus = function (message, percent) {
+    if (message != null) setStatus(message);
+    if (percent != null) setProgress(percent);
+  };
+
+  // Demo messages, kept as fallback text for standalone preview only (no
+  // splash-preload.js present, e.g. opening this file directly in a browser).
+  // The packaged app never runs this loop — window.__xlethSplashPreloadActive
+  // is set by the preload before this script runs.
+  const bootSequence = [
+    ['Loading audio engine…',          14],
+    ['Starting compositor…',           32],
+    ['Scanning VST3 plugins…',         55],
+    ['Updating plug-in cache…',        71],
+    ['Restoring session…',             88],
+    ['Ready.',                        100],
+  ];
+
+  if (!window.__xlethSplashPreloadActive) {
+    let step = 0;
+    (function advance() {
+      const [message, target] = bootSequence[step];
+      window.splashStatus(message, target);
+      step++;
+      if (step < bootSequence.length) {
+        setTimeout(advance, 900);
+      } else {
+        // demo loop restart — real build closes the splash here instead
+        setTimeout(() => { step = 0; setProgress(0); setTimeout(advance, 400); }, 1600);
+      }
+    })();
+  }
+</script>
+
 </body>
 </html>

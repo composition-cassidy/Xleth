@@ -1,5 +1,5 @@
 import React, { useSyncExternalStore } from 'react';
-import type { MouseEvent } from 'react';
+import type { PointerEvent } from 'react';
 import {
   beginDockRegionResize,
   isDockRegionResizing,
@@ -23,10 +23,13 @@ export function DockRegionResizer({ region, currentSize }: DockRegionResizerProp
     () => false,
   );
 
-  const handleMouseDown = (event: MouseEvent<HTMLDivElement>) => {
+  const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     event.preventDefault();
-    beginDockRegionResize(region, axis, event.clientX, event.clientY, currentSize);
+    beginDockRegionResize(region, axis, event.clientX, event.clientY, currentSize, {
+      target: event.currentTarget,
+      pointerId: event.pointerId,
+    });
   };
 
   return (
@@ -35,7 +38,7 @@ export function DockRegionResizer({ region, currentSize }: DockRegionResizerProp
       data-testid={`xleth-dock-region-resizer-${region}`}
       data-region={region}
       data-active={active ? 'true' : 'false'}
-      onMouseDown={handleMouseDown}
+      onPointerDown={handlePointerDown}
       aria-hidden="true"
     />
   );

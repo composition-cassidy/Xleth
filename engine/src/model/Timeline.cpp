@@ -1,6 +1,9 @@
 #include "Timeline.h"
 #include "AutomationEnvelope.h"
 #include "SamplerLegacyMigration.h"
+#include "XlethDebug.h"
+#include "render/GridRectMath.h"   // slotCanvasRect: the one slot -> canvas rect
+#include "render/LandingMath.h"    // edgeFromRect / growFromRect
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -47,6 +50,9 @@ static void sourceToJson(nlohmann::json& j, const SourceMedia& s) {
         {"previewProxyReady",  s.previewProxyReady},
         {"previewProxyHeight", s.previewProxyHeight}
     };
+    // Source Color Grade. Written only when it is not the default.
+    if (!s.colorGrade.isDefault())
+        j["colorGrade"] = xleth::grade::colorGradeToJson(s.colorGrade);
 }
 
 static void sourceFromJson(const nlohmann::json& j, SourceMedia& s) {
@@ -78,6 +84,9 @@ static void sourceFromJson(const nlohmann::json& j, SourceMedia& s) {
     s.previewProxyPath   = j.value("previewProxyPath", std::string{});
     s.previewProxyReady  = j.value("previewProxyReady", false);
     s.previewProxyHeight = j.value("previewProxyHeight", 0);
+    // Source Color Grade. Missing = neutral.
+    s.colorGrade = j.contains("colorGrade")
+        ? xleth::grade::colorGradeFromJson(j.at("colorGrade")) : ColorGrade{};
 }
 
 // ─── Constructor ──────────────────────────────────────────────────────────────
@@ -238,7 +247,11 @@ std::vector<const TrackInfo*> Timeline::getAllTracks() const {
     return out;
 }
 
-bool Timeline::setTrackOrder(const std::vector<int>& trackIdsInOrder) {
+bool Timeline::setTrackOrder(const std::vector<int>& requestedOrder) {
+    if (requestedOrder.size() != m_tracks.size())
+        return false;
+    // Clones stay directly under their source (see setTrackLayout).
+    const std::vector<int> trackIdsInOrder = clones::withClonesAfterSources(requestedOrder, *this);
     if (trackIdsInOrder.size() != m_tracks.size())
         return false;
 
@@ -363,8 +376,11 @@ bool Timeline::validateTrackLayout(const TrackLayout& layout, bool requireKnownF
 }
 
 bool Timeline::setTrackLayout(const TrackLayout& layout) {
-    if (!validateTrackLayout(layout)) return false;
-    return restoreTrackLayout(layout);
+    // Clones (model/Clone.h) always sit directly under their source: an edit
+    // that moves a source carries its Clones. A no-op without Clones.
+    const TrackLayout grouped = clones::withClonesAfterSources(layout, *this);
+    if (!validateTrackLayout(grouped)) return false;
+    return restoreTrackLayout(grouped);
 }
 
 bool Timeline::restoreTrackLayout(const TrackLayout& layout) {
@@ -465,6 +481,9 @@ void Timeline::syncTrackOrdersFromLayout() {
             if (it != m_tracks.end()) it->second.order = order++;
         }
     }
+    // Single choke point for every track add/remove/reorder — see
+    // getTrackTopologyGeneration().
+    m_trackTopologyGeneration.fetch_add(1, std::memory_order_relaxed);
 }
 
 void Timeline::rebuildFlatTrackLayout() {
@@ -492,9 +511,21 @@ int Timeline::addClip(Clip clip) {
         std::cout << "[Timeline] ERROR addClip: regionId=" << clip.regionId << " not found\n";
         return -1;
     }
+    // A clip has to have length, start at or after zero, and read from at or
+    // after the start of its region. None of these is ever a legitimate value,
+    // and each one breaks arithmetic further down (zero-length source windows,
+    // reads before the buffer). No project on disk carries one; refusing here
+    // means a caller's bad arithmetic cannot create the first.
+    if (clip.duration.ticks <= 0 || clip.position.ticks < 0 || clip.regionOffset.ticks < 0) {
+        std::cout << "[Timeline] ERROR addClip: invalid geometry position="
+                  << clip.position.ticks << " duration=" << clip.duration.ticks
+                  << " regionOffset=" << clip.regionOffset.ticks << "\n";
+        return -1;
+    }
     normalizeClipFadePercents(clip);
     clip.id = getNextId();
     m_clips[clip.id] = clip;
+    m_clipTopologyGeneration.fetch_add(1, std::memory_order_relaxed);
     if (!inBulkEdit()) {
         std::cout << "[Timeline] Added clip id=" << clip.id
                   << " trackId=" << clip.trackId
@@ -556,7 +587,14 @@ const Clip* Timeline::getClip(int id) const {
 
 Clip* Timeline::getClipMutable(int id) {
     auto it = m_clips.find(id);
-    return (it != m_clips.end()) ? &it->second : nullptr;
+    if (it == m_clips.end()) return nullptr;
+    // Commands (QuantizeClipsBatchCommand, TimelineCommands, etc.) mutate
+    // position/duration/trackId straight through this pointer, bypassing
+    // moveClip/resizeClip/resizeClipLeft entirely. Since Timeline can't see
+    // what the caller does with it, treat every call as a potential
+    // topology change — see getClipTopologyGeneration().
+    m_clipTopologyGeneration.fetch_add(1, std::memory_order_relaxed);
+    return &it->second;
 }
 
 std::vector<const Clip*> Timeline::getAllClips() const {
@@ -574,11 +612,12 @@ bool Timeline::removeClip(int id) {
         return false;
     }
     if (!inBulkEdit()) {
-        std::cout << "[Timeline] Removed clip id=" << id
+        XLETH_RENDER_LOG(std::cout << "[Timeline] Removed clip id=" << id
                   << " trackId=" << it->second.trackId
-                  << " position=" << it->second.position.ticks << "\n";
+                  << " position=" << it->second.position.ticks << "\n");
     }
     m_clips.erase(it);
+    m_clipTopologyGeneration.fetch_add(1, std::memory_order_relaxed);
     return true;
 }
 
@@ -617,10 +656,16 @@ bool Timeline::moveClip(int clipId, int newTrackId, TickTime newPosition) {
                   << " is a Pattern track; clips cannot move onto pattern tracks\n";
         return false;
     }
+    if (newPosition.ticks < 0) {
+        std::cout << "[Timeline] ERROR moveClip: id=" << clipId
+                  << " negative position " << newPosition.ticks << "\n";
+        return false;
+    }
     int oldTrackId  = it->second.trackId;
     TickTime oldPos = it->second.position;
     it->second.trackId  = newTrackId;
     it->second.position = newPosition;
+    m_clipTopologyGeneration.fetch_add(1, std::memory_order_relaxed);
     if (!inBulkEdit()) {
         std::cout << "[Timeline] Moved clip id=" << clipId
                   << " track " << oldTrackId << "→" << newTrackId
@@ -635,8 +680,14 @@ bool Timeline::resizeClip(int clipId, TickTime newDuration) {
         std::cout << "[Timeline] ERROR resizeClip: id=" << clipId << " not found\n";
         return false;
     }
+    if (newDuration.ticks <= 0) {
+        std::cout << "[Timeline] ERROR resizeClip: id=" << clipId
+                  << " non-positive duration " << newDuration.ticks << "\n";
+        return false;
+    }
     TickTime oldDur = it->second.duration;
     it->second.duration = newDuration;
+    m_clipTopologyGeneration.fetch_add(1, std::memory_order_relaxed);
     std::cout << "[Timeline] Resized clip id=" << clipId
               << " from=" << oldDur.ticks
               << " to=" << newDuration.ticks << "\n";
@@ -650,9 +701,17 @@ bool Timeline::resizeClipLeft(int clipId, TickTime newPosition,
         std::cout << "[Timeline] ERROR resizeClipLeft: id=" << clipId << " not found\n";
         return false;
     }
+    if (newDuration.ticks <= 0 || newPosition.ticks < 0 || newRegionOffset.ticks < 0) {
+        std::cout << "[Timeline] ERROR resizeClipLeft: id=" << clipId
+                  << " invalid geometry position=" << newPosition.ticks
+                  << " duration=" << newDuration.ticks
+                  << " regionOffset=" << newRegionOffset.ticks << "\n";
+        return false;
+    }
     it->second.position     = newPosition;
     it->second.duration     = newDuration;
     it->second.regionOffset = newRegionOffset;
+    m_clipTopologyGeneration.fetch_add(1, std::memory_order_relaxed);
     std::cout << "[Timeline] ResizeClipLeft id=" << clipId
               << " pos=" << newPosition.ticks
               << " dur=" << newDuration.ticks
@@ -854,6 +913,11 @@ bool Timeline::resizePatternBlock(int id, TickTime newDuration) {
         std::cout << "[Timeline] ERROR resizePatternBlock: id=" << id << " not found\n";
         return false;
     }
+    if (newDuration.ticks <= 0) {
+        std::cout << "[Timeline] ERROR resizePatternBlock: id=" << id
+                  << " non-positive duration " << newDuration.ticks << "\n";
+        return false;
+    }
     TickTime oldDur = it->second.duration;
     it->second.duration = newDuration;
     std::cout << "[Timeline] Resized patternBlock id=" << id
@@ -866,6 +930,12 @@ bool Timeline::resizePatternBlockLeft(int id, TickTime newPosition, TickTime new
     auto it = m_patternBlocks.find(id);
     if (it == m_patternBlocks.end()) {
         std::cout << "[Timeline] ERROR resizePatternBlockLeft: id=" << id << " not found\n";
+        return false;
+    }
+    if (newDuration.ticks <= 0 || newPosition.ticks < 0) {
+        std::cout << "[Timeline] ERROR resizePatternBlockLeft: id=" << id
+                  << " invalid geometry position=" << newPosition.ticks
+                  << " duration=" << newDuration.ticks << "\n";
         return false;
     }
     it->second.position = newPosition;
@@ -972,6 +1042,82 @@ bool Timeline::addNotesToPatternBulk(int patternId, std::vector<PatternNote>& no
               << " notes to pattern=" << patternId
               << " (bulk)\n";
     recalcPatternLength(patternId);
+    return true;
+}
+
+// See the header for why this is not clear + addNotesToPatternBulk: the block
+// duration cascade must observe exactly ONE length transition.
+bool Timeline::replacePatternNotes(int patternId, std::vector<PatternNote>& notes) {
+    auto it = m_patterns.find(patternId);
+    if (it == m_patterns.end()) {
+        std::cout << "[Timeline] ERROR replacePatternNotes: patternId="
+                  << patternId << " not found\n";
+        return false;
+    }
+
+    Pattern& pattern = it->second;
+    const size_t oldCount = pattern.notes.size();
+
+    // Fresh ids continue the pattern's own counter rather than restarting at 1,
+    // so an id never refers to two different notes across the swap (piano-roll
+    // selections and any in-flight edit sessions key off note ids).
+    pattern.notes.clear();
+    pattern.notes.reserve(notes.size());
+    for (auto& note : notes) {
+        note.id = pattern.nextNoteId++;
+        pattern.notes.push_back(note);
+    }
+
+    std::cout << "[Timeline] replacePatternNotes pattern=" << patternId
+              << " " << oldCount << " -> " << notes.size() << " notes\n";
+
+    recalcPatternLength(patternId);
+    return true;
+}
+
+bool Timeline::setPatternNotesKeepIds(int patternId, std::vector<PatternNote>& notes) {
+    auto it = m_patterns.find(patternId);
+    if (it == m_patterns.end()) {
+        std::cout << "[Timeline] ERROR setPatternNotesKeepIds: patternId="
+                  << patternId << " not found\n";
+        return false;
+    }
+    Pattern& pattern = it->second;
+    // Kept ids first, so a fresh id can never collide with one still in use.
+    for (const auto& n : notes) {
+        if (n.id > 0 && n.id >= pattern.nextNoteId) pattern.nextNoteId = n.id + 1;
+    }
+    for (auto& n : notes) {
+        if (n.id <= 0) n.id = pattern.nextNoteId++;
+    }
+    pattern.notes = notes;
+    std::cout << "[Timeline] setPatternNotesKeepIds pattern=" << patternId
+              << " notes=" << notes.size() << "\n";
+    recalcPatternLength(patternId);
+    return true;
+}
+
+bool Timeline::restorePatternNotes(int patternId,
+                                   const std::vector<PatternNote>& notes,
+                                   int nextNoteId,
+                                   TickTime length) {
+    auto it = m_patterns.find(patternId);
+    if (it == m_patterns.end()) {
+        std::cout << "[Timeline] ERROR restorePatternNotes: patternId="
+                  << patternId << " not found\n";
+        return false;
+    }
+
+    Pattern& pattern = it->second;
+    pattern.notes  = notes;
+    pattern.length = length;
+    // Never walk the counter backwards: ids handed out since the snapshot may
+    // still be referenced elsewhere, and reusing one would alias two notes.
+    if (nextNoteId > pattern.nextNoteId) pattern.nextNoteId = nextNoteId;
+
+    std::cout << "[Timeline] restorePatternNotes pattern=" << patternId
+              << " notes=" << notes.size()
+              << " length=" << length.ticks << " (no cascade)\n";
     return true;
 }
 
@@ -1118,6 +1264,21 @@ bool Timeline::setTrackVideoHoldLastFrameThresholdBeats(int trackId, double thre
               << " videoHoldLastFrameThresholdBeats=";
     if (normalized < 0.0) std::cout << "unlimited\n";
     else                  std::cout << normalized << "\n";
+    return true;
+}
+
+bool Timeline::setTrackVideoHoldBehavior(int trackId, bool smart, bool keepPlaying) {
+    auto it = m_tracks.find(trackId);
+    if (it == m_tracks.end()) {
+        std::cout << "[Timeline] ERROR setTrackVideoHoldBehavior: trackId="
+                  << trackId << " not found\n";
+        return false;
+    }
+    it->second.videoHoldSmart       = smart;
+    it->second.videoHoldKeepPlaying = keepPlaying;
+    std::cout << "[Timeline] Set track id=" << trackId
+              << " videoHoldSmart=" << (smart ? "true" : "false")
+              << " videoHoldKeepPlaying=" << (keepPlaying ? "true" : "false") << "\n";
     return true;
 }
 
@@ -1306,6 +1467,13 @@ bool Timeline::setTrackSlideNoteEffectSettings(int trackId, const SlideNoteEffec
     return true;
 }
 
+bool Timeline::setTrackNoteFadeSettings(int trackId, const NoteFadeSettings& settings) {
+    auto it = m_tracks.find(trackId);
+    if (it == m_tracks.end()) return false;
+    it->second.noteFade = settings;
+    return true;
+}
+
 bool Timeline::setNoteSlide(int patternId, int noteId, bool isSlide, float curveCx, float curveCy) {
     auto it = m_patterns.find(patternId);
     if (it == m_patterns.end()) return false;
@@ -1330,6 +1498,14 @@ int Timeline::addVisualEffect(int trackId, VisualEffect::Type type)
     if (static_cast<int>(chain.size()) >= 16) return -1;  // enforce max chain length
 
     VisualEffect fx;
+    // A uid never handed out in this session, and above every uid already in the chain
+    // (a chain copied from another track brings its own).
+    {
+        int next = it->second.nextFxUid;
+        for (const VisualEffect& c : chain) next = std::max(next, c.uid + 1);
+        fx.uid = next;
+        it->second.nextFxUid = next + 1;
+    }
     fx.type     = type;
     fx.bypassed = false;
     // Initialize sensible defaults per effect type
@@ -1420,6 +1596,25 @@ int Timeline::addVisualEffect(int trackId, VisualEffect::Type type)
             fx.params[8] = 1.0f;    // blendMode = Multiply
             fx.params[9] = 0.95f;   // alphaThreshold — see the note on VisualEffect
             break;
+        case VisualEffect::Type::VisualEcho:
+            // Unbound on add (delayNodeId = -1): the effect does nothing until
+            // the user points it at a Delay on this track. Deliberate — an echo
+            // that auto-grabbed "the first Delay it finds" would silently
+            // re-target itself whenever the audio chain was reordered.
+            //
+            // The remaining defaults describe a visible-but-tasteful trail so
+            // that the moment a Delay IS bound the effect reads as working:
+            // four repeats, a decay that follows the Delay's own feedback, and a
+            // slight shrink so the trail recedes rather than just dimming.
+            fx.params[0] = 4.0f;    // taps
+            fx.params[1] = 0.65f;   // decay (ignored while followFeedback is on)
+            fx.params[2] = -1.0f;   // delayNodeId — UNBOUND
+            fx.params[3] = 0.20f;   // scaleTrail
+            fx.params[4] = 0.0f;    // flipMode = None
+            fx.params[5] = 0.0f;    // drift
+            fx.params[6] = 0.0f;    // blendMode = Normal
+            fx.params[7] = 1.0f;    // followFeedback = on
+            break;
         default:
             break;
     }
@@ -1502,6 +1697,12 @@ bool Timeline::insertVisualEffectAt(int trackId, int index, const VisualEffect& 
     auto& chain = it->second.visualEffectChain;
     if (index < 0 || index > static_cast<int>(chain.size())) return false;
     chain.insert(chain.begin() + index, fx);
+    if (chain[index].uid <= 0) {
+        int next = it->second.nextFxUid;
+        for (const VisualEffect& c : chain) next = std::max(next, c.uid + 1);
+        chain[index].uid = next;
+        it->second.nextFxUid = next + 1;
+    }
     return true;
 }
 
@@ -1705,6 +1906,14 @@ GridLayout Timeline::gridLayoutAt(TickTime t) const {
     // return a reference into m_gridLayout.
     GridLayout out = m_gridLayout;
 
+    // applyGridSnapshot overwrites ONLY the arrangement (columns/rows/gapScale/
+    // slots/fullscreenLayers), leaving the global fields seeded above untouched.
+    // GridSlot/FullscreenLayer eventActions ride along via the snapshot copy.
+    if (const GridSnapshot* chosen = snapshotAt(t)) applyGridSnapshot(out, *chosen);
+    return out;
+}
+
+const GridSnapshot* Timeline::snapshotAt(TickTime t) const {
     // Walk cues in ascending tick order, keeping the LAST cue whose tick <= t
     // that still resolves to a live snapshot. A cue pointing at a deleted
     // snapshot is skipped (treated as absent), so the previous valid cue wins.
@@ -1723,12 +1932,7 @@ GridLayout Timeline::gridLayoutAt(TickTime t) const {
         if (!chosen && !m_gridSnapshots.empty())
             chosen = &m_gridSnapshots.front();
     }
-
-    // applyGridSnapshot overwrites ONLY the arrangement (columns/rows/gapScale/
-    // slots/fullscreenLayers), leaving the global fields seeded above untouched.
-    // GridSlot/FullscreenLayer eventActions ride along via the snapshot copy.
-    if (chosen) applyGridSnapshot(out, *chosen);
-    return out;
+    return chosen;
 }
 
 void Timeline::addGridCue(TickTime tick, const std::string& snapshotId) {
@@ -1745,9 +1949,19 @@ bool Timeline::moveGridCue(TickTime oldTick, TickTime newTick) {
         [](const GridCue& c, TickTime tk) { return c.tick < tk; });
     if (pos == m_gridCues.end() || !(pos->tick == oldTick)) return false;
     if (oldTick == newTick) return true;         // no-op move
-    std::string id = std::move(pos->snapshotId);
+    // Move the WHOLE cue: its snapshot, its transition and its landings all
+    // belong to the boundary, so they travel with it. (Before landings this
+    // moved the snapshotId alone and silently dropped the transition — see
+    // docs/XLETH_LANDING_AUDIT.md, D1.)
+    GridCue moved = std::move(*pos);
     m_gridCues.erase(pos);
-    addGridCue(newTick, id);                     // sorted insert; replaces on collision
+    moved.tick = newTick;
+    auto dst = std::lower_bound(m_gridCues.begin(), m_gridCues.end(), newTick,
+        [](const GridCue& c, TickTime tk) { return c.tick < tk; });
+    if (dst != m_gridCues.end() && dst->tick == newTick)
+        *dst = std::move(moved);                 // collision: the moved cue replaces it
+    else
+        m_gridCues.insert(dst, std::move(moved));
     return true;
 }
 
@@ -1814,6 +2028,212 @@ Timeline::ResolvedTransition Timeline::transitionAt(TickTime t) const {
     // columns/rows/gapScale.
     out.layoutA = gridLayoutAt(TickTime{ winner->tick.ticks - 1 });
     out.layoutB = gridLayoutAt(winner->tick);
+    return out;
+}
+
+// ── Landings (docs/XLETH_LANDING_SPEC.md) ─────────────────────────────────────
+namespace {
+
+// Where a track is placed in a snapshot, as the compositor would draw it.
+struct PlacedRect {
+    enum class As { None, Slot, Fullscreen };
+    As                   as = As::None;
+    xleth::landing::Rect rect;              // the DRAWN rect (placement, then gap)
+    float                unitW = 0.0f;      // the placement before the gap: Roam's unit
+    float                unitH = 0.0f;
+    const GridSlot*      slot = nullptr;    // valid while the snapshot is; As::Slot only
+};
+
+// Reads the snapshot in place: no allocation, nothing copied but floats.
+// A grid slot wins over a fullscreen layer (a track is one or the other by
+// construction). A fullscreen layer fills the canvas.
+PlacedRect placedRectIn(const GridSnapshot& snap, int trackId, float trackGapOverride) {
+    PlacedRect out;
+    for (const GridSlot& s : snap.slots) {
+        if (s.trackId != trackId) continue;
+        float ux = 0.0f, uy = 0.0f;
+        xleth::slotCellRect(s.gridX, s.gridY, s.spanX, s.spanY,
+                            snap.columns, snap.rows, ux, uy, out.unitW, out.unitH);
+        xleth::slotCanvasRect(s.gridX, s.gridY, s.spanX, s.spanY,
+                              snap.columns, snap.rows,
+                              xleth::effectiveSlotGap(snap.gapScale, trackGapOverride),
+                              out.rect.x, out.rect.y, out.rect.w, out.rect.h);
+        out.as   = PlacedRect::As::Slot;
+        out.slot = &s;
+        return out;
+    }
+    for (const FullscreenLayer& fl : snap.fullscreenLayers) {
+        if (fl.trackId != trackId) continue;
+        out.as    = PlacedRect::As::Fullscreen;
+        out.rect  = xleth::landing::Rect{ 0.0f, 0.0f, 1.0f, 1.0f };
+        out.unitW = 1.0f;
+        out.unitH = 1.0f;
+        return out;
+    }
+    return out;
+}
+
+} // namespace
+
+void Timeline::setCueLandings(TickTime cueTick, const std::vector<TrackLanding>& landings) {
+    auto pos = std::lower_bound(m_gridCues.begin(), m_gridCues.end(), cueTick,
+        [](const GridCue& c, TickTime tk) { return c.tick < tk; });
+    if (pos == m_gridCues.end() || !(pos->tick == cueTick)) return;  // no cue here
+    pos->landings = landings;
+    sanitizeTrackLandings(pos->landings);
+}
+
+bool Timeline::reflowCueLandings(TickTime cueTick, int64_t leadInTicks) {
+    auto pos = std::lower_bound(m_gridCues.begin(), m_gridCues.end(), cueTick,
+        [](const GridCue& c, TickTime tk) { return c.tick < tk; });
+    if (pos == m_gridCues.end() || !(pos->tick == cueTick)) return false;
+
+    const GridSnapshot* snapB = findSnapshot(pos->snapshotId);
+    const GridSnapshot* snapA = snapshotAt(TickTime{ cueTick.ticks - 1 });
+    if (!snapB || !snapA) return false;
+
+    std::vector<TrackLanding> next = pos->landings;
+    for (const GridSlot& slot : snapB->slots) {
+        const TrackInfo* trk = getTrack(slot.trackId);
+        if (!trk) continue;                                  // slot of a deleted track
+        const PlacedRect to   = placedRectIn(*snapB, slot.trackId, trk->gapScaleOverride);
+        const PlacedRect from = placedRectIn(*snapA, slot.trackId, trk->gapScaleOverride);
+        if (to.as != PlacedRect::As::Slot) continue;
+        if (from.as == PlacedRect::As::None) continue;       // in B but not in A: left alone
+        if (from.rect.x == to.rect.x && from.rect.y == to.rect.y
+            && from.rect.w == to.rect.w && from.rect.h == to.rect.h)
+            continue;                                        // does not move
+
+        TrackLanding landing;
+        landing.trackId     = slot.trackId;
+        landing.leadInTicks = leadInTicks;
+        landing.from        = TrackLanding::From::WhereItWas;
+        auto same = std::find_if(next.begin(), next.end(),
+            [&](const TrackLanding& l) { return l.trackId == slot.trackId; });
+        if (same != next.end()) *same = landing;
+        else                    next.push_back(landing);
+    }
+    // Existing landings come first, so when the cue is already full it is the
+    // newly found tracks that the cap turns away.
+    sanitizeTrackLandings(next);
+    pos->landings = std::move(next);
+    return true;
+}
+
+// ── Time-based landing resolution (RENDER path only) ──────────────────────────
+Timeline::ResolvedLandings Timeline::landingsAt(TickTime t) const {
+    ResolvedLandings out;
+
+    // Latest pin first, so the first cue whose window holds t is the winner
+    // ("latest pin wins", like transitionAt).
+    for (size_t i = m_gridCues.size(); i-- > 0; ) {
+        const GridCue& cue = m_gridCues[i];
+        if (cue.landings.empty()) continue;
+
+        const int64_t pin      = cue.tick.ticks;
+        const int64_t carryEnd = pin + (cue.transition.enabled
+                                            ? cue.transition.endOffsetTicks : 0);
+        if (t.ticks >= carryEnd) continue;                               // window is half-open
+        if (t.ticks < pin - TrackLanding::kMaxLeadInTicks) continue;     // cannot have started
+
+        // Ruling 11: the cue's snapshot is gone -> nothing to land into.
+        const GridSnapshot* snapB = findSnapshot(cue.snapshotId);
+        if (!snapB) continue;
+        const GridSnapshot* snapA = snapshotAt(TickTime{ pin - 1 });
+
+        // A landing cannot start before snapshot A exists: clamp the lead-in at
+        // the previous cue that still resolves (a dangling cue is absent, as
+        // everywhere else), or at 0 when there is none.
+        int64_t floorTick = 0;
+        for (size_t j = i; j-- > 0; ) {
+            if (findSnapshot(m_gridCues[j].snapshotId)) {
+                floorTick = m_gridCues[j].tick.ticks;
+                break;
+            }
+        }
+        floorTick = std::min(floorTick, pin);
+
+        int     count       = 0;
+        int64_t windowStart = pin;
+        for (const TrackLanding& stored : cue.landings) {
+            if (count >= TrackLanding::kMaxLandingsPerCue) break;
+
+            const TrackInfo* trk = getTrack(stored.trackId);
+            if (!trk) continue;                                          // deleted track
+            const PlacedRect to = placedRectIn(*snapB, stored.trackId, trk->gapScaleOverride);
+            if (to.as != PlacedRect::As::Slot) continue;                 // no slot in B
+
+            // Stored data is already normalized by every writer; normalizing the
+            // copy keeps the resolver safe against a hand-built cue all the same.
+            TrackLanding l = stored;
+            l.normalize();
+
+            ResolvedLanding& r = out.items[count];
+            r = ResolvedLanding{};
+            r.trackId = l.trackId;
+            r.toX = to.rect.x;  r.toY = to.rect.y;  r.toW = to.rect.w;  r.toH = to.rect.h;
+            r.toUnitW = to.unitW;
+            r.toUnitH = to.unitH;
+
+            xleth::landing::Rect from;
+            float fromUnitW = 0.0f, fromUnitH = 0.0f;
+            bool  resolvedFrom = false;
+            if (l.from == TrackLanding::From::Custom) {
+                from = xleth::landing::Rect{ l.customX, l.customY, l.customW, l.customH };
+                fromUnitW = l.customW;
+                fromUnitH = l.customH;
+                resolvedFrom = true;
+            } else if (l.from == TrackLanding::From::WhereItWas && snapA) {
+                const PlacedRect was =
+                    placedRectIn(*snapA, l.trackId, trk->gapScaleOverride);
+                if (was.as != PlacedRect::As::None) {
+                    from = was.rect;
+                    fromUnitW = was.unitW;
+                    fromUnitH = was.unitH;
+                    resolvedFrom = true;
+                }
+                // Not in A: fall back to Grow below.
+            } else if (l.from == TrackLanding::From::Edge) {
+                // A pure translation: the cell keeps its size, so Roam's unit
+                // is the destination's all the way in.
+                from = xleth::landing::edgeFromRect(to.rect, l.edgeAngleDeg);
+                fromUnitW = to.unitW;
+                fromUnitH = to.unitH;
+                resolvedFrom = true;
+            }
+            if (!resolvedFrom) from = xleth::landing::growFromRect(to.rect);
+
+            r.fromX = from.x;  r.fromY = from.y;  r.fromW = from.w;  r.fromH = from.h;
+            r.fromUnitW   = fromUnitW;
+            r.fromUnitH   = fromUnitH;
+            r.fromOpacity = l.fromOpacity;
+            r.easing      = l.easing;
+            r.startTick   = TickTime{ std::max(pin - l.leadInTicks, floorTick) };
+
+            r.slotGridX   = to.slot->gridX;
+            r.slotGridY   = to.slot->gridY;
+            r.slotSpanX   = to.slot->spanX;
+            r.slotSpanY   = to.slot->spanY;
+            r.slotOpacity = to.slot->opacity;
+            r.slotZOrder  = to.slot->zOrder;
+
+            windowStart = std::min(windowStart, r.startTick.ticks);
+            ++count;
+        }
+
+        // The window opens with the earliest landing that actually resolved.
+        if (count == 0 || t.ticks < windowStart) continue;
+
+        out.count        = count;
+        out.pinTick      = cue.tick;
+        out.carryEndTick = TickTime{ carryEnd };
+        out.columns      = snapB->columns;
+        out.rows         = snapB->rows;
+        out.gapScale     = snapB->gapScale;
+        return out;
+    }
+
+    out.count = 0;
     return out;
 }
 
@@ -1976,12 +2396,81 @@ void Timeline::setGlobalStretchMethod(int method) {
     m_globalStretchMethod = sanitizeProjectGlobalStretchMethod(method);
 }
 
+void Timeline::setMotionBlur(const MotionBlurSettings& m) {
+    m_motionBlur.enabled         = m.enabled;
+    m_motionBlur.shutterAngleDeg = MotionBlurSettings::sanitizeShutter(m.shutterAngleDeg);
+}
+
+// ─── Color Grade ──────────────────────────────────────────────────────────────
+
+const ColorGrade* Timeline::getColorGrade(xleth::grade::Level level, int id) const {
+    using xleth::grade::Level;
+    switch (level) {
+        case Level::Source: {
+            const auto it = m_sources.find(id);
+            return it != m_sources.end() ? &it->second.colorGrade : nullptr;
+        }
+        case Level::Clip: {
+            const Clip* c = getClip(id);
+            return c ? &c->colorGrade : nullptr;
+        }
+        case Level::Region: {
+            const auto it = m_regions.find(id);
+            return it != m_regions.end() ? &it->second.colorGrade : nullptr;
+        }
+        case Level::Layer: {
+            const auto it = m_tracks.find(id);
+            return it != m_tracks.end() ? &it->second.colorGrade : nullptr;
+        }
+        case Level::Master:
+            return &m_masterColorGrade;
+    }
+    return nullptr;
+}
+
+bool Timeline::setColorGrade(xleth::grade::Level level, int id, const ColorGrade& gradeIn) {
+    using xleth::grade::Level;
+    ColorGrade grade = gradeIn;
+    xleth::grade::sanitizeColorGrade(grade);
+    switch (level) {
+        case Level::Source: {
+            const auto it = m_sources.find(id);
+            if (it == m_sources.end()) return false;
+            it->second.colorGrade = grade;
+            return true;
+        }
+        case Level::Clip: {
+            Clip* c = getClipMutable(id);
+            if (!c) return false;
+            c->colorGrade = grade;
+            return true;
+        }
+        case Level::Region: {
+            const auto it = m_regions.find(id);
+            if (it == m_regions.end()) return false;
+            it->second.colorGrade = grade;
+            return true;
+        }
+        case Level::Layer: {
+            const auto it = m_tracks.find(id);
+            if (it == m_tracks.end()) return false;
+            it->second.colorGrade = grade;
+            return true;
+        }
+        case Level::Master:
+            m_masterColorGrade = grade;
+            return true;
+    }
+    return false;
+}
+
 // ─── Restore (undo/redo) ──────────────────────────────────────────────────────
 
 bool Timeline::restoreClip(const Clip& clip) {
     Clip normalized = clip;
     normalizeClipFadePercents(normalized);
     m_clips[normalized.id] = normalized;
+    m_clipTopologyGeneration.fetch_add(1, std::memory_order_relaxed);
     if (normalized.id >= m_nextId) m_nextId = normalized.id + 1;
     if (!inBulkEdit()) {
         std::cout << "[Timeline] Restored clip id=" << clip.id
@@ -2472,6 +2961,10 @@ nlohmann::json Timeline::toJSON() const {
     j["timeSigDen"]    = m_timeSigDen;
     j["declickMs"]     = m_declickMs;
     j["globalStretchMethod"] = m_globalStretchMethod;
+    j["motionBlur"]    = motionBlurToJson(m_motionBlur);
+    // Master Color Grade. Written only when it is not the default.
+    if (!m_masterColorGrade.isDefault())
+        j["masterColorGrade"] = xleth::grade::colorGradeToJson(m_masterColorGrade);
     j["tempoLocked"]   = m_tempoLocked;
     j["nextId"]        = m_nextId;
 
@@ -2680,6 +3173,29 @@ nlohmann::json Timeline::toJSON() const {
             }
             cj["transition"] = std::move(tj);
         }
+        // Landings: written ADDITIVELY and ONLY when the cue has some, so a
+        // project without landings serializes byte-identically to before.
+        if (!cue.landings.empty()) {
+            nlohmann::json lj = nlohmann::json::array();
+            for (const TrackLanding& l : cue.landings) {
+                lj.push_back({
+                    {"trackId",      l.trackId},
+                    {"leadInTicks",  l.leadInTicks},
+                    {"from",         trackLandingFromToString(l.from)},
+                    {"edgeAngleDeg", l.edgeAngleDeg},
+                    {"custom", {
+                        {"x", l.customX}, {"y", l.customY},
+                        {"w", l.customW}, {"h", l.customH},
+                    }},
+                    {"fromOpacity",  l.fromOpacity},
+                    {"easing", {
+                        {"x1", l.easing.x1}, {"y1", l.easing.y1},
+                        {"x2", l.easing.x2}, {"y2", l.easing.y2},
+                    }},
+                });
+            }
+            cj["landings"] = std::move(lj);
+        }
         gl["cues"].push_back(std::move(cj));
     }
     j["gridLayout"] = gl;
@@ -2730,6 +3246,12 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
             m_tempoLocked = true; // old project: default on (preserves prior behavior)
         setGlobalStretchMethod(j.value("globalStretchMethod",
             static_cast<int>(StretchMethod::PSOLA)));
+        // Missing (every project before motion blur) = off.
+        m_motionBlur = j.contains("motionBlur")
+            ? motionBlurFromJson(j.at("motionBlur")) : MotionBlurSettings{};
+        // Missing (every project before Color Grade) = neutral.
+        m_masterColorGrade = j.contains("masterColorGrade")
+            ? xleth::grade::colorGradeFromJson(j.at("masterColorGrade")) : ColorGrade{};
 
         m_sources.clear();
         for (const auto& s : j.at("sources")) {
@@ -2815,6 +3337,7 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
             Clip clip = c.get<Clip>();  // ADL from_json
             m_clips[clip.id] = clip;
         }
+        m_clipTopologyGeneration.fetch_add(1, std::memory_order_relaxed);
 
         m_patterns.clear();
         // Track which regions we've already migrated to so a second pattern
@@ -3031,6 +3554,47 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
                         }
                         tr.normalize();
                         cue.transition = tr;
+                    }
+                    // Additive landing list; absent => none. Every field is
+                    // optional and falls back to the TrackLanding default; a
+                    // wrong-typed field is treated as absent rather than
+                    // failing the load.
+                    if (c.contains("landings") && c.at("landings").is_array()) {
+                        const auto num = [](const nlohmann::json& obj, const char* key,
+                                            float fallback) {
+                            return (obj.contains(key) && obj.at(key).is_number())
+                                ? obj.at(key).get<float>() : fallback;
+                        };
+                        for (const auto& lj : c.at("landings")) {
+                            if (!lj.is_object()) continue;
+                            TrackLanding l;
+                            if (lj.contains("trackId") && lj.at("trackId").is_number_integer())
+                                l.trackId = lj.at("trackId").get<int>();
+                            if (lj.contains("leadInTicks") && lj.at("leadInTicks").is_number())
+                                l.leadInTicks = static_cast<int64_t>(std::clamp(
+                                    lj.at("leadInTicks").get<double>(), -1.0e15, 1.0e15));
+                            if (lj.contains("from") && lj.at("from").is_string())
+                                l.from = stringToTrackLandingFrom(lj.at("from").get<std::string>());
+                            l.edgeAngleDeg = num(lj, "edgeAngleDeg", l.edgeAngleDeg);
+                            if (lj.contains("custom") && lj.at("custom").is_object()) {
+                                const auto& cu = lj.at("custom");
+                                l.customX = num(cu, "x", l.customX);
+                                l.customY = num(cu, "y", l.customY);
+                                l.customW = num(cu, "w", l.customW);
+                                l.customH = num(cu, "h", l.customH);
+                            }
+                            l.fromOpacity = num(lj, "fromOpacity", l.fromOpacity);
+                            if (lj.contains("easing") && lj.at("easing").is_object()) {
+                                const auto& ej = lj.at("easing");
+                                l.easing.x1 = num(ej, "x1", l.easing.x1);
+                                l.easing.y1 = num(ej, "y1", l.easing.y1);
+                                l.easing.x2 = num(ej, "x2", l.easing.x2);
+                                l.easing.y2 = num(ej, "y2", l.easing.y2);
+                            }
+                            cue.landings.push_back(l);
+                        }
+                        // normalize + de-duplicate + cap, as setCueLandings does.
+                        sanitizeTrackLandings(cue.landings);
                     }
                     m_gridCues.push_back(std::move(cue));
                 }
@@ -3333,7 +3897,11 @@ void Timeline::clear() {
     m_timeSigDen = 4;
     m_declickMs  = 0.5;
     m_globalStretchMethod = static_cast<int>(StretchMethod::PSOLA);
+    m_motionBlur = MotionBlurSettings{};
+    m_masterColorGrade = ColorGrade{};
     m_nextId     = 1;
+    m_trackTopologyGeneration.fetch_add(1, std::memory_order_relaxed);
+    m_clipTopologyGeneration.fetch_add(1, std::memory_order_relaxed);
 
     std::cout << "[Timeline] Cleared ("
               << nSrc << " sources, " << nReg << " regions, "
@@ -3360,6 +3928,40 @@ TrackOutputRoute Timeline::getTrackOutputRoute(int sourceTrackId) const
 {
     const TrackInfo* t = getTrack(sourceTrackId);
     return t ? t->outputRoute : TrackOutputRoute{};
+}
+
+xleth::RoutingValidationResult Timeline::setTrackRoutes(int sourceTrackId,
+                                                         int targetTrackId,
+                                                         const std::vector<TrackSend>& sends)
+{
+    auto result = xleth::validateTrackRoutes(*this, sourceTrackId, targetTrackId, sends);
+    if (!result.ok())
+        return result;
+    TrackInfo* t = getTrackMutable(sourceTrackId);
+    if (!t)
+        return { xleth::RoutingValidationReason::unknown_track };
+    t->outputRoute.targetTrackId = targetTrackId;
+    t->sends = sends;
+    for (auto& send : t->sends)
+        send.gain = xleth::clampSidechainGain(send.gain);
+    return result;
+}
+
+xleth::RoutingValidationResult Timeline::setTrackSendGain(int sourceTrackId,
+                                                           int targetTrackId,
+                                                           float gain)
+{
+    if (!std::isfinite(gain))
+        return { xleth::RoutingValidationReason::invalid_gain };
+    TrackInfo* t = getTrackMutable(sourceTrackId);
+    if (!t)
+        return { xleth::RoutingValidationReason::unknown_track };
+    for (auto& send : t->sends) {
+        if (send.targetTrackId != targetTrackId) continue;
+        send.gain = xleth::clampSidechainGain(gain);
+        return { xleth::RoutingValidationReason::ok };
+    }
+    return { xleth::RoutingValidationReason::unknown_route };
 }
 
 // ─── Sidechain routes (Prompt 4B) ────────────────────────────────────────────

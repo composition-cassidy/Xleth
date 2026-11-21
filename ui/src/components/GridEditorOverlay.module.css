@@ -1,0 +1,56 @@
+/* Grid cells drawn over the actual picture in Edit Grid mode. Each cell carries
+ * its track's identity colour (set inline as --cell-color by GridEditorOverlay),
+ * so cell, arrangement lane and layer list read as the same track. The picture
+ * stays visible through the cell: outline only, no tinted fill. */
+@layer kit {
+  .slot {
+    border: 2px solid var(--cell-color, var(--ui-boundary));
+    background: transparent;
+  }
+
+  .slot:hover {
+    background: color-mix(in srgb, var(--cell-color, var(--ui-boundary)) 12%, transparent);
+  }
+
+  /* The name chip is not parked in the middle of the cell: it follows the
+   * pointer while the pointer is inside this cell (GridEditorOverlay sets
+   * --label-x / --label-y and data-hover) and is hidden otherwise. The cell is
+   * still named by its identity-coloured border, the track rail, and its
+   * aria-label. visibility (not display) so the chip can be measured to clamp. */
+  .slot[data-hover] .label {
+    visibility: visible;
+  }
+
+  .label {
+    position: absolute;
+    left: var(--label-x, 0);
+    top: var(--label-y, 0);
+    max-width: calc(100% - 4px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    visibility: hidden;
+    padding: 0 var(--space-1);
+    border-radius: var(--ui-radius-1);
+    background: var(--cell-color, var(--ui-g2));
+    color: var(--cell-ink, var(--ui-ink));
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+    font-weight: var(--weight-medium);
+    text-shadow: none;
+  }
+}
+
+@layer kit {
+  /* Resize handles: shown in the cell's own colour, never the chrome accent. */
+  .slot:hover :global(.grid-editor-slot-resize) {
+    background: var(--cell-color, var(--ui-boundary));
+    opacity: 0.35;
+  }
+
+  .slot :global(.grid-editor-slot-resize):hover,
+  .slot :global(.grid-editor-slot-resize):active {
+    background: var(--cell-color, var(--ui-boundary));
+    opacity: 0.8;
+  }
+}

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
-import ProgressBar from '../ProgressBar.jsx'
+import { Button, Progress } from '../../ui-kit'
+import { exportStyles as styles } from './exportKit.jsx'
 
 // Phase labels for the four OfflineRenderer states.
 const PHASE_LABELS = {
@@ -72,46 +73,34 @@ export default function ProgressPanel({
   if (phase === 'error')     headline = errorMsg || 'Export failed.'
 
   return (
-    <div className="export-progress-panel">
-      <ProgressBar progress={progress} />
-      <div className={`export-progress-headline${phase === 'error' ? ' error' : ''}`}>
-        {headline}
-        {running && <span className="export-progress-pct">{Math.floor(progress * 100)}%</span>}
+    <div className={styles.progress}>
+      <Progress label="Render progress" value={progress} text={`${Math.floor(progress * 100)} %`} />
+      <div className={styles.headline} data-error={phase === 'error' || undefined}>
+        <span>{headline}</span>
       </div>
 
       {running && (
-        <div className="export-progress-stats">
-          <div>Frame {currentFrame.toLocaleString()} of {totalFrames.toLocaleString()}</div>
-          <div>{speed > 0 ? `${speed.toFixed(1)}× realtime` : ''}</div>
-          <div>ETA: {formatEta(displayEta)}</div>
+        <div className={styles.stats}>
+          <span>Frame {currentFrame.toLocaleString()} of {totalFrames.toLocaleString()}</span>
+          <span>{speed > 0 ? `${speed.toFixed(1)}× realtime` : ''}</span>
+          <span>ETA {formatEta(displayEta)}</span>
         </div>
       )}
 
       {finished && outputPath && (
-        <div className="export-progress-path">{outputPath}</div>
+        <div className={styles.outputPath}>{outputPath}</div>
       )}
 
-      <div className="export-progress-actions">
-        {running && (
-          <button className="export-btn-danger" onClick={onCancel}>Cancel</button>
-        )}
-        {phase === 'done' && (
+      <div className={styles.actions}>
+        {running && <Button variant="danger" onClick={onCancel}>Cancel render</Button>}
+        {(phase === 'done' || phase === 'cancelled') && (
           <>
-            <button onClick={onOpenFile}>Open File</button>
-            <button onClick={onOpenFolder}>Open Folder</button>
-            <button className="export-btn-primary" onClick={onClose}>Close</button>
+            <Button onClick={onOpenFile}>Open file</Button>
+            <Button onClick={onOpenFolder}>Open folder</Button>
+            <Button variant="primary" onClick={onClose}>Close</Button>
           </>
         )}
-        {phase === 'cancelled' && (
-          <>
-            <button onClick={onOpenFile}>Open File</button>
-            <button onClick={onOpenFolder}>Open Folder</button>
-            <button className="export-btn-primary" onClick={onClose}>Close</button>
-          </>
-        )}
-        {phase === 'error' && (
-          <button className="export-btn-primary" onClick={onClose}>Close</button>
-        )}
+        {phase === 'error' && <Button variant="primary" onClick={onClose}>Close</Button>}
       </div>
     </div>
   )

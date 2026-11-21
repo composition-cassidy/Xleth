@@ -1,0 +1,55 @@
+/* The top bar's panel controls (ui/DESIGN.md section 8): four region toggles and
+ * one Tools menu. Kit controls only. */
+@layer kit {
+  .regions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    min-width: 0;
+    -webkit-app-region: no-drag;
+  }
+
+  .divider {
+    align-self: stretch;
+    width: 1px;
+    margin: var(--space-1) 0;
+    background: var(--ui-g4);
+  }
+
+  .itemRow {
+    display: flex;
+    flex: 1 1 auto;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-3);
+    min-width: 0;
+  }
+
+  .shortcut {
+    color: var(--ui-ink-3);
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .menuHead {
+    padding: var(--space-1) var(--space-2) 0;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    font-weight: var(--weight-semibold);
+  }
+
+  .launcherIcon {
+    width: 14px;
+    height: 14px;
+    object-fit: contain;
+    display: block;
+  }
+
+  .launcherLetter {
+    display: block;
+    width: 14px;
+    text-align: center;
+    font-size: var(--type-11);
+    font-weight: var(--weight-semibold);
+  }
+}

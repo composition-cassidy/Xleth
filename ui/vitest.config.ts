@@ -9,7 +9,13 @@ export default defineConfig({
   test: {
     environment: 'node',
     setupFiles: ['./src/test-setup.js'],
-    include: ['src/**/*.{test,spec}.{ts,tsx,js,jsx}'],
+    // electron-main holds plain Node modules (no JSX, no DOM) that are worth
+    // unit-testing on their own — the session log buffer and its report
+    // formatting, for instance, have no renderer half to test them through.
+    include: [
+      'src/**/*.{test,spec}.{ts,tsx,js,jsx}',
+      'electron-main/**/*.{test,spec}.{ts,js}',
+    ],
     exclude: [
       '**/build/**',
       '**/build/_deps/**',

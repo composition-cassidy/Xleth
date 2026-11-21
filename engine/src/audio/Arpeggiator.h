@@ -22,6 +22,10 @@ public:
         float velocity    = 1.0f;
     };
 
+    // noteOn() inserts on the audio thread; reserve the full 128-note bound so
+    // it never grows there.
+    Arpeggiator() { heldNotes_.reserve(128); }
+
     // ── Configuration (main-thread setters) ─────────────────────────────────
     bool      enabled    = false;
     bool      tempoSync  = true;

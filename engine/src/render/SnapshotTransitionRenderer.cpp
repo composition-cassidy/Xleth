@@ -63,7 +63,7 @@ void compositeSnapshotToTarget(const GridLayout&                  layout,
                                const SnapshotTransitionFrameCtx&  ctx,
                                const DecodeMissesFn&              decodeMisses)
 {
-    auto requests = collector.collectRequests(
+    auto& requests = collector.collectRequests(
         collectFrameIndex, timeline, ctx.sampleRate, ctx.fps, events,
         ctx.allowProxy, collectProjectStartSample, ctx.posterMode,
         ctx.renderProxyBySource, &layout);

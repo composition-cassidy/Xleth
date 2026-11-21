@@ -14,6 +14,7 @@ export const STOCK_EFFECT_LABELS = Object.freeze({
   xlethfilter: 'Xleth Filter',
   distortion: 'Distortion',
   waveshaper: 'Waveshaper',
+  amp: 'Amp Stack',
   uniflange: 'UniFlange',
   chorus: 'Chorus',
   flanger: 'Flanger',
@@ -23,6 +24,13 @@ export const STOCK_EFFECT_LABELS = Object.freeze({
   reverb: 'Reverb',
   smartbalance: 'Smart Balance',
   resonancesuppressor: 'Resonance Suppressor',
+  pitchshifter: 'Pitch Shifter',
+  glue: 'Glue Comp',
+  opto: 'Opto Comp',
+  fet: 'FET Comp',
+  varimu: 'Vari-Mu Comp',
+  fedda: 'Fedda',
+  szkrezh: 'Szkrezh',
 })
 
 function fallbackUuid() {

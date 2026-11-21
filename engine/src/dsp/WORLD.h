@@ -16,7 +16,9 @@ struct WORLDParams {
 // resampling between clip and engine sample rates is the dispatcher's
 // responsibility — this function works at params.sampleRate.
 //
-// Output length = round(input.getNumSamples() * stretchRatio).
+// Output length = round(input.getNumSamples() * stretchRatio), and the time
+// map is exact: output sample n is input sample n / stretchRatio. Callers may
+// therefore pad the input with context and crop the output at padding * ratio.
 // Safe to call from a non-audio worker thread; allocates internally.
 juce::AudioBuffer<float> processWORLD(
     const juce::AudioBuffer<float>& input,

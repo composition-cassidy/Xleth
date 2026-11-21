@@ -1,17 +1,29 @@
-// Live BS.1770-4 master-bus loudness meter.
+// Live BS.1770-4 master-bus loudness dock (Mixer tab, fixed at the right).
 //
-// The engine tap sits at MixEngine's PostMasterOutput point (post master insert
-// chain, post master fader) and is off by default — metering costs an atomic
-// load per audio block when disabled and a full K-weighting pass when enabled,
-// so the user opts in and the choice persists.
+// The engine tap sits at MixerEngine's PostMasterOutput point (post master insert
+// chain, post master fader) and is off by default: metering costs an atomic load
+// per audio block when disabled and a full K-weighting pass when enabled, so the
+// user opts in and the choice persists.
 //
 // Polling deliberately has no loop of its own: MixerPanel already runs one
 // 125 ms poll for the peak meters, and pollMasterLoudness() below hangs off it.
 // A second timer would double the IPC wakeups for the same 8 Hz of data.
+//
+// Nothing here is a placeholder: while the meter is off or nothing has been
+// measured, every value reads "—" with its unit, and the bars are not drawn.
 
-import { useCallback, useEffect, useState } from 'react'
-import { Activity, RotateCcw } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { IconButton, Select, Toggle, formatValue } from '../ui-kit'
+import { tokenValue } from '../theming/tokenValue.ts'
+import { useThemeEpoch } from '../theming/useThemeEpoch.js'
 import { PLATFORM_TARGETS } from '../constants/loudnessTargets.js'
+import useMixerUiStore from './mixer/mixerUiStore.js'
+import styles from './MasterLoudnessMeter.module.css'
+import { iconComponent } from '../ui-kit/icons'
+
+const IcArrowCounterClockwise = iconComponent('arrow-counter-clockwise')
+const IcCaretDoubleLeft = iconComponent('caret-double-left')
+const IcCaretDoubleRight = iconComponent('caret-double-right')
 
 // LoudnessAnalyzer::kNoMeasurement. A finite sentinel rather than -Infinity so
 // it survives JSON; anything at or below it means "nothing measured yet".
@@ -19,21 +31,23 @@ const NO_MEASUREMENT = -200
 
 export const LOUDNESS_ENABLED_KEY = 'xleth.meter.loudnessEnabled'
 // Shared with ExportDialog: the platform you are mastering for is the same
-// question in both places, so the meter's target marker follows the export
-// picker rather than adding a second control that could disagree with it.
+// question in both places, so the meter's target follows the export picker
+// rather than adding a second control that could disagree with it.
 const LOUDNESS_TARGET_KEY = 'xleth.export.loudnessTarget'
-// 'none' is an export-side choice — "do not renormalize the render" — not a
-// mastering target, and it is what ExportDialog defaults to. Treating it as
-// "no reference line" would leave the marker invisible for anyone who has ever
-// opened the export dialog, so the meter reads it as "unset" and falls back
-// here. Any real platform pick still wins.
+// 'none' is an export-side choice (do not renormalize the render), not a
+// mastering target, and it is what ExportDialog defaults to. The meter reads it as
+// "unset" and falls back here; any real platform pick still wins.
 const DEFAULT_METER_TARGET = 'youtube'
 
-// Bar scale. -50 LUFS is well below anything a master ever sits at, and 0 LUFS
-// is the top of the useful range, so a linear map over that span keeps the
-// -23 … -9 LUFS region where mastering decisions happen in the upper third.
+// Bar scale. -50 LUFS is well below anything a master sits at and 0 LUFS is the
+// top of the useful range, so the -23 ... -9 LUFS region where mastering
+// decisions happen sits in the upper half.
 const SCALE_MIN_LUFS = -50
 const SCALE_MAX_LUFS = 0
+const SCALE_TICKS = [-48, -36, -24, -12, 0]
+const TARGET_OPTIONS = Object.entries(PLATFORM_TARGETS)
+  .filter(([key]) => key !== 'none')
+  .map(([key, t]) => ({ value: key, label: t.label }))
 
 const EMPTY_SNAPSHOT = {
   enabled: false,
@@ -64,7 +78,7 @@ export function readLoudnessEnabledPreference() {
   }
 }
 
-// Called once per peak-poll tick from MixerPanel. No-ops unless the panel is
+// Called once per peak-poll tick from MixerPanel. No-ops unless the dock is
 // mounted and the meter is switched on, so the disabled path costs nothing on
 // either side of the bridge.
 export async function pollMasterLoudness() {
@@ -83,20 +97,20 @@ export async function pollMasterLoudness() {
 
 // ── Formatting ──────────────────────────────────────────────────────────────
 
-function isMeasured(value) {
+export function isMeasured(value) {
   return Number.isFinite(value) && value > NO_MEASUREMENT
 }
 
-function formatLevel(value, digits = 1) {
-  return isMeasured(value) ? value.toFixed(digits) : '—'
+/** "−14.2" with a true minus and one decimal, or "—" when nothing has been measured. */
+export function levelText(value) {
+  return isMeasured(value) ? formatValue(value, 'dB', { unitless: true }) : '—'
 }
 
-// 0 → the bottom of the bar, SCALE_MAX_LUFS → the top. Unmeasured reads empty.
-function levelToPercent(lufs) {
+// 0 → the left of the bar, SCALE_MAX_LUFS → the right. Unmeasured reads empty.
+export function levelToFraction(lufs) {
   if (!isMeasured(lufs)) return 0
   const span = SCALE_MAX_LUFS - SCALE_MIN_LUFS
-  const pos = ((lufs - SCALE_MIN_LUFS) / span) * 100
-  return Math.max(0, Math.min(100, pos))
+  return Math.max(0, Math.min(1, (lufs - SCALE_MIN_LUFS) / span))
 }
 
 function resolveTarget() {
@@ -110,24 +124,115 @@ function resolveTarget() {
   return { key, ...PLATFORM_TARGETS[key] }
 }
 
+// ── Bars: one canvas, M and S, a printed LUFS scale and the target tick ──────
+
+const BAR_H = 10
+const BAR_GAP = 4
+const LABEL_W = 12
+const SCALE_H = 12
+export const BARS_H = BAR_H * 2 + BAR_GAP + SCALE_H + 2
+
+export function drawBars(ctx, { width, momentary, shortTerm, targetLufs, palette }) {
+  ctx.clearRect(0, 0, width, BARS_H)
+  const x0 = LABEL_W
+  const w = width - LABEL_W
+  ctx.font = `10px ${palette.font}`
+  ctx.textBaseline = 'middle'
+  ctx.textAlign = 'left'
+  const rows = [['M', momentary, 0], ['S', shortTerm, BAR_H + BAR_GAP]]
+  for (const [label, lufs, y] of rows) {
+    ctx.fillStyle = palette.well
+    ctx.fillRect(x0, y, w, BAR_H)
+    const fraction = levelToFraction(lufs)
+    if (fraction > 0) {
+      ctx.fillStyle = palette.fill
+      ctx.fillRect(x0, y, Math.round(w * fraction), BAR_H)
+    }
+    ctx.fillStyle = palette.label
+    ctx.fillText(label, 0, y + BAR_H / 2)
+  }
+  const scaleY = BAR_H * 2 + BAR_GAP + 2
+  ctx.textAlign = 'center'
+  for (const db of SCALE_TICKS) {
+    const x = x0 + w * levelToFraction(db)
+    ctx.fillStyle = palette.tick
+    ctx.fillRect(Math.round(x), scaleY, 1, 3)
+    ctx.fillText(String(db).replace('-', '−'), Math.min(width - 8, Math.max(x0 + 6, x)), scaleY + 8)
+  }
+  if (targetLufs != null) {
+    const x = Math.round(x0 + w * levelToFraction(targetLufs))
+    ctx.fillStyle = palette.target
+    ctx.fillRect(x, 0, 1, BAR_H * 2 + BAR_GAP)
+  }
+}
+
+function LoudnessBars({ values, targetLufs }) {
+  const epoch = useThemeEpoch()
+  const canvasRef = useRef(null)
+  const drawRef = useRef(null)
+
+  useEffect(() => {
+    drawRef.current = () => {
+      const canvas = canvasRef.current
+      const ctx = canvas?.getContext?.('2d')
+      if (!canvas || !ctx) return
+      const width = canvas.clientWidth
+      if (width <= 0) return
+      const dpr = window.devicePixelRatio || 1
+      if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(BARS_H * dpr)) {
+        canvas.width = Math.round(width * dpr)
+        canvas.height = Math.round(BARS_H * dpr)
+      }
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      // Read at draw time: tokenValue() is empty before the ThemeProvider mounts.
+      drawBars(ctx, {
+        width,
+        momentary: values.momentary,
+        shortTerm: values.shortTerm,
+        targetLufs,
+        palette: {
+          well: tokenValue('--ui-g0'),
+          fill: tokenValue('--ui-value'),
+          label: tokenValue('--ui-ink-2'),
+          tick: tokenValue('--ui-ink-3'),
+          target: tokenValue('--ui-ink'),
+          font: tokenValue('--ui-font'),
+        },
+      })
+    }
+    drawRef.current()
+  }, [values, targetLufs, epoch])
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas || typeof ResizeObserver === 'undefined') return undefined
+    const ro = new ResizeObserver(() => drawRef.current?.())
+    ro.observe(canvas)
+    return () => ro.disconnect()
+  }, [])
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className={styles.bars}
+      style={{ height: BARS_H }}
+      role="img"
+      aria-label={`Momentary ${levelText(values.momentary)} LUFS, short-term ${levelText(values.shortTerm)} LUFS`}
+    />
+  )
+}
+
 // ── Component ───────────────────────────────────────────────────────────────
 
-function LoudnessBar({ label, lufs, targetPercent, targetLabel }) {
-  const percent = levelToPercent(lufs)
+function Readout({ label, value, unit, over, hint }) {
   return (
-    <div className="loudness-meter-bar-row">
-      <span className="loudness-meter-bar-label">{label}</span>
-      <div className="loudness-meter-bar-track">
-        <div className="loudness-meter-bar-fill" style={{ width: `${percent}%` }} />
-        {targetPercent != null && (
-          <div
-            className="loudness-meter-bar-target"
-            style={{ left: `${targetPercent}%` }}
-            title={targetLabel}
-          />
-        )}
-      </div>
-      <span className="loudness-meter-bar-value">{formatLevel(lufs)}</span>
+    <div className={styles.readout} data-hint={hint}>
+      <span className={styles.readoutLabel}>{label}</span>
+      <span className={styles.readoutValue} data-over={over || undefined}>
+        {value}
+        <span className={styles.unit}>{unit}</span>
+        {over ? <span className={styles.overFlag}>Over</span> : null}
+      </span>
     </div>
   )
 }
@@ -136,12 +241,16 @@ export default function MasterLoudnessMeter() {
   const [values, setValues] = useState(snapshot)
   const [enabled, setEnabled] = useState(readLoudnessEnabledPreference)
   const [target, setTarget] = useState(resolveTarget)
+  // While metering is off the dock is a 28px rail unless the user opened it (the choice is
+  // kept, renderer-only). While metering is on it is always open: a running meter is shown.
+  const userOpen = useMixerUiStore(s => s.loudnessDockOpen)
+  const setUserOpen = useMixerUiStore(s => s.setLoudnessDockOpen)
 
-  // Poll tick: take the new values, and re-resolve the marker only when the
-  // shared target key actually changed. The 'storage' event does not fire in
-  // the window that wrote the key, so this is what picks up an export-dialog
-  // change made while the mixer is open; keeping the old object identity when
-  // the key is unchanged stops it re-rendering the marker 8 times a second.
+  // Poll tick: take the new values, and re-resolve the target only when the
+  // shared key actually changed. The 'storage' event does not fire in the window
+  // that wrote the key, so this is what picks up an export-dialog change made
+  // while the mixer is open; keeping the old object identity when the key is
+  // unchanged stops it re-rendering the target 8 times a second.
   const onSnapshot = useCallback((next) => {
     setValues(next)
     setTarget((prev) => {
@@ -172,19 +281,16 @@ export default function MasterLoudnessMeter() {
     return () => window.removeEventListener('storage', onStorage)
   }, [])
 
-  const handleToggle = useCallback(() => {
-    setEnabled((prev) => {
-      const next = !prev
-      try {
-        localStorage.setItem(LOUDNESS_ENABLED_KEY, next ? '1' : '0')
-      } catch {
-        // no-op: the toggle still applies for this session
-      }
-      if (!next) publish(EMPTY_SNAPSHOT)
-      // Picking up a target the export dialog may have changed since mount.
-      setTarget(resolveTarget())
-      return next
-    })
+  const handleToggle = useCallback((next) => {
+    setEnabled(next)
+    try {
+      localStorage.setItem(LOUDNESS_ENABLED_KEY, next ? '1' : '0')
+    } catch {
+      // no-op: the toggle still applies for this session
+    }
+    if (!next) publish(EMPTY_SNAPSHOT)
+    // Picking up a target the export dialog may have changed since mount.
+    setTarget(resolveTarget())
   }, [])
 
   const handleReset = useCallback(async () => {
@@ -196,86 +302,92 @@ export default function MasterLoudnessMeter() {
     publish(EMPTY_SNAPSHOT)
   }, [])
 
-  const targetPercent = target.targetLufs == null ? null : levelToPercent(target.targetLufs)
-  const targetLabel = target.targetLufs == null
-    ? 'No platform target selected'
-    : `${target.label} target ${target.targetLufs} LUFS`
+  const handleTarget = useCallback((key) => {
+    try {
+      localStorage.setItem(LOUDNESS_TARGET_KEY, key)
+    } catch {
+      // no-op: the choice still applies for this session
+    }
+    setTarget(resolveTarget())
+  }, [])
 
-  // Only a measured peak can be over the ceiling — the sentinel must never read
-  // as "under" and light up green either.
+  // Only a measured peak can be over the ceiling; the sentinel must never read as "under".
   const peakOver = target.maxDbtp != null
     && isMeasured(values.truePeakDbtp)
     && values.truePeakDbtp > target.maxDbtp
+  const lraText = isMeasured(values.integrated) ? formatValue(values.lra, 'dB', { unitless: true }) : '—'
+  const targetText = target.targetLufs == null ? '—' : formatValue(target.targetLufs, 'dB', { unitless: true })
+  const ceilingText = target.maxDbtp == null ? '—' : formatValue(target.maxDbtp, 'dB', { unitless: true })
+
+  if (!enabled && !userOpen) {
+    return (
+      <section className={styles.rail} aria-label="Loudness, collapsed" data-testid="loudness-rail">
+        <button
+          type="button"
+          className={styles.railButton}
+          aria-expanded={false}
+          aria-label="Open the loudness dock. Metering is off"
+          data-hint="Loudness: BS.1770-4 metering of the master bus. Metering is off."
+          data-hint-mods="Click: open the dock"
+          onClick={() => setUserOpen(true)}
+        >
+          <IcCaretDoubleLeft size={14} aria-hidden="true" />
+          <span className={styles.railText}>Loudness</span>
+          <span className={styles.railState}>Off</span>
+        </button>
+      </section>
+    )
+  }
 
   return (
-    <div className={`loudness-meter${enabled ? '' : ' loudness-meter--off'}`}>
-      <div className="loudness-meter-header">
-        <span className="loudness-meter-title">LOUDNESS</span>
-        <button
-          type="button"
-          className={`loudness-meter-btn${enabled ? ' loudness-meter-btn--active' : ''}`}
-          onClick={handleToggle}
-          aria-pressed={enabled}
-          title={enabled ? 'Disable loudness metering' : 'Enable loudness metering'}
-        >
-          <Activity size={12} />
-        </button>
-        <button
-          type="button"
-          className="loudness-meter-btn"
-          onClick={handleReset}
-          title="Reset integrated / LRA / true peak"
-        >
-          <RotateCcw size={12} />
-        </button>
-      </div>
+    <section className={styles.dock} aria-label="Loudness">
+      <header className={styles.header}>
+        <span className={styles.title}>Loudness</span>
+        <Toggle
+          size="sm" on={enabled} onChange={handleToggle}
+          hint={enabled ? 'Master loudness metering is on. Click to turn it off.' : 'Turn on BS.1770-4 loudness metering of the master bus.'}
+        >{enabled ? 'On' : 'Off'}</Toggle>
+        <IconButton
+          size="sm" label="Reset loudness" onClick={handleReset}
+          hint="Reset integrated loudness, loudness range and true peak"
+        ><IcArrowCounterClockwise size={14} aria-hidden="true" /></IconButton>
+        {enabled ? null : (
+          <IconButton
+            size="sm" label="Collapse the loudness dock" onClick={() => setUserOpen(false)}
+            hint="Collapse the loudness dock to a rail. It opens again when metering is turned on."
+          ><IcCaretDoubleRight size={14} aria-hidden="true" /></IconButton>
+        )}
+      </header>
 
-      <div className="loudness-meter-bars">
-        <LoudnessBar
-          label="M"
-          lufs={values.momentary}
-          targetPercent={targetPercent}
-          targetLabel={targetLabel}
-        />
-        <LoudnessBar
-          label="S"
-          lufs={values.shortTerm}
-          targetPercent={targetPercent}
-          targetLabel={targetLabel}
+      <div className={styles.row}>
+        <span className={styles.rowLabel}>Target</span>
+        <Select
+          size="sm" className={styles.target} ariaLabel="Loudness target" value={target.key}
+          options={TARGET_OPTIONS} onChange={handleTarget}
+          hint="Platform target for the marker and the true-peak ceiling. Shared with the export dialog."
         />
       </div>
 
-      <div className="loudness-meter-readouts">
-        <div className="loudness-meter-readout">
-          <span className="loudness-meter-readout-label">I</span>
-          <span className="loudness-meter-readout-value">
-            {formatLevel(values.integrated)}
-            <span className="loudness-meter-unit">LUFS</span>
-          </span>
-        </div>
-        <div className="loudness-meter-readout">
-          <span className="loudness-meter-readout-label">LRA</span>
-          <span className="loudness-meter-readout-value">
-            {isMeasured(values.integrated) ? values.lra.toFixed(1) : '—'}
-            <span className="loudness-meter-unit">LU</span>
-          </span>
-        </div>
-        <div className="loudness-meter-readout">
-          <span className="loudness-meter-readout-label">TP</span>
-          <span
-            className={`loudness-meter-readout-value${peakOver ? ' loudness-meter-readout-value--over' : ''}`}
-          >
-            {formatLevel(values.truePeakDbtp)}
-            <span className="loudness-meter-unit">dBTP</span>
-          </span>
-        </div>
+      {enabled
+        ? <LoudnessBars values={values} targetLufs={target.targetLufs} />
+        : <p className={styles.status} role="status">Metering is off. Turn it on to measure the master bus.</p>}
+
+      <div className={styles.readouts}>
+        <Readout label="Momentary" value={levelText(values.momentary)} unit="LUFS" hint="Momentary loudness, 400 ms" />
+        <Readout label="Short-term" value={levelText(values.shortTerm)} unit="LUFS" hint="Short-term loudness, 3 s" />
+        <Readout label="Integrated" value={levelText(values.integrated)} unit="LUFS" hint="Integrated loudness since the last reset" />
+        <Readout label="Range" value={lraText} unit="LU" hint="Loudness range since the last reset" />
+        <Readout
+          label="True peak" value={levelText(values.truePeakDbtp)} unit="dBTP" over={peakOver}
+          hint="True peak since the last reset. Flagged when it is over the target ceiling."
+        />
       </div>
 
-      <div className="loudness-meter-target" title={targetLabel}>
-        {target.targetLufs == null
-          ? `${target.label} — no target`
-          : `${target.label} · ${target.targetLufs} LUFS · ${target.maxDbtp} dBTP`}
+      <div className={styles.targets}>
+        <Readout label="Target" value={targetText} unit="LUFS" hint={`${target.label} loudness target`} />
+        <Readout label="Ceiling" value={ceilingText} unit="dBTP" hint={`${target.label} true-peak ceiling`} />
       </div>
-    </div>
+
+    </section>
   )
 }

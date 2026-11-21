@@ -1,6 +1,17 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
-import { ChevronLeft, ChevronRight, Plus } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { timelineEvents } from '../../timelineEvents.js'
+import { ticksToBeats } from '../../constants/timeline.js'
+import { Button, IconButton, THIN_SPACE } from '../../ui-kit'
+import { tokenValue } from '../../theming/tokenValue.ts'
+import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
+import useTrackIdentityColors from '../inspector/useTrackIdentityColors.js'
+import usePianoRollStore from '../../stores/usePianoRollStore.js'
+import styles from './PatternListPanel.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcCaretLeft = iconComponent('caret-left')
+const IcCaretRight = iconComponent('caret-right')
+const IcPlus = iconComponent('plus')
 
 // ── PatternListPanel ────────────────────────────────────────────────────────
 // Left strip inside the timeline listing every pattern in the project as one
@@ -17,8 +28,93 @@ import { timelineEvents } from '../../timelineEvents.js'
 
 const PATTERN_ACCENT = 'var(--theme-drag-preview-default)'
 
+/**
+ * { [patternId]: '#RRGGBB' }: the identity colour of the track a pattern's first block sits on
+ * (the earliest block, as the Piano Roll colours its notes: DESIGN.md 15). A pattern has no
+ * colour of its own in the project; one that is not placed has no entry and takes the value colour.
+ */
+export function patternOwnerColors(blocks, trackColors) {
+  const first = {}
+  for (const b of blocks ?? []) {
+    const seen = first[b.patternId]
+    if (!seen || b.positionTicks < seen.positionTicks) first[b.patternId] = b
+  }
+  const out = {}
+  for (const [patternId, b] of Object.entries(first)) {
+    const c = trackColors?.[b.trackId]
+    if (c) out[patternId] = c
+  }
+  return out
+}
+
+/** Where a pattern's notes fall in a w x h box: x by time, y by pitch within the pattern's own range. */
+export function patternPreviewRects(pattern, w, h) {
+  const notes = pattern?.notes
+  const len = pattern?.lengthTicks
+  if (!Array.isArray(notes) || notes.length === 0 || !(len > 0) || !(w > 0) || !(h > 0)) return []
+  let lo = Infinity
+  let hi = -Infinity
+  for (const n of notes) {
+    if (!n || !Number.isFinite(n.pitch)) continue
+    if (n.pitch < lo) lo = n.pitch
+    if (n.pitch > hi) hi = n.pitch
+  }
+  if (lo === Infinity) return []
+  const range = Math.max(1, hi - lo)
+  const noteH = 2
+  const travel = Math.max(0, h - noteH)
+  const rects = []
+  for (const n of notes) {
+    if (!n || !Number.isFinite(n.pitch)) continue
+    const x = (Math.max(0, n.positionTicks || 0) / len) * w
+    if (x >= w) continue
+    rects.push({
+      x,
+      y: travel - ((n.pitch - lo) / range) * travel,
+      w: Math.max(1, Math.min(w - x, ((n.durationTicks || 0) / len) * w)),
+      h: noteH,
+    })
+  }
+  return rects
+}
+
+const PREVIEW_W = 40
+const PREVIEW_H = 14
+
+/**
+ * The row's mini piano roll: one small canvas per pattern, drawn when the pattern, the colour,
+ * the theme or the pixel ratio changes, never per frame. It reads the notes directly: a whole
+ * pattern at 40px needs no viewport index.
+ */
+function PatternRowPreview({ pattern, color }) {
+  const ref = useRef(null)
+  const epoch = useThemeEpoch()
+  useEffect(() => {
+    const canvas = ref.current
+    const ctx = canvas?.getContext?.('2d')
+    if (!ctx) return
+    const dpr = window.devicePixelRatio || 1
+    canvas.width = Math.round(PREVIEW_W * dpr)
+    canvas.height = Math.round(PREVIEW_H * dpr)
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.clearRect(0, 0, PREVIEW_W, PREVIEW_H)
+    ctx.fillStyle = color || tokenValue('--ui-value')
+    for (const r of patternPreviewRects(pattern, PREVIEW_W, PREVIEW_H)) ctx.fillRect(r.x, r.y, r.w, r.h)
+  }, [pattern, color, epoch])
+  return <canvas ref={ref} className={styles.preview} style={{ width: PREVIEW_W, height: PREVIEW_H }} aria-hidden="true" />
+}
+
+// A pattern's length in 16th-note steps, the unit the Piano Roll grid counts in
+// ("16 steps"). A fraction survives to one decimal; a whole number prints bare.
+export function patternStepsLabel(lengthTicks) {
+  const steps = Math.round(ticksToBeats(lengthTicks || 0) * 4 * 10) / 10
+  return `${steps}${THIN_SPACE}${steps === 1 ? 'step' : 'steps'}`
+}
+
 export default function PatternListPanel({
   patterns = {},          // { id: Pattern }
+  tracks = null,          // the project's tracks, for the owning track's colour
+  blocks = null,          // pattern blocks: a pattern takes the colour of its first block's track
   onOpenPianoRoll,        // (patternId) => void
   onNewPattern,           // () => void
   onRename,               // (patternId, name) => void
@@ -26,6 +122,10 @@ export default function PatternListPanel({
   onToggleCollapsed,
 }) {
   const [hoverId, setHoverId] = useState(null)
+  const trackColors = useTrackIdentityColors(tracks)
+  const ownerColors = useMemo(() => patternOwnerColors(blocks, trackColors), [blocks, trackColors])
+  // The pattern open in the Piano Roll is the selected one.
+  const selectedPatternId = usePianoRollStore((s) => s.patternId)
   const [editingId, setEditingId] = useState(null)
   const [nameInput, setNameInput] = useState('')
   const inputRef = useRef(null)
@@ -99,70 +199,81 @@ export default function PatternListPanel({
 
   if (collapsed) {
     return (
-      <div className="pattern-list-panel pattern-list-panel-collapsed">
-        <button
-          className="pattern-list-expand-btn"
-          onClick={onToggleCollapsed}
-          title="Expand pattern list"
-        >
-          <ChevronRight size={14} />
-        </button>
+      <div className={`pattern-list-panel pattern-list-panel-collapsed ${styles.collapsed}`}>
+        <IconButton size="sm" label="Expand pattern list" onClick={onToggleCollapsed} hint="Expand the pattern list">
+          <IcCaretRight size={14} />
+        </IconButton>
       </div>
     )
   }
 
   return (
-    <div className="pattern-list-panel">
-      <div className="pattern-list-header">
-        <span className="pattern-list-title">Patterns</span>
-        <button
-          className="pattern-list-collapse-btn"
-          onClick={onToggleCollapsed}
-          title="Collapse"
-        >
-          <ChevronLeft size={14} />
-        </button>
+    <div className={`pattern-list-panel ${styles.panel}`}>
+      <div className={`pattern-list-header ${styles.header}`}>
+        <span className={`pattern-list-title ${styles.title}`}>Patterns</span>
+        <span className={styles.total} role="img" aria-label={`${sortedPatterns.length} patterns`}>{sortedPatterns.length}</span>
+        <IconButton size="sm" label="Collapse pattern list" onClick={onToggleCollapsed} hint="Collapse the pattern list">
+          <IcCaretLeft size={14} />
+        </IconButton>
       </div>
 
-      <div className="pattern-list-body">
+      <div className={`pattern-list-body ${styles.body}`} role="listbox" aria-label="Patterns">
         {sortedPatterns.length === 0 ? (
-          <div className="pattern-list-empty">No patterns yet</div>
+          <div className={styles.empty}>No patterns yet</div>
         ) : (
           sortedPatterns.map((p) => {
             const isEditing = editingId === p.id
+            const label = p.name || `Pattern ${p.id}`
+            const selected = selectedPatternId === p.id
+            const color = ownerColors[p.id] || null
+            const noteCount = p.notes?.length || 0
             return (
               <div
                 key={p.id}
-                className={`pattern-list-row ${hoverId === p.id ? 'is-hover' : ''}`}
+                role="option"
+                aria-selected={selected}
+                tabIndex={0}
+                className={`pattern-list-row ${styles.row}${hoverId === p.id ? ' is-hover' : ''}`}
+                data-selected={selected ? 'true' : 'false'}
                 draggable={!isEditing}
                 onDragStart={(e) => handleDragStart(e, p)}
                 onDragEnd={handleDragEnd}
                 onClick={() => { if (!isEditing) handleClick(p.id) }}
+                onKeyDown={(e) => {
+                  if (isEditing || e.target !== e.currentTarget) return
+                  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleClick(p.id) }
+                  else if (e.key === 'F2') { e.preventDefault(); startEdit(p) }
+                }}
                 onMouseEnter={() => setHoverId(p.id)}
                 onMouseLeave={() => setHoverId(null)}
-                title={isEditing ? undefined : `${p.name || `Pattern ${p.id}`} — ${p.notes?.length || 0} note(s)`}
+                data-hint={`${label}: ${patternStepsLabel(p.lengthTicks)}, ${noteCount} ${noteCount === 1 ? 'note' : 'notes'}${color ? '' : ', not placed'}`}
+                data-hint-mods="Click: open in the Piano Roll · Drag onto a pattern track · Double-click or F2: rename"
               >
-                <span className="pattern-list-row-swatch" style={{ background: PATTERN_ACCENT }} />
+                {/* The owning track's colour (the thread from lane to strip to here); the value
+                    colour while the pattern is not placed on any track. */}
+                <span className={styles.swatch} style={{ background: color || 'var(--ui-value)' }} aria-hidden="true" />
                 {isEditing ? (
                   <input
                     ref={inputRef}
-                    className="pattern-list-row-name-input"
+                    className={styles.nameInput}
                     value={nameInput}
                     onChange={(e) => setNameInput(e.target.value)}
                     onBlur={commitEdit}
                     onKeyDown={onEditKeyDown}
                     onClick={(e) => e.stopPropagation()}
+                    aria-label="Pattern name"
                     autoFocus
                   />
                 ) : (
                   <span
-                    className="pattern-list-row-name"
+                    className={`pattern-list-row-name ${styles.name}`}
                     onDoubleClick={(e) => { e.stopPropagation(); startEdit(p) }}
                   >
-                    {p.name || `Pattern ${p.id}`}
+                    {label}
                   </span>
                 )}
-                <span className="pattern-list-row-meta">{p.notes?.length || 0}</span>
+                {/* What is in it, not how long it is: the length moved to the hint. */}
+                <PatternRowPreview pattern={p} color={color} />
               </div>
             )
           })
@@ -170,13 +281,11 @@ export default function PatternListPanel({
       </div>
 
       {onNewPattern && (
-        <div className="pattern-list-footer">
-          <button className="pattern-list-new-btn" onClick={onNewPattern} title="New pattern">
-            <Plus size={12} />
-            <span>New Pattern</span>
-          </button>
+        <div className={styles.footer}>
+          <Button size="sm" className={styles.newBtn} glyph={<IcPlus size={14} />} onClick={onNewPattern} hint="Create a new pattern">
+            New pattern
+          </Button>
         </div>
-      )}
-    </div>
+      )}    </div>
   )
 }

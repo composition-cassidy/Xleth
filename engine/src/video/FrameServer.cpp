@@ -1,5 +1,6 @@
 #include "FrameServer.h"
 #include "../model/Timeline.h"
+#include "SwsDestBuffer.h"
 
 extern "C" {
 #include <libswscale/swscale.h>
@@ -83,10 +84,6 @@ void FrameServer::closeAll() {
     for (int id : ids) closeSource(id);
 }
 
-bool FrameServer::isSourceOpen(int sourceId) const {
-    return sources_.count(sourceId) > 0;
-}
-
 FrameServer::SourceInfo FrameServer::getSourceInfo(int sourceId) const {
     auto it = sources_.find(sourceId);
     if (it == sources_.end()) return {};
@@ -159,7 +156,8 @@ std::vector<uint8_t> FrameServer::getFrameJPEG(int sourceId, double timeSeconds,
     };
     int srcStride[3] = { cached->yStride, cached->uStride, cached->vStride };
 
-    std::vector<uint8_t> rgb(outW * outH * 3);
+    // Padded for sws_scale's write slack — see SwsDestBuffer.h.
+    auto rgb = xleth::makeSwsDestBuffer(static_cast<size_t>(outW) * outH * 3);
     uint8_t* dstSlice[1] = { rgb.data() };
     int dstStride[1] = { outW * 3 };
 

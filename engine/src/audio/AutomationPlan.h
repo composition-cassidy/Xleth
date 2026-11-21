@@ -7,7 +7,9 @@
 // The automation-clip analogue of RoutePlan / SidechainPlan (audio/TrackRouting.h)
 // and it follows that idiom exactly:
 //
-//   • built on the MAIN thread from the Timeline, once per automation mutation;
+//   • built off the audio thread from an AutomationModel copied out of the
+//     Timeline (MixEngine: the published TimelineSnapshot's), once per
+//     automation mutation or chain change;
 //   • FIXED capacity, so building never allocates inside the plan and the audio
 //     thread never touches a std::vector, a map, or a std::string;
 //   • FAIL-CLOSED: anything that cannot be represented (unknown lane, missing
@@ -41,6 +43,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -127,9 +130,29 @@ using AutomationBindingResolver = std::function<bool(const AutomationBinding&)>;
 using AutomationBaseValueResolver =
     std::function<bool(const AutomationBinding&, double& outValue)>;
 
-// Build the plan from the timeline's automation model. MAIN THREAD ONLY (it
-// reads std::map collections and constructs std::strings). `out` is fully
-// overwritten, including its diagnostics.
+// The timeline's automation model, by value: everything the build reads.
+// MixEngine publishes one in every TimelineSnapshot, so the envelope applier
+// thread builds from an immutable copy while the bridge thread edits, replaces
+// (project load) or swaps (export) the live Timeline.
+struct AutomationModel {
+    std::map<int, AutomationLane>       lanes;       // by id
+    std::map<int, AutomationClip>       clips;       // by id
+    std::map<int, AutomationEnvelope>   envelopes;   // by id
+    std::map<AutomationBinding, double> baseValues;
+};
+
+// Copy the timeline's automation model. On the thread that edits the timeline.
+AutomationModel copyAutomationModel(const Timeline& timeline);
+
+// Build the plan from an automation model. Not realtime (it reads std::map
+// collections and constructs std::strings); any thread that holds the model
+// stable. `out` is fully overwritten, including its diagnostics.
+void buildAutomationPlan(const AutomationModel& model,
+                         const AutomationBindingResolver& resolver,
+                         const AutomationBaseValueResolver& baseResolver,
+                         AutomationPlan& out);
+
+// Same, from a copy of the timeline's model. On the thread that edits it.
 void buildAutomationPlan(const Timeline& timeline,
                          const AutomationBindingResolver& resolver,
                          const AutomationBaseValueResolver& baseResolver,

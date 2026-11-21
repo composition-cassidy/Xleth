@@ -1,0 +1,16 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "waveshaper",
+  "name": "Rectify Octave",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "pregain": 0,
+      "postgain": 0,
+      "mix": 50,
+      "preset": 5
+    },
+    "points": null
+  }
+}

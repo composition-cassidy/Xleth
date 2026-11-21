@@ -1,0 +1,28 @@
+@layer kit {
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    min-height: var(--ctl-h-md);
+    font-family: var(--ui-font);
+  }
+
+  .toolbar[data-orientation="vertical"] {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .sep {
+    flex: none;
+    width: 1px;
+    height: var(--space-4);
+    margin: 0 var(--space-1);
+    background: var(--ui-g4);
+  }
+
+  .toolbar[data-orientation="vertical"] .sep {
+    width: var(--space-4);
+    height: 1px;
+    margin: var(--space-1) 0;
+  }
+}

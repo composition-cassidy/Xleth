@@ -1,9 +1,37 @@
+import { pearlPlan } from '../ui-kit/pearlRules'
 import { create } from 'zustand'
 import { flatTrackLayout, normalizeTrackLayout } from '../components/timeline/trackFolderLayout.js'
 import { timelineEvents } from '../timelineEvents.js'
 import { createPeakEntry, prunePeakSnapshotTracks } from '../components/mixer/meterTelemetry.js'
+import {
+  MAX_SENDS, SEND_GAIN_MAX, findTrackSidechain, routeOnly, toggleDestination,
+} from '../components/mixer/routeSets.js'
+import { isClone } from '../clones/cloneModel.js'
 
 export const MASTER_OUTPUT_TARGET_ID = -1
+
+/**
+ * The timeline's tracks and folder layout minus every Clone. A Clone is a
+ * video-only cell (docs/XLETH_CLONE_SPEC.md): no audio, so the mixer gives it no
+ * strip, no output route and no send target. Its id is dropped from the layout
+ * too, so normalizeTrackLayout still sees a layout that covers exactly the list.
+ */
+export function withoutCloneTracks(list, layout) {
+  if (!Array.isArray(list) || !list.some(isClone)) return { list, layout }
+  const cloneIds = new Set(list.filter(isClone).map((t) => t.id))
+  const audio = list.filter((t) => !cloneIds.has(t.id))
+  if (!layout || !Array.isArray(layout.rootOrder) || !Array.isArray(layout.folders)) return { list: audio, layout }
+  return {
+    list: audio,
+    layout: {
+      ...layout,
+      rootOrder: layout.rootOrder.filter((item) => !(item?.kind === 'track' && cloneIds.has(item.id))),
+      folders: layout.folders.map((f) => (Array.isArray(f?.trackIds)
+        ? { ...f, trackIds: f.trackIds.filter((id) => !cloneIds.has(id)) }
+        : f)),
+    },
+  }
+}
 export const COMPRESSOR_EXTERNAL_SIDECHAIN_PARAM_ID = 'sc_external'
 
 function dispatchTimelineTrackPatch(trackId, patch) {
@@ -43,6 +71,34 @@ export function normalizeOutputRoutesFromTracks(list) {
   return outputRoutes
 }
 
+/** [{ targetTrackId, gain }] from an engine `sends` array; junk entries dropped. */
+export function normalizeSends(raw) {
+  if (!Array.isArray(raw)) return []
+  const out = []
+  for (const s of raw) {
+    const targetTrackId = Number(s?.targetTrackId)
+    if (!Number.isInteger(targetTrackId) || targetTrackId < 0) continue
+    if (out.some(o => o.targetTrackId === targetTrackId)) continue
+    const g = Number(s?.gain)
+    out.push({ targetTrackId, gain: Number.isFinite(g) ? Math.min(SEND_GAIN_MAX, Math.max(0, g)) : 1 })
+    if (out.length >= MAX_SENDS) break
+  }
+  return out
+}
+
+/** { [trackId]: sends } from a getTracks list or a getRouting snapshot (`id` or `trackId`). */
+export function normalizeSendsByTrack(list) {
+  const sends = {}
+  if (!Array.isArray(list)) return sends
+  for (const entry of list) {
+    const id = normalizeOutputTargetId(entry?.id ?? entry?.trackId)
+    if (id === MASTER_OUTPUT_TARGET_ID) continue
+    if (!Object.prototype.hasOwnProperty.call(entry ?? {}, 'sends')) continue
+    sends[id] = normalizeSends(entry.sends)
+  }
+  return sends
+}
+
 export function normalizeOutputRoutesFromRoutingSnapshot(snapshot) {
   const outputRoutes = {}
   if (!Array.isArray(snapshot)) return outputRoutes
@@ -64,9 +120,11 @@ export function normalizeSidechainRoutesFromRoutingSnapshot(snapshot) {
     const rawRoutes = Array.isArray(entry?.sidechainRoutes) ? entry.sidechainRoutes : []
     for (const route of rawRoutes) {
       const routeId = typeof route?.routeId === 'string' ? route.routeId : ''
+      // '' = a track-level route (FL "Sidechain to this track"): the key goes to
+      // the target track and any sidechain-capable effect there can listen.
       const targetEffectInstanceId =
         typeof route?.targetEffectInstanceId === 'string' ? route.targetEffectInstanceId : ''
-      if (!routeId || !targetEffectInstanceId) continue
+      if (!routeId) continue
       routes.push({
         routeId,
         sourceTrackId: normalizeOutputTargetId(route?.sourceTrackId ?? sourceTrackId),
@@ -84,24 +142,33 @@ export function normalizeSidechainRoutesFromRoutingSnapshot(snapshot) {
   return routes
 }
 
-export function wouldCreateOutputRouteCycle(routesByTrackId, sourceTrackId, targetTrackId) {
+/**
+ * True if routing source → target would close a loop. Follows every existing
+ * edge out of the target: primary outputs, sends and (when given) sidechain
+ * routes, matching the engine's validator.
+ */
+export function wouldCreateOutputRouteCycle(routesByTrackId, sourceTrackId, targetTrackId, sendsByTrackId = null, sidechainRoutes = null) {
   const sourceId = normalizeOutputTargetId(sourceTrackId)
-  let current = normalizeOutputTargetId(targetTrackId)
-  if (current === MASTER_OUTPUT_TARGET_ID) return false
-  if (current === sourceId) return true
+  const targetId = normalizeOutputTargetId(targetTrackId)
+  if (targetId === MASTER_OUTPUT_TARGET_ID) return false
+  if (targetId === sourceId) return true
 
+  const adjacency = buildRoutingAdjacency(routesByTrackId, sidechainRoutes, null, sendsByTrackId)
   const visited = new Set()
-  while (current !== MASTER_OUTPUT_TARGET_ID && !visited.has(current)) {
+  const stack = [targetId]
+  while (stack.length > 0) {
+    const current = stack.pop()
     if (current === sourceId) return true
+    if (visited.has(current)) continue
     visited.add(current)
-    const next = routesByTrackId?.[current]
-    if (next == null) return false
-    current = normalizeOutputTargetId(next)
+    for (const next of adjacency.get(current) ?? []) {
+      if (!visited.has(next)) stack.push(next)
+    }
   }
   return false
 }
 
-function buildRoutingAdjacency(outputRoutes, sidechainRoutes, candidateRoute = null) {
+function buildRoutingAdjacency(outputRoutes, sidechainRoutes, candidateRoute = null, sendsByTrackId = null) {
   const adjacency = new Map()
   const addEdge = (source, target) => {
     const sourceId = normalizeOutputTargetId(source)
@@ -113,6 +180,9 @@ function buildRoutingAdjacency(outputRoutes, sidechainRoutes, candidateRoute = n
 
   for (const [sourceTrackId, targetTrackId] of Object.entries(outputRoutes ?? {})) {
     addEdge(sourceTrackId, targetTrackId)
+  }
+  for (const [sourceTrackId, sends] of Object.entries(sendsByTrackId ?? {})) {
+    for (const send of sends ?? []) addEdge(sourceTrackId, send?.targetTrackId)
   }
 
   const routes = Array.isArray(sidechainRoutes) ? sidechainRoutes : []
@@ -133,6 +203,7 @@ export function wouldCreateSidechainRouteCycle(
   sidechainRoutes,
   sourceTrackId,
   targetTrackId,
+  sendsByTrackId = null,
 ) {
   const sourceId = normalizeOutputTargetId(sourceTrackId)
   const targetId = normalizeOutputTargetId(targetTrackId)
@@ -142,7 +213,7 @@ export function wouldCreateSidechainRouteCycle(
   const adjacency = buildRoutingAdjacency(outputRoutes, sidechainRoutes, {
     sourceTrackId: sourceId,
     targetTrackId: targetId,
-  })
+  }, sendsByTrackId)
   const visited = new Set()
   const stack = [targetId]
 
@@ -172,6 +243,12 @@ export function mapOutputRouteError(reason) {
       return 'Invalid output target'
     case 'master_as_source':
       return 'Master has no output route'
+    case 'duplicate_target':
+      return 'Already routed there'
+    case 'too_many_sends':
+      return `A track can route to at most ${MAX_SENDS + 1} places`
+    case 'last_route':
+      return 'A track always keeps one output'
     default:
       return 'Route rejected'
   }
@@ -293,8 +370,9 @@ const useMixerStore = create((set, get) => ({
   tracks: {},       // { [trackId]: { id, name, volume, pan, spread, muted, solo, visualOnly, type } }
   trackOrder: [],   // [id, ...]
   trackLayout: flatTrackLayout([]),
-  outputRoutes: {}, // { [sourceTrackId]: targetTrackId }, -1 = Master
-  sidechainRoutes: [], // [{ routeId, sourceTrackId, targetTrackId, targetEffectInstanceId, ... }]
+  outputRoutes: {}, // { [sourceTrackId]: targetTrackId }, -1 = Master (the primary output)
+  sends: {}, // { [sourceTrackId]: [{ targetTrackId, gain }] } extra audible routes (FL multi-wiring)
+  sidechainRoutes: [], // [{ routeId, sourceTrackId, targetTrackId, targetEffectInstanceId ('' = track-level), ... }]
   routingError: null,
   sidechainRoutingErrors: {}, // { [`${targetTrackId}::${effectInstanceId}`]: message }
   master: { volume: 1.0 },
@@ -312,7 +390,7 @@ const useMixerStore = create((set, get) => ({
 
   init: async () => {
     try {
-      const [list, rawLayout, engineMasterVolume] = await Promise.all([
+      const [allTracks, rawAllLayout, engineMasterVolume] = await Promise.all([
         window.xleth?.timeline?.getTracks(),
         window.xleth?.timeline?.getTrackLayout?.(),
         // Master volume is engine-side state restored by project load, so the
@@ -320,12 +398,15 @@ const useMixerStore = create((set, get) => ({
         // otherwise it shows 0 dB for a project saved at any other level.
         window.xleth?.audio?.getMasterVolume?.(),
       ])
-      if (!Array.isArray(list)) return
+      if (!Array.isArray(allTracks)) return
+      // Clones have no audio (docs/XLETH_CLONE_SPEC.md): no strip, no route, no send.
+      const { list, layout: rawLayout } = withoutCloneTracks(allTracks, rawAllLayout)
       const trackLayout = normalizeTrackLayout(rawLayout, list)
       const prev = get().tracks
       const tracks = {}
       const trackOrder = []
       const outputRoutes = normalizeOutputRoutesFromTracks(list)
+      const sends = normalizeSendsByTrack(list)
       for (const t of list) {
         trackOrder.push(t.id)
         // Preserve mixer-owned params if already set, otherwise use engine values
@@ -352,15 +433,16 @@ const useMixerStore = create((set, get) => ({
         trackOrder,
         trackLayout,
         outputRoutes,
+        sends,
         routingError: null,
         selectedChainKey: resolveSelectedMixerChainKey(s.selectedChainKey, trackOrder),
         master: Number.isFinite(engineMasterVolume)
           ? { volume: engineMasterVolume }
           : s.master,
       }))
-      if (list.some(t => t?.outputRoute == null)) {
-        await get().refreshRouting()
-      }
+      // The track list carries no sidechain routes, so always read the routing
+      // snapshot once (it also covers builds whose track list lacks outputRoute).
+      await get().refreshRouting()
     } catch (e) {
       console.warn('[mixerStore] init failed:', e.message)
     }
@@ -429,6 +511,33 @@ const useMixerStore = create((set, get) => ({
     dispatchTimelineTrackPatch(trackId, { solo: next })
   },
 
+  // Output pearl (ui-kit/pearlRules.ts): 'toggle' = on/off, 'solo' = this one only, or everything
+  // back on when it is already the only one heard. Works on mute flags; clears legacy solo flags.
+  pearl: (trackId, action) => {
+    const all = Object.values(get().tracks).filter(Boolean)
+    const changes = pearlPlan(all.map(t => ({ id: t.id, muted: !!t.muted, soloed: !!t.solo })), trackId, action)
+    if (changes.length === 0) return
+    set(s => {
+      const tracks = { ...s.tracks }
+      for (const c of changes) {
+        const t = tracks[c.id]
+        if (!t) continue
+        tracks[c.id] = { ...t, muted: c.muted ?? t.muted, solo: c.clearSolo ? false : t.solo }
+      }
+      return { tracks }
+    })
+    for (const c of changes) {
+      if (c.clearSolo) {
+        window.xleth?.timeline?.setTrackSolo(c.id, false)
+        dispatchTimelineTrackPatch(c.id, { solo: false })
+      }
+      if (c.muted !== undefined) {
+        window.xleth?.timeline?.setTrackMuted(c.id, c.muted)
+        dispatchTimelineTrackPatch(c.id, { muted: c.muted })
+      }
+    }
+  },
+
   toggleVisualOnly: (trackId) => {
     const t = get().tracks[trackId]
     if (!t) return
@@ -446,11 +555,15 @@ const useMixerStore = create((set, get) => ({
   getBusInputCount: (trackId) => {
     const id = normalizeOutputTargetId(trackId)
     if (id === MASTER_OUTPUT_TARGET_ID) return 0
-    const { outputRoutes, tracks } = get()
-    return Object.entries(outputRoutes).reduce((count, [sourceId, targetId]) => {
-      if (normalizeOutputTargetId(targetId) !== id) return count
-      return tracks[sourceId] ? count + 1 : count
-    }, 0)
+    const { outputRoutes, sends, tracks } = get()
+    const sources = new Set()
+    for (const [sourceId, targetId] of Object.entries(outputRoutes)) {
+      if (normalizeOutputTargetId(targetId) === id && tracks[sourceId]) sources.add(sourceId)
+    }
+    for (const [sourceId, list] of Object.entries(sends ?? {})) {
+      if (tracks[sourceId] && (list ?? []).some(s => s.targetTrackId === id)) sources.add(sourceId)
+    }
+    return sources.size
   },
 
   getSidechainRouteForEffect: (targetTrackId, effectInstanceId) =>
@@ -461,13 +574,13 @@ const useMixerStore = create((set, get) => ({
 
   getEligibleSidechainSources: (targetTrackId) => {
     const targetId = normalizeOutputTargetId(targetTrackId)
-    const { tracks, trackOrder, outputRoutes, sidechainRoutes } = get()
+    const { tracks, trackOrder, outputRoutes, sends, sidechainRoutes } = get()
     const sources = []
     for (const id of trackOrder) {
       const source = tracks[id]
       if (!source || id === targetId) continue
       if (!isAudioMixerTarget(source)) continue
-      if (wouldCreateSidechainRouteCycle(outputRoutes, sidechainRoutes, id, targetId)) continue
+      if (wouldCreateSidechainRouteCycle(outputRoutes, sidechainRoutes, id, targetId, sends)) continue
       sources.push({ sourceTrackId: id, name: source.name || `Track ${id}` })
     }
     return sources
@@ -475,13 +588,13 @@ const useMixerStore = create((set, get) => ({
 
   getEligibleOutputTargets: (trackId) => {
     const sourceId = normalizeOutputTargetId(trackId)
-    const { tracks, trackOrder, outputRoutes } = get()
+    const { tracks, trackOrder, outputRoutes, sends, sidechainRoutes } = get()
     const targets = [{ targetTrackId: MASTER_OUTPUT_TARGET_ID, name: 'Master' }]
     for (const id of trackOrder) {
       const target = tracks[id]
       if (!target || id === sourceId) continue
       if (!isAudioMixerTarget(target)) continue
-      if (wouldCreateOutputRouteCycle(outputRoutes, sourceId, id)) continue
+      if (wouldCreateOutputRouteCycle(outputRoutes, sourceId, id, sends, sidechainRoutes)) continue
       targets.push({ targetTrackId: id, name: target.name || `Track ${id}` })
     }
     return targets
@@ -490,13 +603,13 @@ const useMixerStore = create((set, get) => ({
   getOutputTargetRejectionReason: (trackId, targetTrackId) => {
     const sourceId = normalizeOutputTargetId(trackId)
     const targetId = normalizeOutputTargetId(targetTrackId)
-    const { tracks, outputRoutes } = get()
+    const { tracks, outputRoutes, sends, sidechainRoutes } = get()
     if (targetId === MASTER_OUTPUT_TARGET_ID) return null
     if (targetId === sourceId) return 'self_route'
     const target = tracks[targetId]
     if (!target) return 'unknown_track'
     if (!isAudioMixerTarget(target)) return 'invalid_target'
-    if (wouldCreateOutputRouteCycle(outputRoutes, sourceId, targetId)) return 'cycle'
+    if (wouldCreateOutputRouteCycle(outputRoutes, sourceId, targetId, sends, sidechainRoutes)) return 'cycle'
     return null
   },
 
@@ -505,15 +618,18 @@ const useMixerStore = create((set, get) => ({
       const routing = await window.xleth?.timeline?.getRouting?.()
       if (!Array.isArray(routing)) return null
       const fetchedRoutes = normalizeOutputRoutesFromRoutingSnapshot(routing)
+      const fetchedSends = normalizeSendsByTrack(routing)
       const sidechainRoutes = normalizeSidechainRoutesFromRoutingSnapshot(routing)
       set(s => {
         const outputRoutes = {}
+        const sends = {}
         for (const id of s.trackOrder) {
           outputRoutes[id] = fetchedRoutes[id] ?? MASTER_OUTPUT_TARGET_ID
+          sends[id] = fetchedSends[id] ?? []
         }
-        return { outputRoutes, sidechainRoutes, routingError: null }
+        return { outputRoutes, sends, sidechainRoutes, routingError: null }
       })
-      return { outputRoutes: fetchedRoutes, sidechainRoutes }
+      return { outputRoutes: fetchedRoutes, sends: fetchedSends, sidechainRoutes }
     } catch (e) {
       console.warn('[mixerStore] refreshRouting failed:', e.message)
       return null
@@ -566,6 +682,133 @@ const useMixerStore = create((set, get) => ({
       await get().refreshRouting()
       set({ routingError: error })
       return { ok: false, reason: 'ipc_error', error }
+    }
+  },
+
+  // ── FL-style multi-wiring ──────────────────────────────────────────────────
+  // Replace a track's whole audible destination set (primary + sends) in one
+  // undoable engine call. Optimistic; rolled back from the engine on rejection.
+  setTrackRoutes: async (trackId, next) => {
+    const sourceId = normalizeOutputTargetId(trackId)
+    const prevTarget = get().outputRoutes[sourceId] ?? MASTER_OUTPUT_TARGET_ID
+    const prevSends = get().sends[sourceId] ?? []
+    const nextTarget = normalizeOutputTargetId(next?.targetTrackId)
+    const nextSends = normalizeSends(next?.sends)
+    set(s => ({
+      outputRoutes: { ...s.outputRoutes, [sourceId]: nextTarget },
+      sends: { ...s.sends, [sourceId]: nextSends },
+      routingError: null,
+    }))
+    const fail = async (reason) => {
+      const error = mapOutputRouteError(reason)
+      set(s => ({
+        outputRoutes: { ...s.outputRoutes, [sourceId]: prevTarget },
+        sends: { ...s.sends, [sourceId]: prevSends },
+      }))
+      await get().refreshRouting()
+      set({ routingError: error })
+      return { ok: false, reason, error }
+    }
+    const setRoutes = window.xleth?.timeline?.setTrackRoutes
+    if (typeof setRoutes !== 'function') return fail('engine_unavailable')
+    try {
+      const result = await setRoutes(sourceId, { targetTrackId: nextTarget, sends: nextSends })
+      if (!result || result.ok === false) return fail(result?.reason || 'rejected')
+      set(s => ({
+        outputRoutes: { ...s.outputRoutes, [sourceId]: normalizeOutputTargetId(result.targetTrackId ?? nextTarget) },
+        sends: { ...s.sends, [sourceId]: Array.isArray(result.sends) ? normalizeSends(result.sends) : nextSends },
+        routingError: null,
+      }))
+      timelineEvents.dispatchEvent(new Event('timeline-routing-changed'))
+      return { ok: true }
+    } catch {
+      return fail('ipc_error')
+    }
+  },
+
+  /**
+   * Left-click on a target's route arrow: route `trackId` there as well, or
+   * unroute it (FL). `only` (Ctrl+click) routes to that target alone.
+   */
+  toggleAudioRoute: async (trackId, targetTrackId, { only = false } = {}) => {
+    const sourceId = normalizeOutputTargetId(trackId)
+    const targetId = normalizeOutputTargetId(targetTrackId)
+    const primary = get().outputRoutes[sourceId] ?? MASTER_OUTPUT_TARGET_ID
+    const sends = get().sends[sourceId] ?? []
+    const routedThere = primary === targetId || sends.some(s => s.targetTrackId === targetId)
+    if (!routedThere || only) {
+      const reason = get().getOutputTargetRejectionReason(sourceId, targetId)
+      if (reason) {
+        const error = mapOutputRouteError(reason)
+        set({ routingError: error })
+        return { ok: false, reason, error }
+      }
+    }
+    const next = only ? routeOnly(targetId) : toggleDestination(primary, sends, targetId)
+    if (!next) {
+      const reason = routedThere ? 'last_route' : 'too_many_sends'
+      const error = mapOutputRouteError(reason)
+      set({ routingError: error })
+      return { ok: false, reason, error }
+    }
+    return get().setTrackRoutes(sourceId, next)
+  },
+
+  /** Live level of an existing send (knob drag). Not undo-tracked, like the fader. */
+  setSendGain: (trackId, targetTrackId, gain) => {
+    const sourceId = normalizeOutputTargetId(trackId)
+    const targetId = normalizeOutputTargetId(targetTrackId)
+    const g = Math.min(SEND_GAIN_MAX, Math.max(0, Number(gain) || 0))
+    set(s => ({
+      sends: {
+        ...s.sends,
+        [sourceId]: (s.sends[sourceId] ?? []).map(x => (x.targetTrackId === targetId ? { ...x, gain: g } : x)),
+      },
+    }))
+    window.xleth?.timeline?.setTrackSendGain?.(sourceId, targetId, g)
+  },
+
+  /**
+   * Right-click on a target's route arrow: toggle a track-level sidechain
+   * route source → target (FL "Sidechain to this track"). The key is silent;
+   * an effect on the target listens when its own sidechain is set to external.
+   */
+  toggleTrackSidechain: async (trackId, targetTrackId) => {
+    const sourceId = normalizeOutputTargetId(trackId)
+    const targetId = normalizeOutputTargetId(targetTrackId)
+    const timeline = window.xleth?.timeline
+    const existing = findTrackSidechain(get().sidechainRoutes, sourceId, targetId)
+    const fail = async (reason) => {
+      const error = mapSidechainRouteError(reason)
+      await get().refreshRouting()
+      set({ routingError: error })
+      return { ok: false, reason, error }
+    }
+    try {
+      if (existing) {
+        const result = await timeline?.removeSidechainRoute?.(sourceId, existing.routeId)
+        if (!result || result.ok === false) return fail(result?.reason || 'rejected')
+      } else {
+        if (targetId === MASTER_OUTPUT_TARGET_ID) return fail('master_as_target')
+        if (sourceId === targetId) return fail('self_sidechain')
+        if (wouldCreateSidechainRouteCycle(get().outputRoutes, get().sidechainRoutes, sourceId, targetId, get().sends)) {
+          return fail('cycle')
+        }
+        const result = await timeline?.addSidechainRoute?.(sourceId, {
+          targetTrackId: targetId,
+          targetEffectInstanceId: '',
+          gain: 1.0,
+          preFader: false,
+          enabled: true,
+        })
+        if (!result || result.ok === false) return fail(result?.reason || 'rejected')
+      }
+      await get().refreshRouting()
+      set({ routingError: null })
+      timelineEvents.dispatchEvent(new Event('timeline-routing-changed'))
+      return { ok: true, removed: Boolean(existing) }
+    } catch {
+      return fail('ipc_error')
     }
   },
 
@@ -669,7 +912,7 @@ const useMixerStore = create((set, get) => ({
         setError(error)
         return { ok: false, reason, error, externalEnabled: false }
       }
-      if (wouldCreateSidechainRouteCycle(get().outputRoutes, get().sidechainRoutes, sourceId, targetId)) {
+      if (wouldCreateSidechainRouteCycle(get().outputRoutes, get().sidechainRoutes, sourceId, targetId, get().sends)) {
         const reason = 'cycle'
         const error = mapSidechainRouteError(reason)
         setError(error)
@@ -802,19 +1045,27 @@ const useMixerStore = create((set, get) => ({
     get().setEffectExternalSidechain({ ...request, requireExternalParam: true }, options),
 
   // One-way sync from timeline fetches — only muted/solo/name/order/routes, NOT vol/pan/spread
-  syncFromTimeline: (list, rawLayout = null) => {
-    if (!Array.isArray(list)) return
+  syncFromTimeline: (allTracks, rawAllLayout = null) => {
+    if (!Array.isArray(allTracks)) return
+    // Clones have no audio (docs/XLETH_CLONE_SPEC.md): no strip, no route, no send.
+    const { list, layout: rawLayout } = withoutCloneTracks(allTracks, rawAllLayout)
     set(s => {
       const trackLayout = normalizeTrackLayout(rawLayout ?? s.trackLayout, list)
       const tracks = { ...s.tracks }
       const trackOrder = []
       const outputRoutes = { ...s.outputRoutes }
+      const sends = { ...s.sends }
       for (const t of list) {
         trackOrder.push(t.id)
         if (Object.prototype.hasOwnProperty.call(t, 'outputRoute')) {
           outputRoutes[t.id] = normalizeOutputTargetId(t.outputRoute?.targetTrackId)
         } else if (!Object.prototype.hasOwnProperty.call(outputRoutes, t.id)) {
           outputRoutes[t.id] = MASTER_OUTPUT_TARGET_ID
+        }
+        if (Object.prototype.hasOwnProperty.call(t, 'sends')) {
+          sends[t.id] = normalizeSends(t.sends)
+        } else if (!Object.prototype.hasOwnProperty.call(sends, t.id)) {
+          sends[t.id] = []
         }
         const existing = tracks[t.id]
         if (existing) {
@@ -835,6 +1086,7 @@ const useMixerStore = create((set, get) => ({
         if (!trackOrder.includes(Number(id))) {
           delete tracks[id]
           delete outputRoutes[id]
+          delete sends[id]
         }
       }
       prunePeakSnapshotTracks(peaksSnapshot, trackOrder)
@@ -846,6 +1098,7 @@ const useMixerStore = create((set, get) => ({
         trackOrder,
         trackLayout,
         outputRoutes,
+        sends,
         sidechainRoutes: nextSidechainRoutes,
         routingError: null,
         selectedChainKey: resolveSelectedMixerChainKey(s.selectedChainKey, trackOrder),

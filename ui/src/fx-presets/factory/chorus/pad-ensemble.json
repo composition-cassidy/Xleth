@@ -1,0 +1,18 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "chorus",
+  "name": "Pad Ensemble",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "rate": 0.35,
+      "depth": 60,
+      "delay": 18,
+      "feedback": 15,
+      "voices": 6,
+      "width": 100,
+      "mix": 55
+    }
+  }
+}

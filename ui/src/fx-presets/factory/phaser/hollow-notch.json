@@ -1,0 +1,21 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "phaser",
+  "name": "Hollow Notch",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "rate": 0.15,
+      "depth": 85,
+      "stages": 3,
+      "feedback": -70,
+      "resonance": 3.5,
+      "width": 20,
+      "mix": 80,
+      "freq_low": 300,
+      "freq_high": 4000,
+      "spread": 10
+    }
+  }
+}

@@ -1,0 +1,84 @@
+/* Edit Grid flyout (ui/DESIGN.md 8.2): the two rails beside a Preview too
+ * narrow to hold them. A window-level surface with the kit's float shadow; below the canvas popover (210) and menus, above every panel. */
+@layer kit {
+  .flyout {
+    position: fixed;
+    z-index: 200;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--ui-g1);
+    border: 1px solid var(--ui-g4);
+    border-radius: var(--ui-radius-2);
+    box-shadow: var(--ui-shadow-float);
+    overflow: hidden;
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+  }
+
+  .head {
+    display: flex;
+    align-items: center;
+    flex: 0 0 var(--panel-header-h);
+    height: var(--panel-header-h);
+    padding: 0 var(--space-1) 0 var(--space-2);
+    background: var(--ui-g2);
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .title {
+    flex: 1 1 auto;
+    color: var(--ui-ink);
+    font-size: var(--type-12);
+    font-weight: var(--weight-semibold);
+  }
+
+  .close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--hit-min);
+    height: var(--hit-min);
+    padding: 0;
+    border: 0;
+    border-radius: var(--ui-radius-1);
+    background: transparent;
+    color: var(--ui-ink-2);
+    cursor: pointer;
+  }
+
+  .close svg {
+    width: var(--type-13);
+    height: var(--type-13);
+  }
+
+  .close:hover {
+    background: var(--ui-g3);
+    color: var(--ui-ink);
+  }
+
+  .close:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  /* The track rail and the settings rail, side by side, each scrolling on its own. */
+  .body {
+    --pv-rail-min: 0px;
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .body > aside {
+    flex: 1 1 0;
+    max-width: none;
+  }
+
+  /* The two rails each draw a divider on their inner edge; keep one. */
+  .body > aside + aside {
+    border-left: 0;
+  }
+}

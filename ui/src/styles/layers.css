@@ -1,0 +1,15 @@
+/* Cascade layer order for the whole renderer (lowest -> highest priority).
+ *
+ *   reset   - future: element resets that must lose to everything
+ *   legacy  - every pre-rebuild stylesheet (app.css, windowing.css, component sheets)
+ *   tokens  - ui-kit token definitions
+ *   kit     - ui-kit components
+ *
+ * This MUST be the first CSS in the bundle: the first appearance of a layer name
+ * fixes its rank, so main.jsx imports this file before anything else.
+ *
+ * Unlayered CSS beats every layer, so no stylesheet may be left unlayered; see
+ * styles/__tests__/layers.test.js. `!important` inside `legacy` still beats kit
+ * declarations - delete the legacy rule, do not fight it (ui/DESIGN.md section 2).
+ */
+@layer reset, legacy, tokens, kit;

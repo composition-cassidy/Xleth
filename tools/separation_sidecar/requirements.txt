@@ -1,0 +1,77 @@
+# XLETH separation sidecar.
+#
+# XLETH bundles this runtime; a normal install does not need pip at all. These
+# pins are for development, CI, and running the sidecar from a source checkout:
+#
+#   python -m venv .venv
+#   .venv\Scripts\python -m pip install -r requirements.txt
+#
+# Verified on Windows 11 / Python 3.14.2 / i7-13700KF / RTX 4080 (2026-09-18).
+
+fastapi>=0.110
+uvicorn>=0.27
+pydantic>=2.5
+
+numpy>=1.24
+soundfile>=0.12
+soxr>=0.3             # high-quality resampling to the model's 44.1 kHz
+PyYAML>=6.0           # the Roformer models ship their own config as YAML
+
+# ── Inference. ONE runtime for all three tiers ──────────────────────────────
+#
+# Pick exactly ONE onnxruntime build. They are mutually exclusive: installing
+# two leaves whichever landed last on sys.path and makes the active provider a
+# coin flip.
+
+onnxruntime>=1.17               # CPU
+
+# --- NVIDIA / CUDA (fastest) -------------------------------------------------
+# onnxruntime-gpu==1.24.4
+# nvidia-cudnn-cu12
+# nvidia-cublas-cu12
+#
+# READ THIS BEFORE PICKING A VERSION. Each onnxruntime-gpu release targets one
+# CUDA major, and getting it wrong costs an hour:
+#
+#   onnxruntime-gpu 1.24.x  ->  CUDA 12 + cuDNN 9   <- use this one
+#   onnxruntime-gpu 1.29.x  ->  CUDA 13 + cuDNN 9
+#
+# 1.29 is the newest and pip installs it by default, but there are NO Windows
+# wheels for the CUDA 13 runtime — nvidia-cublas-cu13 and
+# nvidia-cuda-runtime-cu13 are 0.0.1 placeholder sdists on PyPI and on
+# pypi.nvidia.com alike. So on Windows, pin 1.24.4 and use the cu12 packages.
+# Hence the == above, not >=.
+#
+# A system CUDA Toolkit install does NOT make this work on its own: it ships
+# cuBLAS but not cuDNN. The pip packages above supply cuDNN, and
+# ort_util.register_cuda_dll_dirs() both registers their directories AND
+# ctypes-loads the DLLs — os.add_dll_directory alone is not enough, because
+# onnxruntime loads its provider DLL through a plain LoadLibrary that does not
+# consult user-added directories. Without that preload you get
+# "cudnn64_9.dll ... missing (Error 126)" and a SILENT fallback to CPU.
+#
+# --- DirectML (any DX12 GPU, no CUDA deps at all) ----------------------------
+# onnxruntime-directml
+#
+# Slower than CUDA on an NVIDIA card, but immune to every version trap above.
+
+# ── What is NOT here any more, and why ──────────────────────────────────────
+#
+# torch, einops, librosa, rotary-embedding-torch and beartype were all
+# requirements until the Roformer tiers moved to exported ONNX graphs. Between
+# them they were ~1 GB installed — torch 533 MB, librosa's scientific stack
+# (scipy, llvmlite, numba, scikit-learn) 330 MB, torch's own sympy/networkx
+# 100 MB — against ~135 MB for everything above. That is the entire reason the
+# separators are ONNX now, and it is what makes bundling the runtime with XLETH
+# practical instead of a gigabyte download.
+#
+# torch is still needed to EXPORT the graphs (tools/export_roformer_onnx.py)
+# and to run tests/test_dsp.py, which holds the numpy STFT pair to torch's
+# output. Both are maintainer tasks on a machine that already has it:
+#
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install onnx
+#
+# ── Tests ───────────────────────────────────────────────────────────────────
+# pytest
+# httpx2                        # required by starlette's TestClient

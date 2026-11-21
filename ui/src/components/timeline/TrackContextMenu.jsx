@@ -1,13 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
-import { ChevronRight } from 'lucide-react'
+import { useState } from 'react'
+import { Menu, MenuItem, MenuSeparator } from '../../ui-kit'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcCaretRight = iconComponent('caret-right')
 
 function joinClassNames(...classNames) {
   return classNames.filter(Boolean).join(' ')
 }
 
 /**
- * Context menu for track headers with nested submenu support.
+ * Context menu for track headers with nested submenu support, on the kit Menu.
  *
  * Props:
  *   x, y      – page position (clientX/Y)
@@ -25,131 +27,72 @@ export default function TrackContextMenu({
   menuClassName = '',
   submenuClassName = '',
 }) {
-  const menuRef = useRef(null)
   const [openSubIdx, setOpenSubIdx] = useState(-1)
-  const [subPos, setSubPos] = useState({ x: 0, y: 0 })
-
-  // Clamp to viewport
-  useEffect(() => {
-    const el = menuRef.current
-    if (!el) return
-    const rect = el.getBoundingClientRect()
-    if (rect.right > window.innerWidth)   el.style.left = `${window.innerWidth - rect.width - 4}px`
-    if (rect.bottom > window.innerHeight) el.style.top  = `${window.innerHeight - rect.height - 4}px`
-  }, [x, y])
-
-  // Close on outside click
-  useEffect(() => {
-    const handler = (e) => {
-      if (menuRef.current && !menuRef.current.contains(e.target)) {
-        // Check also submenu container
-        const subs = document.querySelectorAll('.track-context-submenu')
-        for (const s of subs) if (s.contains(e.target)) return
-        onClose()
-      }
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [onClose])
-
-  // Close on Escape
-  useEffect(() => {
-    const handler = (e) => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [onClose])
+  const [subPos, setSubPos] = useState({ x: 0, y: 0, flipX: undefined })
 
   const openSub = (i, e) => {
     const row = e.currentTarget.getBoundingClientRect()
-    setSubPos({ x: row.right - 2, y: row.top })
+    // The parent menu's left edge: a submenu with no room on the right opens beside it on the left.
+    const parent = e.currentTarget.closest('[role="menu"]')?.getBoundingClientRect()
+    setSubPos({ x: row.right - 2, y: row.top, flipX: parent ? parent.left : row.left })
     setOpenSubIdx(i)
   }
 
-  return createPortal(
+  const submenu = openSubIdx >= 0 ? items[openSubIdx]?.submenu : null
+
+  return (
     <>
-      <div
-        ref={menuRef}
-        className={joinClassNames('context-menu', 'track-context-menu', menuClassName)}
-        style={{ left: x, top: y }}
+      <Menu
+        x={x}
+        y={y}
+        onClose={onClose}
+        label="Track menu"
+        className={joinClassNames('track-context-menu', menuClassName)}
       >
-        {items.map((item, i) => {
-          if (item.type === 'separator') return <div key={`sep-${i}`} className="context-menu-sep" />
-          const hasSub = Array.isArray(item.submenu) && item.submenu.length > 0
-          return (
-            <button
-              key={`${item.label}-${i}`}
-              className={`context-menu-item ${item.danger ? 'danger' : ''} ${item.disabled ? 'disabled' : ''}`}
-              disabled={item.disabled}
-              onMouseEnter={(e) => hasSub ? openSub(i, e) : setOpenSubIdx(-1)}
-              onClick={(e) => {
-                if (item.disabled) return
-                if (hasSub) { openSub(i, e); return }
-                item.onClick?.()
-                onClose()
-              }}
-            >
-              {item.checked ? <span style={{ width: 12, fontSize: 10 }}>✓</span> : <span style={{ width: 12 }} />}
-              <span style={{ flex: 1 }}>{item.label}</span>
-              {hasSub && <ChevronRight size={12} />}
-            </button>
-          )
-        })}
-      </div>
-      {openSubIdx >= 0 && items[openSubIdx]?.submenu && (
-        <TrackContextSubmenu
+        <MenuItems
+          items={items}
+          onOpenSub={openSub}
+          onLeaveSub={() => setOpenSubIdx(-1)}
+        />
+      </Menu>
+      {submenu && (
+        <Menu
           x={subPos.x}
           y={subPos.y}
-          items={items[openSubIdx].submenu}
-          submenuClassName={submenuClassName || menuClassName}
-          onSelect={() => onClose()}
-        />
+          flipX={subPos.flipX}
+          onClose={onClose}
+          label={`${items[openSubIdx].label} submenu`}
+          className={joinClassNames('track-context-submenu', submenuClassName || menuClassName)}
+        >
+          {submenu.length === 0 && <MenuItem disabled>(none)</MenuItem>}
+          <MenuItems items={submenu} />
+        </Menu>
       )}
-    </>,
-    document.body
+    </>
   )
 }
 
-function TrackContextSubmenu({ x, y, items, onSelect, submenuClassName = '' }) {
-  const elRef = useRef(null)
-
-  useEffect(() => {
-    const el = elRef.current
-    if (!el) return
-    const rect = el.getBoundingClientRect()
-    if (rect.right > window.innerWidth)   el.style.left = `${window.innerWidth - rect.width - 4}px`
-    if (rect.bottom > window.innerHeight) el.style.top  = `${window.innerHeight - rect.height - 4}px`
-  }, [x, y])
-
-  return (
-    <div
-      ref={elRef}
-      className={joinClassNames('context-menu', 'track-context-submenu', submenuClassName)}
-      style={{ left: x, top: y }}
-    >
-      {items.length === 0 && (
-        <div className="context-menu-item disabled" style={{ opacity: 0.5 }}>
-          <span style={{ width: 12 }} />
-          <span style={{ flex: 1, fontStyle: 'italic' }}>(none)</span>
-        </div>
-      )}
-      {items.map((item, i) => {
-        if (item.type === 'separator') return <div key={`sep-${i}`} className="context-menu-sep" />
-        return (
-          <button
-            key={`${item.label}-${i}`}
-            className={`context-menu-item ${item.danger ? 'danger' : ''} ${item.disabled ? 'disabled' : ''}`}
-            disabled={item.disabled}
-            onClick={() => {
-              if (item.disabled) return
-              item.onClick?.()
-              onSelect?.()
-            }}
-          >
-            {item.checked ? <span style={{ width: 12, fontSize: 10 }}>✓</span> : <span style={{ width: 12 }} />}
-            <span style={{ flex: 1 }}>{item.label}</span>
-          </button>
-        )
-      })}
-    </div>
-  )
+function MenuItems({ items, onOpenSub, onLeaveSub }) {
+  // A check column is reserved for every row only when some row can be checked.
+  const anyChecked = items.some((item) => item.checked !== undefined)
+  return items.map((item, i) => {
+    if (item.type === 'separator') return <MenuSeparator key={`sep-${i}`} />
+    const hasSub = Array.isArray(item.submenu) && item.submenu.length > 0
+    return (
+      <MenuItem
+        key={`${item.label}-${i}`}
+        danger={item.danger}
+        disabled={item.disabled}
+        checked={anyChecked ? !!item.checked : undefined}
+        trailing={hasSub ? <IcCaretRight size={14} /> : undefined}
+        onMouseEnter={onOpenSub ? (e) => (hasSub ? onOpenSub(i, e) : onLeaveSub?.()) : undefined}
+        onSelect={(e) => {
+          if (hasSub) { onOpenSub?.(i, e); return }
+          item.onClick?.() // the menu closes itself after a leaf item runs
+        }}
+      >
+        {item.label}
+      </MenuItem>
+    )
+  })
 }

@@ -1,7 +1,10 @@
 #include "commands/TimelineCommands.h"
 #include "model/Timeline.h"
+#include "model/ParentMath.h"
+#include "commands/TempoTrimAnchor.h"
 #include "XlethDebug.h"
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <iostream>
 #include <set>
@@ -18,6 +21,7 @@ void AddClipCommand::execute(Timeline& timeline) {
         if (id < 0) {
             std::cerr << "[Undo] ERROR AddClipCommand::execute: addClip failed"
                          " (check trackId/regionId exist)\n";
+            setApplied(false);
             return;
         }
         clip_.id      = id;
@@ -50,7 +54,7 @@ RemoveClipCommand::RemoveClipCommand(int clipId, const Timeline& timeline) {
 }
 
 void RemoveClipCommand::execute(Timeline& timeline) {
-    timeline.removeClip(clip_.id);
+    setApplied(timeline.removeClip(clip_.id));
 }
 
 void RemoveClipCommand::undo(Timeline& timeline) {
@@ -79,7 +83,9 @@ MoveClipCommand::MoveClipCommand(int clipId, int newTrackId, TickTime newPositio
 }
 
 void MoveClipCommand::execute(Timeline& timeline) {
-    timeline.moveClip(clipId_, newTrackId_, newPosition_);
+    const bool moved = timeline.moveClip(clipId_, newTrackId_, newPosition_);
+    setApplied(moved && (newTrackId_ != oldTrackId_
+                         || newPosition_.ticks != oldPosition_.ticks));
 }
 
 void MoveClipCommand::undo(Timeline& timeline) {
@@ -107,11 +113,39 @@ ResizeClipCommand::ResizeClipCommand(int clipId, TickTime newDuration,
     }
 }
 
+ResizeClipCommand::ResizeClipCommand(int clipId, TickTime newDuration,
+                                     TickTime newRegionOffset,
+                                     const Timeline& timeline)
+    : clipId_(clipId), newDuration_(newDuration),
+      setsRegionOffset_(true), newRegionOffset_(newRegionOffset)
+{
+    const Clip* c = timeline.getClip(clipId);
+    if (c) {
+        oldDuration_     = c->duration;
+        oldRegionOffset_ = c->regionOffset;
+        position_        = c->position;
+    } else {
+        std::cerr << "[Undo] ERROR ResizeClipCommand: clip id=" << clipId
+                  << " not found in timeline\n";
+    }
+}
+
 void ResizeClipCommand::execute(Timeline& timeline) {
-    timeline.resizeClip(clipId_, newDuration_);
+    if (setsRegionOffset_) {
+        const bool ok = timeline.resizeClipLeft(clipId_, position_, newDuration_, newRegionOffset_);
+        setApplied(ok && (newDuration_.ticks != oldDuration_.ticks
+                          || newRegionOffset_.ticks != oldRegionOffset_.ticks));
+        return;
+    }
+    const bool ok = timeline.resizeClip(clipId_, newDuration_);
+    setApplied(ok && newDuration_.ticks != oldDuration_.ticks);
 }
 
 void ResizeClipCommand::undo(Timeline& timeline) {
+    if (setsRegionOffset_) {
+        timeline.resizeClipLeft(clipId_, position_, oldDuration_, oldRegionOffset_);
+        return;
+    }
     timeline.resizeClip(clipId_, oldDuration_);
 }
 
@@ -148,7 +182,10 @@ void ResizeClipLeftCommand::execute(Timeline& timeline) {
             (long long)oldDuration_.ticks,     (long long)newDuration_.ticks,
             (long long)oldRegionOffset_.ticks, (long long)newRegionOffset_.ticks);
 #endif
-    timeline.resizeClipLeft(clipId_, newPosition_, newDuration_, newRegionOffset_);
+    const bool ok = timeline.resizeClipLeft(clipId_, newPosition_, newDuration_, newRegionOffset_);
+    setApplied(ok && (newPosition_.ticks     != oldPosition_.ticks
+                      || newDuration_.ticks  != oldDuration_.ticks
+                      || newRegionOffset_.ticks != oldRegionOffset_.ticks));
 }
 
 void ResizeClipLeftCommand::undo(Timeline& timeline) {
@@ -243,8 +280,14 @@ void StretchClipCommand::execute(Timeline& timeline) {
             (long long)oldDuration_.ticks, (long long)newDuration_.ticks,
             oldStretchRatio_, newStretchRatio_);
 #endif
+    // A clip has to keep some length; a zero or negative one has no stretch
+    // ratio that makes sense and breaks every division by duration after it.
+    if (newDuration_.ticks <= 0 || !timeline.getClip(clipId_)) {
+        setApplied(false);
+        return;
+    }
     Clip* c = timeline.getClipMutable(clipId_);
-    if (!c) return;
+    setApplied(newDuration_.ticks != oldDuration_.ticks);
     c->duration     = newDuration_;
     c->stretchRatio = newStretchRatio_;
 }
@@ -304,8 +347,13 @@ void StretchClipLeftCommand::execute(Timeline& timeline) {
             (long long)oldDuration_.ticks, (long long)newDuration_.ticks,
             oldStretchRatio_, newStretchRatio_);
 #endif
+    if (newDuration_.ticks <= 0 || newPosition_.ticks < 0 || !timeline.getClip(clipId_)) {
+        setApplied(false);
+        return;
+    }
     Clip* c = timeline.getClipMutable(clipId_);
-    if (!c) return;
+    setApplied(newPosition_.ticks != oldPosition_.ticks
+               || newDuration_.ticks != oldDuration_.ticks);
     c->position     = newPosition_;
     c->duration     = newDuration_;
     c->stretchRatio = newStretchRatio_;
@@ -352,24 +400,18 @@ PitchShiftClipCommand::PitchShiftClipCommand(int clipId, int newSemis, int newCe
 }
 
 void PitchShiftClipCommand::execute(Timeline& timeline) {
-    fprintf(stderr, "[PITCHDBG] PitchShiftClip execute: clip=%d %dst+%dc → %dst+%dc\n",
-            clipId_, oldSemis_, oldCents_, newSemis_, newCents_);
-    fflush(stderr);
 #ifdef XLETH_DEBUG
     fprintf(stderr, "[PitchCmd] execute: clip=%d pitch=%dst+%dc → %dst+%dc\n",
             clipId_, oldSemis_, oldCents_, newSemis_, newCents_);
 #endif
-    Clip* c = timeline.getClipMutable(clipId_);
-    if (!c) {
-        fprintf(stderr, "[PITCHDBG] PitchShiftClip execute: clip=%d NOT FOUND in timeline\n", clipId_);
-        fflush(stderr);
+    if (!timeline.getClip(clipId_)) {
+        setApplied(false);
         return;
     }
+    Clip* c = timeline.getClipMutable(clipId_);
+    setApplied(newSemis_ != oldSemis_ || newCents_ != oldCents_);
     c->pitchOffset      = newSemis_;
     c->pitchOffsetCents = newCents_;
-    fprintf(stderr, "[PITCHDBG] PitchShiftClip execute DONE: clip=%d pitchSemi=%d cents=%d\n",
-            clipId_, c->pitchOffset, c->pitchOffsetCents);
-    fflush(stderr);
 }
 
 void PitchShiftClipCommand::undo(Timeline& timeline) {
@@ -409,8 +451,12 @@ void ReverseClipCommand::execute(Timeline& timeline) {
     fprintf(stderr, "[ReverseCmd] execute: clip=%d reversed=%d→%d\n",
             clipId_, (int)oldReversed_, (int)newReversed_);
 #endif
+    if (!timeline.getClip(clipId_)) {
+        setApplied(false);
+        return;
+    }
     Clip* c = timeline.getClipMutable(clipId_);
-    if (!c) return;
+    setApplied(newReversed_ != oldReversed_);
     c->reversed = newReversed_;
 }
 
@@ -532,7 +578,30 @@ static void applyClipParams(Timeline& timeline, int clipId,
 }
 
 void SetClipParamsCommand::execute(Timeline& timeline) {
+    const Clip* before = timeline.getClip(clipId_);
+    if (!before) {
+        setApplied(false);
+        return;
+    }
+    // Compared on the clip, after the fades are normalised: asking for a value
+    // the clip already has is not an edit.
+    const Clip snapshot = *before;
     applyClipParams(timeline, clipId_, newParams_);
+    const Clip* after = timeline.getClip(clipId_);
+    setApplied(after
+        && (after->pitchOffset      != snapshot.pitchOffset
+         || after->pitchOffsetCents != snapshot.pitchOffsetCents
+         || after->reversed         != snapshot.reversed
+         || after->stretchRatio     != snapshot.stretchRatio
+         || after->stretchMethod    != snapshot.stretchMethod
+         || after->formantPreserve  != snapshot.formantPreserve
+         || after->velocity         != snapshot.velocity
+         || after->fadeInPercent    != snapshot.fadeInPercent
+         || after->fadeOutPercent   != snapshot.fadeOutPercent
+         || after->fadeInX1  != snapshot.fadeInX1  || after->fadeInY1  != snapshot.fadeInY1
+         || after->fadeInX2  != snapshot.fadeInX2  || after->fadeInY2  != snapshot.fadeInY2
+         || after->fadeOutX1 != snapshot.fadeOutX1 || after->fadeOutY1 != snapshot.fadeOutY1
+         || after->fadeOutX2 != snapshot.fadeOutX2 || after->fadeOutY2 != snapshot.fadeOutY2));
 }
 
 void SetClipParamsCommand::undo(Timeline& timeline) {
@@ -595,11 +664,45 @@ std::string AddTrackCommand::describe() const {
 
 // ─── RemoveTrackCommand ───────────────────────────────────────────────────────
 
-RemoveTrackCommand::RemoveTrackCommand(int trackId, const Timeline& timeline) {
+RemoveTrackCommand::RemoveTrackCommand(int trackId, const Timeline& timeline,
+                                       double keepOnScreenTick, bool cascadeFromSource) {
     oldTrackLayout_ = timeline.getTrackLayout();
     const TrackInfo* t = timeline.getTrack(trackId);
     if (t) {
         track_ = *t;
+        // Clones: a source takes its Clones with it (same step). A Voice
+        // clone removed on its own rewrites its source's pins (see header).
+        if (!t->isClone()) {
+            for (const TrackInfo* c : clones::allClonesOf(timeline, trackId))
+                cloneRemovals_.push_back(std::make_unique<RemoveTrackCommand>(
+                    c->id, timeline, keepOnScreenTick, /*cascadeFromSource*/ true));
+        } else if (t->isVoiceClone() && !cascadeFromSource) {
+            const int voice = clones::voiceNumberOf(timeline, *t);
+            if (voice >= 1) {
+                for (int pid : clones::patternsPlayedBy(timeline, t->cloneOf)) {
+                    const Pattern* p = timeline.getPattern(pid);
+                    if (!p) continue;
+                    std::vector<PatternNote> after = p->notes;
+                    if (clones::rewritePinsForRemovedVoice(after, voice)) {
+                        pinsBefore_.emplace_back(pid, p->notes);
+                        pinsAfter_.emplace_back(pid, std::move(after));
+                    }
+                }
+            }
+        }
+        // Motion view: detach every child, keeping it where it is on screen
+        // at keepOnScreenTick (solved now, while the parent still exists).
+        for (const TrackInfo* c : timeline.getAllTracks()) {
+            if (c->id == trackId || c->parentTrackId != trackId) continue;
+            DetachedChild d;
+            d.trackId   = c->id;
+            d.oldParent = c->parentTrackId;
+            d.oldBase   = c->roam.base;
+            const parentmath::KeepOnScreen k =
+                parentmath::keepOnScreen(timeline, c->id, -1, keepOnScreenTick);
+            d.newBase   = k.placed ? k.solve.base : c->roam.base;
+            children_.push_back(d);
+        }
     } else {
         std::cerr << "[Undo] ERROR RemoveTrackCommand: track id=" << trackId
                   << " not found in timeline\n";
@@ -638,6 +741,16 @@ RemoveTrackCommand::RemoveTrackCommand(int trackId, const Timeline& timeline) {
 }
 
 void RemoveTrackCommand::execute(Timeline& timeline) {
+    if (!timeline.getTrack(track_.id)) {
+        setApplied(false);   // nothing was captured, nothing to remove
+        return;
+    }
+    // Clones first (they belong to this track), then the track itself.
+    for (auto& c : cloneRemovals_) c->execute(timeline);
+    for (auto& [pid, notes] : pinsAfter_) {
+        std::vector<PatternNote> copy = notes;
+        timeline.setPatternNotesKeepIds(pid, copy);
+    }
     // Cascade: remove all clips and pattern-blocks first, then the track
     for (const auto& c : clips_) {
         std::cout << "[Undo] RemoveTrackCommand cascading clip id=" << c.id << "\n";
@@ -656,12 +769,28 @@ void RemoveTrackCommand::execute(Timeline& timeline) {
     // Automation cascade (removeAutomationLane also drops the lane's clips).
     for (const auto& l : automationLanes_)
         timeline.removeAutomationLane(l.id);
+    // Motion view: the removed track's children detach (keep-on-screen base).
+    for (const auto& d : children_) {
+        if (TrackInfo* c = timeline.getTrackMutable(d.trackId)) {
+            c->parentTrackId = -1;
+            c->roam.base     = d.newBase;
+        }
+    }
 }
 
 void RemoveTrackCommand::undo(Timeline& timeline) {
+    // Children first: reattach to the track about to come back, old bases.
+    for (const auto& d : children_) {
+        if (TrackInfo* c = timeline.getTrackMutable(d.trackId)) {
+            c->parentTrackId = d.oldParent;
+            c->roam.base     = d.oldBase;
+        }
+    }
     // Restore track before clips/blocks (they logically belong to the track)
     timeline.restoreTrack(track_);
-    timeline.setTrackLayout(oldTrackLayout_);
+    // Exact restore of the captured state (not setTrackLayout, which regroups
+    // Clones by the CURRENT order, where restoreTrack just appended this one).
+    timeline.restoreTrackLayout(oldTrackLayout_);
     for (const auto& c : clips_)
         timeline.restoreClip(c);
     for (const auto& b : patternBlocks_)
@@ -679,12 +808,323 @@ void RemoveTrackCommand::undo(Timeline& timeline) {
     // Automation restore: lanes first, then their clips (a clip needs its lane).
     for (const auto& l : automationLanes_) timeline.restoreAutomationLane(l);
     for (const auto& c : automationClips_) timeline.restoreAutomationClip(c);
+    // Clones: pins back, then the Clones (newest removal undone first), then
+    // the whole layout once every track is back.
+    for (auto& [pid, notes] : pinsBefore_) {
+        std::vector<PatternNote> copy = notes;
+        timeline.setPatternNotesKeepIds(pid, copy);
+    }
+    for (auto it = cloneRemovals_.rbegin(); it != cloneRemovals_.rend(); ++it)
+        (*it)->undo(timeline);
+    if (!cloneRemovals_.empty())
+        timeline.restoreTrackLayout(oldTrackLayout_);
 }
 
 std::string RemoveTrackCommand::describe() const {
-    return "Remove Track '" + track_.name + "' (+"
+    std::string s = "Remove Track '" + track_.name + "' (+"
          + std::to_string(clips_.size()) + " clip(s), +"
-         + std::to_string(patternBlocks_.size()) + " block(s))";
+         + std::to_string(patternBlocks_.size()) + " block(s)";
+    if (!children_.empty())
+        s += ", " + std::to_string(children_.size()) + " child track(s) detached";
+    if (!cloneRemovals_.empty())
+        s += ", " + std::to_string(cloneRemovals_.size()) + " clone(s)";
+    return s + ")";
+}
+
+// ─── Clones (docs/XLETH_CLONE_SPEC.md, model/Clone.h) ────────────────────────
+
+namespace {
+// The layout with `cloneId` moved directly under its source's other Clones
+// (in the source's container). Clones not listed keep their place; the
+// generic grouping (clones::withClonesAfterSources) does the rest.
+TrackLayout layoutWithCloneLast(const Timeline& timeline, const TrackLayout& in,
+                                int sourceId, int cloneId) {
+    TrackLayout out = in;
+    auto dropId = [&](int id) {
+        out.rootOrder.erase(std::remove_if(out.rootOrder.begin(), out.rootOrder.end(),
+            [&](const TrackLayoutItem& i) {
+                return i.kind == TrackLayoutItem::Kind::Track && i.id == id;
+            }), out.rootOrder.end());
+        for (auto& f : out.folders)
+            f.trackIds.erase(std::remove(f.trackIds.begin(), f.trackIds.end(), id), f.trackIds.end());
+    };
+    dropId(cloneId);
+    // Insert after the source's last existing clone (or the source itself).
+    int after = sourceId;
+    for (const TrackInfo* c : clones::allClonesOf(timeline, sourceId))
+        if (c->id != cloneId) after = c->id;
+    for (size_t i = 0; i < out.rootOrder.size(); ++i) {
+        const auto& item = out.rootOrder[i];
+        if (item.kind == TrackLayoutItem::Kind::Track && item.id == after) {
+            out.rootOrder.insert(out.rootOrder.begin() + static_cast<long>(i) + 1,
+                                 { TrackLayoutItem::Kind::Track, cloneId });
+            return out;
+        }
+    }
+    for (auto& f : out.folders) {
+        auto it = std::find(f.trackIds.begin(), f.trackIds.end(), after);
+        if (it != f.trackIds.end()) { f.trackIds.insert(it + 1, cloneId); return out; }
+    }
+    out.rootOrder.push_back({ TrackLayoutItem::Kind::Track, cloneId });
+    return out;
+}
+
+// First free whole cell of the active arrangement, row by row; false = full.
+bool firstFreeCell(const GridLayout& g, int& gx, int& gy) {
+    for (int r = 0; r < g.rows; ++r) {
+        for (int c = 0; c < g.columns; ++c) {
+            const int x = c * kGridSubUnitsPerColumn, y = r * kGridSubUnitsPerRow;
+            bool free = true;
+            for (const GridSlot& s : g.slots) {
+                if (s.trackId < 0) continue;
+                if (x < s.gridX + s.spanX && s.gridX < x + kGridSubUnitsPerColumn
+                    && y < s.gridY + s.spanY && s.gridY < y + kGridSubUnitsPerRow) { free = false; break; }
+            }
+            if (free) { gx = x; gy = y; return true; }
+        }
+    }
+    return false;
+}
+} // namespace
+
+AddCloneCommand::AddCloneCommand(TrackInfo clone, bool autoPlace, const Timeline& timeline)
+    : clone_(std::move(clone)), autoPlace_(autoPlace), oldLayout_(timeline.getTrackLayout()) {}
+
+void AddCloneCommand::execute(Timeline& timeline) {
+    if (firstExecute_) {
+        const TrackInfo* src = timeline.getTrack(clone_.cloneOf);
+        if (!src || src->isClone() || src->type != TrackInfo::Type::Pattern) {
+            setApplied(false);
+            return;
+        }
+        oldLayout_ = timeline.getTrackLayout();
+        clone_.id  = timeline.addTrack(clone_);
+        newLayout_ = layoutWithCloneLast(timeline, timeline.getTrackLayout(),
+                                         clone_.cloneOf, clone_.id);
+        if (autoPlace_ && clone_.cloneKind == CloneKind::Voice) {
+            int gx = 0, gy = 0;
+            const GridLayout& g = timeline.getGridLayout();
+            if (firstFreeCell(g, gx, gy)) {
+                slot_.trackId = clone_.id;
+                slot_.gridX = gx;  slot_.gridY = gy;
+                slot_.spanX = kGridSubUnitsPerColumn;
+                slot_.spanY = kGridSubUnitsPerRow;
+                slot_.zOrder = 0;
+                for (const GridSlot& s : g.slots)
+                    if (s.trackId == clone_.cloneOf) { slot_.zOrder = s.zOrder; break; }
+                placed_ = true;
+            }
+        }
+        firstExecute_ = false;
+    } else {
+        timeline.restoreTrack(clone_);
+    }
+    timeline.restoreTrackLayout(newLayout_);
+    if (placed_)
+        timeline.assignTrackToGridWithZOrder(slot_.trackId, slot_.gridX, slot_.gridY,
+                                             slot_.spanX, slot_.spanY, slot_.zOrder);
+}
+
+void AddCloneCommand::undo(Timeline& timeline) {
+    if (placed_) timeline.removeTrackFromGrid(clone_.id);
+    timeline.removeTrack(clone_.id);
+    timeline.restoreTrackLayout(oldLayout_);
+}
+
+std::string AddCloneCommand::describe() const {
+    return std::string("Add ") + (clone_.cloneKind == CloneKind::Trail ? "Trail" : "Voice")
+         + " clone '" + clone_.name + "'";
+}
+
+SetCloneSettingsCommand::SetCloneSettingsCommand(int trackId, CloneLensMode lensMode,
+                                                 std::map<int, LensTrack> trackLens,
+                                                 TrailSettings trail, const Timeline& timeline)
+    : trackId_(trackId), newMode_(lensMode), newLens_(std::move(trackLens)), newTrail_(std::move(trail)) {
+    if (const TrackInfo* t = timeline.getTrack(trackId); t && t->isClone()) {
+        oldMode_  = t->cloneLensMode;
+        oldLens_  = t->trackLens;
+        oldTrail_ = t->trail;
+        valid_    = true;
+    }
+}
+
+bool SetCloneSettingsCommand::changesAnything() const {
+    if (!valid_) return false;
+    if (oldMode_ != newMode_ || oldTrail_ != newTrail_) return true;
+    if (oldLens_.size() != newLens_.size()) return true;
+    for (auto a = oldLens_.begin(), b2 = newLens_.begin(); a != oldLens_.end(); ++a, ++b2) {
+        if (a->first != b2->first) return true;
+        const LensTrack& x = a->second;
+        const LensTrack& y = b2->second;
+        if (x.base != y.base || x.keys != y.keys || x.zones != y.zones) return true;
+    }
+    return false;
+}
+
+void SetCloneSettingsCommand::execute(Timeline& timeline) {
+    TrackInfo* t = timeline.getTrackMutable(trackId_);
+    if (!valid_ || !t || !t->isClone()) { setApplied(false); return; }
+    t->cloneLensMode = newMode_;
+    t->trackLens     = newLens_;
+    t->trail         = newTrail_;
+}
+
+void SetCloneSettingsCommand::undo(Timeline& timeline) {
+    TrackInfo* t = timeline.getTrackMutable(trackId_);
+    if (!t) return;
+    t->cloneLensMode = oldMode_;
+    t->trackLens     = oldLens_;
+    t->trail         = oldTrail_;
+}
+
+std::string SetCloneSettingsCommand::describe() const {
+    return "Clone settings (track " + std::to_string(trackId_) + ")";
+}
+
+ReorderClonesCommand::ReorderClonesCommand(int sourceTrackId, std::vector<int> cloneIdsInOrder,
+                                           const Timeline& timeline)
+    : sourceTrackId_(sourceTrackId), oldLayout_(timeline.getTrackLayout()) {
+    const TrackInfo* src = timeline.getTrack(sourceTrackId);
+    if (!src || src->isClone()) return;
+    const auto current = clones::allClonesOf(timeline, sourceTrackId);
+    if (current.size() != cloneIdsInOrder.size()) return;
+    std::set<int> want(cloneIdsInOrder.begin(), cloneIdsInOrder.end());
+    if (want.size() != cloneIdsInOrder.size()) return;
+    for (const TrackInfo* c : current) if (!want.count(c->id)) return;
+
+    // New layout: drop every clone, re-insert in the requested order after
+    // the source (layoutWithCloneLast appends after the previous clone).
+    TrackLayout layout = oldLayout_;
+    auto dropId = [&](int id) {
+        layout.rootOrder.erase(std::remove_if(layout.rootOrder.begin(), layout.rootOrder.end(),
+            [&](const TrackLayoutItem& i) {
+                return i.kind == TrackLayoutItem::Kind::Track && i.id == id;
+            }), layout.rootOrder.end());
+        for (auto& f : layout.folders)
+            f.trackIds.erase(std::remove(f.trackIds.begin(), f.trackIds.end(), id), f.trackIds.end());
+    };
+    for (int id : cloneIdsInOrder) dropId(id);
+    int after = sourceTrackId;
+    for (int id : cloneIdsInOrder) {
+        bool done = false;
+        for (size_t i = 0; i < layout.rootOrder.size() && !done; ++i) {
+            const auto& item = layout.rootOrder[i];
+            if (item.kind == TrackLayoutItem::Kind::Track && item.id == after) {
+                layout.rootOrder.insert(layout.rootOrder.begin() + static_cast<long>(i) + 1,
+                                        { TrackLayoutItem::Kind::Track, id });
+                done = true;
+            }
+        }
+        for (auto& f : layout.folders) {
+            if (done) break;
+            auto it = std::find(f.trackIds.begin(), f.trackIds.end(), after);
+            if (it != f.trackIds.end()) { f.trackIds.insert(it + 1, id); done = true; }
+        }
+        if (!done) return;
+        after = id;
+    }
+    if (!timeline.isTrackLayoutValid(layout)) return;
+    newLayout_ = layout;
+    valid_ = true;
+
+    // Voice renumbering: old voice k -> new voice of the same clone.
+    std::vector<int> oldVoices;      // clone id per old voice (1-based at [k-1])
+    for (const TrackInfo* c : current) if (c->isVoiceClone()) oldVoices.push_back(c->id);
+    std::vector<int> newVoices;
+    for (int id : cloneIdsInOrder) {
+        const TrackInfo* c = timeline.getTrack(id);
+        if (c && c->isVoiceClone()) newVoices.push_back(id);
+    }
+    std::vector<int> newOfOld(oldVoices.size() + 1, 0);
+    bool renumbered = false;
+    for (size_t k = 0; k < oldVoices.size(); ++k) {
+        const auto it = std::find(newVoices.begin(), newVoices.end(), oldVoices[k]);
+        newOfOld[k + 1] = static_cast<int>(it - newVoices.begin()) + 1;
+        if (newOfOld[k + 1] != static_cast<int>(k) + 1) renumbered = true;
+    }
+    if (renumbered) {
+        for (int pid : clones::patternsPlayedBy(timeline, sourceTrackId)) {
+            const Pattern* p = timeline.getPattern(pid);
+            if (!p) continue;
+            std::vector<PatternNote> after2 = p->notes;
+            if (clones::rewritePinsForReorder(after2, newOfOld)) {
+                notesBefore_.emplace_back(pid, p->notes);
+                notesAfter_.emplace_back(pid, std::move(after2));
+            }
+        }
+    }
+    std::vector<int> oldOrder;
+    for (const TrackInfo* c : current) oldOrder.push_back(c->id);
+    changed_ = oldOrder != cloneIdsInOrder;
+}
+
+void ReorderClonesCommand::execute(Timeline& timeline) {
+    if (!valid_) { setApplied(false); return; }
+    timeline.restoreTrackLayout(newLayout_);
+    for (auto& [pid, notes] : notesAfter_) {
+        std::vector<PatternNote> copy = notes;
+        timeline.setPatternNotesKeepIds(pid, copy);
+    }
+}
+
+void ReorderClonesCommand::undo(Timeline& timeline) {
+    if (!valid_) return;
+    for (auto& [pid, notes] : notesBefore_) {
+        std::vector<PatternNote> copy = notes;
+        timeline.setPatternNotesKeepIds(pid, copy);
+    }
+    timeline.restoreTrackLayout(oldLayout_);
+}
+
+std::string ReorderClonesCommand::describe() const {
+    return "Reorder clones (track " + std::to_string(sourceTrackId_) + ")";
+}
+
+SetNotesVoicePinCommand::SetNotesVoicePinCommand(const std::vector<Ref>& notes, int pin,
+                                                 const Timeline& timeline)
+    : pin_(pin < 0 ? kVoicePinAuto : std::min(pin, kMaxVoicePin)) {
+    for (const Ref& r : notes) {
+        const Pattern* p = timeline.getPattern(r.patternId);
+        if (!p || r.noteId <= 0) continue;
+        bool dup = false;
+        for (const Entry& e : entries_)
+            if (e.ref.patternId == r.patternId && e.ref.noteId == r.noteId) { dup = true; break; }
+        if (dup) continue;
+        for (const PatternNote& n : p->notes) {
+            if (n.id != r.noteId) continue;
+            entries_.push_back({ r, n.voicePin });
+            break;
+        }
+    }
+}
+
+bool SetNotesVoicePinCommand::changesAnything() const {
+    for (const Entry& e : entries_) if (e.oldPin != pin_) return true;
+    return false;
+}
+
+void SetNotesVoicePinCommand::execute(Timeline& timeline) {
+    if (entries_.empty()) { setApplied(false); return; }
+    for (const Entry& e : entries_) {
+        Pattern* p = timeline.getPatternMutable(e.ref.patternId);
+        if (!p) continue;
+        for (PatternNote& n : p->notes)
+            if (n.id == e.ref.noteId) { n.voicePin = pin_; break; }
+    }
+}
+
+void SetNotesVoicePinCommand::undo(Timeline& timeline) {
+    for (const Entry& e : entries_) {
+        Pattern* p = timeline.getPatternMutable(e.ref.patternId);
+        if (!p) continue;
+        for (PatternNote& n : p->notes)
+            if (n.id == e.ref.noteId) { n.voicePin = e.oldPin; break; }
+    }
+}
+
+std::string SetNotesVoicePinCommand::describe() const {
+    return "Pin " + std::to_string(entries_.size()) + " note(s) to voice "
+         + (pin_ < 0 ? std::string("Auto") : std::to_string(pin_));
 }
 
 // ─── AddRegionCommand ─────────────────────────────────────────────────────────
@@ -784,7 +1224,7 @@ RemoveRegionCommand::RemoveRegionCommand(int regionId, const Timeline& timeline)
 }
 
 void RemoveRegionCommand::execute(Timeline& timeline) {
-    timeline.removeRegion(region_.id);
+    setApplied(timeline.removeRegion(region_.id));
 }
 
 void RemoveRegionCommand::undo(Timeline& timeline) {
@@ -808,9 +1248,12 @@ SetBPMCommand::SetBPMCommand(double newBpm, const Timeline& timeline)
                 savedStretchRatios_[c->id] = c->stretchRatio;
         }
     }
+    // Tempo lock or not: a trim says where in the SOURCE a clip starts.
+    savedRegionOffsets_ = xleth::tempotrim::captureTrimOffsets(timeline);
 }
 
 void SetBPMCommand::execute(Timeline& timeline) {
+    setApplied(newBpm_ != oldBpm_);
     timeline.setBPM(newBpm_);
     // When tempo-lock is on, scale stretchRatio for all stretched clips so
     // srcReadDesired = durSamp/stretchRatio stays constant — the same source
@@ -821,6 +1264,7 @@ void SetBPMCommand::execute(Timeline& timeline) {
         Clip* c = timeline.getClipMutable(clipId);
         if (c) c->stretchRatio = oldRatio * scale;
     }
+    xleth::tempotrim::applyTrimOffsets(timeline, savedRegionOffsets_, oldBpm_, newBpm_);
 }
 
 void SetBPMCommand::undo(Timeline& timeline) {
@@ -829,6 +1273,7 @@ void SetBPMCommand::undo(Timeline& timeline) {
         Clip* c = timeline.getClipMutable(clipId);
         if (c) c->stretchRatio = oldRatio;
     }
+    xleth::tempotrim::restoreTrimOffsets(timeline, savedRegionOffsets_);
 }
 
 std::string SetBPMCommand::describe() const {
@@ -934,8 +1379,9 @@ SetTrackMutedCommand::SetTrackMutedCommand(int trackId, bool newMuted, const Tim
 }
 
 void SetTrackMutedCommand::execute(Timeline& timeline) {
-    if (TrackInfo* t = timeline.getTrackMutable(trackId_))
-        t->muted = newMuted_;
+    TrackInfo* t = timeline.getTrackMutable(trackId_);
+    setApplied(t != nullptr && newMuted_ != oldMuted_);
+    if (t) t->muted = newMuted_;
 }
 
 void SetTrackMutedCommand::undo(Timeline& timeline) {
@@ -989,8 +1435,9 @@ SetTrackSoloCommand::SetTrackSoloCommand(int trackId, bool newSolo, const Timeli
 }
 
 void SetTrackSoloCommand::execute(Timeline& timeline) {
-    if (TrackInfo* t = timeline.getTrackMutable(trackId_))
-        t->solo = newSolo_;
+    TrackInfo* t = timeline.getTrackMutable(trackId_);
+    setApplied(t != nullptr && newSolo_ != oldSolo_);
+    if (t) t->solo = newSolo_;
 }
 
 void SetTrackSoloCommand::undo(Timeline& timeline) {
@@ -1012,7 +1459,7 @@ void SetTrackOrderCommand::execute(Timeline& timeline) {
 }
 
 void SetTrackOrderCommand::undo(Timeline& timeline) {
-    timeline.setTrackLayout(oldTrackLayout_);
+    timeline.restoreTrackLayout(oldTrackLayout_);   // exact captured state
 }
 
 std::string SetTrackOrderCommand::describe() const {
@@ -1025,7 +1472,7 @@ SetTrackLayoutCommand::SetTrackLayoutCommand(TrackLayout newLayout, const Timeli
       description_(std::move(description)) {}
 
 void SetTrackLayoutCommand::execute(Timeline& timeline) { timeline.setTrackLayout(newLayout_); }
-void SetTrackLayoutCommand::undo(Timeline& timeline) { timeline.setTrackLayout(oldLayout_); }
+void SetTrackLayoutCommand::undo(Timeline& timeline) { timeline.restoreTrackLayout(oldLayout_); }   // exact captured state
 std::string SetTrackLayoutCommand::describe() const { return description_; }
 
 CreateTrackFolderCommand::CreateTrackFolderCommand(std::string name,
@@ -1125,6 +1572,41 @@ std::string SetTrackOutputRouteCommand::describe() const {
     return "Set Track " + std::to_string(sourceTrackId_) + " output route to "
          + (newTargetTrackId_ == -1 ? "Master"
                                     : "track " + std::to_string(newTargetTrackId_));
+}
+
+// ─── SetTrackRoutesCommand ────────────────────────────────────────────────────
+
+SetTrackRoutesCommand::SetTrackRoutesCommand(int sourceTrackId, int newTargetTrackId,
+                                             std::vector<TrackSend> newSends,
+                                             const Timeline& timeline)
+    : sourceTrackId_(sourceTrackId),
+      newTargetTrackId_(newTargetTrackId),
+      newSends_(std::move(newSends))
+{
+    if (const TrackInfo* t = timeline.getTrack(sourceTrackId)) {
+        oldTargetTrackId_ = t->outputRoute.targetTrackId;
+        oldSends_         = t->sends;
+    }
+    for (auto& send : newSends_)
+        send.gain = std::isfinite(send.gain) ? std::clamp(send.gain, 0.0f, 2.0f) : 1.0f;
+}
+
+void SetTrackRoutesCommand::execute(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(sourceTrackId_)) {
+        t->outputRoute.targetTrackId = newTargetTrackId_;
+        t->sends = newSends_;
+    }
+}
+
+void SetTrackRoutesCommand::undo(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(sourceTrackId_)) {
+        t->outputRoute.targetTrackId = oldTargetTrackId_;
+        t->sends = oldSends_;
+    }
+}
+
+std::string SetTrackRoutesCommand::describe() const {
+    return "Route Track " + std::to_string(sourceTrackId_);
 }
 
 // ─── AddSidechainRouteCommand ─────────────────────────────────────────────────
@@ -1249,8 +1731,9 @@ SetTrackNameCommand::SetTrackNameCommand(int trackId, std::string newName, const
 }
 
 void SetTrackNameCommand::execute(Timeline& timeline) {
-    if (TrackInfo* t = timeline.getTrackMutable(trackId_))
-        t->name = newName_;
+    TrackInfo* t = timeline.getTrackMutable(trackId_);
+    setApplied(t != nullptr && newName_ != oldName_);
+    if (t) t->name = newName_;
 }
 
 void SetTrackNameCommand::undo(Timeline& timeline) {
@@ -1556,6 +2039,10 @@ RemovePatternCommand::RemovePatternCommand(int patternId, const Timeline& timeli
 }
 
 void RemovePatternCommand::execute(Timeline& timeline) {
+    if (!timeline.getPattern(pattern_.id)) {
+        setApplied(false);
+        return;
+    }
     // Cascade: blocks first, then remove the pattern.
     for (const auto& b : blocks_) {
         std::cout << "[Undo] RemovePatternCommand cascading block id=" << b.id << "\n";
@@ -1652,8 +2139,15 @@ void AddPatternBlockCommand::execute(Timeline& timeline) {
     if (firstExecute_) {
         int id = timeline.addPatternBlock(block_);
         if (id < 0) {
+            // Timeline::addPatternBlock refuses three ways; only the last is common.
+            const char* why = !timeline.getTrack(block_.trackId)     ? "trackId does not exist"
+                            : !timeline.getPattern(block_.patternId) ? "patternId does not exist"
+                            : "exact duplicate of an existing {trackId, patternId, position} block";
             std::cerr << "[Undo] ERROR AddPatternBlockCommand::execute: addPatternBlock"
-                         " failed (check trackId/patternId exist)\n";
+                         " refused (" << why << "; trackId=" << block_.trackId
+                      << " patternId=" << block_.patternId
+                      << " position=" << block_.position.ticks << ")\n";
+            setApplied(false);
             return;
         }
         block_.id     = id;
@@ -1685,7 +2179,7 @@ RemovePatternBlockCommand::RemovePatternBlockCommand(int blockId, const Timeline
 }
 
 void RemovePatternBlockCommand::execute(Timeline& timeline) {
-    timeline.removePatternBlock(block_.id);
+    setApplied(timeline.removePatternBlock(block_.id));
 }
 
 void RemovePatternBlockCommand::undo(Timeline& timeline) {
@@ -1715,7 +2209,9 @@ MovePatternBlockCommand::MovePatternBlockCommand(int blockId, int newTrackId,
 }
 
 void MovePatternBlockCommand::execute(Timeline& timeline) {
-    timeline.movePatternBlock(blockId_, newTrackId_, newPosition_);
+    const bool moved = timeline.movePatternBlock(blockId_, newTrackId_, newPosition_);
+    setApplied(moved && (newTrackId_ != oldTrackId_
+                         || newPosition_.ticks != oldPosition_.ticks));
 }
 
 void MovePatternBlockCommand::undo(Timeline& timeline) {
@@ -1744,7 +2240,8 @@ ResizePatternBlockCommand::ResizePatternBlockCommand(int blockId, TickTime newDu
 }
 
 void ResizePatternBlockCommand::execute(Timeline& timeline) {
-    timeline.resizePatternBlock(blockId_, newDuration_);
+    const bool ok = timeline.resizePatternBlock(blockId_, newDuration_);
+    setApplied(ok && newDuration_.ticks != oldDuration_.ticks);
 }
 
 void ResizePatternBlockCommand::undo(Timeline& timeline) {
@@ -1777,7 +2274,10 @@ ResizePatternBlockLeftCommand::ResizePatternBlockLeftCommand(
 }
 
 void ResizePatternBlockLeftCommand::execute(Timeline& timeline) {
-    timeline.resizePatternBlockLeft(blockId_, newPosition_, newDuration_, newOffset_);
+    const bool ok = timeline.resizePatternBlockLeft(blockId_, newPosition_, newDuration_, newOffset_);
+    setApplied(ok && (newPosition_.ticks != oldPosition_.ticks
+                      || newDuration_.ticks != oldDuration_.ticks
+                      || newOffset_.ticks   != oldOffset_.ticks));
 }
 
 void ResizePatternBlockLeftCommand::undo(Timeline& timeline) {
@@ -1809,7 +2309,8 @@ SetPatternBlockLoopCommand::SetPatternBlockLoopCommand(int blockId, bool newLoop
 }
 
 void SetPatternBlockLoopCommand::execute(Timeline& timeline) {
-    timeline.setPatternBlockLoopEnabled(blockId_, newLoopEnabled_);
+    const bool ok = timeline.setPatternBlockLoopEnabled(blockId_, newLoopEnabled_);
+    setApplied(ok && newLoopEnabled_ != oldLoopEnabled_);
 }
 
 void SetPatternBlockLoopCommand::undo(Timeline& timeline) {
@@ -1832,6 +2333,7 @@ void AddNoteCommand::execute(Timeline& timeline) {
         if (id < 0) {
             std::cerr << "[Undo] ERROR AddNoteCommand::execute: addNoteToPattern failed"
                          " (check patternId exists)\n";
+            setApplied(false);
             return;
         }
         note_.id      = id;
@@ -1869,7 +2371,7 @@ RemoveNoteCommand::RemoveNoteCommand(int patternId, int noteId, const Timeline& 
 }
 
 void RemoveNoteCommand::execute(Timeline& timeline) {
-    timeline.removeNoteFromPattern(patternId_, note_.id);
+    setApplied(timeline.removeNoteFromPattern(patternId_, note_.id));
 }
 
 void RemoveNoteCommand::undo(Timeline& timeline) {
@@ -1904,7 +2406,8 @@ MoveNoteCommand::MoveNoteCommand(int patternId, int noteId, TickTime newPosition
 }
 
 void MoveNoteCommand::execute(Timeline& timeline) {
-    timeline.moveNote(patternId_, noteId_, newPosition_, newPitch_);
+    const bool ok = timeline.moveNote(patternId_, noteId_, newPosition_, newPitch_);
+    setApplied(ok && (newPosition_.ticks != oldPosition_.ticks || newPitch_ != oldPitch_));
 }
 
 void MoveNoteCommand::undo(Timeline& timeline) {
@@ -2005,6 +2508,38 @@ std::string ResizeNotesBatchCommand::describe() const {
          + " (pattern=" + std::to_string(patternId_) + ")";
 }
 
+// ─── EditPatternNotesCommand ──────────────────────────────────────────────────
+
+EditPatternNotesCommand::EditPatternNotesCommand(int patternId, std::vector<PatternNote> after,
+                                                 const Timeline& timeline)
+    : patternId_(patternId), after_(std::move(after))
+{
+    const Pattern* p = timeline.getPattern(patternId);
+    if (!p) {
+        std::cerr << "[Undo] ERROR EditPatternNotesCommand: patternId=" << patternId
+                  << " not found\n";
+        return;
+    }
+    before_ = p->notes;
+    valid_ = true;
+}
+
+void EditPatternNotesCommand::execute(Timeline& timeline) {
+    if (!valid_) return;
+    // First run assigns ids to new notes in place; redo reuses them.
+    timeline.setPatternNotesKeepIds(patternId_, after_);
+}
+
+void EditPatternNotesCommand::undo(Timeline& timeline) {
+    if (!valid_) return;
+    std::vector<PatternNote> before = before_;
+    timeline.setPatternNotesKeepIds(patternId_, before);
+}
+
+std::string EditPatternNotesCommand::describe() const {
+    return "Edit Notes (pattern=" + std::to_string(patternId_) + ")";
+}
+
 // ─── ResizeNoteCommand ────────────────────────────────────────────────────────
 
 ResizeNoteCommand::ResizeNoteCommand(int patternId, int noteId, TickTime newDuration,
@@ -2022,7 +2557,8 @@ ResizeNoteCommand::ResizeNoteCommand(int patternId, int noteId, TickTime newDura
 }
 
 void ResizeNoteCommand::execute(Timeline& timeline) {
-    timeline.resizeNote(patternId_, noteId_, newDuration_);
+    const bool ok = timeline.resizeNote(patternId_, noteId_, newDuration_);
+    setApplied(ok && newDuration_.ticks != oldDuration_.ticks);
 }
 
 void ResizeNoteCommand::undo(Timeline& timeline) {
@@ -2052,7 +2588,8 @@ SetNoteVelocityCommand::SetNoteVelocityCommand(int patternId, int noteId, float 
 }
 
 void SetNoteVelocityCommand::execute(Timeline& timeline) {
-    timeline.setNoteVelocity(patternId_, noteId_, newVelocity_);
+    const bool ok = timeline.setNoteVelocity(patternId_, noteId_, newVelocity_);
+    setApplied(ok && newVelocity_ != oldVelocity_);
 }
 
 void SetNoteVelocityCommand::undo(Timeline& timeline) {
@@ -2186,6 +2723,33 @@ std::string SetTrackVideoHoldLastFrameThresholdCommand::describe() const {
                       ? "unlimited"
                       : std::to_string(newThresholdBeats_) + " beats";
     return "Set Hold Last Frame threshold to " + value
+         + " (track=" + std::to_string(trackId_) + ")";
+}
+
+// ─── SetTrackVideoHoldBehaviorCommand ─────────────────────────────────────────
+
+SetTrackVideoHoldBehaviorCommand::SetTrackVideoHoldBehaviorCommand(
+    int trackId, bool smart, bool keepPlaying, const Timeline& timeline)
+    : trackId_(trackId), newSmart_(smart), newKeepPlaying_(keepPlaying)
+{
+    if (const TrackInfo* t = timeline.getTrack(trackId)) {
+        oldSmart_       = t->videoHoldSmart;
+        oldKeepPlaying_ = t->videoHoldKeepPlaying;
+    }
+}
+
+void SetTrackVideoHoldBehaviorCommand::execute(Timeline& timeline) {
+    timeline.setTrackVideoHoldBehavior(trackId_, newSmart_, newKeepPlaying_);
+}
+
+void SetTrackVideoHoldBehaviorCommand::undo(Timeline& timeline) {
+    timeline.setTrackVideoHoldBehavior(trackId_, oldSmart_, oldKeepPlaying_);
+}
+
+std::string SetTrackVideoHoldBehaviorCommand::describe() const {
+    return std::string("Set Hold Last Frame to ")
+         + (newSmart_ ? "smart gaps" : "all gaps") + ", "
+         + (newKeepPlaying_ ? "keep playing" : "freeze")
          + " (track=" + std::to_string(trackId_) + ")";
 }
 
@@ -2401,6 +2965,28 @@ void SetTrackSlideNoteEffectCommand::undo(Timeline& timeline) {
 
 std::string SetTrackSlideNoteEffectCommand::describe() const {
     return "Set Slide Note Effect (track=" + std::to_string(trackId_) + ")";
+}
+
+// ─── SetTrackNoteFadeCommand ─────────────────────────────────────────────────
+
+SetTrackNoteFadeCommand::SetTrackNoteFadeCommand(
+    int trackId, const NoteFadeSettings& newSettings, const Timeline& timeline)
+    : trackId_(trackId), newSettings_(newSettings)
+{
+    const TrackInfo* t = timeline.getTrack(trackId);
+    oldSettings_ = t ? t->noteFade : NoteFadeSettings{};
+}
+
+void SetTrackNoteFadeCommand::execute(Timeline& timeline) {
+    timeline.setTrackNoteFadeSettings(trackId_, newSettings_);
+}
+
+void SetTrackNoteFadeCommand::undo(Timeline& timeline) {
+    timeline.setTrackNoteFadeSettings(trackId_, oldSettings_);
+}
+
+std::string SetTrackNoteFadeCommand::describe() const {
+    return "Set Note Fade (track=" + std::to_string(trackId_) + ")";
 }
 
 // ─── SetNoteSlideCommand ─────────────────────────────────────────────────────
@@ -3027,4 +3613,394 @@ void SetAutomationBaseValueCommand::undo(Timeline& timeline) {
 
 std::string SetAutomationBaseValueCommand::describe() const {
     return "Set automation base value";
+}
+
+// ─── SetClipLensCommand ──────────────────────────────────────────────────────
+
+SetClipLensCommand::SetClipLensCommand(int clipId, const LensParams& newLens,
+                                       const Timeline& timeline, bool isReset)
+    : clipId_(clipId), newLens_(newLens), isReset_(isReset)
+{
+    const Clip* c = timeline.getClip(clipId);
+    oldLens_ = c ? c->lens.base : LensParams{};
+}
+
+void SetClipLensCommand::execute(Timeline& timeline) {
+    if (Clip* c = timeline.getClipMutable(clipId_)) c->lens.base = newLens_;
+}
+
+void SetClipLensCommand::undo(Timeline& timeline) {
+    if (Clip* c = timeline.getClipMutable(clipId_)) c->lens.base = oldLens_;
+}
+
+std::string SetClipLensCommand::describe() const {
+    return std::string(isReset_ ? "Reset" : "Set") + " Clip Lens (clip="
+         + std::to_string(clipId_) + ")";
+}
+
+// ─── SetClipLensKeysCommand ──────────────────────────────────────────────────
+
+SetClipLensKeysCommand::SetClipLensKeysCommand(int clipId, std::vector<LensKey> keys,
+                                               const Timeline& timeline)
+    : clipId_(clipId), newKeys_(std::move(keys))
+{
+    if (const Clip* c = timeline.getClip(clipId)) oldKeys_ = c->lens.keys;
+}
+
+void SetClipLensKeysCommand::execute(Timeline& timeline) {
+    if (Clip* c = timeline.getClipMutable(clipId_)) c->lens.keys = newKeys_;
+}
+
+void SetClipLensKeysCommand::undo(Timeline& timeline) {
+    if (Clip* c = timeline.getClipMutable(clipId_)) c->lens.keys = oldKeys_;
+}
+
+std::string SetClipLensKeysCommand::describe() const {
+    return "Set Clip Lens keys (clip=" + std::to_string(clipId_) + ", "
+         + std::to_string(newKeys_.size()) + " keys)";
+}
+
+// ─── SetTrackLensCommand ─────────────────────────────────────────────────────
+
+SetTrackLensCommand::SetTrackLensCommand(int trackId, int regionId, const LensParams& newLens,
+                                         const Timeline& timeline, bool isReset)
+    : trackId_(trackId), regionId_(regionId), newLens_(newLens), isReset_(isReset)
+{
+    if (const TrackInfo* t = timeline.getTrack(trackId)) {
+        const auto it = t->trackLens.find(regionId);
+        if (it != t->trackLens.end()) {
+            hadEntry_ = true;
+            oldEntry_ = it->second;
+        }
+    }
+}
+
+void SetTrackLensCommand::execute(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(trackId_)) {
+        // A new entry starts from the old one (keys/hitCurve kept), or empty.
+        LensTrack& entry = t->trackLens[regionId_];
+        if (!hadEntry_) entry = LensTrack{};
+        entry.base = newLens_;
+    }
+}
+
+void SetTrackLensCommand::undo(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(trackId_)) {
+        if (hadEntry_) t->trackLens[regionId_] = oldEntry_;
+        else           t->trackLens.erase(regionId_);
+    }
+}
+
+std::string SetTrackLensCommand::describe() const {
+    return std::string(isReset_ ? "Reset" : "Set") + " Track Lens (track="
+         + std::to_string(trackId_) + ", region=" + std::to_string(regionId_) + ")";
+}
+
+// ─── SetTrackRoamCommand ─────────────────────────────────────────────────────
+
+SetTrackRoamCommand::SetTrackRoamCommand(int trackId, const RoamParams& newRoam,
+                                         const Timeline& timeline, bool isReset)
+    : trackId_(trackId), newRoam_(newRoam), isReset_(isReset)
+{
+    const TrackInfo* t = timeline.getTrack(trackId);
+    oldRoam_ = t ? t->roam.base : RoamParams{};
+}
+
+void SetTrackRoamCommand::execute(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(trackId_)) t->roam.base = newRoam_;
+}
+
+void SetTrackRoamCommand::undo(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(trackId_)) t->roam.base = oldRoam_;
+}
+
+std::string SetTrackRoamCommand::describe() const {
+    return std::string(isReset_ ? "Reset" : "Set") + " Track Roam (track="
+         + std::to_string(trackId_) + ")";
+}
+
+// ─── SetTrackRoamKeysCommand ─────────────────────────────────────────────────
+
+SetTrackRoamKeysCommand::SetTrackRoamKeysCommand(int trackId, std::vector<RoamKey> keys,
+                                                 const Timeline& timeline)
+    : trackId_(trackId), newKeys_(std::move(keys))
+{
+    if (const TrackInfo* t = timeline.getTrack(trackId)) oldKeys_ = t->roam.keys;
+}
+
+void SetTrackRoamKeysCommand::execute(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(trackId_)) t->roam.keys = newKeys_;
+}
+
+void SetTrackRoamKeysCommand::undo(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(trackId_)) t->roam.keys = oldKeys_;
+}
+
+std::string SetTrackRoamKeysCommand::describe() const {
+    return "Set Track Roam keys (track=" + std::to_string(trackId_) + ", "
+         + std::to_string(newKeys_.size()) + " keys)";
+}
+
+// ─── SetTrackSweepKeysCommand (P11) ──────────────────────────────────────────
+
+SetTrackSweepKeysCommand::SetTrackSweepKeysCommand(int trackId, std::vector<LensKey> keys,
+                                                   const Timeline& timeline)
+    : trackId_(trackId), newKeys_(std::move(keys))
+{
+    if (const TrackInfo* t = timeline.getTrack(trackId)) oldKeys_ = t->sweep.keys;
+}
+
+void SetTrackSweepKeysCommand::execute(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(trackId_)) t->sweep.keys = newKeys_;
+}
+
+void SetTrackSweepKeysCommand::undo(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(trackId_)) t->sweep.keys = oldKeys_;
+}
+
+std::string SetTrackSweepKeysCommand::describe() const {
+    return "Set Track Sweep keys (track=" + std::to_string(trackId_) + ", "
+         + std::to_string(newKeys_.size()) + " keys)";
+}
+
+// ─── SetTrackFxKeysCommand (Motion view: video effect param keys) ────────────
+
+SetTrackFxKeysCommand::SetTrackFxKeysCommand(int trackId, std::vector<FxKey> keys, const Timeline& timeline)
+    : trackId_(trackId), newKeys_(std::move(keys))
+{
+    if (const TrackInfo* t = timeline.getTrack(trackId)) oldKeys_ = t->fxKeys;
+}
+
+void SetTrackFxKeysCommand::execute(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(trackId_)) t->fxKeys = newKeys_;
+}
+
+void SetTrackFxKeysCommand::undo(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(trackId_)) t->fxKeys = oldKeys_;
+}
+
+std::string SetTrackFxKeysCommand::describe() const {
+    return "Set Track effect keys (track=" + std::to_string(trackId_) + ", "
+         + std::to_string(newKeys_.size()) + " keys)";
+}
+
+// ─── Motion view: SetTrackParentCommand ──────────────────────────────────────
+
+SetTrackParentCommand::SetTrackParentCommand(int trackId, int newParentTrackId,
+                                             const Timeline& timeline,
+                                             std::optional<RoamParams> newBase)
+    : trackId_(trackId), newParent_(newParentTrackId < 0 ? -1 : newParentTrackId),
+      newBase_(std::move(newBase))
+{
+    if (const TrackInfo* t = timeline.getTrack(trackId)) {
+        oldParent_ = t->parentTrackId;
+        oldBase_   = t->roam.base;
+    }
+}
+
+void SetTrackParentCommand::execute(Timeline& timeline) {
+    TrackInfo* t = timeline.getTrackMutable(trackId_);
+    if (!t || parentmath::validateParent(timeline, trackId_, newParent_) != parentmath::ParentReject::None) {
+        setApplied(false);
+        return;
+    }
+    t->parentTrackId = newParent_;
+    if (newBase_) t->roam.base = *newBase_;
+}
+
+void SetTrackParentCommand::undo(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(trackId_)) {
+        t->parentTrackId = oldParent_;
+        if (newBase_) t->roam.base = oldBase_;
+    }
+}
+
+std::string SetTrackParentCommand::describe() const {
+    std::string s = newParent_ < 0
+        ? "Detach Track " + std::to_string(trackId_) + " from its parent"
+        : "Set Parent of Track " + std::to_string(trackId_) + " to Track " + std::to_string(newParent_);
+    if (newBase_) s += " (keep on screen)";
+    return s;
+}
+
+// ─── Motion view: SetTrackMasksCommand ───────────────────────────────────────
+
+SetTrackMasksCommand::SetTrackMasksCommand(int trackId, std::vector<RoamMask> masks,
+                                           const Timeline& timeline)
+    : trackId_(trackId), newMasks_(std::move(masks))
+{
+    if (const TrackInfo* t = timeline.getTrack(trackId)) oldMasks_ = t->roam.masks;
+}
+
+void SetTrackMasksCommand::execute(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(trackId_)) t->roam.masks = newMasks_;
+    else setApplied(false);
+}
+
+void SetTrackMasksCommand::undo(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(trackId_)) t->roam.masks = oldMasks_;
+}
+
+std::string SetTrackMasksCommand::describe() const {
+    return "Set Track Masks (track=" + std::to_string(trackId_) + ", "
+         + std::to_string(newMasks_.size()) + " mask(s))";
+}
+
+// ─── Lens + Roam P8: per-note overrides ──────────────────────────────────────
+
+namespace {
+
+PatternNote* findLensNote(Timeline& timeline, const NoteLensRef& ref) {
+    Pattern* p = timeline.getPatternMutable(ref.patternId);
+    if (!p) return nullptr;
+    for (PatternNote& n : p->notes)
+        if (n.id == ref.noteId) return &n;
+    return nullptr;
+}
+
+const PatternNote* findLensNote(const Timeline& timeline, const NoteLensRef& ref) {
+    const Pattern* p = timeline.getPattern(ref.patternId);
+    if (!p) return nullptr;
+    for (const PatternNote& n : p->notes)
+        if (n.id == ref.noteId) return &n;
+    return nullptr;
+}
+
+const char* noteLensModeName(NoteLensMode m) {
+    switch (m) {
+        case NoteLensMode::Nudge: return "Nudge";
+        case NoteLensMode::Own:   return "Own";
+        default:                  return "Follow";
+    }
+}
+
+std::string noteCountLabel(std::size_t n) {
+    return std::to_string(n) + (n == 1 ? " note" : " notes");
+}
+
+} // namespace
+
+LensNoteOverridePtr noteLensOverrideOf(const Timeline& timeline, const NoteLensRef& ref) {
+    const PatternNote* n = findLensNote(timeline, ref);
+    return n ? n->lensOverride : nullptr;
+}
+
+NoteLensOverrideCommand::Swap* NoteLensOverrideCommand::addNote(const Timeline& timeline,
+                                                                const NoteLensRef& ref) {
+    const PatternNote* n = findLensNote(timeline, ref);
+    if (!n) return nullptr;
+    for (const Swap& s : swaps_)
+        if (s.ref == ref) return nullptr;
+    swaps_.push_back(Swap{ ref, n->lensOverride, n->lensOverride });
+    return &swaps_.back();
+}
+
+void NoteLensOverrideCommand::execute(Timeline& timeline) {
+    for (const Swap& s : swaps_)
+        if (PatternNote* n = findLensNote(timeline, s.ref)) n->lensOverride = s.after;
+}
+
+void NoteLensOverrideCommand::undo(Timeline& timeline) {
+    for (auto it = swaps_.rbegin(); it != swaps_.rend(); ++it)
+        if (PatternNote* n = findLensNote(timeline, it->ref)) n->lensOverride = it->before;
+}
+
+bool NoteLensOverrideCommand::changesAnything() const {
+    for (const Swap& s : swaps_)
+        if (!sameLensOverride(s.before, s.after)) return true;
+    return false;
+}
+
+std::vector<NoteLensRef> NoteLensOverrideCommand::notes() const {
+    std::vector<NoteLensRef> out;
+    out.reserve(swaps_.size());
+    for (const Swap& s : swaps_) out.push_back(s.ref);
+    return out;
+}
+
+SetNoteLensModeCommand::SetNoteLensModeCommand(const std::vector<NoteLensRef>& notes,
+                                               NoteLensMode mode, const Timeline& timeline) {
+    for (const NoteLensRef& ref : notes) {
+        Swap* s = addNote(timeline, ref);
+        if (!s) continue;
+        if (mode == NoteLensMode::Follow) { s->after = nullptr; continue; }
+        const LensOverrideMode m = mode == NoteLensMode::Own ? LensOverrideMode::Own
+                                                             : LensOverrideMode::Nudge;
+        if (s->before && s->before->mode == m) continue;          // already in that mode
+        auto o = std::make_shared<LensNoteOverride>();
+        o->mode = m;
+        if (s->before) o->keys = s->before->keys;                 // the keys carry over
+        s->after = std::move(o);
+    }
+    label_ = std::string("Set note Lens mode ") + noteLensModeName(mode) + " ("
+           + noteCountLabel(swaps_.size()) + ")";
+}
+
+SetNoteLensKeysCommand::SetNoteLensKeysCommand(const NoteLensRef& note, std::vector<LensKey> keys,
+                                               const Timeline& timeline) {
+    if (Swap* s = addNote(timeline, note)) {
+        auto o = std::make_shared<LensNoteOverride>();
+        o->mode = s->before ? s->before->mode : LensOverrideMode::Nudge;
+        o->keys = std::move(keys);
+        s->after = std::move(o);
+    }
+    label_ = "Set note Lens keys (pattern=" + std::to_string(note.patternId)
+           + ", note=" + std::to_string(note.noteId) + ")";
+}
+
+SetNoteLensKeysCommand::SetNoteLensKeysCommand(
+    const std::vector<std::pair<NoteLensRef, std::vector<LensKey>>>& entries, const Timeline& timeline) {
+    for (const auto& e : entries) {
+        Swap* s = addNote(timeline, e.first);
+        if (!s) continue;
+        auto o = std::make_shared<LensNoteOverride>();
+        o->mode = s->before ? s->before->mode : LensOverrideMode::Nudge;
+        o->keys = e.second;
+        s->after = std::move(o);
+    }
+    label_ = "Set note Lens keys (" + noteCountLabel(swaps_.size()) + ")";
+}
+
+RevertNotesToFollowCommand::RevertNotesToFollowCommand(const std::vector<NoteLensRef>& notes,
+                                                       const Timeline& timeline) {
+    for (const NoteLensRef& ref : notes)
+        if (Swap* s = addNote(timeline, ref)) s->after = nullptr;
+    label_ = "Revert " + noteCountLabel(swaps_.size()) + " to Follow";
+}
+
+// ─── SetHitCurveCommand ──────────────────────────────────────────────────────
+
+SetHitCurveCommand::SetHitCurveCommand(int trackId, int regionId, std::vector<LensKey> keys,
+                                       const xleth::keycurve::NoteZones* zones,
+                                       const Timeline& timeline, std::string label)
+    : trackId_(trackId), regionId_(regionId), label_(std::move(label))
+{
+    if (const TrackInfo* t = timeline.getTrack(trackId)) {
+        const auto it = t->trackLens.find(regionId);
+        if (it != t->trackLens.end()) {
+            hadEntry_ = true;
+            oldEntry_ = it->second;
+        }
+    }
+    // A new entry keeps rendering what the absent one did (newContentDefault).
+    newEntry_ = hadEntry_ ? oldEntry_ : LensTrack{};
+    if (!hadEntry_) newEntry_.base = LensParams::newContentDefault();
+    newEntry_.keys = std::move(keys);
+    if (zones) newEntry_.zones = *zones;
+}
+
+void SetHitCurveCommand::execute(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(trackId_)) t->trackLens[regionId_] = newEntry_;
+}
+
+void SetHitCurveCommand::undo(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(trackId_)) {
+        if (hadEntry_) t->trackLens[regionId_] = oldEntry_;
+        else           t->trackLens.erase(regionId_);
+    }
+}
+
+bool SetHitCurveCommand::changesAnything() const {
+    if (!hadEntry_) return true;   // materialising the entry is itself a change
+    return newEntry_.keys != oldEntry_.keys || newEntry_.zones != oldEntry_.zones;
 }

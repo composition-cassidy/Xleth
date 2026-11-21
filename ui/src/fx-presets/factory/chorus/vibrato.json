@@ -1,0 +1,18 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "chorus",
+  "name": "Vibrato",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "rate": 4.5,
+      "depth": 15,
+      "delay": 7,
+      "feedback": 0,
+      "voices": 1,
+      "width": 0,
+      "mix": 100
+    }
+  }
+}

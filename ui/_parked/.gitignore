@@ -1,0 +1,5 @@
+# Parked code is kept on disk only. Nothing in here is built, linted, tested or counted by check:legacy-css,
+# and none of it is tracked except this file and README.md.
+*
+!.gitignore
+!README.md

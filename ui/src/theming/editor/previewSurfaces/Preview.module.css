@@ -1,0 +1,230 @@
+/* The live preview beside the theme editor. These cards demonstrate the WORKING theme, so they read the
+ * --theme-* tokens the preview root carries (PreviewPane writes the working theme onto it), not the kit's
+ * --ui-* tokens, which resolve from the document root. Three type sizes: 13, 12, 11. */
+@layer kit {
+  .pane {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .paneLabel {
+    padding-bottom: var(--space-1);
+    border-bottom: 1px solid var(--theme-border-subtle);
+    color: var(--theme-text-muted);
+    font-size: var(--type-12);
+    font-weight: var(--weight-semibold);
+  }
+
+  .card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-2);
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--ui-radius-1);
+    background: var(--theme-bg-surface);
+  }
+
+  .cardLabel {
+    color: var(--theme-text-muted);
+    font-size: var(--type-11);
+    font-weight: var(--weight-semibold);
+  }
+
+  .swatches {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-1);
+  }
+
+  .swatch {
+    display: flex;
+    flex: 1;
+    align-items: flex-end;
+    height: 32px;
+    padding: 2px var(--space-1);
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--ui-radius-1);
+  }
+
+  .swatchLabel {
+    color: var(--theme-text-muted);
+    font-size: var(--type-11);
+  }
+
+  .typeStack {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .textPrimary { color: var(--theme-text-primary); font-size: var(--type-13); font-weight: var(--weight-semibold); }
+  .textSecondary { color: var(--theme-text-secondary); font-size: var(--type-12); }
+  .textMuted { color: var(--theme-text-muted); font-size: var(--type-11); }
+  .textAccent { color: var(--theme-accent); font-size: var(--type-12); }
+
+  .accentRow,
+  .chips {
+    display: flex;
+    gap: var(--space-2);
+  }
+
+  .btnPrimary,
+  .btnGhost {
+    flex: 1;
+    height: var(--ctl-h-sm);
+    border-radius: var(--ui-radius-1);
+    font-family: inherit;
+    font-size: var(--type-11);
+    font-weight: var(--weight-semibold);
+    cursor: default;
+  }
+
+  .btnPrimary {
+    border: 1px solid var(--theme-accent);
+    background: var(--theme-accent);
+    color: var(--theme-text-on-accent);
+  }
+
+  .btnGhost {
+    border: 1px solid var(--theme-border-default);
+    background: transparent;
+    color: var(--theme-text-secondary);
+  }
+
+  .chip {
+    flex: 1;
+    padding: 3px 0;
+    border-radius: var(--ui-radius-1);
+    color: var(--theme-accent);
+    font-size: var(--type-11);
+    font-weight: var(--weight-medium);
+    text-align: center;
+  }
+
+  .chipActive {
+    border: 1px solid var(--theme-accent);
+    background: var(--theme-accent-bg-subtle);
+  }
+
+  .chipSelected {
+    border: 1px solid transparent;
+    background: var(--theme-accent-bg-medium);
+  }
+
+  .statusStack {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .status {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding: var(--space-1) var(--space-2);
+    border: 1px solid transparent;
+    border-radius: var(--ui-radius-1);
+    font-size: var(--type-11);
+  }
+
+  .statusError {
+    border-color: var(--theme-danger);
+    background: var(--theme-semantic-danger-bg-subtle);
+    color: var(--theme-semantic-danger-text);
+  }
+
+  .statusWarning {
+    border-color: var(--theme-semantic-warning-border);
+    background: var(--theme-semantic-warning-bg-subtle);
+    color: var(--theme-semantic-warning-text);
+  }
+
+  .statusSuccess {
+    border-color: var(--theme-semantic-success-border);
+    color: var(--theme-semantic-success-border);
+  }
+
+  .mixerRow {
+    display: flex;
+    gap: var(--space-2);
+    justify-content: space-around;
+  }
+
+  .channel {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .faderTrack {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 4px;
+    height: 40px;
+    border-radius: var(--ui-radius-1);
+    background: var(--theme-bg-tertiary);
+  }
+
+  .faderThumb {
+    position: absolute;
+    width: 12px;
+    height: 6px;
+    border-radius: var(--ui-radius-1);
+    background: var(--theme-text-secondary);
+  }
+
+  .channelLabel {
+    color: var(--theme-text-muted);
+    font-size: var(--type-11);
+    text-align: center;
+  }
+
+  .tracks {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .track {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .trackHead {
+    display: flex;
+    flex: 0 0 56px;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .trackDot {
+    flex: 0 0 auto;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--track-color);
+  }
+
+  .trackName {
+    overflow: hidden;
+    color: var(--theme-text-secondary);
+    font-size: var(--type-11);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .trackClip {
+    flex: 1;
+    height: 18px;
+    border: 1px solid var(--track-color);
+    border-radius: var(--ui-radius-1);
+    background: color-mix(in srgb, var(--track-color) 20%, transparent);
+  }
+}

@@ -1,0 +1,14 @@
+{
+ "panel-inspector": "The 34 nodes are the flip preview in the track section (note names, state numbers, caption), present only in shot 90 (a clip track selected); 91 and 92 are 0. Baseline had 33 nodes here, so this is the same class of problem, not new text. Follow-up: lift the preview's muted ink.",
+ "timeline-headers": "Not the headers: shot 13 is scoped to the whole docked layer, which includes the Inspector, so the 17 nodes are the same flip-preview texts as panel-inspector. 13b (scope .timeline-header-column, KICK muted and SNARE soloed) is 0 / 0 / none / 2 sizes.",
+ "dock-devices": "Two cells (Freq label 2.73:1, 100 Hz value 3.81:1) in the Glue Comp device, plus SVG ruler text in the Xleth EQ (band names SUB, BASS, ...: uppercase with letter-spacing inherited by SVG text). The EQ ruler's capitals are the dual-vocabulary ruler the skill recommends, but they still break the DESIGN.md rule.",
+ "fx-glue": "The same two Glue Comp cells as dock-devices (Freq 2.73:1, 100 Hz 3.81:1).",
+ "fx-xletheq": "SVG text in the EQ band ruler (SUB, BASS, ...): letter-spaced capitals.",
+ "picker-sheet": "Still on legacy CSS: the class names (`marked-sample-*`, `picker-*`) are global, not CSS-module. 9px badges, 5 caps labels and 5 font sizes. Not migrated in round 2.",
+ "browser": "`sample-thumbnail-duration` (9px, legacy global class) on the sample thumbnails. Same 5 nodes in all three browser shots.",
+ "menu-view": "RESET button in `titlebar-export-row` (legacy global classes) inside the View menu: letter-spaced caps.",
+ "panel-sandbox": "Layer rail meta text (`_layerMeta`, 4.14:1) in the Sandbox's rail, a kit CSS module. The baseline's 35 nodes under 10px are gone.",
+ "theme-editor": "The `Built-in` badge in the theme list (4.14:1).",
+ "dlg-midi-import": "One option row label (Override project tempo to match source, 3.81:1). The baseline had 7 font sizes; it now has 3.",
+ "devices-video": "Dimmed ink in the video devices: the `None` trigger label 3.54:1, section name `Effect` 2.68:1, caption `Length` 2.73:1 (9 nodes in 85-01..04). New surface (the baseline had these controls in the Inspector)."
+}

@@ -58,21 +58,21 @@ describe('target spec table', () => {
 
 describe('labels', () => {
   it('names sources by their flat index', () => {
-    expect(sourceLabel(ENV_SOURCE_0)).toBe('ENV 1')
-    expect(sourceLabel(ENV_SOURCE_0 + 5)).toBe('ENV 6')
+    expect(sourceLabel(ENV_SOURCE_0)).toBe('Env 1')
+    expect(sourceLabel(ENV_SOURCE_0 + 5)).toBe('Env 6')
     expect(sourceLabel(LFO_SOURCE_0)).toBe('LFO 1')
     expect(sourceLabel(LFO_SOURCE_0 + 5)).toBe('LFO 6')
-    expect(sourceLabel(VELO_SOURCE)).toBe('VELO')
-    expect(sourceLabel(NOTE_SOURCE)).toBe('NOTE')
+    expect(sourceLabel(VELO_SOURCE)).toBe('Velocity')
+    expect(sourceLabel(NOTE_SOURCE)).toBe('Note')
   })
 
   it('reads slot, MANGLE-instance, master and cross-mod targets', () => {
-    expect(targetLabel(TARGET_SLOT_SEM, 1)).toBe('Slot 2 SEM')
-    expect(targetLabel(TARGET_SLOT_MANGLE_MIX, 0, 1)).toBe('Slot 1 MANGLE 2 MIX')
-    expect(targetLabel(TARGET_MASTER_VOLUME)).toBe('Master VOLUME')
-    expect(targetLabel(TARGET_SRC_RATE, LFO_SOURCE_0 + 1)).toBe('LFO 2 RATE')
-    expect(targetLabel(TARGET_SRC_AMOUNT, VELO_SOURCE)).toBe('VELO OUT')
-    expect(targetLabel(TARGET_ENV_STAGE_TIME, ENV_SOURCE_0 + 1, STAGE_RELEASE)).toBe('ENV 2 RELEASE')
+    expect(targetLabel(TARGET_SLOT_SEM, 1)).toBe('Slot 2 semitones')
+    expect(targetLabel(TARGET_SLOT_MANGLE_MIX, 0, 1)).toBe('Slot 1 mangle 2 mix')
+    expect(targetLabel(TARGET_MASTER_VOLUME)).toBe('Master volume')
+    expect(targetLabel(TARGET_SRC_RATE, LFO_SOURCE_0 + 1)).toBe('LFO 2 rate')
+    expect(targetLabel(TARGET_SRC_AMOUNT, VELO_SOURCE)).toBe('Velocity out')
+    expect(targetLabel(TARGET_ENV_STAGE_TIME, ENV_SOURCE_0 + 1, STAGE_RELEASE)).toBe('Env 2 release')
   })
 
   it('colours a ring by its source family', () => {
@@ -208,35 +208,35 @@ describe('tooltip', () => {
     const reg = { target: TARGET_SLOT_SEM, index: 1, stage: 0, scale: 1 }
     const route = { source: LFO_SOURCE_0, target: TARGET_SLOT_SEM, index: 1, stage: 0, amount: 7 / 48, bipolar: false }
     const text = routeTooltip(route, reg, 0)
-    expect(text).toContain('LFO 1 → Slot 2 SEM')
-    expect(text).toContain('+7.0 st')
-    expect(text).toContain('0.0 st … 7.0 st')
+    expect(text).toContain('LFO 1 → Slot 2 semitones')
+    expect(text).toContain('+7.0 st')
+    expect(text).toContain('0.0 st … 7.0 st')
   })
 
   it('marks a bipolar route with ±', () => {
     const reg = { target: TARGET_SLOT_SEM, index: 1, stage: 0, scale: 1 }
     const route = { source: LFO_SOURCE_0, target: TARGET_SLOT_SEM, index: 1, stage: 0, amount: 7 / 48, bipolar: true }
-    expect(routeTooltip(route, reg, 0)).toContain('±7.0 st')
+    expect(routeTooltip(route, reg, 0)).toContain('±7.0 st')
   })
 
   it('reports an exponential route’s depth in octaves, not the base’s unit', () => {
     // amount 0.25 on a 4-octave span is one octave. Calling that "1.00 Hz" is
     // only true while the LFO happens to sit at 1 Hz.
     const route = { source: LFO_SOURCE_0, target: TARGET_SRC_RATE, index: LFO_SOURCE_0 + 1, stage: 0, amount: 0.25, bipolar: true }
-    expect(formatRouteDepth(route)).toBe('±1.00 oct')
-    expect(formatRouteDepth({ ...route, bipolar: false })).toBe('+1.00 oct')
-    expect(formatRouteDepth({ ...route, bipolar: false, amount: -0.5 })).toBe('−2.00 oct')
+    expect(formatRouteDepth(route)).toBe('±1.00 oct')
+    expect(formatRouteDepth({ ...route, bipolar: false })).toBe('+1.00 oct')
+    expect(formatRouteDepth({ ...route, bipolar: false, amount: -0.5 })).toBe('−2.00 oct')
     // The RANGE stays in the target's own unit, which is where Hz belongs.
     const reg = { target: TARGET_SRC_RATE, index: LFO_SOURCE_0 + 1, stage: 0, scale: 1 }
     const text = routeTooltip(route, reg, 1)
-    expect(text).toContain('LFO 1 → LFO 2 RATE')
-    expect(text).toContain('±1.00 oct')
-    expect(text).toContain('0.50 Hz … 2.00 Hz')
+    expect(text).toContain('LFO 1 → LFO 2 rate')
+    expect(text).toContain('±1.00 oct')
+    expect(text).toContain('0.50 Hz … 2.00 Hz')
   })
 
   it('renders percent targets as percent', () => {
-    expect(formatTargetValue(TARGET_SLOT_MANGLE_MIX, 0.25)).toBe('25 %')
-    expect(formatTargetValue(TARGET_SLOT_SEM, 12)).toBe('12.0 st')
+    expect(formatTargetValue(TARGET_SLOT_MANGLE_MIX, 0.25)).toBe('25 %')
+    expect(formatTargetValue(TARGET_SLOT_SEM, 12)).toBe('12.0 st')
   })
 })
 

@@ -23,10 +23,10 @@ describe('effectCatalog shared add-effect source', () => {
     // Spot-check the well-known stock effects so a regression that drops one is caught.
     expect(stockPluginIds()).toEqual(
       expect.arrayContaining([
-        'compressor', 'limiter', 'overdone', 'transientproc', 'resonancesuppressor',
-        'xletheq', 'xlethfilter', 'distortion', 'waveshaper',
+        'compressor', 'glue', 'opto', 'fet', 'varimu', 'limiter', 'overdone', 'transientproc', 'resonancesuppressor',
+        'xletheq', 'xlethfilter', 'distortion', 'waveshaper', 'amp',
         'uniflange', 'chorus', 'flanger', 'phaser', 'phanjer',
-        'delay', 'reverb', 'smartbalance',
+        'delay', 'reverb', 'smartbalance', 'fedda', 'pitchshifter', 'szkrezh',
       ]),
     )
   })

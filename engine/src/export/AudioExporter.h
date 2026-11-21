@@ -30,7 +30,17 @@ public:
     struct Config {
         std::string outputPath;
         Format      format      = Format::WAV;
-        int         sampleRate  = 44100;    // 44100 or 48000
+        int         sampleRate  = 44100;    // rate of the FILE: 44100 or 48000
+        // Rate the engine MIXES at; 0 = same as sampleRate. The bridge sets it
+        // to the session rate so an export is the mix the user has been hearing
+        // (pitch/stretch engines and plugin latencies behave differently when
+        // the whole engine is re-prepared at another rate); the finished render
+        // is then resampled to sampleRate. startBeat/endBeat/tail are converted
+        // to samples at THIS rate.
+        int         mixSampleRate = 0;
+        int renderRate() const {
+            return mixSampleRate > 0 ? mixSampleRate : (sampleRate > 0 ? sampleRate : 44100);
+        }
         int         bitDepth    = 24;       // WAV: 16 / 24 / 32(float)
         int         mp3Bitrate  = 320;      // kbps
         int         flacLevel   = 5;        // 0..8
@@ -45,7 +55,7 @@ public:
         // Phase 3A tail policy. Default (HardCut, maxTailSamples == 0) reproduces
         // pre-3A behaviour: render exactly [startBeat, endBeat) with no tail. The
         // bridge derives this from the project LoopRegion via
-        // xleth::computeTailRenderPlan() at the export sample rate.
+        // xleth::computeTailRenderPlan() at the MIX rate (renderRate()).
         xleth::TailRenderPlan tail{};
 
         // ── Loudness normalisation (opt-in; see NormalizationReport below) ────
@@ -115,6 +125,15 @@ public:
                                                  double targetLufs,
                                                  double maxDbtp,
                                                  bool allowUpwardGain);
+
+    // Convert a finished render from the mix rate to the file's rate. `out` is
+    // exactly the same span of time as `in` (length = round(n * outRate /
+    // inRate)) and is time-aligned with it sample-for-sample: the resampler's
+    // filter delay is compensated, so an event at time t stays at time t.
+    // inRate == outRate copies. Returns false only if the resampler could not
+    // be created.
+    static bool resampleBuffer(const juce::AudioBuffer<float>& in, int inRate, int outRate,
+                               juce::AudioBuffer<float>& out);
 
     struct PrerollPlan {
         // Track-path latency term of the pre-roll. The MixEngine-driven

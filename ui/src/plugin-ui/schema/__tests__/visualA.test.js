@@ -12,7 +12,7 @@ import {
   getAppearanceRulesForType,
   isRawColorLike,
 } from '../../appearance/appearanceRegistry.js'
-import { isSaveAllowed } from '../../designer/validationStatus.js'
+import { isSaveAllowed } from '../validationStatus.js'
 import { SHIPPED_LAYOUTS } from '../../layouts/index.js'
 import { COMPRESSOR_MANIFEST } from '../../manifests/compressor.js'
 import { validate } from '../validate.js'

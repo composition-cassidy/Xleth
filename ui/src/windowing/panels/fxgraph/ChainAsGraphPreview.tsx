@@ -1,5 +1,7 @@
 import React from 'react';
 import { resolveChainEffectDisplayName } from '../../../fxgraph/chainToGraphState.js';
+import { DEVICE_NAMES } from '../../../components/devices/deviceNames.js';
+import styles from './FxGraphPanel.module.css';
 
 export interface ChainEffect {
   nodeId?: number;
@@ -33,9 +35,8 @@ export function resolvePreviewEffectLabel(
 
 function PreviewConnector() {
   return (
-    <div className="xleth-chain-graph-preview__connector" aria-hidden="true">
-      <span className="xleth-chain-graph-preview__line" />
-      <span className="xleth-chain-graph-preview__arrow">-&gt;</span>
+    <div className={`xleth-chain-graph-preview__connector ${styles.chainConnector}`} aria-hidden="true">
+      <span className={`xleth-chain-graph-preview__line ${styles.chainLine}`} />
     </div>
   );
 }
@@ -51,19 +52,20 @@ function PreviewNode({
 }) {
   return (
     <div
-      className={`xleth-chain-graph-preview__node xleth-chain-graph-preview__node--${kind}`}
+      className={`xleth-chain-graph-preview__node xleth-chain-graph-preview__node--${kind} ${styles.chainNode}`}
+      data-kind={kind}
       role="listitem"
       aria-label={label}
     >
       <span className="xleth-chain-graph-preview__node-label">{label}</span>
       {effect?.bypassed && (
-        <span className="xleth-chain-graph-preview__badge">Bypassed</span>
+        <span className={`xleth-chain-graph-preview__badge ${styles.chainBadge}`}>Bypassed</span>
       )}
       {effect?.missing && (
-        <span className="xleth-chain-graph-preview__badge">Missing</span>
+        <span className={`xleth-chain-graph-preview__badge ${styles.chainBadge}`}>Missing</span>
       )}
       {effect?.crashed && (
-        <span className="xleth-chain-graph-preview__badge">Crashed</span>
+        <span className={`xleth-chain-graph-preview__badge ${styles.chainBadge}`}>Crashed</span>
       )}
     </div>
   );
@@ -75,16 +77,16 @@ export default function ChainAsGraphPreview({
 }: ChainAsGraphPreviewProps) {
   return (
     <section
-      className="xleth-chain-graph-preview"
+      className={`xleth-chain-graph-preview ${styles.chainPreview}`}
       aria-label="Read-only Mixer Chain graph preview"
     >
-      <p className="xleth-chain-graph-preview__notice">
+      <p className={`xleth-chain-graph-preview__notice ${styles.copy}`}>
         Preview only. Mixer Chain still owns routing.
       </p>
-      <div className="xleth-chain-graph-preview__rail" role="list">
-        <PreviewNode label="Track Input" kind="io" />
+      <div className={styles.chainRail} role="list">
+        <PreviewNode label="Track input" kind="io" />
         {chain.map((effect, index) => {
-          const label = resolvePreviewEffectLabel(effect, vstPlugins);
+          const label = (effect.pluginId && DEVICE_NAMES[effect.pluginId]) || resolvePreviewEffectLabel(effect, vstPlugins);
           const key = `${effect.nodeId ?? effect.pluginId ?? 'effect'}-${index}`;
           return (
             <React.Fragment key={key}>
@@ -94,7 +96,7 @@ export default function ChainAsGraphPreview({
           );
         })}
         <PreviewConnector />
-        <PreviewNode label="Track Output" kind="io" />
+        <PreviewNode label="Track output" kind="io" />
       </div>
     </section>
   );

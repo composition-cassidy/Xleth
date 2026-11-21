@@ -1,4 +1,7 @@
 #pragma once
+#include "LensRoam.h"
+#include "Clone.h"
+#include "ColorGrade.h"
 #include "ParamTrack.h"
 #include "SamplerModulationConfig.h"
 
@@ -124,12 +127,13 @@ struct SourceMedia {
     bool        posterReady = false;
 
     // ── Whole-source preview proxy (preview-only) ────────────────────────────
-    // ONE small all-intra proxy of the ENTIRE source, downscaled to
+    // ONE small proxy of the ENTIRE source (H.264 or legacy all-intra — see
+    // ProxyCodec in ProxyTranscoder.h; the path is codec-tagged), downscaled to
     // previewProxyHeight (aspect-preserved). When ready, ALL preview decode —
     // grid cells AND fullscreen/backdrop layers — reads frames from this proxy
     // instead of the 4K original (FrameCollector substitutes the path; frame
     // indices map 1:1 because every source frame is kept at the source fps).
-    // Random access into the small intra proxy is cheap, so LIVE preview stays
+    // Random access into the small proxy is cheap, so LIVE preview stays
     // smooth even when scrubbing into previously-unvisited regions. Generated
     // once in the background on the ProxyManager pool; persisted + reused across
     // sessions (re-validated against disk on load, like posterPath). NEVER
@@ -150,6 +154,11 @@ struct SourceMedia {
     // pool; NOT serialized (rebuilt from disk / regenerated). Touched only by the
     // video thread (drain installs, FrameCollector reads).
     std::unordered_map<int, std::string> thumbnailPaths;
+
+    // Source Color Grade (model/ColorGrade.h): the repair of this footage.
+    // Belongs to the source, so every clip and region cut from it inherits it
+    // and deleting a clip never loses it. Default = neutral, no change.
+    ColorGrade colorGrade;
 };
 
 // ─── SampleSlot ───────────────────────────────────────────────────────────────
@@ -411,12 +420,17 @@ struct SampleRegion {
         double      endTime   = 0.0;
         int         number    = 0;
         std::string text;
+        // Quick Notation: where inside THIS syllable the 32nd-note symbols
+        // (' # x) start, as a percentage of the syllable's own length. Saved
+        // with the project so later sessions reuse what was tuned by ear.
+        double      quickOffsetPercent = 50.0;
     };
     std::vector<Syllable> syllables;
 
     // ── On-demand proxy state (per-region, quote-scoped) ─────────────────────
     // Generated when this region is placed on a non-Chorus/non-Crash grid cell.
-    // The proxy is a half-resolution DNxHR LB transcode covering only the
+    // The proxy is a half-resolution transcode (H.264 <id>.h264.mov, or legacy
+    // DNxHR LB <id>.mxf — see ProxyCodec) covering only the
     // [proxyStartTime, proxyEndTime] range in the source file (seconds).
     // When a VideoDecoder reads this proxy, time 0 in the proxy corresponds to
     // proxyStartTime in the source, so callers subtract proxyStartTime from
@@ -471,6 +485,11 @@ struct SampleRegion {
         for (const auto& s : slots) if (s.solo) return true;
         return false;
     }
+
+    // Clip Color Grade for a Pattern Track (model/ColorGrade.h): this region's
+    // own look wherever a pattern plays it, applied after its source's grade.
+    // The Clip-level counterpart of Clip::colorGrade. Default = neutral.
+    ColorGrade colorGrade;
 };
 
 // ─── StretchMethod ────────────────────────────────────────────────────────────
@@ -688,6 +707,17 @@ struct Clip {
     // Per-clip modulation FX (Vibrato / Scratch / video companion).
     // Phase A: data only — no DSP reads this yet. Defaults are all-disabled.
     ClipModulation modulation;
+
+    // Lens: framing of this clip's video inside its grid cell (Clip Track
+    // event lens, docs/XLETH_LENS_ROAM_SPEC.md). A NEW clip starts at fit =
+    // Cover; a clip loaded without a "lens" key (pre-v8 project) loads as
+    // identity, i.e. Stretch, today's rendering. See model/LensRoam.h.
+    LensTrack lens{ LensParams::newContentDefault(), {} };
+
+    // Clip Color Grade (model/ColorGrade.h): this one instance's look, applied
+    // after its source's grade. A struct copy (duplicate, split, paste) carries
+    // it; the copy is then independent. Default = neutral.
+    ColorGrade colorGrade;
 
     bool isSyllableClip() const { return syllableIndex >= 0; }
 };
@@ -1027,6 +1057,54 @@ inline float zprLog2ToZoom(double log2Zoom) {
     return static_cast<float>(std::exp2(log2Zoom));
 }
 
+// Motion blur for TRANSFORM animation (render/MotionBlur.h). A virtual shutter
+// open for `shutterAngleDeg / 360` of each output frame, centred on the frame:
+// the compositor averages the moving cell over that window, so a fast Lens /
+// Roam / Sweep / Zoom-pan-rot move smears along its path instead of strobing.
+// Only the transform is integrated; the video's own pixels are never blurred.
+//
+// Two independent instances exist:
+//   * project-wide (Timeline::getMotionBlur, project.json "motionBlur"):
+//     Lens, Roam and Sweep on every grid cell and fullscreen layer;
+//   * per track on Zoom/pan/rot (ZoomPanRotSettings::motionBlur): the note- and
+//     slide-triggered ZPR animation. Deliberately NOT governed by the
+//     project-wide one, in either direction.
+// Saved as {"enabled": bool, "shutterAngle": degrees}.
+struct MotionBlurSettings {
+    bool  enabled         = false;
+    float shutterAngleDeg = 180.0f;   // 180 = the film-camera default
+
+    static constexpr float kMaxShutterAngleDeg = 360.0f;
+
+    // Garbage (NaN, negative) reads as closed; > 360 is held at a full frame.
+    static float sanitizeShutter(float deg) {
+        if (!std::isfinite(deg) || deg < 0.0f) return 0.0f;
+        return deg > kMaxShutterAngleDeg ? kMaxShutterAngleDeg : deg;
+    }
+    // True when the shutter actually integrates time.
+    bool active() const { return enabled && shutterAngleDeg > 0.0f; }
+
+    bool operator==(const MotionBlurSettings& o) const {
+        return enabled == o.enabled && shutterAngleDeg == o.shutterAngleDeg;
+    }
+    bool operator!=(const MotionBlurSettings& o) const { return !(*this == o); }
+};
+
+inline nlohmann::json motionBlurToJson(const MotionBlurSettings& m) {
+    return nlohmann::json{ {"enabled", m.enabled}, {"shutterAngle", m.shutterAngleDeg} };
+}
+
+// Tolerant: a missing or malformed field keeps its default (off, 180 degrees).
+inline MotionBlurSettings motionBlurFromJson(const nlohmann::json& j) {
+    MotionBlurSettings m;
+    if (!j.is_object()) return m;
+    if (j.contains("enabled") && j.at("enabled").is_boolean())
+        m.enabled = j.at("enabled").get<bool>();
+    if (j.contains("shutterAngle") && j.at("shutterAngle").is_number())
+        m.shutterAngleDeg = MotionBlurSettings::sanitizeShutter(j.at("shutterAngle").get<float>());
+    return m;
+}
+
 struct ZoomPanRotSettings {
     bool   enabled          = false;
     float  startZoom        = 1.0f;
@@ -1065,6 +1143,12 @@ struct ZoomPanRotSettings {
     OnEndMode     onEndMode            = OnEndMode::Hold;
     RetriggerMode retriggerMode        = RetriggerMode::Restart;
     float         retriggerCrossfadeMs = 50.0f; // only meaningful when retriggerMode == Crossfade
+
+    // This track's ZPR motion blur. Independent of the project-wide setting
+    // (see MotionBlurSettings). Read from the TRACK's ZPR only: it blurs the
+    // composed ZPR pose, note channel and slide delta layer alike, so the
+    // copy inside SlideNoteEffectSettings::zoomPanRot is never consulted.
+    MotionBlurSettings motionBlur;
 
     // Named-preset bookkeeping. The preset library is ui/electron-main/fx-presets.js
     // with effectType "xform" (ui/src/fx-presets/effectPresetAdapters.js); this
@@ -1151,6 +1235,71 @@ struct SlideNoteEffectSettings {
     SlideTVSettings    tv;
 };
 
+// ─── NoteFadeSettings — Pattern-track-exclusive automatic per-note video fade ──
+//
+// Every normal PatternNote emits its own VideoEvent whose durationBeats IS the
+// note's length, and a grid cell simply disappears once that event ends (there
+// is no hold-through-gap for grid cells).  That makes "fade every note's video
+// in and/or out" expressible entirely as an opacity envelope over the note's
+// own span — no shader, no chain pass, no extra compositor stage.
+//
+// It is deliberately NOT a VisualEffect chain entry:
+//   * A chain entry is per-track but type-agnostic; this one is meaningless on a
+//     Clip track, whose events are clips and which already has a hand-authored
+//     per-clip fade envelope (Clip::fadeInPercent / fadeOutPercent).
+//   * The chain runs on the GPU, one pass per entry, against a cell-sized target
+//     that knows nothing about note timing.  The fade needs beat-space note
+//     timing, which only FrameCollector has.
+// It follows SlideNoteEffectSettings instead: a separate per-track config,
+// gated on TrackInfo::Type::Pattern in both the UI and the collector.
+//
+// LengthMode decides how the LENGTH of one fade is specified; each side (in and
+// out) carries its own mode + all three values, so switching modes back and
+// forth never loses the other modes' settings.
+//
+//   FollowNoteLength — length is `percent` of the note's own duration. Default,
+//                      and the only mode that stays musical across every note
+//                      length in a pattern.
+//   Division         — a fixed musical length: `divisionDenominator` D means
+//                      4/D beats, matching the house convention used by the
+//                      Sampler / Phanjer tempo-sync dropdowns (D=4 is one beat,
+//                      D=16 a sixteenth note). Capped at one beat (D>=4).
+//   Milliseconds     — a fixed wall-clock length, tempo-independent.
+//
+// Whatever the mode, the resolved length is expressed back as a PERCENT of the
+// note so it can go straight through evaluateClipFadeGain (audio/ClipFade.h) —
+// the same evaluator the user-authored clip fade uses, so both fade kinds share
+// one curve implementation and one in+out > 100% normalization rule.
+//
+// The curve options are named relative to the SILENT end of the fade, not to
+// time, because evaluateClipFadeGain feeds the fade-out its bezier reversed
+// (x = remaining/ratio). Naming them that way makes one option mean the same
+// shape on both sides.
+struct NoteFadeSettings {
+    enum class LengthMode { FollowNoteLength = 0, Division = 1, Milliseconds = 2 };
+    enum class Curve      { Linear = 0, Smooth = 1, Snappy = 2, Gentle = 3 };
+
+    // One fade side. Both sides are configured independently — "fade in and/or
+    // fade out" is expressed by zeroing the side you do not want.
+    struct Side {
+        LengthMode mode                = LengthMode::FollowNoteLength;
+        float      percent             = 10.0f;  // FollowNoteLength: 0..100 of note length
+        int        divisionDenominator = 16;     // Division: length = 4/D beats
+        float      ms                  = 60.0f;  // Milliseconds: length in ms
+        Curve      curve               = Curve::Linear;
+    };
+
+    bool enabled = false;
+    Side fadeIn;
+    Side fadeOut;
+};
+
+// Smallest legal note-division denominator: D=4 is exactly one beat, the cap the
+// feature is specified to. Larger D = shorter fade; 64 (a 64th note) is the
+// shortest offered.
+inline constexpr int kNoteFadeMinDivisionDenominator = 4;
+inline constexpr int kNoteFadeMaxDivisionDenominator = 64;
+
 struct SlideAnimationEvent {
     double   startBeat      = 0.0;
     double   durationBeats  = 0.0;
@@ -1169,7 +1318,8 @@ struct VisualEffect {
         ZoomPanRotation    = 4,
         ChromaKey          = 5,
         Outline            = 6,
-        DropShadow         = 7
+        DropShadow         = 7,
+        VisualEcho         = 8
     };
     Type type   = Type::Desaturation;
     bool bypassed = false;
@@ -1228,6 +1378,44 @@ struct VisualEffect {
     //          processEffectChain switch; see below)
     //       3. ui/src/components/grid/ChainableEffectParams.jsx (fx.type 6 / 7 panels)
     //
+    // VisualEcho:         [0]=taps           1..8, rounded. Number of echo repeats drawn
+    //                                        BEHIND the live cell.
+    //                     [1]=decay          0..1 per-tap gain g; tap n draws at g^n
+    //                                        (times the cap taper, see below)
+    //                     [2]=delayNodeId    APG node uid of the Delay FX on this track
+    //                                        whose repeat interval drives the echo.
+    //                                        <0 = unbound; the effect is fully inert.
+    //                                        Stored as a float — node uids are small
+    //                                        ints and exact in float32 well past 2^24.
+    //                     [3]=scaleTrail     0..1 scale-toward-centre per tap
+    //                     [4]=flipMode       0=None 1=AltHorizontal 2=AltVertical
+    //                                        3=AltHalfTurn 4=KleinCycle
+    //                     [5]=drift          0..1 ping-pong edge drift; applied ONLY
+    //                                        when the bound Delay is in PingPong mode
+    //                     [6]=blendMode      0=Normal 1=Additive (trail only; the live
+    //                                        cell always composites normally)
+    //                     [7]=followFeedback 0/1 — when 1, [1] is ignored and the decay
+    //                                        is taken from the Delay's own feedback %
+    //   ^ CANONICAL LAYOUT. Like Outline / Drop Shadow this is NOT a case in the
+    //     processEffectChain switch — it is a COMPOSITE-TIME stage (see
+    //     isTerminalStageEffect / drawEchoTaps in GridCompositor.cpp), because it
+    //     needs the cell's finished pixels from EARLIER FRAMES, which no
+    //     single-frame chain pass can see. Keep in sync with:
+    //       1. engine/src/render/VisualEchoTypes.h    (EchoSettings, flip modes, caps)
+    //       2. engine/src/render/FrameCollector.cpp   (resolveEchoSettings)
+    //          engine/src/render/GridCompositor.cpp   (pushEchoFrame / drawEchoTaps)
+    //       3. ui/src/components/grid/ChainableEffectParams.jsx (fx.type === 8 panel)
+    //     There is deliberately NO shader and no constant buffer: every tap is an
+    //     ordinary drawCell of an already-rendered texture, so the whole effect is
+    //     geometry + opacity + the existing orientation transform.
+    //
+    //   Unlike every other entry here it is also STATEFUL: the compositor keeps a
+    //   per-cell ring of that cell's own finished frames. Consequences worth
+    //   knowing before touching it are in the GridCompositor::pushEchoFrame
+    //   comment — notably that the ring is pushed once per DISTINCT output frame
+    //   (a paused preview re-compositing the same frame must not advance it), and
+    //   that a transport seek flushes it while a LOOP WRAP deliberately does not.
+    //
     //   These two are LAYER STYLES, not pixel filters, and that makes them unlike
     //   every other entry above in three ways worth knowing before touching them:
     //     • They draw OUTSIDE the source's own bounds, so they run in a render
@@ -1241,6 +1429,12 @@ struct VisualEffect {
     //     • Their spatial radii are in TRUE cell pixels, not the output pixels
     //       ChromaKey's choke/edgeBlur use, because the padded target's real
     //       dimensions are passed down in the constant buffer.
+    // Stable identity inside its track's chain (> 0 once the chain is loaded or the
+    // effect added): it travels with the effect through reorder, remove and undo,
+    // so animation keys (TrackInfo::fxKeys) keep addressing the same effect when
+    // its INDEX changes. Never reused within a session. Saved only for an effect
+    // that has keys.
+    int uid = 0;
     float params[16] = {};
 };
 
@@ -1262,6 +1456,23 @@ struct PatternNote {
     bool     isSlide      = false;
     float    slideCurveCx = 0.5f;   // bezier control point (cubic 0,0 → cx,cy → 1-cx,1-cy → 1,1)
     float    slideCurveCy = 0.5f;
+
+    // ── Lens override (docs/XLETH_LENS_ROAM_SPEC.md, model/LensRoam.h) ────
+    // Null = Follow (the default; every pre-P5 note). Living on the note makes
+    // the spec's {patternId, noteId} key implicit, so it survives move,
+    // quantize, undo/redo and save/load with the note, and is dropped with it.
+    // Copies (paste, duplicate, Make Unique Copy) carry it to their new ids.
+    // Every note converter must carry this field: jsToPatternNote /
+    // patternNoteToJs (engine) and toEngineNote (piano roll), or a piano-roll
+    // edit silently erases it. Not evaluated until P8.
+    LensNoteOverridePtr lensOverride;
+
+    // ── Voice pin (Clones, model/Clone.h) ─────────────────────────────────
+    // Which cell plays this note when its track has Voice clones: -1 = Auto
+    // (the default; absent on disk), 0 = the source cell, k >= 1 = Voice
+    // clone k. Lives on the note like lensOverride (the spec's {patternId,
+    // noteId} key), so every note converter must carry it.
+    int voicePin = kVoicePinAuto;
 };
 
 // ─── Pattern ──────────────────────────────────────────────────────────────────
@@ -1584,25 +1795,36 @@ inline std::string normalizeTrackCustomColor(const std::string& v) {
 }
 
 // ─── Mixer routing model ─────────────────────────────────────────────────────
-// Source track owns its route. targetTrackId = -1 means Master (default).
-// sends and sidechainRoutes are reserved for Prompt 4+ and are always empty
-// in Prompt 2A. All three types are persisted additively (omitted when default).
+// Source track owns its routes. A track's audible destinations are its primary
+// outputRoute (targetTrackId = -1 means Master, the default) PLUS any `sends`
+// (FL-style multi-wiring: extra post-fader audio routes into other tracks, each
+// with its own level). sidechainRoutes are silent key routes. All three are
+// persisted additively (omitted when default).
 
 struct TrackOutputRoute {
     int targetTrackId = -1;  // -1 = Master
 };
 
-// Reserved for Prompt 4+. Not wired to DSP in Prompt 2A.
+// Max extra audio routes per track (RoutePlanSlotInput::kMaxSends mirrors it).
+constexpr int kMaxTrackSends = 8;
+
+// An extra audible route: the source's post-fader/post-pan signal summed into
+// another track's pre-chain input at `gain` (clamped [0,2]). Targets are always
+// real tracks — never Master (Master is reached through outputRoute) — and are
+// unique per source and distinct from outputRoute.targetTrackId.
 struct TrackSend {
-    std::string routeId;
+    std::string routeId;     // unused; kept for forward compat
     int   targetTrackId = -1;
     float gain          = 1.0f;
-    float pan           = 0.0f;
-    bool  preFader      = false;
+    float pan           = 0.0f;  // unused
+    bool  preFader      = false; // unused (always post-fader)
     bool  enabled       = true;
 };
 
-// Silent key route. Reserved for Prompt 4+. Not wired to DSP in Prompt 2A.
+// Silent key route. An empty targetEffectInstanceId is a TRACK-LEVEL route
+// (FL's "Sidechain to this track"): the key reaches every sidechain-capable
+// effect on the target track; each effect's own external switch decides
+// whether it listens.
 struct SidechainRoute {
     std::string routeId;
     int         targetTrackId          = -1;
@@ -1684,6 +1906,18 @@ struct TrackInfo {
     static constexpr double kHoldLastFrameThresholdUnlimited = -1.0;
     double videoHoldLastFrameThresholdBeats = kHoldLastFrameThresholdUnlimited;
 
+    // Smart hold: decide per gap whether to hold, from the track's own rhythm
+    // (model/SmartHold.h). Gaps inside a phrase hold; the long rests between
+    // phrases, and the space after the last clip, go blank. Overrides the
+    // threshold above while on. Only consulted when videoHoldLastFrame is true.
+    bool videoHoldSmart = false;
+
+    // What fills a held gap. false = freeze the clip's last frame (the
+    // original behaviour). true = keep playing the source on from where the
+    // clip stopped, until the next clip/note takes over. Only consulted when
+    // videoHoldLastFrame is true.
+    bool videoHoldKeepPlaying = false;
+
     // ── Visual compositor effect settings ────────────────────────────────
     float                           gapScaleOverride = -1.0f; // -1 = use global, >=0 = override
     float                           cornerRadius     = 0.0f;  // 0.0–1.0
@@ -1691,7 +1925,60 @@ struct TrackInfo {
     PingPongSettings                pingPong;
     ZoomPanRotSettings              zoomPanRot;
     SlideNoteEffectSettings         slideNoteEffect;
+    // Pattern-track exclusive. Ignored outright on a Clip track: FrameCollector
+    // gates on type == Pattern, and neither UI surface offers the section for a
+    // Clip track. See NoteFadeSettings and model/NoteFade.h.
+    NoteFadeSettings                noteFade;
     std::vector<VisualEffect>       visualEffectChain;
+
+    // Layer Color Grade (model/ColorGrade.h): the look of this track's cell,
+    // applied after the Source and Clip grades and before the visual effect
+    // chain. Belongs to the track, so it follows whatever the cell shows.
+    ColorGrade                      colorGrade;
+
+    // ── Lens + Roam (model/LensRoam.h) ───────────────────────────────────
+    // roam: transform of this track's CELL (offset/scale/rotation/bounds/layer).
+    // trackLens: Pattern-track exclusive. Each source the track plays, keyed by
+    // regionId (so the spec's {trackId, regionId} key), has a default Lens plus
+    // its hit curve. A source with no entry is new and resolves to fit = Cover
+    // (lensroam::resolveSourceLens); pre-v8 sources are materialized as Stretch
+    // on load. Unused on a Clip track (each clip carries its own lens).
+    RoamTrack                       roam;
+    std::map<int, LensTrack>        trackLens;
+    // sweep (P11): this track's timeline-absolute Lens offset, a layer on the
+    // framing after the note animation (zoom multiplies; centre and rotation add).
+    // Missing / empty = no Sweep.
+    SweepTrack                      sweep;
+    // Video effect parameter keys (Motion view): timeline-absolute keys on a chain
+    // effect's params[], addressed by VisualEffect::uid + params index. A keyed
+    // param follows its keys, an unkeyed one holds the effect's own value.
+    // Evaluated by LensRoamSnapshot::applyFxKeys, on the request's copy of the chain.
+    std::vector<FxKey>              fxKeys;
+    // The next VisualEffect::uid this track hands out (never lower than the
+    // highest uid in its chain + 1; Timeline::addVisualEffect enforces that).
+    int                             nextFxUid = 1;
+    // Parent (Motion view, docs/XLETH_MOTION_VIEW_DESIGN.md R6-R8, 2.1): the
+    // track whose cell this track's cell follows (Roam only: offset, scale,
+    // rotation). -1 = none. A dangling id (the track is gone) resolves as no
+    // parent everywhere. Edited only through SetTrackParentCommand (which
+    // rejects self, cycles and chains deeper than 4); RemoveTrackCommand
+    // detaches the children of the track it removes.
+    int                             parentTrackId = -1;
+
+    // Clone (docs/XLETH_CLONE_SPEC.md, model/Clone.h). cloneOf = the source
+    // Pattern Track this video-only track belongs to; -1 = an ordinary track
+    // (every field below is then unused and never saved). A Voice clone plays
+    // the notes the source cannot (polyphony) in its own cell; a Trail clone
+    // replays the source's whole cell result trail.delayTicks later. Clones
+    // are Pattern-type, visualOnly tracks with no blocks of their own; a
+    // Trail's added Roam is this track's `roam` (offset only).
+    int                             cloneOf       = -1;
+    CloneKind                       cloneKind     = CloneKind::Voice;
+    CloneLensMode                   cloneLensMode = CloneLensMode::Linked;   // Voice only
+    TrailSettings                   trail;                                   // Trail only
+    bool isClone() const { return cloneOf >= 0; }
+    bool isVoiceClone() const { return cloneOf >= 0 && cloneKind == CloneKind::Voice; }
+    bool isTrailClone() const { return cloneOf >= 0 && cloneKind == CloneKind::Trail; }
 
     // Sub-column subdivision used when placing this track in the grid. 1 =
     // full column (default), 2 = half, 4 = quarter, 8 = eighth. Drives the
@@ -2051,6 +2338,119 @@ inline SnapshotTransition::Type stringToSnapshotTransitionType(const std::string
     return SnapshotTransition::Type::Crossfade;
 }
 
+// ─── TrackLanding ─────────────────────────────────────────────────────────────
+// One track's move into its slot in the cue's incoming snapshot (B), ending
+// exactly on the cue pin (docs/XLETH_LANDING_SPEC.md). The move runs during the
+// LEAD-IN before the pin: the track flies from a start rect to the rect its
+// slot occupies in B, so the cut is seamless for that track.
+//
+// Owned by the GridCue for the same reason SnapshotTransition is: a snapshot is
+// reused across many cues, and only the cue is an unambiguous boundary.
+//
+// Nothing here is baked. The destination is B's CURRENT slot, resolved at
+// render time (Timeline::landingsAt), and a landing whose track, slot or
+// snapshot is gone is skipped by the resolver and left untouched in storage.
+struct TrackLanding {
+    static constexpr int64_t kDefaultLeadInTicks = 960;        // 1 beat @ 960 PPQ
+    static constexpr int64_t kMaxLeadInTicks     = 960 * 16;   // 4 bars of 4/4
+    static constexpr int     kMaxLandingsPerCue  = 16;
+    static constexpr float   kDefaultEdgeAngleDeg = 270.0f;
+
+    // Where the move starts.
+    //   Edge       — off-canvas along edgeAngleDeg
+    //   Grow       — a zero-size rect at the destination centre
+    //   WhereItWas — the track's rect in the outgoing snapshot (A)
+    //   Custom     — the stored canvas-normalized rect
+    enum class From : uint8_t { Edge = 0, Grow = 1, WhereItWas = 2, Custom = 3 };
+
+    int      trackId      = -1;
+    int64_t  leadInTicks  = kDefaultLeadInTicks;
+    From     from         = From::Edge;
+    float    edgeAngleDeg = kDefaultEdgeAngleDeg;  // side it enters from: 0=left, 90=top,
+                                                   // 180=right, 270=bottom (the convention
+                                                   // of SnapshotTransition::geomAngleDeg)
+    float    customX = 0.0f, customY = 0.0f, customW = 0.0f, customH = 0.0f;  // canvas-normalized
+    float    fromOpacity  = 1.0f;       // 0..1, eases to 1.0 at the pin; 1.0 = no fade
+    SnapshotTransitionEasingCurve easing{0.22f, 1.0f, 0.36f, 1.0f};  // "Land" (strong ease-out)
+
+    void normalize() noexcept {
+        leadInTicks = std::clamp<int64_t>(leadInTicks, 0, kMaxLeadInTicks);
+
+        switch (from) {
+            case From::Edge: case From::Grow: case From::WhereItWas: case From::Custom: break;
+            default: from = From::Edge; break;
+        }
+
+        if (!std::isfinite(edgeAngleDeg)) {
+            edgeAngleDeg = kDefaultEdgeAngleDeg;
+        } else {
+            edgeAngleDeg = std::fmod(edgeAngleDeg, 360.0f);
+            if (edgeAngleDeg < 0.0f) edgeAngleDeg += 360.0f;
+            if (edgeAngleDeg >= 360.0f) edgeAngleDeg = 0.0f;   // -1e-9 + 360 rounds up to 360
+        }
+
+        if (!std::isfinite(customX)) customX = 0.0f;
+        if (!std::isfinite(customY)) customY = 0.0f;
+        if (!std::isfinite(customW)) customW = 0.0f;
+        if (!std::isfinite(customH)) customH = 0.0f;
+        customX = std::clamp(customX, 0.0f, 1.0f);
+        customY = std::clamp(customY, 0.0f, 1.0f);
+        customW = std::clamp(customW, 0.0f, 1.0f);
+        customH = std::clamp(customH, 0.0f, 1.0f);
+
+        if (!std::isfinite(fromOpacity)) fromOpacity = 1.0f;
+        fromOpacity = std::clamp(fromOpacity, 0.0f, 1.0f);
+
+        // A non-finite curve resets to THIS struct's default ("Land"), not to
+        // the linear default SnapshotTransitionEasingCurve::normalize falls to.
+        if (!std::isfinite(easing.x1) || !std::isfinite(easing.y1)
+            || !std::isfinite(easing.x2) || !std::isfinite(easing.y2))
+            easing = SnapshotTransitionEasingCurve{0.22f, 1.0f, 0.36f, 1.0f};
+        easing.normalize();
+    }
+};
+
+inline const char* trackLandingFromToString(TrackLanding::From from) {
+    switch (from) {
+        case TrackLanding::From::Grow:       return "grow";
+        case TrackLanding::From::WhereItWas: return "whereItWas";
+        case TrackLanding::From::Custom:     return "custom";
+        case TrackLanding::From::Edge:
+        default:                             return "edge";
+    }
+}
+
+// An unknown string loads as Edge.
+inline TrackLanding::From stringToTrackLandingFrom(const std::string& s) {
+    if (s == "grow")       return TrackLanding::From::Grow;
+    if (s == "whereItWas") return TrackLanding::From::WhereItWas;
+    if (s == "custom")     return TrackLanding::From::Custom;
+    return TrackLanding::From::Edge;
+}
+
+// The one place a landing list is made valid. Every landing is normalized; an
+// entry without a track is dropped; when a trackId appears more than once the
+// LATER entry wins (it takes the earlier one's position); entries past
+// kMaxLandingsPerCue are rejected. Used by Timeline::setCueLandings and by the
+// project loader, so a cue can never hold an invalid list.
+inline void sanitizeTrackLandings(std::vector<TrackLanding>& landings) {
+    std::vector<TrackLanding> out;
+    out.reserve(std::min<size_t>(landings.size(),
+                                 static_cast<size_t>(TrackLanding::kMaxLandingsPerCue)));
+    for (TrackLanding& landing : landings) {
+        if (landing.trackId < 0) continue;
+        landing.normalize();
+        auto same = std::find_if(out.begin(), out.end(),
+            [&](const TrackLanding& l) { return l.trackId == landing.trackId; });
+        if (same != out.end()) {
+            *same = landing;
+        } else if (out.size() < static_cast<size_t>(TrackLanding::kMaxLandingsPerCue)) {
+            out.push_back(landing);
+        }
+    }
+    landings = std::move(out);
+}
+
 // ─── GridCue ──────────────────────────────────────────────────────────────────
 // One entry in the project's time-based snapshot automation. It binds an
 // absolute project tick to a snapshot: at render time the grid arrangement in
@@ -2068,10 +2468,15 @@ inline SnapshotTransition::Type stringToSnapshotTransitionType(const std::string
 // A cue optionally carries a `transition` describing how the boundary AT this
 // cue animates (the cue tick is the transition pin). A default-constructed
 // (disabled) transition means the boundary hard-cuts, exactly as before.
+//
+// A cue also owns its `landings`: per-track moves that END on this cue's pin
+// (see TrackLanding). Empty = today's behaviour. At most one per trackId and at
+// most TrackLanding::kMaxLandingsPerCue; sanitizeTrackLandings enforces both.
 struct GridCue {
     TickTime           tick;         // absolute project tick where snapshotId takes effect
     std::string        snapshotId;   // -> GridSnapshot::id
     SnapshotTransition transition{}; // boundary animation; disabled default = hard cut
+    std::vector<TrackLanding> landings;  // per-track moves ending on the pin; empty = none
 };
 
 // ─── GridLayoutContainer (persisted shape, documented for reference) ──────────
@@ -2093,6 +2498,13 @@ struct GridCue {
 // describing the boundary animation at that cue. The transition object is written
 // ONLY when enabled (omitted entirely for a hard cut) and defaults to a hard cut
 // when absent, so projects saved before transitions existed load unchanged.
+//
+// A cue MAY also carry an additive `landings` array of
+// { trackId, leadInTicks, from, edgeAngleDeg, custom: {x,y,w,h}, fromOpacity,
+//   easing: {x1,y1,x2,y2} }
+// (`from` is "edge" | "grow" | "whereItWas" | "custom"; unknown loads as edge).
+// It is written ONLY when non-empty, and every field is optional on load, so a
+// project without landings serializes byte-identically to before they existed.
 //
 // A dedicated container struct is intentionally unnecessary: Timeline owns the
 // std::vector<GridSnapshot>, active + default identity, global flat cache, and

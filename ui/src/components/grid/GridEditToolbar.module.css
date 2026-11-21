@@ -1,0 +1,93 @@
+/* Edit Grid settings rail, right of the Preview picture (ui/DESIGN.md 8.2).
+ * Neutral chrome: the only colour in grid editing is on the picture
+ * (identity-coloured cells). Sections are kit section strips in the order you
+ * reach for them; Clear layout sits at the bottom, away from the controls you
+ * drag. */
+@layer kit {
+  .rail {
+    box-sizing: border-box;
+    display: flex;
+    flex: 1 1 var(--pv-rail-min, 176px);
+    flex-direction: column;
+    gap: var(--space-2);
+    min-width: var(--pv-rail-min, 176px);
+    max-width: 240px;
+    min-height: 0;
+    overflow-y: auto;
+    background: var(--ui-g1);
+    border-left: 1px solid var(--ui-g4);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+  }
+
+  .section {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+  }
+
+  .body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-1) var(--space-2) 0;
+  }
+
+  /* Two things on one line: a number box either side of a link, or a box and a toggle. */
+  .pair {
+    display: flex;
+    align-items: center;
+  }
+
+  .pair > * + * {
+    margin-left: var(--space-1);
+  }
+
+  .pair .nb {
+    flex: 1 1 0;
+    width: auto;
+    min-width: 0;
+  }
+
+  .icons {
+    display: flex;
+    gap: var(--space-1);
+  }
+
+  .snapSelect,
+  .wide {
+    width: 100%;
+  }
+
+  .numbers {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .readout {
+    color: var(--ui-ink-3);
+    font-size: var(--type-11);
+  }
+
+  .foot {
+    margin-top: auto;
+    padding: 0 var(--space-2) var(--space-2);
+  }
+
+  .rename {
+    box-sizing: border-box;
+    width: 100%;
+    height: var(--ctl-h-sm);
+    padding: 0 var(--space-1);
+    border: 1px solid var(--ui-select);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g0);
+    color: var(--ui-ink);
+    font: inherit;
+  }
+
+  .rename:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 0;
+  }
+}

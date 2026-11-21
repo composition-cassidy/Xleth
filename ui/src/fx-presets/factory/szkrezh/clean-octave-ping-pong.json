@@ -1,0 +1,41 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "szkrezh",
+  "name": "Clean Octave Ping-Pong",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "pitch_src": 0,
+      "pitch": 1200,
+      "pitch_offset": 0,
+      "harmony": 2,
+      "key": 0,
+      "scale": 0,
+      "root": 60,
+      "sync": 1,
+      "splice": 500,
+      "splice_div": 10,
+      "smoothing": 20,
+      "delay": 0,
+      "delay_div": 7,
+      "splice_offset": 0,
+      "delay_offset": 0,
+      "reverse": 1,
+      "recycle": 45,
+      "fb_mode": 1,
+      "low_cut": 80,
+      "high_cut": 20000,
+      "freeze": 0,
+      "dyn_amount": 0,
+      "dyn_threshold": -24,
+      "dyn_attack": 5,
+      "dyn_release": 250,
+      "dyn_target": 0,
+      "quality": 1,
+      "input": 0,
+      "output": 0,
+      "mix": 45
+    }
+  }
+}

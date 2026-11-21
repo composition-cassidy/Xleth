@@ -1,0 +1,25 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "delay",
+  "name": "Pitch Sample Ducked Echo",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "time_l": 500,
+      "time_r": 500,
+      "sync": 1,
+      "sync_div_l": 3,
+      "sync_div_r": 3,
+      "stereo_mode": 1,
+      "feedback": 35,
+      "filter_lo": 200,
+      "filter_hi": 6000,
+      "mod_rate": 0.3,
+      "mod_depth": 0,
+      "stereo_width": 30,
+      "duck_amount": 70,
+      "mix": 30
+    }
+  }
+}

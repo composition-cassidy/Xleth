@@ -339,9 +339,3 @@ int VideoDecoder::timeToFrame(double seconds) const
     if (fps_ <= 0.0) return 0;
     return static_cast<int>(seconds * fps_);
 }
-
-double VideoDecoder::frameToTime(int frameNumber) const
-{
-    if (fps_ <= 0.0) return 0.0;
-    return static_cast<double>(frameNumber) / fps_;
-}

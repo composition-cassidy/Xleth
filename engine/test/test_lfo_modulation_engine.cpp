@@ -289,6 +289,7 @@ static double renderAt(MixEngine& engine, Transport& transport,
     transport.seekToSample(positionSamples);
     juce::AudioBuffer<float> buffer(2, blockSize);
     buffer.clear();
+    engine.refreshTimelineSnapshot();   // the bridge publishes after every edit
     engine.processBlock(buffer, blockSize, transport);
     return publishedValue(engine);
 }
@@ -368,6 +369,7 @@ static void testStopSettlesToBase()
     {
         juce::AudioBuffer<float> buffer(2, 512);
         buffer.clear();
+        fx.engine.refreshTimelineSnapshot();   // the bridge publishes after every edit
         fx.engine.processBlock(buffer, 512, fx.transport);
     }
     CHECK_NEAR(publishedValue(fx.engine), base,
@@ -377,6 +379,7 @@ static void testStopSettlesToBase()
     for (int i = 0; i < 4; ++i) {
         juce::AudioBuffer<float> buffer(2, 512);
         buffer.clear();
+        fx.engine.refreshTimelineSnapshot();   // the bridge publishes after every edit
         fx.engine.processBlock(buffer, 512, fx.transport);
     }
     CHECK_NEAR(publishedValue(fx.engine), base, "further stopped blocks leave it at base");
@@ -477,6 +480,7 @@ static void testConcurrentSnapshotSwap()
         while (!stop.load(std::memory_order_acquire)) {
             buffer.clear();
             fx.transport.seekToSample(pos % 96000);
+            fx.engine.refreshTimelineSnapshot();   // the bridge publishes after every edit
             fx.engine.processBlock(buffer, 256, fx.transport);
             const double v = publishedValue(fx.engine);
             // evaluateModulationMapping always clamps to [0,1], and the inert

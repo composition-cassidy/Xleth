@@ -4,11 +4,20 @@
 //
 // Guards against the exact failure class fixed in 3db1b33: SyncManager::
 // videoTick() performing blocking decoder->seekAndDecode() calls in the
-// bridge (.node/XLETH_CORE_ONLY) build whose output nothing ever consumed
-// (compositor_ is always nullptr there). That dead work cost 100-330ms per
-// scattered seek on the frame-pacing thread and collapsed a real project's
-// preview from 60fps to ~17fps. See:
+// bridge (.node) build whose output nothing ever consumed (compositor_ was
+// always nullptr there). That dead work cost 100-330ms per scattered seek on
+// the frame-pacing thread and collapsed a real project's preview from 60fps
+// to ~17fps. See:
 //   docs / memory: project_preview_fps_synctick_dead_decode
+//
+// That whole path has since been retired (Issue 10 in VIDEO_PREVIEW_AUDIT.txt):
+// SyncManager holds no decoder and no compositor, and the per-tick call it
+// serves the video thread — currentBeatPosition() — runs without the event
+// lock. counters.syncManagerDecodeCount is therefore structurally 0 rather
+// than measured-0, and the videoTick budget below now measures that beat
+// query. The gate is kept because the surrounding budgets (delivered FPS
+// floor, per-stage timings, non-vacuous run) still catch a re-introduction of
+// per-event work on the frame-pacing thread, whatever shape it takes.
 //
 // This is NOT a functional-correctness test — it drives the real preview
 // path (XlethEngineService::videoThreadBody) against a synthetic project
@@ -178,7 +187,7 @@ async function main() {
       totalClips += 1;
 
       // Filler clips: registered but positioned entirely after the active
-      // window, so SyncManager's per-tick loop still has to walk past them
+      // window, so any per-tick loop over the event list has to walk past them
       // (its `continue` on the beat-range check) without ever decoding —
       // this is what mirrors a real project's "many total, few active" shape
       // (the 1738-event project this bug was found on had cells=3-7 active
@@ -224,6 +233,7 @@ async function main() {
     let lastSeenTickCount = -1;
     let lastDecodeCount = 0;
     let lastSnapshot = null;
+    const cadence0 = addon.diag_getVisualPreviewDiagnostic().counters || {};
     const measureStart = Date.now();
     while (Date.now() - measureStart < MEASURE_MS) {
       const d = addon.diag_getVisualPreviewDiagnostic();
@@ -278,6 +288,54 @@ async function main() {
     ok(measuredElapsedMs >= MEASURE_MS * 0.9 && measuredElapsedMs <= MEASURE_MS * 3,
        `measurement wall-clock duration sane (${measuredElapsedMs}ms for a ${MEASURE_MS}ms window)`);
 
+    // Frame cadence. The video thread used to derive its frame index from a
+    // transport position that only moves once per audio block, sampled by an
+    // independent timer: at 60 fps a third of published frames were repeats of
+    // the previous index and a third of indices were skipped, at full delivered
+    // FPS (so the FPS floor above could never see it). The smoothed clock +
+    // centre-of-frame pacing make a repeat structurally impossible in steady
+    // playback; a skip is only a genuine late tick.
+    console.log('\n[ playback cadence + readback policy ]');
+    const cad1 = (lastSnapshot && lastSnapshot.c) || {};
+    ok('cadencePublished' in cad1 && 'cadenceRepeated' in cad1 && 'cadenceSkipped' in cad1,
+       'diagnostic exposes counters.cadencePublished / cadenceRepeated / cadenceSkipped');
+    const published = (cad1.cadencePublished || 0) - (cadence0.cadencePublished || 0);
+    const repeated = (cad1.cadenceRepeated || 0) - (cadence0.cadenceRepeated || 0);
+    const skipped = (cad1.cadenceSkipped || 0) - (cadence0.cadenceSkipped || 0);
+    ok(published >= 60, `published ${published} playback frames in the window (need >= 60)`);
+    ok(repeated <= Math.ceil(published * 0.01),
+       `repeated frame indices = ${repeated} <= 1% of ${published} published`);
+    ok(skipped <= Math.ceil(published * 0.10),
+       `skipped frame indices = ${skipped} <= 10% of ${published} published`);
+    // The readback must stay on FastImmediate. The automatic switch to the
+    // AsyncQueued ring was removed after it was measured delivering 0-18 fps
+    // (warm-up readbacks tripped it on a workstation too); if anything
+    // re-introduces a switch, this goes red.
+    ok(cad1.readbackPolicyActive === 0,
+       `readback policy stayed FastImmediate (readbackPolicyActive=${cad1.readbackPolicyActive})`);
+
+    // Hardware-decoded frames must stay on the GPU. The decoder converts a
+    // D3D11VA frame with a GPU copy + NV12→BGRA shader; the old route
+    // (av_hwframe_transfer_data + sws_scale + upload, 8-19 ms per 720p frame)
+    // is now only a fallback and must not fire while the GPU path is up.
+    // Not applicable (and reported, not asserted) when the fixture is decoded
+    // in software or the device cannot sample NV12.
+    console.log('\n[ hardware decode stays on the GPU ]');
+    ok('decoderHwGpuFrames' in cad1 && 'decoderHwTransferFrames' in cad1 && 'decoderHwGpuPath' in cad1,
+       'diagnostic exposes counters.decoderHwGpuFrames / decoderHwTransferFrames / decoderHwGpuPath');
+    const srcDiag = (addon.diag_getVisualPreviewDiagnostic().activeSources) || [];
+    const hwDecodeActive = srcDiag.some((s) => s.decodePath === 'hardware');
+    if (hwDecodeActive && cad1.decoderHwGpuPath) {
+      ok(cad1.decoderHwGpuFrames > 0,
+         `hw frames converted on the GPU: ${cad1.decoderHwGpuFrames}`);
+      ok(cad1.decoderHwTransferFrames === 0,
+         `no hw frame took the CPU transfer path (decoderHwTransferFrames=${cad1.decoderHwTransferFrames})`);
+    } else {
+      console.log(`  n/a: decodePath=${srcDiag.map((s) => s.decodePath).join(',') || 'none'} ` +
+                  `gpuPath=${cad1.decoderHwGpuPath} (gpu=${cad1.decoderHwGpuFrames} ` +
+                  `transfer=${cad1.decoderHwTransferFrames} sw=${cad1.decoderSwFrames})`);
+    }
+
     // ── Summary table (always printed — this is what makes a failure
     //    diagnosable from CI output alone, no local repro needed) ───────────
     const c = (lastSnapshot && lastSnapshot.c) || {};
@@ -286,15 +344,16 @@ async function main() {
                 `${COLUMNS}x${ROWS} grid, previewFps cap ${PREVIEW_FPS_CAP}`);
     console.log(`delivered FPS    : steady-state avg ${avgFps.toFixed(1)}  (cap ${PREVIEW_FPS_CAP})`);
     console.log(`syncManager decodes: ${lastDecodeCount}  (must be 0)`);
-    console.log(`videoTick (SyncManager::videoTick call only, us):`);
+    console.log(`videoTick (SyncManager beat-query call only, us):`);
     console.log(`  samples=${sortedTicks.length}  mean=${fmtMs(tickMean)}ms  p50=${fmtMs(tickP50)}ms  ` +
                 `p95=${fmtMs(tickP95)}ms  max=${fmtMs(tickMax)}ms`);
-    console.log(`preview-pipeline per-stage (windowed avg, us) — separate stage, starts AFTER videoTick:`);
+    console.log(`preview-pipeline per-stage (windowed avg, us) — separate stage, starts AFTER the beat query:`);
     console.log(`  collect=${fmtMs(c.avgCollectUs)}ms resolve=${fmtMs(c.avgResolveUs)}ms ` +
                 `decode=${fmtMs(c.avgDecodeUs)}ms composite=${fmtMs(c.avgCompositeUs)}ms ` +
                 `readback=${fmtMs(c.avgReadbackUs)}ms swizzle=${fmtMs(c.avgSwizzleUs)}ms ` +
                 `wholeTick=${fmtMs(c.avgTickUs)}ms`);
     console.log(`cells/reqs (max seen): cells=${maxCells} reqs=${maxReqs}`);
+    console.log(`cadence          : published=${published} repeated=${repeated} skipped=${skipped}`);
     console.log('─────────────────────────────────────────────────────────');
 
   } finally {

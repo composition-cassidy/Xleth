@@ -74,14 +74,19 @@ describe('track palette — resolved through ThemeProvider pipeline', () => {
 
   it('default theme palette values match spec', () => {
     const { values } = resolveTheme(defaultTheme as Parameters<typeof resolveTheme>[0]);
-    expect(values['--theme-track-palette-1']).toBe('#4CC9F0');
-    expect(values['--theme-track-palette-16']).toBe('#FB7185');
+    expect(values['--theme-track-palette-1']).toBe('#58B2CE');
+    // Slot 16 was #DB6A7B until UI rebuild Phase 0, which moved it to satisfy
+    // the identity-palette hue-exclusion rule (ui/DESIGN.md §3.4). The full
+    // before/after list is asserted in ui-kit/__tests__/tokens.test.ts.
+    expect(values['--theme-track-palette-16']).toBe('#D76A8F');
   });
 
   it('light theme palette values match spec', () => {
+    // Phase 7: light uses Default's palette so a track keeps its colour across themes
+    // (ui-kit/__tests__/themes.test.ts asserts all 16 slots in every shipped theme).
     const { values } = resolveTheme(lightTheme as Parameters<typeof resolveTheme>[0]);
-    expect(values['--theme-track-palette-1']).toBe('#167FA3');
-    expect(values['--theme-track-palette-16']).toBe('#B43A52');
+    expect(values['--theme-track-palette-1']).toBe('#58B2CE');
+    expect(values['--theme-track-palette-16']).toBe('#D76A8F');
   });
 
   it('catalog defaults resolve without any theme override', () => {

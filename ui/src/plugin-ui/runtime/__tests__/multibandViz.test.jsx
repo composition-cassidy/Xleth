@@ -34,16 +34,10 @@ import {
   multibandGrFillHeight,
   smoothMultibandDisplayHistory,
 } from '../visualizers/multibandPainter.js'
-import {
-  getPresetOptionsForSource,
-  isPresetAllowedForSource,
-  resolveSafePresetForSource,
-} from '../../designer/inspectors/inspectorHelpers.js'
 import { OVERDONE_MANIFEST } from '../../manifests/overdone.js'
 import { TRANSIENT_MANIFEST } from '../../manifests/transient.js'
 import { LIMITER_MANIFEST } from '../../manifests/limiter.js'
 import { COMPRESSOR_MANIFEST } from '../../manifests/compressor.js'
-import { getVizSourceOptions } from '../../designer/BindingPicker.jsx'
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -410,70 +404,7 @@ describe('Multiband meter values', () => {
 
 // ── Inspector helpers / preset gating ──────────────────────────────────────
 
-describe('Multiband visualizer inspector helpers', () => {
-  it('lists multiband presets for overdone.multiband source', () => {
-    const options = getPresetOptionsForSource('overdone.multiband', null)
-    const keys = options.map(o => o.value)
-    expect(keys).toContain('overdoneMultiband')
-    expect(keys.every(k => k.startsWith('overdone'))).toBe(true)
-  })
-
-  it('lists transient presets for transient.shaper source (no leak)', () => {
-    const options = getPresetOptionsForSource('transient.shaper', null)
-    const keys = options.map(o => o.value)
-    expect(keys.every(k => !k.startsWith('overdone'))).toBe(true)
-  })
-
-  it('isPresetAllowedForSource enforces source-preset matching across plugins', () => {
-    expect(isPresetAllowedForSource('overdoneMultiband', 'overdone.multiband')).toBe(true)
-    expect(isPresetAllowedForSource('overdoneMultiband', 'transient.shaper')).toBe(false)
-    expect(isPresetAllowedForSource('overdoneMultiband', 'compressor.combined')).toBe(false)
-    expect(isPresetAllowedForSource('overdoneMultiband', 'limiter.realtime')).toBe(false)
-    expect(isPresetAllowedForSource('transientShaper',   'overdone.multiband')).toBe(false)
-    expect(isPresetAllowedForSource('levelHistory',      'overdone.multiband')).toBe(false)
-    expect(isPresetAllowedForSource('limiterRealtime',   'overdone.multiband')).toBe(false)
-  })
-
-  it('resolveSafePresetForSource returns the documented default for overdone.multiband', () => {
-    expect(resolveSafePresetForSource('overdone.multiband')).toBe('overdoneMultiband')
-    expect(MULTIBAND_SOURCE_DEFAULT_PRESET['overdone.multiband']).toBe('overdoneMultiband')
-  })
-
-  it('MULTIBAND_VISUALIZER_PRESETS exports an overdoneMultiband preset bound to overdone.multiband', () => {
-    const preset = MULTIBAND_VISUALIZER_PRESETS.overdoneMultiband
-    expect(preset).toBeTruthy()
-    expect(preset.sources).toContain('overdone.multiband')
-  })
-})
-
 // ── BindingPicker source listing ───────────────────────────────────────────
-
-describe('BindingPicker viz source options for Overdone', () => {
-  it('lists overdone.multiband for the Overdone manifest', () => {
-    const opts = getVizSourceOptions(OVERDONE_MANIFEST, null)
-    const values = opts.map(o => o.value)
-    expect(values).toContain('overdone.multiband')
-  })
-
-  it('does not list compressor / limiter / transient sources for the Overdone manifest', () => {
-    const opts = getVizSourceOptions(OVERDONE_MANIFEST, null)
-    const values = opts.map(o => o.value)
-    for (const v of values) {
-      expect(v.startsWith('compressor.')).toBe(false)
-      expect(v.startsWith('limiter.')).toBe(false)
-      expect(v.startsWith('transient.')).toBe(false)
-      expect(v.startsWith('overdone.')).toBe(true)
-    }
-  })
-
-  it('does not list overdone sources for the Compressor / Limiter / Transient manifests', () => {
-    for (const m of [COMPRESSOR_MANIFEST, LIMITER_MANIFEST, TRANSIENT_MANIFEST]) {
-      const opts = getVizSourceOptions(m, null)
-      const values = opts.map(o => o.value)
-      for (const v of values) expect(v.startsWith('overdone.')).toBe(false)
-    }
-  })
-})
 
 // ── Source-prefix dispatch ────────────────────────────────────────────────
 

@@ -1,3 +1,4 @@
+@layer legacy {
 .effect-module--with-sidechain {
   row-gap: 4px;
   padding-bottom: 5px;
@@ -97,4 +98,5 @@
 
 .compressor-sidechain-status--warning {
   color: var(--theme-semantic-warning-text);
+}
 }

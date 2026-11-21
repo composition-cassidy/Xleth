@@ -15,9 +15,14 @@
 #include "audio/AudioPerformanceTelemetry.h"
 #include "audio/ClipRenderCache.h"
 #include "audio/ClipModulatedReader.h"
+#include "render/VisualEchoTypes.h"   // xleth::echo::DelaySnapshot / IDelaySnapshotResolver
 #include "audio/SamplerPreviewRoute.h"
+#include "audio/SourceTransformTable.h"
 #include "dsp/LoudnessAnalyzer.h"
+#include "util/RtPublished.h"
+#include "util/SpscRing.h"
 
+#include <algorithm>
 #include <atomic>
 #include <limits>
 #include <array>
@@ -49,7 +54,10 @@ namespace juce { class AudioProcessor; }
 namespace juce { class RangedAudioParameter; }
 namespace xleth { struct RoutePlan; struct RoutePdcPlan; }
 namespace xleth::audio { class WorldStretchCache; }
-namespace xleth::audio { class SlotBakeCache; struct BakeKey; }
+// Immutable per-chain node view (AudioGraph.h). Held by shared_ptr only, so an
+// incomplete type here keeps juce_audio_processors out of this header.
+namespace xleth::audio { struct GraphRealtimeView; }
+namespace xleth::audio { class SlotBakeCache; struct BakeKey; class RealtimeWorkerPool; }
 
 // ─── Debug log queue (lock-free, single-producer / single-consumer) ──────────
 
@@ -94,8 +102,30 @@ public:
     ~MixEngine();
 
     // ── Configuration (main thread) ──────────────────────────────────────────
+    // Also publishes the new timeline's snapshot (refreshTimelineSnapshot).
     void setTimeline(const Timeline* timeline);
     void setSampleBank(const SampleBank* bank);
+
+    // Copy what the audio thread plays from out of the Timeline (tracks,
+    // clips, pattern blocks, patterns, region syllables) and publish it as the
+    // snapshot processBlock reads (timelineSnapshot_). Main thread. Call after
+    // ANY edit of those: the UndoManager post-mutation hook covers every
+    // command and undo/redo, setTimeline calls it, and the few live edits that
+    // bypass UndoManager (clip gain/fade drag preview, send gain) call it
+    // themselves. An edit not followed by this call is not heard.
+    void refreshTimelineSnapshot();
+
+    // The same, after an edit that changed ONLY clipId's non-placement fields
+    // (gain, fades: the clip gain/fade drag preview, which republishes at drag
+    // rate). Copies that one track's clips and shares everything else with the
+    // current snapshot; anything else falls back to refreshTimelineSnapshot().
+    void refreshTimelineSnapshotForClip(int clipId);
+
+    // Debug check (main thread): rebuild the snapshot from the live timeline
+    // and compare it with the published one, on the fields the audio thread
+    // reads. Empty when they agree, else the first difference. A difference
+    // after an edit means that edit path does not republish.
+    std::string verifyTimelineSnapshot() const;
 
     // Map a region ID to a sample bank slot. Must be called from main thread
     // before playback of clips referencing that region.
@@ -112,11 +142,10 @@ public:
     void unmapRegion(int regionId);
 
     // Look up the sample bank slot for a region. Returns -1 if not mapped.
-    // Main-thread read (map is only mutated from main thread).
+    // Any thread: reads the published snapshot (see regionToSampleMap_).
     int  getSampleIdForRegion(int regionId) const;
 
-    // Returns a copy of the current region→sample mapping table.
-    // Main-thread read only; the map is mutated from the main thread.
+    // Returns a copy of the current region→sample mapping table. Any thread.
     std::unordered_map<int, int> getRegionToSampleMapSnapshot() const;
 
     // ── Per-slot sample mapping (main thread) ────────────────────────────────
@@ -160,11 +189,36 @@ public:
     // edits (block add/move/delete, pattern regionId change, region settings
     // change, SampleBank load completion).
     //
-    // THREADING: May only be called when the audio device is stopped or when
-    // processBlock() is guaranteed not to be executing concurrently.
-    // SmoothedValue is not thread-safe; setCurrentAndTargetValue() called inside
-    // this function is not safe to race with the audio thread's getNextValue().
-    void rebuildAllSamplers();
+    // onlyRegionId >= 0 narrows the forced RELOAD to samplers of that region (a
+    // region-settings edit). Every other sampler that is still needed and
+    // still matches its region (same settings, same audio — see
+    // samplerBuiltFrom_) is carried over untouched, so its sounding voices
+    // keep playing; one that no longer matches is rebuilt whichever region
+    // was asked for. Pruning, building of missing pairs, and the same check on
+    // preview samplers always cover the whole timeline. A pair whose region no
+    // longer exists is dropped.
+    //
+    // THREADING: main thread, safe while the audio callback runs. The new set
+    // is published as one immutable snapshot (samplerSet_); replaced samplers
+    // are freed here, later, once no block still holds them. The volume
+    // smoother snap is queued to the audio thread rather than done in place.
+    void rebuildAllSamplers(int onlyRegionId = -1);
+
+    // Rebuild only what no longer matches its region, and nothing else: the
+    // right call after an edit that MAY have touched sampler inputs (a region
+    // patch, an audio remap). Same threading as rebuildAllSamplers.
+    void refreshStaleSamplers();
+
+    // Diagnostic (main thread): every live sampler with the inputs it was
+    // built from, whether those still match its region, and a few values read
+    // straight off the Sampler. { playback: [...], preview: [...] }.
+    nlohmann::json describeSamplers() const;
+
+    // Main-thread pump: frees samplers a rebuild replaced, and timeline
+    // snapshots an edit replaced, while a block was still rendering from them,
+    // now that the block is over. Cheap (usually an empty list); call from any
+    // regular main-thread poll.
+    void reclaimRetiredSamplers();
 
     // ── Per-slot PREP bake (main thread) ─────────────────────────────────────
     // The sampler's offline time-stretch / pitch-shift stage. buildSamplerForRegion
@@ -213,11 +267,20 @@ public:
     // Main-thread only.
     Sampler* getSamplerPtr(int trackId, int regionId);
 
-    // Main-thread bulk: fire allNotesOff() on every loaded sampler (both
-    // per-track playback samplers and preview samplers). Used by bridge
-    // Stop/Pause handlers as a main-thread safety net alongside the audio-
-    // thread transition handler in processBlock.
+    // Main-thread bulk: allNotesOff() on every loaded sampler (both per-track
+    // playback samplers and preview samplers). Used by bridge Stop/Pause
+    // handlers as a safety net alongside the audio-thread transition handler
+    // in processBlock. Queued: it lands at the start of the next processBlock,
+    // because a sampler's voices have exactly one writer (see SamplerEvent).
     void silenceAllSamplers();
+
+    // ── Preview note events (main thread) ────────────────────────────────────
+    // Piano-roll / MiniKeyboard key audition. Queued to the audio thread and
+    // applied at the start of the next block; a region with no preview sampler
+    // by then simply drops the event. Call ensurePreviewSampler() first.
+    void previewNoteOn(int regionId, int pitch, float velocity);
+    void previewNoteOff(int regionId, int pitch);
+    void previewAllNotesOff(int regionId);
 
     // ── Preview samplers (main thread; piano roll / MiniKeyboard audition) ──
     // Separate from per-track playback samplers so auditioning a note in the
@@ -245,6 +308,29 @@ public:
 
     // The route currently published for a region, without re-resolving.
     int getPreviewRouteTrack(int regionId) const;
+
+    // ── Pattern audition (main thread control; piano roll "solo" play) ──────
+    // Plays ONE pattern on its own, ignoring the arrangement, from a private
+    // sample clock that runs only while the transport is stopped. Notes go
+    // through the region's preview sampler, which is routed through the track
+    // the pattern lives on (its effect chain, fader, then the master chain) —
+    // the same path a piano-roll key audition takes. Starting normal playback
+    // cancels it (the track chains belong to the arrangement then).
+    //
+    // loop=true repeats the pattern until stopped; loop=false plays it once and
+    // ends. setPatternAuditionLoop() is live: switching loop off mid-run lets
+    // the current pass finish, switching it on keeps it going.
+    struct PatternAuditionState
+    {
+        bool    active        = false;  // audio thread is currently sequencing
+        int     patternId     = -1;
+        bool    loop          = false;
+        int64_t positionTicks = 0;      // within the pattern (wraps when looping)
+    };
+    bool startPatternAudition(int patternId, bool loop);
+    void stopPatternAudition();
+    void setPatternAuditionLoop(bool loop);
+    PatternAuditionState getPatternAuditionState() const;
 
     // ── Audio thread ─────────────────────────────────────────────────────────
     // Mix timeline audio into outputBuffer (additive). Caller must clear first
@@ -384,10 +470,28 @@ public:
     LatencyCompensationSnapshot getLatencyCompensationSnapshot() const;
     bool isInterTrackLatencyCompensationApplied() const;
     void refreshLatencyDiagnostics();
+
+    // [PDCNotify] Recompute PDC for every chain (tracks + master) that holds a
+    // latency change no owner path has accounted for - e.g. an EQ band switched
+    // to Spectral through Audio_EQ_SetBandParam, which mutates the effect
+    // directly. Run by the envelope applier thread each pass; costs one atomic
+    // load when nothing changed anywhere, and takes chainsMutex_ (never the
+    // audio thread's lock - it only try_locks it) only when something did.
+    // NOT for the audio thread. Returns the number of chains recomputed.
+    int servicePendingLatencyChanges();
+    std::uint64_t getLatencyChangeServiceCount() const noexcept
+    {
+        return latencyChangeServiceCount_.load(std::memory_order_relaxed);
+    }
+
     int addProcessorForTesting(int trackId,
                                const std::string& pluginId,
                                std::unique_ptr<juce::AudioProcessor> proc,
                                int position);
+
+    // Tests that must keep a stale automation plan installed: the applier
+    // thread would otherwise rebuild it within one pass.
+    void stopEnvelopeApplierForTesting() { stopEnvelopeApplierThread(); }
 
     struct RealtimeDiagnosticsSnapshot
     {
@@ -414,7 +518,11 @@ public:
         uint64_t overrunBlockCount = 0;
         uint64_t audioCallbackOverrunCount = 0;
         uint64_t droppedTelemetrySamples = 0;
+        // Finding 9: structurally 0 while the realtime path uses the chain
+        // snapshot. A non-zero value means a try_lock has come back.
         uint64_t chainLockMissCount = 0;
+        // Blocks that ran before the first chain snapshot was published.
+        uint64_t chainSnapshotMissingCount = 0;
         uint64_t masterChainSkippedCount = 0;
         uint64_t trackChainSkippedCount = 0;
         uint64_t staleSnapshotReuseCount = 0;
@@ -470,6 +578,23 @@ public:
     };
 
     void setRealtimeDiagnosticsEnabled(bool enabled);
+
+    // ── Parallel track processing ───────────────────────────────────────────
+    // Independent track effect chains run on helper threads during the audio
+    // callback (and offline renders). Output is bit-identical to the serial mix:
+    // only the chains move; every sum still happens on the calling thread in
+    // processOrder. Helpers are created by prepare() (HardwareTier::
+    // audioWorkerThreads(); 0 on small machines → always serial). The switch is
+    // read once per block, so it can be flipped live (tests, A/B).
+    void setParallelTrackProcessingEnabled(bool enabled) noexcept
+    {
+        parallelTracksEnabled_.store(enabled, std::memory_order_relaxed);
+    }
+    bool isParallelTrackProcessingEnabled() const noexcept
+    {
+        return parallelTracksEnabled_.load(std::memory_order_relaxed);
+    }
+    int getTrackWorkerCount() const noexcept;
     bool isRealtimeDiagnosticsEnabled() const;
     void resetRealtimeDiagnostics();
     RealtimeDiagnosticsSnapshot getRealtimeDiagnosticsSnapshot(uint64_t minTimingSequence = 0) const;
@@ -480,6 +605,23 @@ public:
         uint64_t* accumulatorOverflowDrops = nullptr) const;
     std::string getRealtimeDiagnosticsJSON() const;
     void recordAudioCallbackTiming(int numSamples, double sampleRate, uint64_t elapsedNs);
+
+    // The callback deadline the realtime diagnostics / telemetry judge against.
+    // 0 (the default) derives it from the block: numSamples / sampleRate, which
+    // is the true deadline for ASIO and WASAPI exclusive/low-latency, where the
+    // driver hands over one buffer per period. Under WASAPI SHARED mode that
+    // arithmetic is wrong (the true deadline is the fixed engine period,
+    // independent of the buffer size the app asked for), so AudioEngine
+    // publishes the real value here from audioDeviceAboutToStart. Message/RPC
+    // thread writes, audio thread reads (relaxed).
+    void setRealtimeDeadlineOverrideNs(uint64_t deadlineNs) noexcept
+    {
+        realtimeDeadlineOverrideNs_.store(deadlineNs, std::memory_order_relaxed);
+    }
+    uint64_t getRealtimeDeadlineOverrideNs() const noexcept
+    {
+        return realtimeDeadlineOverrideNs_.load(std::memory_order_relaxed);
+    }
 
     // ── Debug log ────────────────────────────────────────────────────────────
     MixDebugLog& getDebugLog() { return debugLog_; }
@@ -561,12 +703,115 @@ public:
     // layer so the main process can poll and drive the UI processing spinner.
     std::vector<int> getWorldActiveJobIds() const { return clipRenderCache_.getWorldActiveJobIds(); }
 
+    // ── Per-track source transform table (Pitch Shifter Clip mode) ──────────
+    //
+    // trackId -> SourceTransform, rebuilt from the effect chains and published
+    // lock-free. See SourceTransformTable.h for the table's rules. Consumed by
+    // AUDIO CLIPS (mode 4, see "Clip mode render path" below) and by PATTERN
+    // tracks, as a voice-spawn transpose (Sampler::setTransposeOffset, written
+    // per block in processBlock's pattern loop; Mix/method/formant inert).
+    //
+    // Poll-driven, not mutator-driven. XlethEngineService calls
+    // pollSourceTransformTable() from the WORLD-spinner poll
+    // (cache_getWorldActiveJobs, 150 ms while jobs run, 1000 ms idle). A poll
+    // whose chains still match the cached stamp snapshot — same nodes, same
+    // order, same bypass, same sourceTransformEpoch() — returns without
+    // allocating and without republishing. Anything else rebuilds and
+    // republishes exactly once.
+    //
+    // Returns true iff it republished. Skips (returns false, retries next poll)
+    // when chainsMutex_ is contended — an offline render holds it for whole
+    // blocks, and this poll must never stall the RPC thread behind an export.
+    // MESSAGE THREAD.
+    bool pollSourceTransformTable();
+
+    // ── Clip mode render path (Pitch Shifter mode 4, audio clips) ───────────
+    //
+    // For a clip on a track with an active table entry the engine keeps TWO
+    // renders: the clip's original render (only when the clip has processing
+    // of its own — otherwise raw PCM is the original) and the SHIFTED render
+    // (ClipRenderCache fx lane, key = original key + the transform). The clip
+    // loop blends them per sample at the provider node's smoothed Mix:
+    //   no table entry / wet not ready / Mix == 0  -> today's code, untouched
+    //   Mix == 1                                   -> shifted render only
+    //   0 < Mix < 1                                -> dry*(1-m) + wet*m
+    // with the clip's gain/fade/declick applied once to the result. The
+    // shifted render is requested whenever the transform is active, whatever
+    // Mix is, so an automated Mix sweep always has wet to blend against.
+    //
+    // Clips read through ClipModulatedReader (vibrato / scratch) are NOT
+    // blended: they keep today's output. The reader holds one readhead state
+    // per clip, and a second, independent readhead for the wet is not built.
+    //
+    // Invalidation: a republish that changes a track's transform queues that
+    // track, and kSourceTransformSettleMs after the LAST such change every clip
+    // on it is invalidated (and so resubmitted) in one batch. The settle is
+    // the render-storm guard for a stepped sweep; a settle timer on the message
+    // thread flushes it, and every poll flushes a due queue as well.
+    static constexpr int64_t kSourceTransformSettleMs = 250;
+
+    // pollSourceTransformTable() with an explicit clock (ms, ClipRenderCache::
+    // nowMs() scale). `blocking` waits for chainsMutex_ instead of skipping.
+    bool pollSourceTransformTableAt(int64_t nowMs, bool blocking = false);
+
+    // Invalidate every clip on the queued tracks once the settle has elapsed
+    // (or immediately with force). Returns how many clips it invalidated.
+    // MESSAGE THREAD.
+    int  flushSourceTransformInvalidations(int64_t nowMs, bool force = false);
+    bool hasPendingSourceTransformInvalidation() const noexcept { return fxInvalidationPending_; }
+
+    // Drain the cache's miss reports and resubmit those clips (a clip whose
+    // buffer was evicted, or whose key went stale without an invalidation),
+    // then flush a due settle queue. Clips on a track still settling are left
+    // to the flush. MESSAGE THREAD; hooked on the same poll as the table.
+    void serviceClipRenderCache();
+
+    // Export entry: publish the current table NOW (blocking), flush any pending
+    // settle immediately, so the refresh + wait that follows sees final keys.
+    void prepareSourceTransformsForExport();
+
+    // The fx-lane key for `original` under transform `t` (fx fields only; the
+    // clip's own pitch fields are left alone).
+    static CacheKey withSourceTransform(CacheKey original, const xleth::SourceTransform& t) noexcept;
+
+    // True when the clip needs any cache render: processing of its own, or an
+    // active transform on its track. The filter every "warm the caches" loop
+    // must use — the old pitch/reverse/stretch test misses identity clips on a
+    // Clip-mode track.
+    bool clipNeedsCacheRender(const Clip& clip) const;
+
+    // True when every render the clip needs is published (original and/or
+    // shifted). Clips needing none are ready. MESSAGE THREAD.
+    bool isClipCacheReady(int clipId) const;
+
+    // The clip's shifted (fx lane) buffer under the current table, or nullptr.
+    std::shared_ptr<const juce::AudioBuffer<float>> getClipFxProcessedBuffer(int clipId) const;
+
+    // Direct cache access for observability and tests.
+    ClipRenderCache&       getClipRenderCache()       noexcept { return clipRenderCache_; }
+    const ClipRenderCache& getClipRenderCache() const noexcept { return clipRenderCache_; }
+
+    // Read API. One atomic load, no lock, no allocation; the returned pointer
+    // pins the table. Never null. Safe from the audio thread.
+    std::shared_ptr<const xleth::TrackSourceTransformTable> currentSourceTransformTable() const noexcept
+    {
+        return sourceTransformTable_.load(std::memory_order_acquire);
+    }
+
+    // Generation of the currently published table: 0 for the empty table the
+    // constructor publishes, +1 per republish. Test/introspection.
+    std::uint64_t getSourceTransformTableGeneration() const noexcept
+    {
+        return currentSourceTransformTable()->generation;
+    }
+
     // Returns the cached processed buffer for clipId (message-thread safe via
     // atomic reads). Builds the CacheKey from the clip's current params.
     // Returns nullptr if the clip has identity params (no processing needed)
     // or the cache is a miss (buffer still building). Safe to call from any
-    // non-audio thread — atomic shared_ptr load, no mutex.
-    const juce::AudioBuffer<float>* getClipProcessedBuffer(int clipId) const;
+    // non-audio thread — atomic shared_ptr load, no mutex. The pointer pins
+    // the buffer, so a concurrent LRU eviction cannot free it under the caller.
+    std::shared_ptr<const juce::AudioBuffer<float>> getClipProcessedBuffer(int clipId) const;
 
     // Returns the engine sample rate set by the last prepare() call.
     double getPreparedSampleRate() const { return preparedSampleRate_; }
@@ -653,6 +898,12 @@ public:
     // Set the path to xleth-editor-host.exe. Call once after engine init.
     // Must be called before any openPluginEditor() on a VST node.
     void setEditorHostExe(const std::string& exePath);
+
+    // Why the last openPluginEditor() returned false ("" after a success):
+    //   "protocol-mismatch"   stale xleth-editor-host.exe (rebuild: bridge-clean)
+    //   "editor-host-missing" | "editor-host-error" | "timeout" | "no-description"
+    // Message thread only. Surfaced additively by audio_openPluginEditor (P2).
+    std::string getLastEditorOpenError() const { return lastEditorOpenError_; }
 
     // Store the main Xleth window HWND so VST editor-host windows can be
     // parented to it (minimize together, no separate taskbar button, etc.).
@@ -847,6 +1098,21 @@ public:
     // Main/applier thread only.
     int applyPendingLfoModulation();
 
+    // Services effect-chain reset requests posted by the audio thread. A
+    // transport stop resets whole chains here. A jump (seek, loop wrap, play
+    // after an audition) already reset every realtime-safe node in the jump
+    // block (see jumpChainResetPending_); this pass only finishes the rest
+    // (VST3 nodes, a Pitch Shifter that had no primed spare). Coalesces any
+    // number of requests into one pass, each chain claimed via
+    // EffectChainManager::tryResetProcessorsOffThread /
+    // tryResetDeferredOffThread. The expensive part of
+    // a reset is primed before and after the claims
+    // (EffectChainManager::primeDeferredReset), so a claim holds a chain
+    // silent for microseconds, not for the whole reset. Takes chainsMutex_.
+    // Returns 1 when it ran a reset pass, 0 when nothing was pending. Public so
+    // tests can service deterministically; the applier thread calls exactly this.
+    int serviceEffectChainResets();
+
     // Test/diagnostic read of the live snapshot. Never call from the audio thread.
     std::shared_ptr<const xleth::lfomod::LfoModulationSnapshot>
     getLfoModulationSnapshotForTesting() const;
@@ -856,8 +1122,10 @@ public:
     // Same three-role split as the Envelope/LFO modulators, but with the
     // publication step done under chainsMutex_ instead of an epoch-RCU swap:
     //
-    //   message  refreshAutomationPlan() flattens the Timeline's automation
-    //            model into an AutomationPlan and resolves each target to the
+    //   message  refreshAutomationPlan() flattens the automation model of the
+    //   + applier PUBLISHED timeline snapshot (never the live Timeline, which
+    //            the bridge edits without chainsMutex_) into an
+    //            AutomationPlan and resolves each target to the
     //            raw APVTS atomic its effect reads (both need the chains lock,
     //            so both happen here, together).
     //   audio    processBlock() evaluates the plan at this block's tick and
@@ -883,13 +1151,16 @@ public:
     // it complete by construction for timeline edits), project load, and effect
     // chain changes. Cheap and idempotent. Takes chainsMutex_ — NEVER call it
     // from processBlock or from a function that already holds that lock.
+    // Builds from the PUBLISHED timeline: publish an edit
+    // (refreshTimelineSnapshot) before calling this, as the hook does.
     void refreshAutomationPlan();
 
-    // Rebuild only if a chain mutation has invalidated the resolved parameter
-    // handles since the last rebuild. Driven by the envelope applier thread, so
-    // adding or removing an effect re-resolves its automation without every
-    // chain mutator having to remember to call refreshAutomationPlan(). Returns
-    // 1 when it rebuilt, 0 when nothing was dirty.
+    // Rebuild only if the resolved parameter handles may be stale: the dirty
+    // flag is set, OR the live chains differ from what the plan was resolved
+    // against (a chain created/destroyed/rebuilt, an effect added/removed). The
+    // second check is the one that makes it complete: no chain mutator has to
+    // remember anything. Driven by the envelope applier thread. Returns 1 when
+    // it rebuilt, 0 otherwise (including when chainsMutex_ was busy).
     int refreshAutomationPlanIfDirty();
 
     // { targetCount, windowCount, pointCount, overflowed, droppedTargets,
@@ -952,6 +1223,23 @@ public:
     XlethEffectBase* getEffectPtr(int trackId, int nodeId);
     XlethEffectBase* getMasterEffectPtr(int nodeId);
 
+    // ── Visual Echo delay binding (render thread) ────────────────────────────
+    //
+    // Resolve the repeat interval published by a Delay effect so the video-side
+    // Visual Echo can size its ring buffer and place its taps. The ONLY thing
+    // the render path is allowed to learn about the audio graph.
+    //
+    // NOT on the audio callback path — called once per output frame per echoing
+    // cell from the preview video thread and from the export render thread. It
+    // takes chainsMutex_ exactly as getEffectPtr does; that lock is held only by
+    // main-thread chain mutations and never by processBlock, so a render thread
+    // waiting on it can never stall audio.
+    //
+    // trackId == -1 selects the master chain, matching the meter/param
+    // convention. Returns a snapshot with .valid == false when the node does not
+    // exist, is not a Delay, or has not processed a block yet.
+    xleth::echo::DelaySnapshot resolveDelaySnapshot(int trackId, int nodeId) const;
+
     // Master graph APIs (trackId-less)
     bool addMasterConnection(int sourceNodeId, int destNodeId);
     bool removeMasterConnection(int sourceNodeId, int destNodeId);
@@ -965,7 +1253,64 @@ private:
     const Timeline*   timeline_   = nullptr;
     const SampleBank* sampleBank_ = nullptr;
 
-    std::unordered_map<int, int> regionToSampleMap_;
+    // Region → SampleBank id. The audio thread reads this every block
+    // (findActiveClips) while RPC handlers, project load and MIDI import write
+    // it, so it is never mutated in place: writers copy, modify and publish a
+    // new immutable map under regionSampleMapWriteMutex_; readers take one
+    // atomic load and hold that map for as long as they use it. Same shape as
+    // chainSnapshot_. Never null after construction.
+    using RegionSampleMap = std::unordered_map<int, int>;
+    mutable std::atomic<std::shared_ptr<const RegionSampleMap>> regionToSampleMap_;
+    // Writers only — the audio thread never takes it.
+    std::mutex regionSampleMapWriteMutex_;
+    // Superseded maps, released only here (writer side) once no reader holds
+    // them, so the audio thread never runs an unordered_map destructor.
+    std::vector<std::shared_ptr<const RegionSampleMap>> retiredRegionSampleMaps_;
+    // PRECONDITION: regionSampleMapWriteMutex_ held.
+    void publishRegionSampleMapLocked(RegionSampleMap next);
+    std::shared_ptr<const RegionSampleMap> loadRegionSampleMap() const noexcept
+    {
+        return regionToSampleMap_.load(std::memory_order_acquire);
+    }
+
+    // ── Published timeline ──────────────────────────────────────────────────
+    // The audio thread never reads timeline_. The main thread edits it in
+    // place, and an edit frees std::map nodes and std::vector buffers a
+    // reader may be walking (a block removed mid-walk, a note list
+    // reallocated). What processBlock needs is copied instead into one
+    // immutable TimelineSnapshot after every commit (refreshTimelineSnapshot)
+    // and published; processBlock pins it for the whole block (rtTimeline_),
+    // so every Clip / PatternBlock / Pattern / TrackInfo pointer it and the
+    // RealtimeWorkerPool helpers take stays valid until the block ends. A
+    // replaced snapshot is freed on the main thread (the next publish, or
+    // reclaimRetiredSamplers), never on the audio thread.
+    struct TimelineSnapshot
+    {
+        uint64_t serial = 0;                  // unique per publish, never reused
+        // Shared, unchanged, by the snapshots a clip-only publish derives.
+        std::shared_ptr<const std::vector<TrackInfo>>    tracks;     // getAllTracks() order
+        std::shared_ptr<const std::vector<PatternBlock>> blocks;     // by id
+        std::shared_ptr<const std::vector<Pattern>>      patterns;   // by id
+        // Each syllable's startTime (s), for regions that have syllables; by region id.
+        std::shared_ptr<const std::vector<std::pair<int, std::vector<double>>>> syllableStarts;
+        // Clips are owned per track (ascending track id), so a clip-only edit
+        // copies one track's clips; `clips` is what the audio thread walks.
+        std::vector<int> clipTrackIds;
+        std::vector<std::shared_ptr<const std::vector<Clip>>> clipTracks;
+        std::vector<const Clip*> clips;       // every clip, by (position, id)
+        // Not read by the audio thread: what refreshAutomationPlan() builds
+        // from, on the envelope applier thread too, so it never reads timeline_.
+        std::shared_ptr<const xleth::automation::AutomationModel> automation;   // never null
+
+        const Pattern* findPattern(int id) const noexcept;
+        const std::vector<double>* findSyllableStarts(int regionId) const noexcept;
+    };
+    std::shared_ptr<TimelineSnapshot> buildTimelineSnapshot() const;   // timeline_ non-null
+    xleth::util::RtPublished<TimelineSnapshot> timelineSnapshot_;
+    uint64_t timelineSnapshotSerial_ = 0;     // main thread
+    // The snapshot this block is rendering from. Audio thread, valid only
+    // inside processBlock (set and cleared by its pin guard).
+    const TimelineSnapshot* rtTimeline_ = nullptr;
 
     // Pre-allocated stereo track buffers (one per track slot, up to kMaxTracks)
     std::vector<juce::AudioBuffer<float>> trackBuffers_;
@@ -1080,10 +1425,20 @@ private:
     {
     public:
         void prepare(double sampleRate, int maxBlockSize);
+        // Floor on the ring size (samples). Track delays keep the generous
+        // default; send-edge delays use a small floor because there are
+        // kMaxTracks * kMaxTrackSends of them. Call before prepare().
+        void setMinimumCapacitySamples(int samples) noexcept { minCapacitySamples_ = samples; }
         void reset();
         void resetToDelaySamples(int delaySamples);
         void setTargetDelaySamples(int delaySamples);
         void process(juce::AudioBuffer<float>& buffer, int numSamples);
+        // Longest delay any read tap may still be using (a retarget crossfade
+        // reads both the source and the target delay).
+        int getCurrentDelaySamples() const noexcept
+        {
+            return std::max({ currentDelaySamples_, sourceDelaySamples_, targetDelaySamples_ });
+        }
 
     private:
         static constexpr int kCrossfadeSamples = 64;
@@ -1103,9 +1458,25 @@ private:
         bool hasProcessedAudio_ = false;
         int maxBlockSize_ = 0;
         double sampleRate_ = 44100.0;
+        int minCapacitySamples_ = kDefaultCapacitySamples;
     };
 
     StereoCompensationDelay trackCompensationDelays_[kMaxTracks];
+
+    // ── Sends (FL multi-wiring) ─────────────────────────────────────────────
+    // One delay line per (source slot, send index): a source feeding junctions
+    // of different latency needs a different alignment per edge (junction PDC,
+    // per edge). Sized small at prepare (kSendDelayMinCapacity); a latency past
+    // that grows the ring like the track delays do.
+    static constexpr int kSendDelayMinCapacity = 4096;
+    StereoCompensationDelay sendCompensationDelays_[kMaxTracks][kMaxTrackSends];
+    int   cachedSendCompensationSamples_[kMaxTracks][kMaxTrackSends] = {};
+    // Gain each send edge ended the previous block at, so a level change ramps
+    // across one block instead of stepping (zipper).
+    float sendGainPrev_[kMaxTracks][kMaxTrackSends] = {};
+    // Scratch for one send edge's delayed copy of its source (pre-sized).
+    juce::AudioBuffer<float> sendScratch_;
+    void syncSendCompensationDelayState(int slot, bool clearHistory);
     int cachedTrackInsertLatencySamples_[kMaxTracks] = {};
     int cachedTrackCompensationSamples_[kMaxTracks] = {};
     std::uint64_t cachedTrackLatencyEpochs_[kMaxTracks] = {};
@@ -1186,6 +1557,11 @@ private:
 
     std::thread             envelopeApplierThread_;
     std::atomic<bool>       envelopeApplierRunning_{false};
+
+    // [PDCNotify] Last LatencyChangeSignal::generation() servicePendingLatencyChanges
+    // acted on, and how many chain recomputes it has performed.
+    std::atomic<std::uint64_t> latencyChangeGenerationSeen_{0};
+    std::atomic<std::uint64_t> latencyChangeServiceCount_{0};
 
     // AUDIO THREAD. Evaluate every published envelope at this block's transport
     // position and publish the mapped values. `atRest` publishes the env == 0
@@ -1330,6 +1706,11 @@ private:
 
     RealtimeDiagnosticsState realtimeDiagnostics_;
 
+    // See setRealtimeDeadlineOverrideNs(). 0 = derive from block size / rate.
+    std::atomic<uint64_t> realtimeDeadlineOverrideNs_{0};
+    // Deadline for a callback-level timing sample (AudioCallback / MixBlock).
+    uint64_t realtimeDeadlineNs(int numSamples, double sampleRate) const noexcept;
+
     // [Underrun] Audio-health: clip-render-cache misses observed on the audio
     // thread (see getClipCacheMissCount). Incremented in processBlock; read from
     // the 1s health sampler. Standalone (not gated on realtime diagnostics).
@@ -1378,6 +1759,7 @@ private:
 
     // ── Plugin registry ──────────────────────────────────────────────────────
     std::unique_ptr<PluginRegistry> pluginRegistry_;
+    std::string                     lastEditorOpenError_;   // see getLastEditorOpenError()
 
     // ── Plugin editor host (stock effects — in-process DocumentWindow) ──────────
     std::unique_ptr<PluginEditorHost> editorHost_;
@@ -1404,32 +1786,62 @@ private:
     void runCoordinatorReaper();
     void reapCoordinator(std::unique_ptr<EditorProcessCoordinator> dying);
 
-    // ── Effect chains (main-thread owned, audio-thread reads via tryLock) ──
-    // Map key = trackId.  mutex protects both the map and masterEffectChain_.
+    // ── Effect chains ───────────────────────────────────────────────────────
+    // Map key = trackId. chainsMutex_ protects the map, masterEffectChain_ and
+    // the automation runtime AGAINST OTHER MESSAGE-THREAD WRITERS, and is still
+    // taken (blocking) by an offline render — see processBlock.
+    //
+    // Finding 9: the REALTIME audio thread no longer takes this mutex at all.
+    // It used to try_lock it and, on a miss, skip every per-track and master
+    // effect chain for that block — a dry block and an audible level jump, not
+    // a dropped optimisation. Measured on a real session it missed on ~1.9% of
+    // blocks during ordinary mixer metering and on up to ~94% while chains were
+    // being edited. The audio thread now reads an immutable ChainSnapshot
+    // published through std::atomic<std::shared_ptr>, the same pattern
+    // ClipRenderCache::slots_ uses for rendered buffers.
     mutable std::mutex chainsMutex_;
-    std::unordered_map<int, std::unique_ptr<EffectChainManager>> effectChains_;
+    std::unordered_map<int, std::shared_ptr<EffectChainManager>> effectChains_;
 
-    // ── Automation runtime (guarded by chainsMutex_) ─────────────────────────
+    // ── Automation runtime (written under chainsMutex_) ──────────────────────
     // One entry per AutomationPlan target, in the same order. Resolution is main
     // thread; the audio thread only stores into `raw`.
     //
-    // `effect` + `nodeId` are a LIVENESS CHECK, not a shortcut: before writing,
-    // the audio thread re-derives the effect from its chain by nodeId and
-    // compares. If the effect was removed (or replaced) since the plan was
-    // built, the lookup returns a different pointer (node ids are monotonic
-    // uids, never reused) and the target is skipped — so a stale plan fails
-    // closed instead of writing through a dangling pointer. Both the check and
-    // the write happen under chainsMutex_, which is exactly the lock that has to
-    // be held to destroy an effect, so the pointer cannot die mid-check.
+    // `graphSerial` + `nodeId` + `effect` are a LIVENESS CHECK, not a shortcut:
+    // before writing, the audio thread confirms its chain's view describes the
+    // same juce graph the plan resolved against, then re-derives the effect by
+    // nodeId and compares. Node uids are monotonic only WITHIN one graph: a
+    // chain rebuilt by project load starts again at the same uids, and its new
+    // effect is often allocated at the freed one's address, so nodeId + effect
+    // alone passed and the block wrote through the dead effect's parameter
+    // (0xC0000005 in convertFrom0to1). The serial is never reused, so a stale
+    // plan fails closed.
+    //
+    // A runtime is NOT tied to the chains it resolved against: every publish
+    // attaches the current automationRuntime_, and a chain rebuild publishes
+    // before the envelope applier gets to refresh the plan. What makes reading
+    // `param`/`raw` safe is the check above plus the snapshot's strong Node::Ptr
+    // references, which keep a matching `effect` alive for the whole block.
     struct AutomationRuntimeTarget
     {
         std::atomic<float>*         raw    = nullptr;
         juce::RangedAudioParameter* param  = nullptr;
         XlethEffectBase*            effect = nullptr;
+        std::uint64_t graphSerial = 0;   // GraphRealtimeView::graphSerial at resolve time
         int   nodeId      = -1;
         int   trackId     = -1;     // -1 = master chain
         float lastWritten = 0.0f;   // skip redundant stores
         bool  everWritten = false;
+    };
+
+    // What a plan was resolved against, for one chain (master = -1): its graph
+    // serial and every effect instance -> node id in its realtime view. Node ids
+    // are monotonic within one graph and the serial is never reused, so equal
+    // keys mean no effect was added, removed or rebuilt since.
+    struct AutomationChainKey
+    {
+        int           trackId     = -1;
+        std::uint64_t graphSerial = 0;
+        std::vector<std::pair<std::string, int>> nodes;   // sorted by instance id
     };
 
     struct AutomationRuntime
@@ -1437,23 +1849,143 @@ private:
         std::shared_ptr<const xleth::automation::AutomationPlan> plan;
         std::vector<AutomationRuntimeTarget> targets;   // parallel to plan->targets
         int resolvedCount = 0;
+        std::vector<AutomationChainKey> chains;         // sorted by trackId; applier-side only
     };
 
-    // Published by refreshAutomationPlan(), read by processBlock. Written and
-    // read only under chainsMutex_, which is why no epoch-RCU is needed: the
-    // audio thread already holds that lock over the whole region that touches
-    // effect processors.
+    // Envelope applier thread only (under chainsMutex_): true when the live
+    // chains no longer match the keys the current plan was resolved against.
+    bool automationChainsChangedLocked() const;
+    // XLETH_VERIFY_AUTOMATION_PLAN=1 safety net, applier thread only (under
+    // chainsMutex_): logs when resolved targets have failed the audio thread's
+    // liveness check for kAutomationVerifyPasses passes in a row.
+    void verifyAutomationPlanLocked();
+    int automationVerifyMismatchPasses_ = 0;   // applier thread only
+
+    // Published by refreshAutomationPlan() under chainsMutex_, and handed to the
+    // audio thread only as ChainSnapshot::automation — never read directly off
+    // this member from the realtime path.
     std::shared_ptr<AutomationRuntime> automationRuntime_;
 
-    // Set by every chain mutator that can create or destroy a node; serviced by
-    // the envelope applier thread through refreshAutomationPlanIfDirty().
+    // Set by chain mutators that can create or destroy a node, for an immediate
+    // rebuild; serviced by the envelope applier thread through
+    // refreshAutomationPlanIfDirty(). Not load-bearing: that pass also rebuilds
+    // whenever the chains differ from the plan's AutomationChainKeys, so a
+    // mutator that forgets the flag only costs one applier pass.
     std::atomic<bool> automationBindingsDirty_{false};
 
-    // Evaluate the plan at `tick` and write each target's value. AUDIO THREAD,
-    // and ONLY with chainsMutex_ already held. No allocation, no locks, no
-    // logging.
-    void applyAutomationForBlock(int64_t tick) noexcept;
-    std::unique_ptr<EffectChainManager> masterEffectChain_;
+
+    // ── Lock-free chain snapshot (Finding 9) ────────────────────────────────
+    //
+    // Immutable once published. Holds shared_ptrs to THE SAME EffectChainManager
+    // objects effectChains_/masterEffectChain_ own, which is what makes the
+    // offline path (which still reads the map under the blocking lock) and the
+    // realtime path bit-identical by construction: same objects, same order,
+    // same DSP. The snapshot answers "which chains exist, and for which track";
+    // "what is in this chain right now" is answered per block by the chain's own
+    // GraphRealtimeView.
+    struct ChainSnapshot
+    {
+        struct TrackEntry
+        {
+            int trackId = -1;
+            std::shared_ptr<EffectChainManager> chain;
+        };
+
+        std::uint64_t generation = 0;
+        std::vector<TrackEntry> tracks;                 // sorted by trackId
+        std::shared_ptr<EffectChainManager> master;
+
+        // Deliberately NOT cached here: AudioGraph republishes its own node
+        // view on its debounce timer, so a view captured at snapshot time can
+        // go stale between chain mutations. The audio thread loads the current
+        // one per block through chain->realtimeView() — one atomic load, and
+        // the copy it holds pins every processor it names for the block.
+
+        // Resolved against exactly these chains, so a target can never point
+        // into an effect this snapshot does not keep alive.
+        std::shared_ptr<AutomationRuntime> automation;
+
+        // Audio thread: binary search, no allocation, no hashing.
+        const TrackEntry* find(int trackId) const noexcept
+        {
+            const auto it = std::lower_bound(
+                tracks.begin(), tracks.end(), trackId,
+                [](const TrackEntry& e, int id) { return e.trackId < id; });
+            return (it != tracks.end() && it->trackId == trackId) ? &*it : nullptr;
+        }
+    };
+
+    // Published by publishChainSnapshotLocked(), read by processBlock.
+    // MSVC implements std::atomic<shared_ptr<T>> with internal lock striping
+    // (~20 ns) rather than a user-visible lock — the same trade ClipRenderCache
+    // documents and accepts, and negligible against a 10 ms block.
+    mutable std::atomic<std::shared_ptr<const ChainSnapshot>> chainSnapshot_;
+    std::uint64_t chainSnapshotGeneration_ = 0;   // message thread only
+
+    // Superseded snapshots, held on the message thread so the audio thread can
+    // never be the last owner of an EffectChainManager (which would run plugin
+    // destructors on the realtime thread). Pruned on the next publish, and only
+    // when use_count()==1 — i.e. when nothing but this list still holds it.
+    std::vector<std::shared_ptr<const ChainSnapshot>> retiredChainSnapshots_;
+
+    // Rebuild and publish the snapshot from effectChains_/masterEffectChain_.
+    // PRECONDITION: chainsMutex_ is held by the caller.
+    void publishChainSnapshotLocked();
+
+    // ── Source transform table publisher ────────────────────────────────────
+    // Same shape as chainSnapshot_: immutable table behind an atomic
+    // shared_ptr, superseded tables retired here so a reader can never be the
+    // one that frees a table's vector on the realtime thread.
+    mutable std::atomic<std::shared_ptr<const xleth::TrackSourceTransformTable>> sourceTransformTable_;
+    std::uint64_t sourceTransformGeneration_ = 0;                   // message thread only
+    xleth::SourceTransformEpochSnapshot sourceTransformSnapshot_;   // message thread only
+    std::vector<std::shared_ptr<const xleth::TrackSourceTransformTable>> retiredSourceTransformTables_;
+
+    // Publish `table` with the next generation. PRECONDITION: chainsMutex_ held
+    // (it serialises this with every other writer of the members above).
+    void publishSourceTransformTableLocked(xleth::TrackSourceTransformTable table);
+
+    // ── Clip mode settle queue (message thread only) ────────────────────────
+    std::vector<int> fxInvalidationTracks_;        // sorted, unique
+    int64_t          fxInvalidationLastChangeMs_ = 0;
+    bool             fxInvalidationPending_      = false;
+    std::vector<int> clipMissScratch_;             // serviceClipRenderCache scratch
+    class SourceTransformSettleTimer;
+    std::unique_ptr<SourceTransformSettleTimer> fxSettleTimer_;
+
+    // Queue every track whose transform differs between the two tables.
+    void queueSourceTransformChanges(const xleth::TrackSourceTransformTable& before,
+                                     const xleth::TrackSourceTransformTable& after,
+                                     int64_t nowMs);
+
+    // RAII republish. Declared immediately after the lock guard in every chain
+    // mutator: destruction order means this fires while chainsMutex_ is still
+    // held, and no early return can leave the audio thread on a stale snapshot.
+    // Parameter writes deliberately do NOT use it — they change no chain
+    // membership, and any latency rebuild they trigger republishes the
+    // AudioGraph node view on its own.
+    struct ChainSnapshotPublisher
+    {
+        MixEngine* engine;
+        explicit ChainSnapshotPublisher(MixEngine* e) noexcept : engine(e) {}
+        ~ChainSnapshotPublisher() { engine->publishChainSnapshotLocked(); }
+        ChainSnapshotPublisher(const ChainSnapshotPublisher&) = delete;
+        ChainSnapshotPublisher& operator=(const ChainSnapshotPublisher&) = delete;
+    };
+
+    // Convenience for the ~40 message-thread mutators: take the lock, run `fn`,
+    // republish before releasing. Returns whatever `fn` returns.
+    std::shared_ptr<const ChainSnapshot> currentChainSnapshot() const noexcept
+    {
+        return chainSnapshot_.load(std::memory_order_acquire);
+    }
+
+    // Evaluate the plan at `tick` and write each target's value. AUDIO THREAD.
+    // Reads everything it touches out of `chains`, which pins both the runtime
+    // and the effects it points into. No allocation, no locks, no logging.
+    void applyAutomationForBlock(const ChainSnapshot& chains, int64_t tick) noexcept;
+
+    std::shared_ptr<EffectChainManager> masterEffectChain_;
     double preparedSampleRate_ = 44100.0;
     int    preparedBlockSize_  = 512;
 
@@ -1467,6 +1999,34 @@ private:
         int64_t         regionOffsetSamples;
     };
     std::vector<ActiveClip> activeClips_;
+
+    // ── Incremental active-clip scan (Finding 2c) ───────────────────────────
+    // The snapshot's clips are sorted ascending by tick position (order by
+    // ticks == order by samples for any fixed bpm, so this ordering stays
+    // valid across a live tempo change).
+    //
+    // During uninterrupted sequential playback, findActiveClips() no longer
+    // rescans every clip in the project: clipScanCursor_ walks forward
+    // through rtTimeline_->clips exactly once, activating each clip as its
+    // start sample enters the window, while already-active clips are
+    // refreshed (not rescanned from the full list) each block so a live bpm
+    // change or a live region→sample remap still lands on the next block,
+    // exactly as the old full rescan produced. A new snapshot (any edit) or a
+    // seek (bufferStart not contiguous with the last call) forces one full
+    // rebuild — the same cost the old code paid every single block.
+    int      clipScanCursor_ = 0;
+    int64_t  clipScanLastBufferEnd_ = -1;
+    uint64_t clipScanSerial_ = 0;            // snapshot the cursor indexes into
+    uint64_t clipScanRegionMapSerial_ = 0;   // region map the last full scan saw
+    // Bumped after every region map publish. A clip whose region was unmapped
+    // at the full scan was skipped and the cursor moved past it, so a later
+    // mapping (project load decodes after it publishes the timeline) must
+    // force a rescan or the clip stays silent until a seek.
+    std::atomic<uint64_t> regionSampleMapSerial_ { 0 };
+    // Double-buffer scratch for refreshing the previous block's active set
+    // without a per-block allocation (same swap-not-copy idiom prevActiveBlocks_
+    // uses below for pattern blocks).
+    std::vector<ActiveClip> prevActiveClipsScratch_;
 
     // Per-{track,region} Sampler instances (main-thread owned, audio-thread
     // read). Keyed by {trackId, regionId}: each pattern track is sample-
@@ -1492,8 +2052,6 @@ public:
         }
     };
 private:
-    std::unordered_map<TrackRegionKey, std::unique_ptr<Sampler>, TrackRegionKeyHash> samplers_;
-
     // {regionId, slotIndex} → SampleBank id, for slots 1..7 only (see
     // mapRegionSlotToSample). Keyed by regionId*MAX_SAMPLE_SLOTS + slotIndex.
     std::unordered_map<int, int> slotSampleMap_;
@@ -1521,8 +2079,93 @@ private:
         // the audio thread must never take that lock, so the answer is
         // published here instead. -1 when the route has no live mixer slot.
         std::atomic<int> routeTrackSlot { -1 };
+        // samplerInputs() of the region when this sampler was built. Written
+        // once, before the slot is published; main thread reads only.
+        nlohmann::json builtFrom;
+        uint64_t       buildSerial = 0;
     };
-    std::unordered_map<int, std::unique_ptr<PreviewSamplerSlot>> previewSamplers_;
+
+    // ── Published sampler set ────────────────────────────────────────────────
+    // Every sampler the audio thread may play, as ONE immutable snapshot. The
+    // maps are never edited in place: a writer copies the current set, changes
+    // the copy and publishes it. processBlock pins the set for the whole block
+    // (rtSamplers_), so every Sampler* it derives stays alive until the block
+    // ends, however many rebuilds land meanwhile; a replaced Sampler is freed
+    // on the main thread once no block holds the set that owned it.
+    //
+    // The Sampler objects themselves are mutable, with one writer: their voice
+    // state belongs to the audio thread. The main thread only touches the
+    // atomically published parts (PREP buffers, route atomics) and otherwise
+    // sends a SamplerEvent.
+    struct SamplerSet
+    {
+        std::unordered_map<TrackRegionKey, std::shared_ptr<Sampler>, TrackRegionKeyHash> playback;
+        std::unordered_map<int, std::shared_ptr<PreviewSamplerSlot>> preview;
+    };
+    xleth::util::RtPublished<SamplerSet> samplerSet_ { std::make_shared<const SamplerSet>() };
+    // The set this block is rendering from. Audio thread, valid only inside
+    // processBlock (set and cleared by its pin guard).
+    const SamplerSet* rtSamplers_ = nullptr;
+
+    // Copy the current set, apply `edit` to the copy, publish it. Main thread.
+    template <class Fn> void editSamplerSet(Fn&& edit);
+    // Build {trackId, regionId}'s sampler into `set`. False (set untouched)
+    // when the track / region / audio is not there to build from.
+    bool buildSamplerInto(SamplerSet& set, int trackId, int regionId);
+
+    // ── What each live sampler was built from ────────────────────────────────
+    // samplerInputs() is everything buildSamplerForRegion reads: the region's
+    // sampler settings, every slot, the modulation config, and the SampleBank
+    // id behind each slot. It is recorded per sampler at build time (here for
+    // playback samplers, on the slot for preview ones). A sampler whose record
+    // no longer equals its region's current inputs is STALE, and every rebuild
+    // replaces stale samplers — so a rebuild scoped to one region can leave the
+    // rest playing without trusting that every handler remembered to refresh.
+    // Main thread only.
+    nlohmann::json samplerInputs(const SampleRegion& region) const;
+    struct SamplerBuild
+    {
+        nlohmann::json inputs;
+        uint64_t       serial = 0;   // samplerBuildSerial_ at build: tells a rebuild from a carry-over
+    };
+    std::unordered_map<TrackRegionKey, SamplerBuild, TrackRegionKeyHash> samplerBuiltFrom_;
+    uint64_t samplerBuildSerial_ = 0;
+
+    enum class SamplerRebuild { All, Region, StaleOnly };
+    void rebuildSamplers(SamplerRebuild mode, int regionId);
+    // A fresh preview slot for `region` (null when it has no audio to play).
+    // Carries `previous`'s published route over, so replacing the sampler of a
+    // running audition does not drop it back to dry.
+    std::shared_ptr<PreviewSamplerSlot> makePreviewSlot(const SampleRegion& region,
+                                                        const PreviewSamplerSlot* previous);
+
+    // ── Sampler events (main thread -> audio thread) ─────────────────────────
+    // Anything the main thread wants done to a sampler's voices, or to another
+    // audio-thread-owned value, travels here and is applied at the top of the
+    // next processBlock. Addressed by regionId, never by pointer, and resolved
+    // against the set that block pinned.
+    //
+    // Single producer: the bridge/main thread. A full ring drops a note-on
+    // (nobody is listening that fast) but turns a lost note-off into
+    // samplerPanic_, which releases everything, so a note can never stick.
+    struct SamplerEvent
+    {
+        enum class Kind : uint8_t {
+            PreviewNoteOn, PreviewNoteOff, PreviewAllNotesOff,
+            AllNotesOff,            // every playback and preview sampler
+            SnapVolumeSmoothers     // value = number of track slots to snap
+        };
+        Kind  kind     = Kind::AllNotesOff;
+        int   regionId = -1;
+        int   value    = 0;         // pitch, or slot count
+        float velocity = 0.0f;
+    };
+    static constexpr int kMaxSamplerEventsPerBlock = 64;
+    xleth::util::SpscRing<SamplerEvent> samplerEvents_ { 256 };
+    std::atomic<bool> samplerPanic_ { false };
+    void postSamplerEvent(const SamplerEvent& e);
+    // Audio thread. rtSamplers_ must be pinned.
+    void applySamplerEvents(const SamplerEvent* events, int count, bool releaseAll);
 
     // Audition routing preference (main thread writes, main thread reads during
     // route resolution). selectedTrackId is only meaningful in Selected mode.
@@ -1534,9 +2177,14 @@ private:
     // sums each preview sampler into previewBuffer_, groups by resolved route,
     // and pushes each group through that track's chain before it reaches the
     // master output. `chainsLocked` must be true for any chain to be used.
+    // `chains` non-null enables routed auditioning (walk the track chain, the
+    // track fader, then the master chain). Null means dry audition only. It
+    // used to be a bool fed by a try_lock on chainsMutex_, which silently
+    // demoted a routed audition to dry whenever the message thread happened to
+    // hold the lock; the snapshot removes that coin flip (Finding 9).
     void renderPreviewSamplers(juce::AudioBuffer<float>& outputBuffer,
                                int numSamples, double sampleRate,
-                               double bpm, bool chainsLocked);
+                               double bpm, const ChainSnapshot* chains);
 
     // Scratch MIDI for preview chain processing. Always empty — preview notes
     // carry no onset events for effects to read.
@@ -1557,9 +2205,58 @@ private:
     // held pattern notes so stale voices don't ring past the seek point.
     int64_t lastBufferEnd_ = -1;
 
-    // Transport stop/seek reset request for latent effect processors.
-    // Audio-thread only; serviced after chainsMutex_ is acquired.
-    bool pendingEffectChainReset_ = false;
+    // Transport stop reset request for effect processors. Audio thread posts
+    // through requestEffectChainReset():
+    //   - realtime: bumps effectResetRequestGen_; serviceEffectChainResets()
+    //     resets the chains off-thread, typically within 1-2 blocks. Only for
+    //     a STOP: nothing plays until the next start, so late is harmless.
+    //   - non-realtime (export): sets pendingEffectChainReset_ and the chains
+    //     reset inline under chainsMutex_, exactly as before, so an export stays
+    //     deterministic.
+    void requestEffectChainReset() noexcept;
+    bool pendingEffectChainReset_ = false;              // audio thread only
+    std::atomic<uint64_t> effectResetRequestGen_ { 0 }; // audio thread -> worker
+    uint64_t effectResetServicedGen_ = 0;               // worker only (under chainsMutex_)
+
+    // Transport JUMP while playing (seek, loop wrap, play after an audition).
+    // The PDC compensation delay lines reset inline in the jump block, so the
+    // chains must too - a worker reset lands blocks later, and a latent effect
+    // then plays pre-jump audio and drops post-jump audio against every
+    // compensated track. requestJumpChainReset() sets
+    // jumpChainResetPending_; the same block resets every chain on the audio
+    // thread (EffectChainManager::resetOnAudioThread) and bumps
+    // jumpResetRequestGen_ so the worker re-primes the spares that consumed and
+    // finishes any node that could not reset realtime safely. Non-realtime:
+    // the inline full reset above, as for a stop.
+    void requestJumpChainReset() noexcept;
+    bool jumpChainResetPending_ = false;                // audio thread only
+    std::atomic<uint64_t> jumpResetRequestGen_ { 0 };   // audio thread -> worker
+    uint64_t jumpResetServicedGen_ = 0;                 // worker only (under chainsMutex_)
+    // An audition ran a track/master chain while stopped. Those tails must not
+    // bleed into playback, but must not be wiped mid-audition either, so the
+    // reset is requested on the next play start. Audio thread only.
+    bool auditionDirtiedChains_ = false;
+
+    // ── Pattern audition state ──────────────────────────────────────────────
+    // Main thread publishes (patternId, loop, then bumps the start sequence);
+    // the audio thread owns everything below the line.
+    std::atomic<int>      auditionPatternId_ { -1 };    // -1 = none requested
+    std::atomic<bool>     auditionLoop_ { false };
+    std::atomic<uint32_t> auditionStartSeq_ { 0 };      // bumped on every start
+    std::atomic<bool>     auditionActive_ { false };    // audio-thread truth
+    std::atomic<int64_t>  auditionPosTicks_ { 0 };
+    // ---- audio thread only ----
+    uint32_t     auditionSeenSeq_ = 0;
+    int          auditionRunningPatternId_ = -1;
+    int          auditionRunningRegionId_ = -1;
+    bool         auditionSeenLoop_ = false;
+    int64_t      auditionPosSamples_ = 0;
+    int64_t      auditionEndTick_ = 0;       // pass boundary (huge while looping)
+    int64_t      auditionEndSample_ = 0;
+    PatternBlock auditionBlock_;             // synthetic block: lets the audition
+                                             // reuse triggerPatternNotes verbatim
+    void runPatternAudition(int numSamples, double bpm, double sampleRate);
+    void haltPatternAudition();              // audio thread: release + go idle
 
     // Active pattern-block info — pre-allocated, reused each block
     struct ActivePatternBlock
@@ -1569,6 +2266,9 @@ private:
         Sampler*            sampler;
         int64_t             blockStartSample;
         int64_t             blockEndSample;
+        // Compared across blocks instead of `block`: last block's pointer may
+        // name a snapshot that has since been freed.
+        int                 blockId = -1;
     };
     std::vector<ActivePatternBlock> activeBlocks_;
 
@@ -1586,7 +2286,38 @@ private:
     // jumped away), fire allNotesOff() on that pair's sampler. Keyed per
     // {trackId, regionId} so cutting a different-region block on the same
     // track never cuts voices that belong to a different region's sampler.
-    std::unordered_set<TrackRegionKey, TrackRegionKeyHash> prevActiveKeys_;
+    //
+    // Fixed capacity, linear search: this set is rebuilt on the audio thread
+    // every block, and an unordered_set allocates a node per insert (and, on
+    // MSVC, its sentinel + buckets on construction). The key count is bounded
+    // by the number of simultaneously active pattern blocks — a handful.
+    struct ActiveKeySet
+    {
+        static constexpr int kCapacity = 1024;
+        std::array<TrackRegionKey, kCapacity> keys {};
+        int count = 0;
+
+        bool contains(const TrackRegionKey& k) const noexcept
+        {
+            for (int i = 0; i < count; ++i)
+                if (keys[static_cast<size_t>(i)] == k) return true;
+            return false;
+        }
+        void insert(const TrackRegionKey& k) noexcept
+        {
+            if (contains(k)) return;
+            jassert(count < kCapacity);
+            if (count < kCapacity) keys[static_cast<size_t>(count++)] = k;
+        }
+        void assign(const ActiveKeySet& o) noexcept
+        {
+            std::copy(o.keys.begin(), o.keys.begin() + o.count, keys.begin());
+            count = o.count;
+        }
+        void clear() noexcept { count = 0; }
+    };
+    ActiveKeySet prevActiveKeys_;
+    ActiveKeySet currentActiveKeysScratch_;
 
     // ── Clip render cache ────────────────────────────────────────────────────
     ClipRenderCache clipRenderCache_;
@@ -1605,6 +2336,15 @@ private:
     // Content-keyed, disk-backed cache for the sampler's stretch/shift bake.
     // Held by pointer so MixEngine.h need not pull in the DSP headers.
     std::unique_ptr<xleth::audio::SlotBakeCache> slotBakeCache_;
+
+    // Parallel track processing (see setParallelTrackProcessingEnabled). The job
+    // block is preallocated so the callback never allocates; its layout lives in
+    // MixEngine.cpp.
+    struct ParallelTrackJob;
+    static void parallelTrackWorker(void* job);
+    std::unique_ptr<xleth::audio::RealtimeWorkerPool> trackWorkerPool_;
+    std::unique_ptr<ParallelTrackJob>                 parallelTrackJob_;
+    std::atomic<bool>                                 parallelTracksEnabled_{true};
 
     // Bakes queued but not yet published, keyed by regionId*MAX_SAMPLE_SLOTS +
     // slotIndex — the same flat key slotSampleMap_ uses. Main thread only.

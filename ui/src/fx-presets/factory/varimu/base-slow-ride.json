@@ -1,0 +1,15 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "varimu",
+  "name": "Base Slow Ride",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "input": 4,
+      "output": -2,
+      "time_constant": 4,
+      "mode": 0
+    }
+  }
+}

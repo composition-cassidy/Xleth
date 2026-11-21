@@ -131,6 +131,23 @@ const METHODS = [
     returns: 'value',
     binary: null,
   },
+  // A gesture made of several calls is one undo entry between these two.
+  {
+    method: 'undo_beginGroup',
+    channels: ['xleth:undo:beginGroup'],
+    api: { 'undo.beginGroup': 'xleth:undo:beginGroup' },
+    handler: 'Undo_BeginGroup',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'undo_endGroup',
+    channels: ['xleth:undo:endGroup'],
+    api: { 'undo.endGroup': 'xleth:undo:endGroup' },
+    handler: 'Undo_EndGroup',
+    returns: 'value',
+    binary: null,
+  },
 
   // ── Phase 0 transport / status compatibility (AUDIT.md S1) ───────────────
   {
@@ -173,6 +190,24 @@ const METHODS = [
     channels: ['xleth:proxy:getStatus'],
     api: { 'proxy.getStatus': 'xleth:proxy:getStatus' },
     handler: 'Proxy_GetStatus',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'proxy_getCodec',
+    channels: ['xleth:proxy:getCodec'],
+    api: { 'proxy.getCodec': 'xleth:proxy:getCodec' },
+    handler: 'Proxy_GetCodec',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    // Returns the resulting { requested, effective, h264Available } state, so a
+    // caller can confirm the call really reached the engine.
+    method: 'proxy_setCodec',
+    channels: ['xleth:proxy:setCodec'],
+    api: { 'proxy.setCodec': 'xleth:proxy:setCodec' },
+    handler: 'Proxy_SetCodec',
     returns: 'value',
     binary: null,
   },
@@ -336,6 +371,14 @@ const METHODS = [
     binary: null,
   },
   {
+    method: 'timeline_getPreviewResolutionAutoMode',
+    channels: ['xleth:timeline:getPreviewResolutionAutoMode'],
+    api: { 'timeline.getPreviewResolutionAutoMode': 'xleth:timeline:getPreviewResolutionAutoMode' },
+    handler: 'Timeline_GetPreviewResolutionAutoMode',
+    returns: 'value',
+    binary: null,
+  },
+  {
     method: 'timeline_getPreviewPosterMode',
     channels: ['xleth:timeline:getPreviewPosterMode'],
     api: { 'timeline.getPreviewPosterMode': 'xleth:timeline:getPreviewPosterMode' },
@@ -365,6 +408,106 @@ const METHODS = [
     api: { 'timeline.setGlobalStretchMethod': 'xleth:timeline:setGlobalStretchMethod' },
     handler: 'Timeline_SetGlobalStretchMethod',
     returns: 'void',
+    binary: null,
+  },
+  // Project-wide motion blur for Lens / Roam / Sweep (render/MotionBlur.h).
+  // { enabled, shutterAngle }; set merges the fields given and returns the
+  // stored, sanitized settings. Zoom/pan/rot has its own, per track, on
+  // timeline_setTrackZoomPanRotSettings ("motionBlur").
+  {
+    method: 'timeline_getMotionBlur',
+    channels: ['xleth:timeline:getMotionBlur'],
+    api: { 'timeline.getMotionBlur': 'xleth:timeline:getMotionBlur' },
+    handler: 'Timeline_GetMotionBlur',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_setMotionBlur',
+    channels: ['xleth:timeline:setMotionBlur'],
+    api: { 'timeline.setMotionBlur': 'xleth:timeline:setMotionBlur' },
+    handler: 'Timeline_SetMotionBlur',
+    returns: 'value',
+    binary: null,
+  },
+  // ── Color Grade (engine/src/model/ColorGrade.h) ──────────────────────────
+  // Colour correction at four levels: Source -> Clip (or Region) -> Layer ->
+  // Master. A target is { level: 'source'|'clip'|'region'|'layer'|'master', id }.
+  // preview / commit / cancel are one drag: preview writes live with no undo
+  // entry, commit ends it as ONE undo step, cancel restores what was there.
+  // setMany writes several targets as one undo step (bulk apply, paste, Auto
+  // over a selection). setCompare is preview-only (hold to compare) and is
+  // never saved or exported.
+  {
+    method: 'colorGrade_get',
+    channels: ['xleth:colorGrade:get'],
+    api: { 'colorGrade.get': 'xleth:colorGrade:get' },
+    handler: 'ColorGrade_Get',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'colorGrade_getAll',
+    channels: ['xleth:colorGrade:getAll'],
+    api: { 'colorGrade.getAll': 'xleth:colorGrade:getAll' },
+    handler: 'ColorGrade_GetAll',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'colorGrade_preview',
+    channels: ['xleth:colorGrade:preview'],
+    api: { 'colorGrade.preview': 'xleth:colorGrade:preview' },
+    handler: 'ColorGrade_Preview',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'colorGrade_commit',
+    channels: ['xleth:colorGrade:commit'],
+    api: { 'colorGrade.commit': 'xleth:colorGrade:commit' },
+    handler: 'ColorGrade_Commit',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'colorGrade_cancel',
+    channels: ['xleth:colorGrade:cancel'],
+    api: { 'colorGrade.cancel': 'xleth:colorGrade:cancel' },
+    handler: 'ColorGrade_Cancel',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'colorGrade_setMany',
+    channels: ['xleth:colorGrade:setMany'],
+    api: { 'colorGrade.setMany': 'xleth:colorGrade:setMany' },
+    handler: 'ColorGrade_SetMany',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'colorGrade_analyze',
+    channels: ['xleth:colorGrade:analyze'],
+    api: { 'colorGrade.analyze': 'xleth:colorGrade:analyze' },
+    handler: 'ColorGrade_Analyze',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'colorGrade_setCompare',
+    channels: ['xleth:colorGrade:setCompare'],
+    api: { 'colorGrade.setCompare': 'xleth:colorGrade:setCompare' },
+    handler: 'ColorGrade_SetCompare',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'colorGrade_checkLut',
+    channels: ['xleth:colorGrade:checkLut'],
+    api: { 'colorGrade.checkLut': 'xleth:colorGrade:checkLut' },
+    handler: 'ColorGrade_CheckLut',
+    returns: 'value',
     binary: null,
   },
   {
@@ -480,6 +623,22 @@ const METHODS = [
     binary: null,
   },
   {
+    method: 'timeline_setTrackRoutes',
+    channels: ['xleth:timeline:setTrackRoutes'],
+    api: { 'timeline.setTrackRoutes': 'xleth:timeline:setTrackRoutes' },
+    handler: 'Timeline_SetTrackRoutes',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_setTrackSendGain',
+    channels: ['xleth:timeline:setTrackSendGain'],
+    api: { 'timeline.setTrackSendGain': 'xleth:timeline:setTrackSendGain' },
+    handler: 'Timeline_SetTrackSendGain',
+    returns: 'value',
+    binary: null,
+  },
+  {
     method: 'timeline_addSidechainRoute',
     channels: ['xleth:timeline:addSidechainRoute'],
     api: { 'timeline.addSidechainRoute': 'xleth:timeline:addSidechainRoute' },
@@ -584,6 +743,14 @@ const METHODS = [
     binary: null,
   },
   {
+    method: 'timeline_setVideoHoldBehavior',
+    channels: ['xleth:timeline:setVideoHoldBehavior'],
+    api: { 'timeline.setVideoHoldBehavior': 'xleth:timeline:setVideoHoldBehavior' },
+    handler: 'Timeline_SetVideoHoldBehavior',
+    returns: 'void',
+    binary: null,
+  },
+  {
     method: 'timeline_setTrackCornerRadius',
     channels: ['xleth:timeline:setTrackCornerRadius'],
     api: { 'timeline.setTrackCornerRadius': 'xleth:timeline:setTrackCornerRadius' },
@@ -656,6 +823,249 @@ const METHODS = [
     binary: null,
   },
   {
+    method: 'timeline_setTrackNoteFade',
+    channels: ['xleth:timeline:setTrackNoteFade'],
+    api: { 'timeline.setTrackNoteFade': 'xleth:timeline:setTrackNoteFade' },
+    handler: 'Timeline_SetTrackNoteFade',
+    returns: 'void',
+    binary: null,
+  },
+  // ── Lens + Roam (docs/XLETH_LENS_ROAM_SPEC.md, P3) ──
+  // Each setter/reset is one undo command; no streaming path (drags preview
+  // locally and commit once on mouseup). Renderer entry point:
+  // ui/src/lensRoam/lensRoamApi.js.
+  {
+    method: 'timeline_setClipLens',
+    channels: ['xleth:timeline:setClipLens'],
+    api: { 'timeline.setClipLens': 'xleth:timeline:setClipLens' },
+    handler: 'Timeline_SetClipLens',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_resetClipLens',
+    channels: ['xleth:timeline:resetClipLens'],
+    api: { 'timeline.resetClipLens': 'xleth:timeline:resetClipLens' },
+    handler: 'Timeline_ResetClipLens',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_setTrackLens',
+    channels: ['xleth:timeline:setTrackLens'],
+    api: { 'timeline.setTrackLens': 'xleth:timeline:setTrackLens' },
+    handler: 'Timeline_SetTrackLens',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_resetTrackLens',
+    channels: ['xleth:timeline:resetTrackLens'],
+    api: { 'timeline.resetTrackLens': 'xleth:timeline:resetTrackLens' },
+    handler: 'Timeline_ResetTrackLens',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_setTrackRoam',
+    channels: ['xleth:timeline:setTrackRoam'],
+    api: { 'timeline.setTrackRoam': 'xleth:timeline:setTrackRoam' },
+    handler: 'Timeline_SetTrackRoam',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_resetTrackRoam',
+    channels: ['xleth:timeline:resetTrackRoam'],
+    api: { 'timeline.resetTrackRoam': 'xleth:timeline:resetTrackRoam' },
+    handler: 'Timeline_ResetTrackRoam',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_getLensRoam',
+    channels: ['xleth:timeline:getLensRoam'],
+    api: { 'timeline.getLensRoam': 'xleth:timeline:getLensRoam' },
+    handler: 'Timeline_GetLensRoam',
+    returns: 'value',
+    binary: null,
+  },
+  // ── Lens + Roam P8: per-note overrides ({patternId, noteId}), hit curve, presets ──
+  {
+    method: 'timeline_setNoteLensMode',
+    channels: ['xleth:timeline:setNoteLensMode'],
+    api: { 'timeline.setNoteLensMode': 'xleth:timeline:setNoteLensMode' },
+    handler: 'Timeline_SetNoteLensMode',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_setNoteLensKeys',
+    channels: ['xleth:timeline:setNoteLensKeys'],
+    api: { 'timeline.setNoteLensKeys': 'xleth:timeline:setNoteLensKeys' },
+    handler: 'Timeline_SetNoteLensKeys',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_revertNotesToFollow',
+    channels: ['xleth:timeline:revertNotesToFollow'],
+    api: { 'timeline.revertNotesToFollow': 'xleth:timeline:revertNotesToFollow' },
+    handler: 'Timeline_RevertNotesToFollow',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_setHitCurve',
+    channels: ['xleth:timeline:setHitCurve'],
+    api: { 'timeline.setHitCurve': 'xleth:timeline:setHitCurve' },
+    handler: 'Timeline_SetHitCurve',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_applyHitPreset',
+    channels: ['xleth:timeline:applyHitPreset'],
+    api: { 'timeline.applyHitPreset': 'xleth:timeline:applyHitPreset' },
+    handler: 'Timeline_ApplyHitPreset',
+    returns: 'value',
+    binary: null,
+  },
+  // ── Lens + Roam P10: Track Roam keys (TimelineTicks) ──
+  {
+    method: 'timeline_setTrackRoamKeys',
+    channels: ['xleth:timeline:setTrackRoamKeys'],
+    api: { 'timeline.setTrackRoamKeys': 'xleth:timeline:setTrackRoamKeys' },
+    handler: 'Timeline_SetTrackRoamKeys',
+    returns: 'value',
+    binary: null,
+  },
+  // ── Landing (docs/XLETH_LANDING_SPEC.md, P4) ──
+  // Per-track moves owned by a snapshot cue, ending on its pin. Both return the
+  // post-mutation cue list (the shape listCues returns; a cue carries `landings`
+  // only when it has some). Like every other cue edit they are not on the
+  // UndoManager. No streaming path: a drag previews locally and commits one
+  // setCueLandings on release. The older cue RPCs (addCue, setCueTransition, ...)
+  // are still hand-wired in grid-layout.js / preload.js / XlethAddon.cpp; these
+  // two are pure pass-throughs, so they are declared here and nowhere else.
+  {
+    method: 'timeline_setCueLandings',
+    channels: ['xleth:timeline:setCueLandings'],
+    api: { 'timeline.setCueLandings': 'xleth:timeline:setCueLandings' },
+    handler: 'Timeline_SetCueLandings',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_reflowCueLandings',
+    channels: ['xleth:timeline:reflowCueLandings'],
+    api: { 'timeline.reflowCueLandings': 'xleth:timeline:reflowCueLandings' },
+    handler: 'Timeline_ReflowCueLandings',
+    returns: 'value',
+    binary: null,
+  },
+  // ── Lens + Roam P11: Track Sweep keys (TimelineTicks, a Lens layer) ──
+  {
+    method: 'timeline_setTrackSweepKeys',
+    channels: ['xleth:timeline:setTrackSweepKeys'],
+    api: { 'timeline.setTrackSweepKeys': 'xleth:timeline:setTrackSweepKeys' },
+    handler: 'Timeline_SetTrackSweepKeys',
+    returns: 'value',
+    binary: null,
+  },
+  // ── Motion view: video effect param keys (TimelineTicks, uid + params index) ──
+  {
+    method: 'timeline_setTrackFxKeys',
+    channels: ['xleth:timeline:setTrackFxKeys'],
+    api: { 'timeline.setTrackFxKeys': 'xleth:timeline:setTrackFxKeys' },
+    handler: 'Timeline_SetTrackFxKeys',
+    returns: 'value',
+    binary: null,
+  },
+  // ── Motion view: Parent and Masks (docs/XLETH_MOTION_VIEW_DESIGN.md 3.1) ──
+  {
+    method: 'timeline_setTrackParent',
+    channels: ['xleth:timeline:setTrackParent'],
+    api: { 'timeline.setTrackParent': 'xleth:timeline:setTrackParent' },
+    handler: 'Timeline_SetTrackParent',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_setTrackMasks',
+    channels: ['xleth:timeline:setTrackMasks'],
+    api: { 'timeline.setTrackMasks': 'xleth:timeline:setTrackMasks' },
+    handler: 'Timeline_SetTrackMasks',
+    returns: 'value',
+    binary: null,
+  },
+  // ── Clones (docs/XLETH_CLONE_SPEC.md, engine model/Clone.h) ──
+  {
+    method: 'timeline_addClone',
+    channels: ['xleth:timeline:addClone'],
+    api: { 'timeline.addClone': 'xleth:timeline:addClone' },
+    handler: 'Timeline_AddClone',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_setCloneSettings',
+    channels: ['xleth:timeline:setCloneSettings'],
+    api: { 'timeline.setCloneSettings': 'xleth:timeline:setCloneSettings' },
+    handler: 'Timeline_SetCloneSettings',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_reorderClones',
+    channels: ['xleth:timeline:reorderClones'],
+    api: { 'timeline.reorderClones': 'xleth:timeline:reorderClones' },
+    handler: 'Timeline_ReorderClones',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_setNotesVoicePin',
+    channels: ['xleth:timeline:setNotesVoicePin'],
+    api: { 'timeline.setNotesVoicePin': 'xleth:timeline:setNotesVoicePin' },
+    handler: 'Timeline_SetNotesVoicePin',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_getVoiceAssignment',
+    channels: ['xleth:timeline:getVoiceAssignment'],
+    api: { 'timeline.getVoiceAssignment': 'xleth:timeline:getVoiceAssignment' },
+    handler: 'Timeline_GetVoiceAssignment',
+    returns: 'value',
+    binary: null,
+  },
+  // ── Lens + Roam P9: Clip Track event Lens keys (EventTicks) ──
+  {
+    method: 'timeline_setClipLensKeys',
+    channels: ['xleth:timeline:setClipLensKeys'],
+    api: { 'timeline.setClipLensKeys': 'xleth:timeline:setClipLensKeys' },
+    handler: 'Timeline_SetClipLensKeys',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_setNotesLensKeys',
+    channels: ['xleth:timeline:setNotesLensKeys'],
+    api: { 'timeline.setNotesLensKeys': 'xleth:timeline:setNotesLensKeys' },
+    handler: 'Timeline_SetNotesLensKeys',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_getHitPresets',
+    channels: ['xleth:timeline:getHitPresets'],
+    api: { 'timeline.getHitPresets': 'xleth:timeline:getHitPresets' },
+    handler: 'Timeline_GetHitPresets',
+    returns: 'value',
+    binary: null,
+  },
+  {
     method: 'timeline_setPreviewResolutionScale',
     channels: ['xleth:timeline:setPreviewResolutionScale'],
     api: { 'timeline.setPreviewResolutionScale': 'xleth:timeline:setPreviewResolutionScale' },
@@ -668,6 +1078,14 @@ const METHODS = [
     channels: ['xleth:timeline:setPreviewEffectsBypass'],
     api: { 'timeline.setPreviewEffectsBypass': 'xleth:timeline:setPreviewEffectsBypass' },
     handler: 'Timeline_SetPreviewEffectsBypass',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'timeline_setPreviewResolutionAutoMode',
+    channels: ['xleth:timeline:setPreviewResolutionAutoMode'],
+    api: { 'timeline.setPreviewResolutionAutoMode': 'xleth:timeline:setPreviewResolutionAutoMode' },
+    handler: 'Timeline_SetPreviewResolutionAutoMode',
     returns: 'void',
     binary: null,
   },
@@ -768,7 +1186,7 @@ const METHODS = [
     channels: ['xleth:timeline:moveClip'],
     api: { 'timeline.moveClip': 'xleth:timeline:moveClip' },
     handler: 'Timeline_MoveClip',
-    returns: 'void',
+    returns: 'value',
     binary: null,
   },
   {
@@ -776,7 +1194,7 @@ const METHODS = [
     channels: ['xleth:timeline:resizeClip'],
     api: { 'timeline.resizeClip': 'xleth:timeline:resizeClip' },
     handler: 'Timeline_ResizeClip',
-    returns: 'void',
+    returns: 'value',
     binary: null,
   },
   {
@@ -784,7 +1202,7 @@ const METHODS = [
     channels: ['xleth:timeline:resizeClipLeft'],
     api: { 'timeline.resizeClipLeft': 'xleth:timeline:resizeClipLeft' },
     handler: 'Timeline_ResizeClipLeft',
-    returns: 'void',
+    returns: 'value',
     binary: null,
   },
   {
@@ -792,7 +1210,7 @@ const METHODS = [
     channels: ['xleth:timeline:stretchClip'],
     api: { 'timeline.stretchClip': 'xleth:timeline:stretchClip' },
     handler: 'Timeline_StretchClip',
-    returns: 'void',
+    returns: 'value',
     binary: null,
   },
   {
@@ -800,7 +1218,7 @@ const METHODS = [
     channels: ['xleth:timeline:stretchClipLeft'],
     api: { 'timeline.stretchClipLeft': 'xleth:timeline:stretchClipLeft' },
     handler: 'Timeline_StretchClipLeft',
-    returns: 'void',
+    returns: 'value',
     binary: null,
   },
   {
@@ -864,6 +1282,17 @@ const METHODS = [
     channels: ['xleth:timeline:setClipModulation'],
     api: { 'timeline.setClipModulation': 'xleth:timeline:setClipModulation' },
     handler: 'Timeline_SetClipModulation',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    // Manifest-eligible for the same reason as timeline_addPatternBlocksBatch:
+    // the batching lives entirely in the engine handler and every JS layer is a
+    // single-arg pass-through.
+    method: 'timeline_setClipModulationBatch',
+    channels: ['xleth:timeline:setClipModulationBatch'],
+    api: { 'timeline.setClipModulationBatch': 'xleth:timeline:setClipModulationBatch' },
+    handler: 'Timeline_SetClipModulationBatch',
     returns: 'value',
     binary: null,
   },
@@ -960,6 +1389,62 @@ const METHODS = [
     channels: ['xleth:project:isDirty'],
     api: { 'project.isDirty': 'xleth:project:isDirty' },
     handler: 'Project_IsDirty',
+    returns: 'value',
+    binary: null,
+  },
+  // ── Motion view UI state (design R19): opaque, saved under "motionView",
+  // not undoable, not dirtying ──
+  {
+    method: 'project_getMotionViewState',
+    channels: ['xleth:project:getMotionViewState'],
+    api: { 'project.getMotionViewState': 'xleth:project:getMotionViewState' },
+    handler: 'Project_GetMotionViewState',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'project_setMotionViewState',
+    channels: ['xleth:project:setMotionViewState'],
+    api: { 'project.setMotionViewState': 'xleth:project:setMotionViewState' },
+    handler: 'Project_SetMotionViewState',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    // The app setting "Delete regenerable files when closing a project". Returns
+    // the value now in force, so a caller can confirm the call reached the engine.
+    method: 'project_setPurgeOnClose',
+    channels: ['xleth:project:setPurgeOnClose'],
+    api: { 'project.setPurgeOnClose': 'xleth:project:setPurgeOnClose' },
+    handler: 'Project_SetPurgeOnClose',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    // null | { projectDir, freedBytes, filesRemoved, filesFailed, categories[] } —
+    // the last purge-on-close result, consumed on read.
+    method: 'project_takeLastPurge',
+    channels: ['xleth:project:takeLastPurge'],
+    api: { 'project.takeLastPurge': 'xleth:project:takeLastPurge' },
+    handler: 'Project_TakeLastPurge',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    // Dry run of "Clean up project" for the confirmation dialog. Deletes nothing.
+    method: 'project_cleanupScan',
+    channels: ['xleth:project:cleanupScan'],
+    api: { 'project.cleanupScan': 'xleth:project:cleanupScan' },
+    handler: 'Project_CleanupScan',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    // "Clean up project": delete orphaned + leftover-partial files now.
+    method: 'project_cleanupRun',
+    channels: ['xleth:project:cleanupRun'],
+    api: { 'project.cleanupRun': 'xleth:project:cleanupRun' },
+    handler: 'Project_CleanupRun',
     returns: 'value',
     binary: null,
   },
@@ -1139,6 +1624,18 @@ const METHODS = [
     binary: null,
   },
   {
+    // Per-slot read-head position (source samples, -1 = not sounding) for the
+    // sampler editor's waveform playhead. Reads the region's PREVIEW sampler,
+    // which is the instance the panel's own audition keyboard drives. Polled
+    // only while a note is held.
+    method: 'timeline_getSamplerPlayPositions',
+    channels: ['xleth:timeline:getSamplerPlayPositions'],
+    api: { 'timeline.getSamplerPlayPositions': 'xleth:timeline:getSamplerPlayPositions' },
+    handler: 'Timeline_GetSamplerPlayPositions',
+    returns: 'value',
+    binary: null,
+  },
+  {
     method: 'timeline_getPatternAudioInfo',
     channels: ['xleth:timeline:getPatternAudioInfo'],
     api: { 'timeline.getPatternAudioInfo': 'xleth:timeline:getPatternAudioInfo' },
@@ -1172,6 +1669,27 @@ const METHODS = [
     channels: ['xleth:timeline:addPatternBlock'],
     api: { 'timeline.addPatternBlock': 'xleth:timeline:addPatternBlock' },
     handler: 'Timeline_AddPatternBlock',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    // Batched, but manifest-eligible: the batching lives ENTIRELY in the engine
+    // handler and every JS layer is a single-arg pass-through — the same
+    // criterion that admitted the FXG.3-d topology ops (docs/rpc-manifest.md).
+    // The older *ClipsBatch methods stay hand-written in electron-main/timeline.js
+    // only because they predate the manifest.
+    method: 'timeline_addPatternBlocksBatch',
+    channels: ['xleth:timeline:addPatternBlocksBatch'],
+    api: { 'timeline.addPatternBlocksBatch': 'xleth:timeline:addPatternBlocksBatch' },
+    handler: 'Timeline_AddPatternBlocksBatch',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_pastePatternBlocksBatch',
+    channels: ['xleth:timeline:pastePatternBlocksBatch'],
+    api: { 'timeline.pastePatternBlocksBatch': 'xleth:timeline:pastePatternBlocksBatch' },
+    handler: 'Timeline_PastePatternBlocksBatch',
     returns: 'value',
     binary: null,
   },
@@ -1304,6 +1822,38 @@ const METHODS = [
     api: { 'timeline.previewAllNotesOff': 'xleth:timeline:previewAllNotesOff' },
     handler: 'Timeline_PreviewAllNotesOff',
     returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'timeline_startPatternAudition',
+    channels: ['xleth:timeline:startPatternAudition'],
+    api: { 'timeline.startPatternAudition': 'xleth:timeline:startPatternAudition' },
+    handler: 'Timeline_StartPatternAudition',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_stopPatternAudition',
+    channels: ['xleth:timeline:stopPatternAudition'],
+    api: { 'timeline.stopPatternAudition': 'xleth:timeline:stopPatternAudition' },
+    handler: 'Timeline_StopPatternAudition',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'timeline_setPatternAuditionLoop',
+    channels: ['xleth:timeline:setPatternAuditionLoop'],
+    api: { 'timeline.setPatternAuditionLoop': 'xleth:timeline:setPatternAuditionLoop' },
+    handler: 'Timeline_SetPatternAuditionLoop',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'timeline_getPatternAuditionState',
+    channels: ['xleth:timeline:getPatternAuditionState'],
+    api: { 'timeline.getPatternAuditionState': 'xleth:timeline:getPatternAuditionState' },
+    handler: 'Timeline_GetPatternAuditionState',
+    returns: 'value',
     binary: null,
   },
   {
@@ -1472,6 +2022,22 @@ const METHODS = [
     binary: null,
   },
   {
+    method: 'audio_setMetronome',
+    channels: ['xleth:audio:setMetronome'],
+    api: { 'audio.setMetronome': 'xleth:audio:setMetronome' },
+    handler: 'Audio_SetMetronome',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getMetronome',
+    channels: ['xleth:audio:getMetronome'],
+    api: { 'audio.getMetronome': 'xleth:audio:getMetronome' },
+    handler: 'Audio_GetMetronome',
+    returns: 'value',
+    binary: null,
+  },
+  {
     method: 'audio_getOutputDevices',
     channels: ['xleth:audio:getOutputDevices'],
     api: { 'audio.getOutputDevices': 'xleth:audio:getOutputDevices' },
@@ -1492,6 +2058,46 @@ const METHODS = [
     channels: ['xleth:audio:setOutputDevice'],
     api: { 'audio.setOutputDevice': 'xleth:audio:setOutputDevice' },
     handler: 'Audio_SetOutputDevice',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_rescanDevices',
+    channels: ['xleth:audio:rescanDevices'],
+    api: { 'audio.rescanDevices': 'xleth:audio:rescanDevices' },
+    handler: 'Audio_RescanDevices',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getSupportedSampleRates',
+    channels: ['xleth:audio:getSupportedSampleRates'],
+    api: { 'audio.getSupportedSampleRates': 'xleth:audio:getSupportedSampleRates' },
+    handler: 'Audio_GetSupportedSampleRates',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getDeviceInfo',
+    channels: ['xleth:audio:getDeviceInfo'],
+    api: { 'audio.getDeviceInfo': 'xleth:audio:getDeviceInfo' },
+    handler: 'Audio_GetDeviceInfo',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_setBufferSize',
+    channels: ['xleth:audio:setBufferSize'],
+    api: { 'audio.setBufferSize': 'xleth:audio:setBufferSize' },
+    handler: 'Audio_SetBufferSize',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_setSampleRate',
+    channels: ['xleth:audio:setSampleRate'],
+    api: { 'audio.setSampleRate': 'xleth:audio:setSampleRate' },
+    handler: 'Audio_SetSampleRate',
     returns: 'value',
     binary: null,
   },
@@ -1792,6 +2398,19 @@ const METHODS = [
     channels: ['xleth:audio:filterGetResponseCurve'],
     api: { 'audio.filterGetResponseCurve': 'xleth:audio:filterGetResponseCurve' },
     handler: 'Audio_Filter_GetResponseCurve',
+    returns: 'value',
+    binary: null,
+  },
+  // The panel's animation frame: effective (post-modulation) knob positions,
+  // every modulator lane's live source value and the response curve drawn from
+  // those same values, in ONE Float32Array. Polled at frame rate while the
+  // filter panel is open and a modulator is running, which is why it is one
+  // door and not three.
+  {
+    method: 'audio_filterGetLiveState',
+    channels: ['xleth:audio:filterGetLiveState'],
+    api: { 'audio.filterGetLiveState': 'xleth:audio:filterGetLiveState' },
+    handler: 'Audio_Filter_GetLiveState',
     returns: 'value',
     binary: null,
   },
@@ -2099,10 +2718,52 @@ const METHODS = [
   // ── VST3 scanner / editor / missing-plugin / crash recovery (AUDIT.md S1) ──
   // Pure engine pass-throughs from ui/electron-main/vst3.js. All dispatch with
   // the value shape (engine returns Handler(info).raw() for every one, including
-  // the editor mutations). audio_scanPlugins is NOT here: its vst3.js handler
-  // reshapes the argument (paths && paths.length ? [paths] : []) before
-  // forwarding, so it stays hand-written. xleth:dialog:addVstSearchPath owns an
-  // Electron dialog, not an engine call, and stays hand-written too.
+  // the editor mutations). xleth:dialog:addVstSearchPath owns an Electron
+  // dialog, not an engine call, and stays hand-written.
+  //
+  // P1 scan pipeline (docs/PLUGIN_HOSTING_LOG.md): audio_scanPlugins now takes
+  // an options object ({ mode: 'incremental'|'full', retryFailed? }) and the
+  // engine owns the search paths, so it is a plain pass-through here too.
+  {
+    method: 'audio_scanPlugins',
+    channels: ['xleth:audio:scanPlugins'],
+    api: { 'audio.scanPlugins': 'xleth:audio:scanPlugins' },
+    handler: 'Audio_ScanPlugins',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_cancelPluginScan',
+    channels: ['xleth:audio:cancelPluginScan'],
+    api: { 'audio.cancelPluginScan': 'xleth:audio:cancelPluginScan' },
+    handler: 'Audio_CancelPluginScan',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getPluginSearchPaths',
+    channels: ['xleth:audio:getPluginSearchPaths'],
+    api: { 'audio.getPluginSearchPaths': 'xleth:audio:getPluginSearchPaths' },
+    handler: 'Audio_GetPluginSearchPaths',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_setPluginSearchPaths',
+    channels: ['xleth:audio:setPluginSearchPaths'],
+    api: { 'audio.setPluginSearchPaths': 'xleth:audio:setPluginSearchPaths' },
+    handler: 'Audio_SetPluginSearchPaths',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_retryFailedPlugins',
+    channels: ['xleth:audio:retryFailedPlugins'],
+    api: { 'audio.retryFailedPlugins': 'xleth:audio:retryFailedPlugins' },
+    handler: 'Audio_RetryFailedPlugins',
+    returns: 'value',
+    binary: null,
+  },
   {
     method: 'audio_getScanProgress',
     channels: ['xleth:audio:getScanProgress'],
@@ -2188,6 +2849,25 @@ const METHODS = [
     channels: ['xleth:audio:resetCrashedPlugin'],
     api: { 'audio.resetCrashedPlugin': 'xleth:audio:resetCrashedPlugin' },
     handler: 'Audio_ResetCrashedPlugin',
+    returns: 'value',
+    binary: null,
+  },
+  // P2 host safety (docs/PLUGIN_HOSTING_LOG.md): the load-crash breadcrumb the
+  // previous engine left behind (consumed on read), and the way back out of
+  // quarantine.
+  {
+    method: 'audio_getLastLoadCrash',
+    channels: ['xleth:audio:getLastLoadCrash'],
+    api: { 'audio.getLastLoadCrash': 'xleth:audio:getLastLoadCrash' },
+    handler: 'Audio_GetLastLoadCrash',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_unquarantinePlugin',
+    channels: ['xleth:audio:unquarantinePlugin'],
+    api: { 'audio.unquarantinePlugin': 'xleth:audio:unquarantinePlugin' },
+    handler: 'Audio_UnquarantinePlugin',
     returns: 'value',
     binary: null,
   },
@@ -2312,6 +2992,16 @@ const METHODS = [
     channels: ['xleth:automation:addClip'],
     api: { 'automation.addClip': 'xleth:automation:addClip' },
     handler: 'Automation_AddClip',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    // Placements are resolved ENGINE-side (same-lane overlap is rejected, so each
+    // landing tick depends on the ones before it) — see Automation_AddClipsBatch.
+    method: 'automation_addClipsBatch',
+    channels: ['xleth:automation:addClipsBatch'],
+    api: { 'automation.addClipsBatch': 'xleth:automation:addClipsBatch' },
+    handler: 'Automation_AddClipsBatch',
     returns: 'value',
     binary: null,
   },
@@ -2452,11 +3142,256 @@ const METHODS = [
     binary: null,
   },
 
+  // ── Sample Sandbox (SB-2 bridge over SB-1's SandboxCore/SandboxRenderer) ──
+  // Every op-stack mutation is undoable (routes through xleth::sandbox's own
+  // Command classes); open/close and render/getRenderedBuffer/bake are not —
+  // opening a workspace and running its renderer are not content edits.
+  {
+    method: 'sandbox_open',
+    channels: ['xleth:sandbox:open'],
+    api: { 'sandbox.open': 'xleth:sandbox:open' },
+    handler: 'Sandbox_Open',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    // Copies a layer WITH its op-stack and mix params. Undoable
+    // (DuplicateSandboxLayerCommand) unlike open/close, because unlike them it
+    // produces new content rather than just a view onto existing content.
+    method: 'sandbox_duplicateLayer',
+    channels: ['xleth:sandbox:duplicateLayer'],
+    api: { 'sandbox.duplicateLayer': 'xleth:sandbox:duplicateLayer' },
+    handler: 'Sandbox_DuplicateLayer',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'sandbox_close',
+    channels: ['xleth:sandbox:close'],
+    api: { 'sandbox.close': 'xleth:sandbox:close' },
+    handler: 'Sandbox_Close',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'sandbox_stackAdd',
+    channels: ['xleth:sandbox:stackAdd'],
+    api: { 'sandbox.stackAdd': 'xleth:sandbox:stackAdd' },
+    handler: 'Sandbox_StackAdd',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'sandbox_stackRemove',
+    channels: ['xleth:sandbox:stackRemove'],
+    api: { 'sandbox.stackRemove': 'xleth:sandbox:stackRemove' },
+    handler: 'Sandbox_StackRemove',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'sandbox_stackReorder',
+    channels: ['xleth:sandbox:stackReorder'],
+    api: { 'sandbox.stackReorder': 'xleth:sandbox:stackReorder' },
+    handler: 'Sandbox_StackReorder',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'sandbox_stackSetParam',
+    channels: ['xleth:sandbox:stackSetParam'],
+    api: { 'sandbox.stackSetParam': 'xleth:sandbox:stackSetParam' },
+    handler: 'Sandbox_StackSetParam',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'sandbox_stackSetBypassed',
+    channels: ['xleth:sandbox:stackSetBypassed'],
+    api: { 'sandbox.stackSetBypassed': 'xleth:sandbox:stackSetBypassed' },
+    handler: 'Sandbox_StackSetBypassed',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'sandbox_render',
+    channels: ['xleth:sandbox:render'],
+    api: { 'sandbox.render': 'xleth:sandbox:render' },
+    handler: 'Sandbox_Render',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    // data: interleaved float32 PCM as a real Buffer — see Sandbox_GetRenderedBuffer.
+    // No special-case needed in addon-worker.js: the fork uses
+    // serialization:'advanced', which preserves Buffer identity across IPC
+    // (same reason midi_executeImport's noteData survives unconverted).
+    method: 'sandbox_getRenderedBuffer',
+    channels: ['xleth:sandbox:getRenderedBuffer'],
+    api: { 'sandbox.getRenderedBuffer': 'xleth:sandbox:getRenderedBuffer' },
+    handler: 'Sandbox_GetRenderedBuffer',
+    returns: 'value',
+    binary: 'sandboxBuffer',
+  },
+  {
+    // data: one uint8 token per (frame, bin) — see Sandbox_GetSpectrogram.
+    // Same transport as sandbox_getRenderedBuffer: fork uses
+    // serialization:'advanced', Buffer identity survives unconverted.
+    method: 'sandbox_getSpectrogram',
+    channels: ['xleth:sandbox:getSpectrogram'],
+    api: { 'sandbox.getSpectrogram': 'xleth:sandbox:getSpectrogram' },
+    handler: 'Sandbox_GetSpectrogram',
+    returns: 'value',
+    binary: 'sandboxBuffer',
+  },
+  {
+    // frames: interleaved (f0Hz, confidence) float32 pairs, one pair per
+    // analysis hop — see Sandbox_GetPitchTrack. Same transport as
+    // sandbox_getRenderedBuffer/sandbox_getSpectrogram: fork uses
+    // serialization:'advanced', Buffer identity survives unconverted.
+    method: 'sandbox_getPitchTrack',
+    channels: ['xleth:sandbox:getPitchTrack'],
+    api: { 'sandbox.getPitchTrack': 'xleth:sandbox:getPitchTrack' },
+    handler: 'Sandbox_GetPitchTrack',
+    returns: 'value',
+    binary: 'sandboxBuffer',
+  },
+  {
+    method: 'sandbox_bake',
+    channels: ['xleth:sandbox:bake'],
+    api: { 'sandbox.bake': 'xleth:sandbox:bake' },
+    handler: 'Sandbox_Bake',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    // Captures a range of the layer's published render into the session-local
+    // clipboard store (SB-4). Not undoable — see Sandbox_CopySelection. CUT is
+    // this call followed by sandbox_stackAdd({type:'cut', ...}) on the same
+    // range; PASTE and INSERT SILENCE are both sandbox_stackAdd({type:'paste'})
+    // — no dedicated bridge calls needed for either.
+    method: 'sandbox_copySelection',
+    channels: ['xleth:sandbox:copySelection'],
+    api: { 'sandbox.copySelection': 'xleth:sandbox:copySelection' },
+    handler: 'Sandbox_CopySelection',
+    returns: 'value',
+    binary: null,
+  },
+
+  // ── Sample Sandbox layering + bake (SB-5) ──────────────────────────────────
+  // Layer mix params (gain/pan/offset/mute/solo) live OUTSIDE the op-stack, so
+  // none of these three dirty a layer's render. Composite render/bake mix every
+  // layer's own published render by those params — see SandboxRenderer::
+  // renderComposite. sandbox_bakeComposite is undoable (BakeSandboxCompositeCommand);
+  // sandbox_renderComposite is not, same reasoning as sandbox_render.
+  {
+    method: 'sandbox_setLayerMix',
+    channels: ['xleth:sandbox:setLayerMix'],
+    api: { 'sandbox.setLayerMix': 'xleth:sandbox:setLayerMix' },
+    handler: 'Sandbox_SetLayerMix',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'sandbox_setLayerMuted',
+    channels: ['xleth:sandbox:setLayerMuted'],
+    api: { 'sandbox.setLayerMuted': 'xleth:sandbox:setLayerMuted' },
+    handler: 'Sandbox_SetLayerMuted',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'sandbox_setLayerSoloed',
+    channels: ['xleth:sandbox:setLayerSoloed'],
+    api: { 'sandbox.setLayerSoloed': 'xleth:sandbox:setLayerSoloed' },
+    handler: 'Sandbox_SetLayerSoloed',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    // data: interleaved float32 PCM as a real Buffer — same transport as
+    // sandbox_getRenderedBuffer.
+    method: 'sandbox_renderComposite',
+    channels: ['xleth:sandbox:renderComposite'],
+    api: { 'sandbox.renderComposite': 'xleth:sandbox:renderComposite' },
+    handler: 'Sandbox_RenderComposite',
+    returns: 'value',
+    binary: 'sandboxBuffer',
+  },
+  {
+    method: 'sandbox_bakeComposite',
+    channels: ['xleth:sandbox:bakeComposite'],
+    api: { 'sandbox.bakeComposite': 'xleth:sandbox:bakeComposite' },
+    handler: 'Sandbox_BakeComposite',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    // SPC selection's COPY TO NEW LAYER — see Sandbox_ExtractSelection's own
+    // comment (XlethEngineService.cpp) for why this reuses
+    // BakeSandboxCompositeCommand rather than a new command type.
+    method: 'sandbox_extractSelection',
+    channels: ['xleth:sandbox:extractSelection'],
+    api: { 'sandbox.extractSelection': 'xleth:sandbox:extractSelection' },
+    handler: 'Sandbox_ExtractSelection',
+    returns: 'value',
+    binary: null,
+  },
+
+  // ── Sample Sandbox swap-in / workspace / history (SB-6) ────────────────────
+  // sandbox_swapIn is undoable (SwapSandboxSampleCommand). sandbox_undo /
+  // sandbox_redo drive the ONE shared UndoManager — the Sandbox has no second
+  // stack — but refuse when the entry on top is not a sandbox edit, so the
+  // panel's Undo button can never undo a timeline clip move. getWorkspace /
+  // getHistory are pure reads.
+  {
+    method: 'sandbox_swapIn',
+    channels: ['xleth:sandbox:swapIn'],
+    api: { 'sandbox.swapIn': 'xleth:sandbox:swapIn' },
+    handler: 'Sandbox_SwapIn',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    // Returns SandboxCore::toJson() as a JSON STRING (same convention as
+    // automation_getPlanDiagnostics) — the caller JSON.parses it.
+    method: 'sandbox_getWorkspace',
+    channels: ['xleth:sandbox:getWorkspace'],
+    api: { 'sandbox.getWorkspace': 'xleth:sandbox:getWorkspace' },
+    handler: 'Sandbox_GetWorkspace',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'sandbox_undo',
+    channels: ['xleth:sandbox:undo'],
+    api: { 'sandbox.undo': 'xleth:sandbox:undo' },
+    handler: 'Sandbox_Undo',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'sandbox_redo',
+    channels: ['xleth:sandbox:redo'],
+    api: { 'sandbox.redo': 'xleth:sandbox:redo' },
+    handler: 'Sandbox_Redo',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'sandbox_getHistory',
+    channels: ['xleth:sandbox:getHistory'],
+    api: { 'sandbox.getHistory': 'xleth:sandbox:getHistory' },
+    handler: 'Sandbox_GetHistory',
+    returns: 'value',
+    binary: null,
+  },
+
 ];
 
 // Binary kinds addon-worker.js knows how to transport. A manifest entry with
 // any other value is a wiring mistake, caught by validateManifest().
-const KNOWN_BINARY_KINDS = new Set(['frame', 'midiImport']);
+const KNOWN_BINARY_KINDS = new Set(['frame', 'midiImport', 'sandboxBuffer']);
 
 // Graph-broadcast keys rpc-registry.js knows how to map to a key function
 // (electron-main/effects.js's trackKey / masterKey). The field is optional —

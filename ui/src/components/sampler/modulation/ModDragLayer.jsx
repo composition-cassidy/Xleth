@@ -2,7 +2,8 @@ import { useCallback, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import useSamplerModDragStore from '../../../stores/samplerModDragStore.js'
 import useSamplerModulationStore from '../../../stores/samplerModulationStore.js'
-import { parseTargetKey, modSourceColorVar } from './modTargets.js'
+import { parseTargetKey } from './modTargets.js'
+import styles from '../Sampler.module.css'
 
 // ── Drag-to-route ────────────────────────────────────────────────────────────
 // A source TAB starts the drag; window-level listeners track it; the control
@@ -94,8 +95,10 @@ export function ModDragGhost() {
   if (source == null || typeof document === 'undefined') return null
   return createPortal(
     <div
-      className={`sampler-mod-drag-ghost${hoverKey ? ' is-over' : ''}`}
-      style={{ left: x, top: y, '--ghost-color': `var(${modSourceColorVar(source)})` }}
+      className={styles.dragGhost}
+      data-over={hoverKey ? 'true' : undefined}
+      style={{ left: x, top: y }}
+      aria-hidden="true"
     >
       {label}
     </div>,

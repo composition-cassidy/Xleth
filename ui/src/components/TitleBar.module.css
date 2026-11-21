@@ -1,0 +1,187 @@
+/* Top bar (ui/DESIGN.md section 8):
+ *   Menus | transport cluster (centred) | panel toggles + window controls
+ * The bar itself is the window drag region; every control opts out. */
+@layer kit {
+  .bar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: center;
+    column-gap: var(--space-3);
+    height: var(--shell-topbar-h);
+    min-height: var(--shell-topbar-h);
+    padding: 0 0 0 var(--space-2);
+    background: var(--ui-g2);
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .left {
+    justify-self: start;
+    min-width: 0;
+    /* Not hidden: File / Edit / View / Settings open their dropdowns inside this
+     * box, and overflow: hidden clipped each one to the 30px menu row. */
+    overflow: visible;
+  }
+
+  .center {
+    justify-self: center;
+    height: 100%;
+  }
+
+  .right {
+    justify-self: end;
+    display: flex;
+    align-items: center;
+    height: 100%;
+    min-width: 0;
+  }
+
+  /* Menu triggers are kit Buttons (ghost). Open or active = the hover look, so
+   * an open menu reads as pressed without an underline or a glow. */
+  button.menuTrigger {
+    padding: 0 var(--space-2);
+  }
+
+  button.menuTrigger[data-open="true"] {
+    background: var(--ui-g3);
+    color: var(--ui-ink);
+  }
+
+  /* Window controls: kit IconButtons behind a hairline divider. */
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    height: 100%;
+    margin-left: var(--space-2);
+    padding-left: var(--space-1);
+    border-left: 1px solid var(--ui-g4);
+  }
+
+  /* Narrow CSS viewport (a small window, or a high UI scale): two rows, so nothing overlaps.
+   * Row 1: menus, panel toggles, window controls. Row 2: the transport cluster, whole. The
+   * `.right` wrapper dissolves so its two children join the grid. Panel toggles keep their
+   * 24 px hit area and scroll, rather than shrink, if the row is narrower still. */
+  @media (max-width: 1100px) {
+    .bar {
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      grid-template-rows: repeat(2, calc(var(--shell-topbar-h) / 2));
+      grid-template-areas:
+        "left dock controls"
+        "center center center";
+      row-gap: 0;
+      padding-right: 0;
+    }
+
+    .left { grid-area: left; }
+
+    .center {
+      grid-area: center;
+      justify-self: start;
+      min-width: 0;
+    }
+
+    .right { display: contents; }
+
+    .controls {
+      grid-area: controls;
+      margin-left: 0;
+    }
+
+    .dock {
+      grid-area: dock;
+      justify-self: end;
+      max-width: 100%;
+      min-width: 0;
+      overflow-x: auto;
+      scrollbar-width: none;
+      gap: 0;
+      padding: 0 var(--space-1);
+    }
+
+    .dock > button {
+      flex: 0 0 auto;
+      min-width: var(--hit-min);
+      min-height: var(--hit-min);
+    }
+  }
+
+  /* File / Edit / View dropdown surface: the kit Menu's grammar (24px rows, 12px text, hard
+   * offset shadow because it floats), anchored under its trigger by the global
+   * `.titlebar-dropdown` wrapper. Label left, shortcut right. */
+  .panel {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    min-width: 216px;
+    padding: var(--space-1);
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-2);
+    background: var(--ui-g2);
+    box-shadow: var(--ui-shadow-float);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    -webkit-app-region: no-drag;
+  }
+
+  .row {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+    width: 100%;
+    min-height: var(--row-h);
+    padding: 0 var(--space-2);
+    border: 1px solid transparent;
+    border-radius: var(--ui-radius-1);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    white-space: nowrap;
+    cursor: pointer;
+    -webkit-app-region: no-drag;
+  }
+
+  .row:is(:hover, :focus-visible) {
+    background: var(--ui-g3);
+  }
+
+  .row:focus-visible {
+    border-color: var(--ui-select);
+    outline: none;
+  }
+
+  .keys {
+    flex: none;
+    margin: 0;
+    color: var(--ui-ink-2);
+    font: inherit;
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .sep {
+    height: 1px;
+    margin: var(--space-1) 0;
+    background: var(--ui-g4);
+  }
+
+  .group {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .groupLabel {
+    padding: var(--space-1) var(--space-2);
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+  }
+
+  /* Close warns on hover: the clip/error colour, with dark ink on it (6:1). */
+  button.close:hover:not(:disabled) {
+    background: var(--ui-clip);
+    color: var(--ui-g0);
+  }
+}

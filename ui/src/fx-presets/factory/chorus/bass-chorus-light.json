@@ -1,0 +1,18 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "chorus",
+  "name": "Bass Chorus Light",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "rate": 0.5,
+      "depth": 30,
+      "delay": 9,
+      "feedback": 0,
+      "voices": 2,
+      "width": 60,
+      "mix": 22
+    }
+  }
+}

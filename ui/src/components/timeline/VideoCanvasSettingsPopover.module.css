@@ -1,0 +1,46 @@
+/* The project canvas popover (DESIGN.md 22): three labelled rows of kit controls. It is a
+ * floating surface (hard offset shadow) positioned by the wrapper the Edit grid rail puts it
+ * in: its top-right corner sits at the wrapper's origin. */
+@layer kit {
+  .popover {
+    box-sizing: border-box;
+    position: absolute;
+    top: calc(100% + var(--space-1));
+    right: 0;
+    z-index: 210;
+    min-width: 232px;
+    padding: var(--space-2);
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-2);
+    background: var(--ui-g2);
+    box-shadow: var(--ui-shadow-float);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+  }
+
+  .controls {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .row {
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr);
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .label {
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+  }
+
+  .sizeRow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-1);
+  }
+}

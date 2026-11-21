@@ -1,5 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react'
-import { Repeat } from 'lucide-react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import ContextMenu from '../ContextMenu.jsx'
 import useEffectChainStore from '../../stores/effectChainStore.js'
 import { PPQ } from '../../constants/timeline.js'
@@ -20,6 +19,10 @@ import {
   buildLoopGhostCurveSegments,
   buildLoopRepeatDividers,
 } from './macroLaneGeometry.js'
+import styles from './MacroAutomationLanes.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcRepeat = iconComponent('repeat')
 
 // FXG.4-h-r1 — Real macro automation child-lane layer (replaces the FXG.4-h-fix
 // amber overlay strips). Renders one interactive row per visible macro automation
@@ -347,7 +350,7 @@ export default function MacroAutomationLanes({
   return (
     <div
       ref={layerRef}
-      className="macro-automation-lanes-layer"
+      className={`macro-automation-lanes-layer ${styles.layer}`}
       style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: trackLayout.totalHeight }}
     >
       {macroRows.map((row) => {
@@ -358,7 +361,7 @@ export default function MacroAutomationLanes({
         return (
           <div
             key={row.id}
-            className={`macro-automation-lane${row.targetUnavailable ? ' macro-automation-lane--orphan' : ''}`}
+            className={`macro-automation-lane ${styles.lane}${row.targetUnavailable ? ` macro-automation-lane--orphan ${styles.orphan}` : ''}`}
             data-lane-id={row.laneId}
             data-macro-node-id={row.macroNodeId}
             style={{ position: 'absolute', top: row.y, left: 0, width: '100%', height: row.height }}
@@ -366,7 +369,7 @@ export default function MacroAutomationLanes({
             onPointerDown={(e) => { if (e.target === e.currentTarget) setSelected(null) }}
           >
             {row.targetUnavailable && (
-              <span className="macro-automation-lane-orphan-tag">macro unavailable</span>
+              <span className={`macro-automation-lane-orphan-tag ${styles.orphanTag}`}>Macro unavailable</span>
             )}
             {clips.map((clip) => {
               const { left, width } = clipPixelRect(clip, pixelsPerBeat, scrollOffset)
@@ -382,12 +385,12 @@ export default function MacroAutomationLanes({
               return (
                 <div
                   key={clip.clipId}
-                  className={macroAutomationClipClassName({
+                  className={`${macroAutomationClipClassName({
                     isSelected,
                     loopEnabled: clip.loopEnabled,
                     hoverTarget: clipHoverTarget,
                     clipId: clip.clipId,
-                  })}
+                  })} ${styles.clip}`}
                   data-clip-id={clip.clipId}
                   style={{ position: 'absolute', left, top: 0, width, height: row.height, cursor: clipHoverTarget?.cursor }}
                   onPointerMove={(e) => updateClipHover(e, row, clip, contentTop, contentH)}
@@ -397,7 +400,7 @@ export default function MacroAutomationLanes({
                   onContextMenu={(e) => openClipMenu(e, row, clip, contentTop, contentH)}
                 >
                   <svg
-                    className="macro-automation-clip-curve"
+                    className={`macro-automation-clip-curve ${styles.curve}`}
                     width={width}
                     height={row.height}
                     style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}
@@ -433,12 +436,12 @@ export default function MacroAutomationLanes({
                       <button
                         key={i}
                         type="button"
-                        className={macroAutomationPointClassName({
+                        className={`${macroAutomationPointClassName({
                           isLoopBoundary,
                           hoverTarget: clipHoverTarget,
                           clipId: clip.clipId,
                           pointIndex: i,
-                        })}
+                        })} ${styles.point}`}
                         style={{ position: 'absolute', left: px - POINT_HIT_R, top: py - POINT_HIT_R, width: POINT_HIT_R * 2, height: POINT_HIT_R * 2 }}
                         aria-label={`Automation point ${i + 1}`}
                       />
@@ -446,13 +449,13 @@ export default function MacroAutomationLanes({
                   })}
                   {!row.targetUnavailable && (
                     <>
-                      <span className="macro-automation-clip-handle macro-automation-clip-handle--left" />
-                      <span className="macro-automation-clip-handle macro-automation-clip-handle--right" />
+                      <span className={`macro-automation-clip-handle macro-automation-clip-handle--left ${styles.handle} ${styles.handleLeft}`} />
+                      <span className={`macro-automation-clip-handle macro-automation-clip-handle--right ${styles.handle} ${styles.handleRight}`} />
                     </>
                   )}
                   {clip.loopEnabled && (
-                    <span className="macro-automation-clip-loop" title="Loop enabled">
-                      <Repeat size={10} strokeWidth={2} />
+                    <span className={`macro-automation-clip-loop ${styles.loopGlyph}`} role="img" aria-label="Loop enabled" data-hint="Loop enabled">
+                      <IcRepeat size={14} aria-hidden="true" />
                     </span>
                   )}
                 </div>

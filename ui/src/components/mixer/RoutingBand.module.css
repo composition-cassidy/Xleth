@@ -1,0 +1,13 @@
+/* The routing cables sit over each strip's empty cable row, just above its Output
+ * selector. They never take the pointer: the selectors are the controls. */
+@layer kit {
+  .band {
+    position: absolute;
+    left: 0;
+    bottom: var(--out-h, 26px);
+    z-index: 1;
+    width: 100%;
+    height: var(--cable-h, 20px);
+    pointer-events: none;
+  }
+}

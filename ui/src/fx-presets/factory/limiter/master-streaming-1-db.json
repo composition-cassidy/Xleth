@@ -1,0 +1,15 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "limiter",
+  "name": "Master Streaming -1 dB",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "gain": 3,
+      "ceiling": -1,
+      "release": 150,
+      "style": 0
+    }
+  }
+}

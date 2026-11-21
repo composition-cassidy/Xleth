@@ -746,6 +746,112 @@ static void testExportEndToEnd()
     }
 }
 
+// ── Mix rate → file rate ─────────────────────────────────────────────────────
+// The exporter renders at the session rate and resamples the finished mix to
+// the file's rate. That conversion must not move anything in time and must not
+// change the length: an impulse stays at its timestamp, and the output spans
+// exactly the input's duration.
+static void testResampleBufferIsTimeAligned()
+{
+    std::cout << "\n── resampleBuffer: length + alignment ──\n";
+    struct Case { int in, out; };
+    const Case cases[] = { {48000, 44100}, {44100, 48000}, {96000, 44100}, {48000, 48000} };
+    for (const Case& c : cases) {
+        const int n = c.in * 2 + 777;                       // off any round number
+        const int impulseAt = static_cast<int>(c.in * 0.6) + 5;
+        juce::AudioBuffer<float> in(2, n);
+        in.clear();
+        in.setSample(0, impulseAt, 0.9f);
+        in.setSample(1, impulseAt + 100, -0.9f);            // channels stay independent
+
+        juce::AudioBuffer<float> out;
+        const bool ok = AudioExporter::resampleBuffer(in, c.in, c.out, out);
+        CHECK(ok, "resampleBuffer succeeds " << c.in << "->" << c.out);
+        if (!ok) continue;
+
+        const int expectLen = static_cast<int>(std::llround(static_cast<double>(n) * c.out / c.in));
+        CHECK(out.getNumSamples() == expectLen,
+              c.in << "->" << c.out << " length " << out.getNumSamples() << " != " << expectLen);
+        CHECK(out.getNumChannels() == 2, "channel count preserved");
+
+        for (int ch = 0; ch < 2; ++ch) {
+            int peak = 0;
+            const float* d = out.getReadPointer(ch);
+            for (int i = 1; i < out.getNumSamples(); ++i)
+                if (std::abs(d[i]) > std::abs(d[peak])) peak = i;
+            const double expectPeak =
+                static_cast<double>(impulseAt + (ch == 1 ? 100 : 0)) * c.out / c.in;
+            CHECK(std::abs(peak - expectPeak) <= 1.0,
+                  c.in << "->" << c.out << " ch" << ch << " impulse at " << peak
+                       << ", expected " << expectPeak);
+        }
+        std::cout << "    " << c.in << " -> " << c.out << " Hz: " << n << " -> "
+                  << out.getNumSamples() << " samples, impulse aligned\n";
+    }
+}
+
+// End to end: mix at one rate, write the file at another. The file must carry
+// the requested rate, last exactly as long, and play at the same PITCH — the
+// content is the session-rate mix resampled, not a second render of the project
+// at a different rate.
+static void testExportMixRateDiffersFromFileRate()
+{
+    std::cout << "\nexportAudio: mix rate != file rate\n";
+    ExportFixture fx("xleth_export_mixrate");
+
+    AudioExporter::NormalizationReport report;
+    auto refCfg = fx.baseConfig("native.wav");
+    const auto native = fx.run(refCfg, report, "native-rate export");
+
+    const int mixRate  = static_cast<int>(kExportSampleRate);
+    const int fileRate = (mixRate == 48000) ? 44100 : 48000;
+    auto cfg = fx.baseConfig("resampled.wav");
+    cfg.sampleRate    = fileRate;
+    cfg.mixSampleRate = mixRate;
+    const auto resampled = fx.run(cfg, report, "cross-rate export");
+    if (native.getNumSamples() == 0 || resampled.getNumSamples() == 0) return;
+
+    // The file really is at the requested rate.
+    {
+        juce::AudioFormatManager manager;
+        manager.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> reader(
+            manager.createReaderFor(juce::File(cfg.outputPath)));
+        CHECK(reader != nullptr, "cross-rate WAV is readable");
+        if (reader)
+            CHECK(static_cast<int>(reader->sampleRate) == fileRate,
+                  "file sample rate " << reader->sampleRate << " != requested " << fileRate);
+    }
+
+    // Same duration.
+    const double nativeSec    = static_cast<double>(native.getNumSamples()) / mixRate;
+    const double resampledSec = static_cast<double>(resampled.getNumSamples()) / fileRate;
+    CHECK(std::abs(nativeSec - resampledSec) < 2.0 / fileRate,
+          "duration changed: " << nativeSec << " s -> " << resampledSec << " s");
+
+    // Same pitch: zero crossings per second over the middle of the file.
+    auto crossingsPerSecond = [](const juce::AudioBuffer<float>& b, int rate) {
+        const float* d = b.getReadPointer(0);
+        const int from = rate, to = std::min(b.getNumSamples(), rate * 3);
+        int count = 0;
+        for (int i = from + 1; i < to; ++i)
+            if ((d[i - 1] < 0.0f) != (d[i] < 0.0f)) ++count;
+        return static_cast<double>(count) * rate / std::max(1, to - from);
+    };
+    const double fNative    = crossingsPerSecond(native, mixRate);
+    const double fResampled = crossingsPerSecond(resampled, fileRate);
+    std::cout << "    " << mixRate << " Hz mix -> " << fileRate << " Hz file: "
+              << nativeSec << " s -> " << resampledSec << " s, zero-crossings/s "
+              << fNative << " -> " << fResampled << "\n";
+    CHECK(fNative > 10.0, "native render has a measurable tone");
+    CHECK(std::abs(fNative - fResampled) <= 0.01 * fNative,
+          "pitch changed across the rate conversion: " << fNative << " -> " << fResampled);
+
+    // Same level: resampling is not a gain stage.
+    CHECK(std::abs(maxAbs(native) - maxAbs(resampled)) < 0.02f,
+          "peak changed: " << maxAbs(native) << " -> " << maxAbs(resampled));
+}
+
 int main()
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
@@ -767,6 +873,8 @@ int main()
     testClosedLoopUpwardCapped(44100.0);
 
     testExportEndToEnd();
+    testResampleBufferIsTimeAligned();
+    testExportMixRateDiffersFromFileRate();
 
     std::cout << "\n" << g_passed << " passed, " << g_failed << " failed\n";
     if (g_failed > 0)

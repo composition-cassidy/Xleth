@@ -1,0 +1,42 @@
+@layer kit {
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .select {
+    width: 100%;
+  }
+
+  .name {
+    box-sizing: border-box;
+    flex: 1 1 auto;
+    min-width: 0;
+    height: var(--ctl-h-sm);
+    padding: 0 var(--space-1);
+    border: 1px solid var(--ui-select);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g0);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    outline: none;
+  }
+
+  .name::placeholder {
+    color: var(--ui-ink-3);
+  }
+
+  .error {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--ui-rec-text);
+    font-size: var(--type-11);
+  }
+}

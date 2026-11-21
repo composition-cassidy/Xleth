@@ -1,0 +1,70 @@
+/* One lane's chain of devices, left to right. It does not scroll itself: the Devices panel
+ * (windowing/panels/DevicesPanel.module.css) owns the scrolling for both lanes, so a lane's
+ * folder tab can stay pinned. Sized so a --device-h device plus the lane tab and the panel's
+ * scrollbar fits the dock's default height. */
+@layer kit {
+  .scroller {
+    box-sizing: border-box;
+    display: flex;
+    flex: 0 0 auto;
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .row {
+    display: flex;
+    align-items: flex-start;
+    /* A clear strip of the g0 well between neighbours: with a 2px gap the g4 outlines of two
+     * devices read as one shared edge and the chain looked like a single wide panel. */
+    gap: var(--space-3);
+    padding: var(--space-1) var(--space-3) var(--space-1) var(--space-1);
+  }
+
+  .slot {
+    flex: 0 0 auto;
+  }
+
+  .slot[data-dragging="true"] {
+    outline: 1px solid var(--ui-select);
+  }
+
+  /* The device a mixer strip's insert row asked for: outlined until the next press in the chain. */
+  .slot[data-revealed="true"] {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 1px;
+  }
+
+  /* The end of the chain: plain text, no illustration. Opens the FX picker. */
+  .drop {
+    box-sizing: border-box;
+    flex: 0 0 auto;
+    width: 160px;
+    height: var(--device-h);
+    padding: var(--space-3);
+    border: 1px dashed var(--ui-boundary);
+    background: transparent;
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    cursor: pointer;
+  }
+
+  .drop:is(:hover, :focus-visible):not(:disabled) {
+    outline: none;
+    border-color: var(--ui-ink-2);
+    color: var(--ui-ink);
+  }
+
+  .drop:disabled {
+    opacity: var(--ui-mute-opacity);
+    cursor: default;
+  }
+
+  .empty {
+    display: flex;
+    align-items: center;
+    width: 360px;
+    height: var(--device-h);
+    padding: var(--space-2);
+  }
+}

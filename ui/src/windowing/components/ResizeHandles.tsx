@@ -1,5 +1,5 @@
 import React from 'react';
-import type { MouseEvent } from 'react';
+import type { PointerEvent } from 'react';
 import { beginResize, type ResizeEdge } from '../managers/ResizeManager';
 import { usePanelRegistry } from '../registry/PanelRegistry';
 import type { PanelId } from '../registry/panelCatalog';
@@ -20,7 +20,7 @@ export function ResizeHandles({ id }: ResizeHandlesProps) {
 
   if (mode === 'maximized') return null;
 
-  const handleMouseDown = (edge: ResizeEdge) => (event: MouseEvent<HTMLDivElement>) => {
+  const handlePointerDown = (edge: ResizeEdge) => (event: PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     event.preventDefault();
     beginResize(
@@ -32,6 +32,7 @@ export function ResizeHandles({ id }: ResizeHandlesProps) {
       floatingY,
       floatingWidth,
       floatingHeight,
+      { target: event.currentTarget, pointerId: event.pointerId },
     );
   };
 
@@ -43,7 +44,7 @@ export function ResizeHandles({ id }: ResizeHandlesProps) {
           className={`xleth-resize-handle xleth-resize-handle-${edge}`}
           data-testid={`xleth-resize-handle-${edge}`}
           data-resize-edge={edge}
-          onMouseDown={handleMouseDown(edge)}
+          onPointerDown={handlePointerDown(edge)}
           aria-hidden="true"
         />
       ))}

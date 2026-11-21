@@ -14,6 +14,7 @@ import {
   formatClipControlValue,
   getClipControlVisibility,
   hitTestClipControl,
+  isFadeHandleFrozen,
   normalizeClipFades,
   normalizeClipControlSpec,
   setPathValue,
@@ -79,6 +80,18 @@ describe('clipControlSpec fade dragging and geometry', () => {
     expect(hitTestClipControl({ localX: 107, localY: 64, clip: overlapping, rect })?.kind).toBe('fadeIn')
     expect(hitTestClipControl({ localX: 113, localY: 64, clip: overlapping, rect })?.kind).toBe('fadeOut')
     expect(hitTestClipControl({ localX: 110, localY: 64, clip: overlapping, rect })?.kind).toBe('fadeIn')
+  })
+
+  it('leaves a fade handle ungrabbable once the opposite fade covers the whole clip', () => {
+    const fullOut = { ...clip, fadeInPercent: 0, fadeOutPercent: 100 }
+    const fullIn = { ...clip, fadeInPercent: 100, fadeOutPercent: 0 }
+    // Both anchors coincide on the left edge; the movable fade-out must win.
+    expect(hitTestClipControl({ localX: rect.x, localY: 64, clip: fullOut, rect })?.kind).toBe('fadeOut')
+    expect(hitTestClipControl({ localX: rect.x + 3, localY: 64, clip: fullOut, rect })?.kind).toBe('fadeOut')
+    expect(hitTestClipControl({ localX: rect.x + rect.w, localY: 64, clip: fullIn, rect })?.kind).toBe('fadeIn')
+    expect(isFadeHandleFrozen(100, 200)).toBe(true)
+    expect(isFadeHandleFrozen(99.5, 200)).toBe(true)
+    expect(isFadeHandleFrozen(90, 200)).toBe(false)
   })
 
   it('suppresses controls below the single shared eligibility threshold', () => {

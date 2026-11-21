@@ -4,12 +4,15 @@ const NOOP = () => {}
 
 const defaultValue = {
   onOpenPicker: NOOP,
+  pickerSource: null,
+  onClosePicker: NOOP,
   activeSampleId: null,
   setActiveSampleId: NOOP,
   currentPatternIdByTrack: {},
   setCurrentPatternIdByTrack: NOOP,
   activeCenterTab: 'timeline',
   availablePatterns: [],
+  allPatterns: {},
   onSwitchPattern: null,
   onNewPattern: NOOP,
   onOpenMidiImport: NOOP,

@@ -1,0 +1,19 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "uniflange",
+  "name": "Hollow Sweep",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "order": 1,
+      "depth": 80,
+      "speed": 15,
+      "delay": 0,
+      "spread": 0,
+      "cross": 0,
+      "dry": 100,
+      "wet": -100
+    }
+  }
+}

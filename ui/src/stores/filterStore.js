@@ -104,8 +104,8 @@ export const MOD_DESTS = [
 export const LFO_SHAPES = [
   { value: 0, label: 'Sine' },
   { value: 1, label: 'Triangle' },
-  { value: 2, label: 'Saw ↑' },
-  { value: 3, label: 'Saw ↓' },
+  { value: 2, label: 'Saw up' },
+  { value: 3, label: 'Saw down' },
   { value: 4, label: 'Square' },
   { value: 5, label: 'S&H' },
 ]
@@ -155,7 +155,93 @@ export function typeMorphLabel(type) {
   return 'MORPH'
 }
 
-const useFilterStore = create((set, get) => ({
+// ── Live state (animation frame) ─────────────────────────────────────────────
+// audio_filterGetLiveState returns ONE Float32Array holding everything the panel
+// animates from. The layout is fixed and must stay in lockstep with
+// XlethFilterEffect::getLiveState — see the comment there for the map.
+
+export const LIVE_HEADER_FLOATS = 4
+export const LIVE_LANE_OFFSET   = 8
+export const LIVE_SLOT_STRIDE   = LIVE_LANE_OFFSET + MAX_MODS_PER_SLOT * 2   // 20
+export const LIVE_CURVE_OFFSET  = LIVE_HEADER_FLOATS + MAX_SLOTS * LIVE_SLOT_STRIDE
+export const LIVE_CURVE_SIZE    = 512
+export const LIVE_STATE_FLOATS  = LIVE_CURVE_OFFSET + LIVE_CURVE_SIZE
+
+// Turns the flat payload into { slotCount, sampleRate, slots, curve }.
+// Returns null for anything that is not a payload this build understands (a
+// short array, or format 0 — which is what a torn-down chain answers with), so
+// every caller has exactly one "no live data" case to handle.
+export function decodeLiveState(buf) {
+  if (!buf || typeof buf.length !== 'number') return null
+  if (buf.length < LIVE_STATE_FLOATS) return null
+  if (buf[0] !== 1) return null
+
+  const slotCount = Math.max(0, Math.min(MAX_SLOTS, Math.round(buf[1])))
+  const slots = []
+  for (let i = 0; i < slotCount; i++) {
+    const b = LIVE_HEADER_FLOATS + i * LIVE_SLOT_STRIDE
+    const lanes = []
+    for (let j = 0; j < MAX_MODS_PER_SLOT; j++) {
+      lanes.push({
+        src: buf[b + LIVE_LANE_OFFSET + j * 2],
+        accent: buf[b + LIVE_LANE_OFFSET + j * 2 + 1],
+      })
+    }
+    slots.push({
+      cutoff: buf[b + 0],
+      q: buf[b + 1],
+      gain: buf[b + 2],
+      morph: buf[b + 3],
+      drive: buf[b + 4],
+      mix: buf[b + 5],
+      // Zero is a legal gain/morph/mix, so the engine sends a validity flag
+      // rather than letting the panel guess from the numbers.
+      valid: buf[b + 6] > 0.5,
+      lanes,
+    })
+  }
+
+  return {
+    slotCount,
+    sampleRate: buf[2] > 0 ? buf[2] : 44100,
+    slots,
+    curve: buf.subarray
+      ? buf.subarray(LIVE_CURVE_OFFSET, LIVE_CURVE_OFFSET + LIVE_CURVE_SIZE)
+      : null,
+  }
+}
+
+// Overlays a decoded live slot onto the parked slot payload, so the same
+// filterResponse.slotResponseDb() that draws the parked guide curve draws the
+// moving one. Falls back to the parked slot whenever the engine has no live
+// reading for it (never audio-processed, or just cleared by a transport reset).
+export function slotWithLiveValues(slot, liveSlot) {
+  if (!slot || !liveSlot || !liveSlot.valid) return slot
+  return {
+    ...slot,
+    cutoff: liveSlot.cutoff,
+    q: liveSlot.q,
+    gain: liveSlot.gain,
+    morph: liveSlot.morph,
+    drive: liveSlot.drive,
+    mix: liveSlot.mix,
+  }
+}
+
+// Does this slot list carry any modulator at all? The animation loop only runs
+// when it does — a filter with no modulators has nothing to animate, and
+// polling the engine every frame to be told so is pure cost.
+export function hasAnyModulator(slots) {
+  if (!Array.isArray(slots)) return false
+  return slots.some(s => Array.isArray(s?.mods)
+    && s.mods.some(m => Number(m?.kind ?? MOD_KIND_OFF) !== MOD_KIND_OFF))
+}
+
+// The store body, exported so a Filter DEVICE can own a private instance
+// (createStore(filterStoreInitializer)): several Xleth Filters can be on screen, docked or
+// popped out, without sharing slots or the selected slot. The global store below only
+// marks the popped-out instance and backs the editor opener.
+export const filterStoreInitializer = (set, get) => ({
   // { trackId, nodeId, storeKey } or null
   target: null,
 
@@ -305,9 +391,23 @@ const useFilterStore = create((set, get) => ({
     } catch { return null }
   },
 
+  // One animation frame's worth of engine state. Deliberately NOT written into
+  // the store: it arrives 30 times a second and every consumer paints it
+  // imperatively, so putting it in zustand would re-render the whole panel —
+  // knobs, selects and all — at frame rate for no gain.
+  async fetchLiveState() {
+    const t = get().target
+    if (!t) return null
+    try {
+      return await window.xleth?.audio?.filterGetLiveState(t.trackId, t.nodeId)
+    } catch { return null }
+  },
+
   setSelectedSlot(index) {
     set({ selectedSlotIndex: index })
   },
-}))
+})
+
+const useFilterStore = create(filterStoreInitializer)
 
 export default useFilterStore

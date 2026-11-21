@@ -1,0 +1,179 @@
+@layer kit {
+  /* The EQ display (Phase 4b). The SVG stretches its 640x280 viewBox to the
+   * well, so every line uses a non-scaling stroke and every label and token is
+   * counter-scaled in EqCanvas.jsx: strokes stay 1px and text stays a true
+   * 10px whatever the well's size. Colours are kit tokens, read by the cascade. */
+  .wrap {
+    position: absolute;
+    inset: 0;
+    background: var(--ui-g0);
+  }
+
+  .svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+  }
+
+  .plotBg {
+    fill: var(--ui-g0);
+    pointer-events: none;
+  }
+
+  .gridLine,
+  .gridAna,
+  .gridResp,
+  .gridZero,
+  .specFill,
+  .specPreFill,
+  .specHold,
+  .specPreHold,
+  .responseLine {
+    vector-effect: non-scaling-stroke;
+  }
+
+  /* Three weights, as the grid grammar asks: decade lines strongest, the
+   * analyzer and response references fainter. */
+  .gridLine {
+    stroke: var(--ui-g4);
+    stroke-width: 1;
+    stroke-dasharray: 2 4;
+  }
+
+  .gridAna,
+  .gridResp {
+    stroke: var(--ui-g3);
+    stroke-width: 1;
+  }
+
+  .gridZero {
+    stroke: var(--ui-boundary);
+    stroke-width: 1;
+  }
+
+  .label {
+    fill: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-10);
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+  }
+
+  .labelDim {
+    fill: var(--ui-ink-3);
+  }
+
+  .bandName {
+    fill: var(--ui-ink-3);
+    font-family: var(--ui-font);
+    font-size: var(--type-10);
+    font-weight: var(--weight-medium);
+    letter-spacing: 0.04em;
+    pointer-events: none;
+  }
+
+  .bandEdge {
+    stroke: var(--ui-g3);
+    stroke-width: 1;
+    vector-effect: non-scaling-stroke;
+    pointer-events: none;
+  }
+
+  /* Live spectrum: real engine data, signal-audio hue as content, not chrome. */
+  .specFill {
+    fill: color-mix(in srgb, var(--ui-signal-audio) 22%, transparent);
+    stroke: color-mix(in srgb, var(--ui-signal-audio) 65%, transparent);
+    stroke-width: 1;
+    pointer-events: none;
+  }
+
+  .specPreFill {
+    fill: color-mix(in srgb, var(--ui-ink-3) 18%, transparent);
+    stroke: color-mix(in srgb, var(--ui-ink-3) 45%, transparent);
+    stroke-width: 1;
+    pointer-events: none;
+  }
+
+  .specHold {
+    fill: none;
+    stroke: var(--ui-signal-audio);
+    stroke-width: 1;
+    opacity: 0.6;
+    pointer-events: none;
+  }
+
+  .specPreHold {
+    fill: none;
+    stroke: var(--ui-ink-3);
+    stroke-width: 1;
+    opacity: 0.5;
+    pointer-events: none;
+  }
+
+  .responseLine {
+    fill: none;
+    stroke: var(--ui-ink);
+    stroke-width: 2;
+    stroke-linejoin: round;
+    pointer-events: none;
+  }
+
+  /* Mid/Side curves are dashed so they stay apart from the similarly tinted
+   * Left/Right ones. */
+  .dashed {
+    stroke-dasharray: 5 3;
+  }
+
+  .nodeNumber {
+    fill: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+    font-weight: var(--weight-semibold);
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+  }
+
+  .nodeNumber[data-active="true"] {
+    fill: var(--ui-g0);
+  }
+
+  .nodeBadge {
+    font-family: var(--ui-font);
+    font-size: var(--type-10);
+    font-weight: var(--weight-semibold);
+    pointer-events: none;
+  }
+
+  .node {
+    cursor: grab;
+  }
+
+  .hoverLabel {
+    position: absolute;
+    z-index: 2;
+    transform: translate(-50%, -100%);
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    pointer-events: none;
+  }
+
+  .hoverReadout {
+    position: absolute;
+    right: var(--space-1);
+    top: var(--space-1);
+    z-index: 2;
+    padding: 1px var(--space-1);
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g1);
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    pointer-events: none;
+  }
+}

@@ -52,11 +52,14 @@ void VoiceManager::processBlock(juce::AudioBuffer<float>& outputBuffer,
     const int numOutChannels = outputBuffer.getNumChannels();
     const int numSamples     = outputBuffer.getNumSamples();
 
+    // Pinned for the block: a voice's buffer cannot be freed while it is read.
+    const SampleBank::Pin bank = sampleBank.pin();
+
     for (auto& voice : voices_)
     {
         if (!voice.active) continue;
 
-        const auto* srcBuf = sampleBank.getSample(voice.sampleId);
+        const auto* srcBuf = bank->getSample(voice.sampleId);
         if (srcBuf == nullptr) { voice.active = false; continue; }
 
         const int srcChannels = srcBuf->getNumChannels();
@@ -93,11 +96,3 @@ void VoiceManager::processBlock(juce::AudioBuffer<float>& outputBuffer,
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-int VoiceManager::getActiveVoiceCount() const
-{
-    int count = 0;
-    for (const auto& v : voices_)
-        if (v.active) ++count;
-    return count;
-}

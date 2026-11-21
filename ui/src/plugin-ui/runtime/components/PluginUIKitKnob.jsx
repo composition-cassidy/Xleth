@@ -40,6 +40,14 @@ export default function PluginUIKitKnob({
   skew = 1,
   appearance: rawAppearance,
   accentColor,
+  // Resolved literal colors that win over the preset's surface/text tokens —
+  // the same escape hatch accentColor already is, for skins whose palette
+  // (e.g. Amp Stack ANALOG) is hardcoded paint rather than a theme token.
+  // Callers must resolve these themselves (tokenValue() on their own CSS
+  // custom property, never a hardcoded hex) since canvas fillStyle cannot
+  // consume a live `var(...)` reference.
+  surfaceColor,
+  textColor,
   // Automation (Phase C). `paramId` is the effect's stable APVTS parameter id
   // and `automationTarget` is the panel's { trackId, nodeId } (trackId -1 =
   // Master chain). Supplying BOTH opts this knob into right-click "Create
@@ -56,8 +64,14 @@ export default function PluginUIKitKnob({
 
   // An explicit accentColor (e.g. a band identity color) wins over the
   // preset's accent token: drop the token so BaseKnob falls back to `color`.
-  const effectiveTokens = accentColor
-    ? { ...knobTokens, accentCssVar: null }
+  // surfaceColor/textColor are the same idea for the cap body and its text.
+  const effectiveTokens = (accentColor || surfaceColor || textColor)
+    ? {
+        ...knobTokens,
+        accentCssVar: accentColor ? null : knobTokens.accentCssVar,
+        surfaceCssVar: surfaceColor ? null : knobTokens.surfaceCssVar,
+        textCssVar: textColor ? null : knobTokens.textCssVar,
+      }
     : knobTokens
 
   // While a clip covers the playhead the knob DISPLAYS the automated value and
@@ -110,6 +124,8 @@ export default function PluginUIKitKnob({
         glyph={appearance.glyph === 'rotary-arrow' ? 'rotary-arrow' : null}
         appearanceTokens={effectiveTokens}
         color={accentColor || undefined}
+        surfaceColor={surfaceColor || undefined}
+        textColor={textColor || undefined}
       />
     </div>
   )

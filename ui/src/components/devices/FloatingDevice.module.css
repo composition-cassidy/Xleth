@@ -1,0 +1,10 @@
+@layer kit {
+  /* A popped-out device window. Same stacking as every stock editor window
+   * (they sit above the shell's top bar). The device frame draws the border and
+   * the hard offset shadow. */
+  .window {
+    position: fixed;
+    z-index: 200;
+    user-select: none;
+  }
+}

@@ -16,6 +16,8 @@
  * These helpers are pure so the geometry is testable without an engine.
  */
 
+import { isClone } from '../../clones/cloneModel.js'
+
 /** Fields carried through a clip copy. Anything omitted resets to its engine default. */
 const CLIP_SNAPSHOT_FIELDS = [
   'regionId', 'durationTicks', 'regionOffsetTicks', 'syllableIndex',
@@ -107,6 +109,12 @@ export function buildTimelineClipboard({ clips = [], patternBlocks = [], automat
       }
       // Vibrato / Scratch / Video Swirl+Scratch — copied whole so paste keeps it.
       snap.modulation = clip.modulation ?? null
+      // Lens {base, keys} — copied whole, or paste/split/duplicate rebuild the
+      // clip at the new-clip default (fit = Cover) and lose its framing.
+      snap.lens = clip.lens ?? null
+      // Clip Color Grade: present only on a graded clip (the engine omits a
+      // default grade), carried so a pasted or duplicated clip keeps its look.
+      snap.colorGrade = clip.colorGrade ?? null
       return snap
     })
 
@@ -187,7 +195,8 @@ export function resolveTimelinePaste({
 
   for (const item of clipboard.patternBlocks ?? []) {
     const track = destFor(item.trackOffset ?? 0)
-    if (track?.type !== 'Pattern') { skipped.typeMismatchBlock++; continue }
+    // A Clone is a Pattern track the engine refuses blocks on (it plays its source's).
+    if (track?.type !== 'Pattern' || isClone(track)) { skipped.typeMismatchBlock++; continue }
     blockPlacements.push({
       item,
       trackId: track.id,
@@ -213,8 +222,13 @@ export function resolveTimelinePaste({
  *
  * Half-open interval test: an item that merely touches a placement's edge
  * (end === start) does not overlap it. Returns IDs, in the order given.
+ *
+ * `excludeIds` holds the gesture's OWN items (a Set, or null). A move must not
+ * delete the thing it is moving, and it must not delete a sibling that is
+ * vacating its slot in the same rigid translation — both are decided by the
+ * gesture's FINAL state, not the one it started from.
  */
-export function itemsCoveredByPlacements(existing, placements) {
+export function itemsCoveredByPlacements(existing, placements, excludeIds = null) {
   if (!Array.isArray(existing) || existing.length === 0) return []
   if (!Array.isArray(placements) || placements.length === 0) return []
 
@@ -229,6 +243,7 @@ export function itemsCoveredByPlacements(existing, placements) {
 
   const covered = []
   for (const item of existing) {
+    if (excludeIds?.has(item.id)) continue
     const spans = byTrack.get(item.trackId)
     if (!spans) continue
     const start = item.positionTicks
@@ -244,12 +259,47 @@ export function itemsCoveredByPlacements(existing, placements) {
 }
 
 /**
+ * resolveOverwritePlan — the ONE overlap policy for track-addressed items.
+ *
+ * Clips and pattern blocks are OVERWRITTEN by whatever lands on them, the way
+ * Ableton / Reaper / FL do it. Every gesture that addresses a track resolves
+ * here — Ctrl+V paste, drag-move, Shift+drag duplicate and Ctrl+D — so the four
+ * can no longer disagree about what happens to occupied space.
+ *
+ * Before this, only paste overwrote. Move, Ctrl+D and Shift+drag STACKED: the
+ * engine validates ids and track type but never occupancy (Timeline::moveClip,
+ * Timeline::addClip), so two clips really did end up on the same ticks of the
+ * same track — which double-triggers the sampler.
+ *
+ * Automation clips are deliberately absent. The engine rejects same-lane
+ * overlap outright, so those callers slide right into a free slot instead
+ * (findFreeAutomationLanePosition); there is nothing to overwrite.
+ *
+ * `movingClipIds` / `movingBlockIds` are the gesture's OWN items — see
+ * itemsCoveredByPlacements.
+ *
+ * @returns {{doomedClipIds: Array, doomedBlockIds: Array}}
+ */
+export function resolveOverwritePlan({
+  existingClips = [], existingBlocks = [],
+  clipPlacements = [], blockPlacements = [],
+  movingClipIds = null, movingBlockIds = null,
+} = {}) {
+  return {
+    doomedClipIds: itemsCoveredByPlacements(existingClips, clipPlacements, movingClipIds),
+    doomedBlockIds: itemsCoveredByPlacements(existingBlocks, blockPlacements, movingBlockIds),
+  }
+}
+
+/**
  * clipPayloadFromSnapshot — clipboard entry + destination → addClip(sBatch) payload.
  */
 export function clipPayloadFromSnapshot(item, trackId, positionTicks) {
   const payload = { trackId, positionTicks }
   for (const f of CLIP_SNAPSHOT_FIELDS) payload[f] = item[f] ?? CLIP_DEFAULTS[f]
   if (item.modulation) payload.modulation = item.modulation
+  if (item.lens) payload.lens = item.lens
+  if (item.colorGrade) payload.colorGrade = item.colorGrade
   return payload
 }
 

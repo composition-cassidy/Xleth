@@ -30,6 +30,8 @@
 //   (see spec §3.2; the darker-on-hover pattern is deliberate for this palette.)
 
 import type { BaseTokens } from './base';
+import { DEFAULT_RAMP, RAMPS, type RampName } from './neutralRamp';
+import { capChroma, hexToOklch } from '../../ui-kit/colorMath';
 
 // ──────────────────────────────────────────────────────────────────────────
 // Color math
@@ -147,7 +149,12 @@ export type DerivedTokens = Record<string, string>;
  * palette. Each tuned formula is annotated with its ΔE2000 distance to the
  * shipped anchor; pinning tests enforce the thresholds in derivation.test.ts.
  */
-export function deriveTheme(base: BaseTokens, derivationDetached: ReadonlyArray<string> = []): DerivedTokens {
+export function deriveTheme(
+  base: BaseTokens,
+  derivationDetached: ReadonlyArray<string> = [],
+  rampName: RampName = DEFAULT_RAMP,
+): DerivedTokens {
+  const ramp = RAMPS[rampName] ?? RAMPS[DEFAULT_RAMP];
   const detached = new Set(derivationDetached);
   const bgPrimary = base['--theme-bg-primary'];
   const bgSurface = base['--theme-bg-surface'];
@@ -231,6 +238,49 @@ export function deriveTheme(base: BaseTokens, derivationDetached: ReadonlyArray<
   put('--theme-lipsync-selection-fill',        withAlpha(accent, 0.15));
   put('--theme-waveform-envelope-fill',        withAlpha(accent, 0.35));
   put('--theme-waveform-rms-body',             withAlpha(accent, 0.55));
+
+  // ── UI kit neutral ramp + semantic colours (ui/DESIGN.md section 3) ─────────
+  // Steps and semantic values come from the one ramp table (neutralRamp.ts). g0/g1/
+  // ink are the base tokens themselves; the rest are signed lightness steps from
+  // bg-surface (g2..g4) and from text (ink-2, ink-3, boundary). On the dark ramp
+  // the Default base (#0F0F0F / #1A1A1A / #E6E6E6) reproduces the contract values
+  // exactly. Hue and saturation are inherited, so a neutral base yields a neutral
+  // ramp.
+  //
+  // A step moves HSL lightness and keeps HSL saturation, so on a tinted base it AMPLIFIES
+  // the cast: a near-white text of OKLCH chroma 0.008 becomes a chroma-0.10 boundary. The
+  // ramp is therefore never allowed more chroma than the base it steps from (`stepOf`).
+  // Neutral bases are unaffected (0 stays 0); this is what keeps outlines and labels grey
+  // on a theme whose text or surface carries a hue.
+  const st = ramp.steps;
+  const stepOf = (from: string, dL: number): string => {
+    const stepped = shift(from, { dL });
+    return capChroma(stepped, hexToOklch(normalizeHex(from)).c);
+  };
+  put('--theme-ui-g0',       bgPrimary);
+  put('--theme-ui-g1',       bgSurface);
+  put('--theme-ui-g2',       stepOf(bgSurface, st.g2));
+  put('--theme-ui-g3',       stepOf(bgSurface, st.g3));
+  put('--theme-ui-g4',       stepOf(bgSurface, st.g4));
+  put('--theme-ui-ink',      text);
+  put('--theme-ui-ink-2',    stepOf(text, st.ink2));
+  put('--theme-ui-ink-3',    stepOf(text, st.ink3));
+  put('--theme-ui-boundary', stepOf(text, st.boundary));
+  // The arrangement's alternate bar groups: one small step from the ground (DESIGN.md 22).
+  put('--theme-timeline-bar-group-shade', stepOf(bgPrimary, st.barGroup));
+
+  const sem = ramp.semantic;
+  put('--theme-ui-rec',              sem.rec);
+  put('--theme-ui-rec-text',         sem.recText);
+  put('--theme-ui-solo',             sem.solo);
+  put('--theme-ui-signal-audio',     sem.signalAudio);
+  put('--theme-ui-signal-events',    sem.signalEvents);
+  put('--theme-ui-signal-parameter', sem.signalParameter);
+  put('--theme-ui-signal-video',     sem.signalVideo);
+  put('--theme-ui-band-1',           sem.band1);
+  put('--theme-ui-band-2',           sem.band2);
+  put('--theme-ui-band-3',           sem.band3);
+  put('--theme-ui-band-4',           sem.band4);
 
   return out;
 }

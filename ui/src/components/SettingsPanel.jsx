@@ -1,50 +1,112 @@
 import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import { Film, Image as ImageIcon, X } from 'lucide-react'
 import {
   GLOBAL_STRETCH_METHOD_OPTIONS,
   sanitizeGlobalStretchMethod,
 } from '../constants/globalStretchMethods.js'
 import AudioPerformanceDiagnosticsPanel from './debug/AudioPerformanceDiagnosticsPanel.jsx'
-import XlethSelect from './common/XlethSelect.jsx'
 import VstBrowser from './mixer/VstBrowser.jsx'
+import {
+  SettingsHint,
+  SettingsRow,
+  SettingsSection,
+  SettingsValue,
+  settingsStyles,
+} from './settings/settingsKit.jsx'
+import ShortcutsSection from './settings/ShortcutsSection.jsx'
+import LogsSection from './settings/LogsSection.jsx'
 import { ThemeContext } from '../theming/runtime/ThemeProvider'
 import { resolveTheme, writeThemeToRoot } from '../theming/runtime/applyTheme'
 import {
+  APPEARANCE_CONTRAST_MAX,
+  APPEARANCE_CONTRAST_MIN,
+  APPEARANCE_MODEL_VERSION,
   APPEARANCE_THEME_SLUG,
+  APPEARANCE_TINT_MAX,
   DEFAULT_APPEARANCE_ACCENT,
   DEFAULT_APPEARANCE_CONTRAST,
   DEFAULT_APPEARANCE_DARKNESS,
   DEFAULT_APPEARANCE_HUE,
   DEFAULT_APPEARANCE_SATURATION,
   buildAppearanceTheme,
+  migrateLegacyAppearance,
   normalizeAccentHex,
 } from '../theming/runtime/appearanceTheme'
+import ChromeReadouts from '../theming/editor/ChromeReadouts'
+import { ThemeEditorContent } from '../theming/editor/ThemeEditor'
 import {
-  BACKDROP_FX_PRESETS,
-  BACKDROP_FX_QUALITIES,
-  useBackdropFxSettingsStore,
-} from '../backdrop/backdropFxSettings.js'
+  Button, IconButton, MINUS, MotionDiv, NumberBox, SegmentedControl, Select, TextField, Toggle, formatValue,
+  useAfterMount, useMotionEnter,
+} from '../ui-kit'
+import { MOTION_TIER_OPTIONS, effectiveMotionTier, useMotionStore } from '../stores/motionStore.js'
+import {
+  UI_SCALE_DEFAULT,
+  UI_SCALE_MAX,
+  UI_SCALE_MIN,
+  UI_SCALE_STEP,
+  useUiScaleStore,
+} from '../stores/uiScaleStore.js'
 import { useQuickLaunchersStore } from '../stores/quickLaunchersStore.js'
 import {
-  BACKDROP_MEDIA_SOURCE_TYPES,
-  backdropMediaFromBackdropState,
-  useBackdropMediaSettingsStore,
-} from '../backdrop/backdropMediaSettings.js'
+  useClipVideoFxDefaultsStore,
+} from '../stores/clipVideoFxDefaultsStore.js'
+import { clipHasVideo, planClipVideoFxApply } from './timeline/clipVideoFxApply.js'
+import { timelineEvents } from '../timelineEvents.js'
 import { getPickerPath, openFilePicker } from './filePicker/filePickerService.js'
 import { IMAGE_EXTENSIONS } from './filePicker/filePickerHelpers.js'
+import { iconComponent } from '../ui-kit/icons'
+
+const IcArrowsClockwise = iconComponent('arrows-clockwise')
+const IcCheckFill = iconComponent('check', 'fill')
+const IcX = iconComponent('x')
 
 const VALID_NAMING_FORMATS = ['sampleNameOnly', 'categoryAndName', 'sourceAndName', 'fullLegacy']
 
-export const SETTINGS_CATEGORIES = [
-  { id: 'project', label: 'Project', summary: 'Clip handling and safety defaults' },
-  { id: 'transport', label: 'Transport', summary: 'Playback controls' },
-  { id: 'audio', label: 'Audio', summary: 'Latency and realtime diagnostics' },
-  { id: 'plugins', label: 'Plugins', summary: 'Scan and manage VST3 plugins' },
-  { id: 'graphics', label: 'Graphics', summary: 'GPU and preview diagnostics' },
-  { id: 'appearance', label: 'Appearance', summary: 'Accent color, brightness, and workspace backdrop' },
-  { id: 'launchers', label: 'Launchers', summary: 'Quick-launch external tools from the toolbar' },
-  { id: 'advanced', label: 'Advanced', summary: 'Export naming behavior' },
+const FALLBACK_AUDIO_BUFFER_SIZES = [128, 256, 512, 1024, 2048]
+
+// Output device, buffer size and sample rate are all hardware properties of
+// this machine, not of the project — persisted through the same generic
+// settings store other per-machine prefs on this panel use (xleth-settings.json),
+// never into project.json. main.js's applyEngineDefaults() restores all three
+// from this same store before the window is ever shown, so by the time this
+// panel is opened the engine is already running with the saved config — this
+// panel only needs to save on change, never re-apply on mount.
+const SETTINGS_KEY_AUDIO_DEVICE = 'audioOutputDevice'
+const SETTINGS_KEY_AUDIO_BUFFER = 'audioBufferSize'
+const SETTINGS_KEY_AUDIO_RATE   = 'audioSampleRate'
+
+// ─── Shell structure: two tabs, each with its own short sub-nav ─────────────
+//
+// The split is by WHAT A SETTING BELONGS TO, which is also what determines
+// whether it travels: Project settings are saved into the project and move
+// with it, Application settings are this installation's and stay behind. A
+// flat list of nine peers could not say that, and it left single-row pages
+// (Transport's one dropdown, Advanced's one dropdown) looking like whole
+// topics — both are now sections inside Project, where they are read in the
+// context they actually apply to.
+export const SETTINGS_TABS = [
+  { id: 'project', label: 'Project', summary: 'Settings saved with this project.' },
+  { id: 'application', label: 'Application', summary: 'Settings for this installation of XLETH.' },
 ]
+
+export const SETTINGS_CATEGORIES = [
+  { id: 'project', tab: 'project', label: 'General', summary: 'Clip handling, playback and safety defaults' },
+  { id: 'clipfx', tab: 'project', label: 'Clip FX', summary: 'Default Vibrato and Scratch video companion FX' },
+  { id: 'audio', tab: 'application', label: 'Audio', summary: 'Output device, buffer size, and realtime diagnostics' },
+  { id: 'plugins', tab: 'application', label: 'Plugins', summary: 'Scan and manage VST3 plugins' },
+  { id: 'graphics', tab: 'application', label: 'Graphics', summary: 'GPU and preview diagnostics' },
+  { id: 'appearance', tab: 'application', label: 'Appearance', summary: 'Theme, accent color, brightness, UI scale, and motion' },
+  { id: 'shortcuts', tab: 'application', label: 'Shortcuts', summary: 'View and customise keyboard shortcuts' },
+  { id: 'launchers', tab: 'application', label: 'Launchers', summary: 'Quick-launch external tools from the toolbar' },
+  { id: 'logs', tab: 'application', label: 'Logs', summary: 'Export this session\'s console log' },
+]
+
+// Categories that used to be their own page. Kept so an existing deep link
+// (or a persisted "last open category") still lands somewhere sensible
+// instead of silently falling back to the first page.
+const MERGED_CATEGORY_ALIASES = {
+  transport: 'project',
+  advanced: 'project',
+}
 
 const AUTOSAVE_OPTIONS = [
   { value: 0, label: 'Off' },
@@ -65,6 +127,13 @@ const VIDEO_MODE_OPTIONS = [
   { value: 'hardware', label: 'Hardware only' },
 ]
 
+// Preview-proxy codec (engine ProxyCodec). Persisted in app settings as
+// 'proxyCodec' and pushed to the engine at startup (main.js applyEngineDefaults).
+const PROXY_CODEC_OPTIONS = [
+  { value: 'h264', label: 'H.264 (recommended)' },
+  { value: 'intra', label: 'All-intra (DNxHR / MJPEG): high quality' },
+]
+
 const NAMING_FORMAT_OPTIONS = [
   { value: 'sampleNameOnly', label: 'Sample name only' },
   { value: 'categoryAndName', label: 'Category + sample name' },
@@ -76,17 +145,13 @@ function getXleth() {
   return typeof window !== 'undefined' ? window.xleth : undefined
 }
 
-function getInitialBackdropState() {
-  const current = getXleth()?.backdrop?.current
-  return current || { capability: null, preference: 'acrylic', mode: 'off' }
-}
-
-function normalizeBackdropPreference(value) {
-  return ['off', 'acrylic', 'image'].includes(value) ? value : 'acrylic'
-}
-
 function normalizeCategory(category) {
-  return SETTINGS_CATEGORIES.some(item => item.id === category) ? category : 'project'
+  if (SETTINGS_CATEGORIES.some(item => item.id === category)) return category
+  return MERGED_CATEGORY_ALIASES[category] || 'project'
+}
+
+function tabForCategory(category) {
+  return SETTINGS_CATEGORIES.find(item => item.id === category)?.tab || 'project'
 }
 
 // PROXY context only. This creates a fresh off-screen WebGL context inside
@@ -148,43 +213,44 @@ function snapshotPreviewDiag() {
   }
 }
 
-function SettingsSection({ title, children, index = 0, className = '' }) {
-  return (
-    <section
-      className={`settings-panel-section ${className}`.trim()}
-      style={{ '--settings-card-index': index }}
-    >
-      <div className="settings-panel-section-title">{title}</div>
-      {children}
-    </section>
-  )
-}
+// Two-decimal readout with a true minus (DESIGN.md section 6).
+const fmt2 = (v) => v.toFixed(2).replace('-', MINUS)
 
-function SettingsRow({ label, htmlFor, description, children }) {
+// An on / off setting. The word says the state as well as the chip, so colour is never the only signal.
+function OnOff({ id, label, on, onChange }) {
   return (
-    <div className="settings-panel-row">
-      <div className="settings-panel-row-copy">
-        {htmlFor ? (
-          <label className="settings-panel-label" htmlFor={htmlFor}>{label}</label>
-        ) : (
-          <div className="settings-panel-label">{label}</div>
-        )}
-        {description && <div className="settings-panel-field-copy">{description}</div>}
-      </div>
-      <div className="settings-panel-control">
-        {children}
-      </div>
-    </div>
+    <Toggle
+      id={id}
+      aria-label={label}
+      on={!!on}
+      onChange={onChange}
+      glyph={<IcCheckFill size={14} />}
+    >
+      {on ? 'On' : 'Off'}
+    </Toggle>
   )
 }
 
 export default function SettingsPanel({ onClose, initialCategory = 'project' }) {
-  const backdropVideoInputRef = useRef(null)
   const themeContext = useContext(ThemeContext)
+  const [themeEditorOpen, setThemeEditorOpen] = useState(false)
   const appearanceAppliedRef = useRef(null)
   const appearancePersistTimerRef = useRef(null)
   const [accentColor, setAccentColor] = useState(DEFAULT_APPEARANCE_ACCENT)
   const [brightness, setBrightness] = useState(DEFAULT_APPEARANCE_DARKNESS)
+  const uiScalePercent = useUiScaleStore((state) => state.percent)
+  const setUiScalePercent = useUiScaleStore((state) => state.setPercent)
+  // Motion tier (ui/DESIGN.md section 27): what was picked, and what is in force.
+  const motionTier = useMotionStore((state) => state.tier)
+  const motionFollowSystem = useMotionStore((state) => state.followSystem)
+  const motionSystemReduced = useMotionStore((state) => state.systemReduced)
+  const setMotionTier = useMotionStore((state) => state.setTier)
+  const setMotionFollowSystem = useMotionStore((state) => state.setFollowSystem)
+  const motionInForce = effectiveMotionTier({ tier: motionTier, followSystem: motionFollowSystem, systemReduced: motionSystemReduced })
+  const motionOption = MOTION_TIER_OPTIONS.find((option) => option.value === motionTier) ?? MOTION_TIER_OPTIONS[0]
+  // The dialog's own entrance, and "a page other than the first one shown".
+  const panelEnter = useMotionEnter('dialog')
+  const afterMount = useAfterMount()
   const [chromeHue, setChromeHue] = useState(DEFAULT_APPEARANCE_HUE)
   const [chromeSaturation, setChromeSaturation] = useState(DEFAULT_APPEARANCE_SATURATION)
   const [textContrast, setTextContrast] = useState(DEFAULT_APPEARANCE_CONTRAST)
@@ -192,21 +258,32 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
   const [projectStretchMethod, setProjectStretchMethod] = useState(null)
   const [defaultStretchMethod, setDefaultStretchMethod] = useState(null)
   const [formantPreserve, setFormantPreserve] = useState(false)
+  // Project-wide Lens / Roam / Sweep motion blur ({ enabled, shutterAngle }).
+  // null until the engine answers.
+  const [motionBlur, setMotionBlur] = useState(null)
   const [spacebarMode, setSpacebarMode] = useState('play-pause')
   const [autosaveInterval, setAutosaveInterval] = useState(5)
   const [gpuStatus, setGpuStatus] = useState({ state: 'loading', adapters: [] })
   const [hwEncoderStatus, setHwEncoderStatus] = useState({ state: 'loading', encoders: [] })
   const [videoMode, setVideoMode] = useState('auto')
+  const [proxyCodec, setProxyCodec] = useState('h264')
+  // Engine-reported state: { requested, effective, h264Available } or null.
+  const [proxyCodecState, setProxyCodecState] = useState(null)
+  // "Delete regenerable files when closing a project" — default off. `error` is set
+  // when the engine did not confirm the value (the bridge call is optional-chained
+  // everywhere, so a missing call would otherwise leave UI and engine disagreeing).
+  const [purgeOnClose, setPurgeOnClose] = useState(false)
+  const [purgeOnCloseError, setPurgeOnCloseError] = useState('')
   const [diagState, setDiagState] = useState({ status: 'idle', message: '', path: '' })
   const [namingFormat, setNamingFormat] = useState('sampleNameOnly')
-  const [backdropState, setBackdropState] = useState(getInitialBackdropState)
-  const backdropFxSettings = useBackdropFxSettingsStore((state) => state.settings)
-  const hydrateBackdropFxSettings = useBackdropFxSettingsStore((state) => state.hydrate)
-  const setBackdropFxSettings = useBackdropFxSettingsStore((state) => state.setSettings)
-  const backdropMediaSettings = useBackdropMediaSettingsStore((state) => state.settings)
-  const hydrateBackdropMediaSettings = useBackdropMediaSettingsStore((state) => state.hydrate)
-  const setBackdropMediaSettings = useBackdropMediaSettingsStore((state) => state.setSettings)
-  const syncBackdropMediaFromState = useBackdropMediaSettingsStore((state) => state.syncFromBackdropState)
+  const [audioDevices, setAudioDevices] = useState([])
+  const [audioSelectedDevice, setAudioSelectedDevice] = useState('')
+  const [audioRescanning, setAudioRescanning] = useState(false)
+  const [audioSampleRates, setAudioSampleRates] = useState([])
+  const [audioBufferSizes, setAudioBufferSizes] = useState(FALLBACK_AUDIO_BUFFER_SIZES)
+  const [audioDefaultBufferSize, setAudioDefaultBufferSize] = useState(null)
+  const [audioBufferSize, setAudioBufferSizeState] = useState(null)
+  const [audioSampleRate, setAudioSampleRateState] = useState(null)
 
   const launchers = useQuickLaunchersStore((s) => s.launchers)
   const hydrateLaunchers = useQuickLaunchersStore((s) => s.hydrate)
@@ -216,6 +293,16 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
   const [pendingLauncher, setPendingLauncher] = useState(null)
   const [editingId, setEditingId] = useState(null)
   const [editDraft, setEditDraft] = useState(null)
+
+  const clipVideoFxDefaults = useClipVideoFxDefaultsStore((s) => s.defaults)
+  const hydrateClipVideoFxDefaults = useClipVideoFxDefaultsStore((s) => s.hydrate)
+  const setClipVideoFxDefaults = useClipVideoFxDefaultsStore((s) => s.setDefaults)
+  // One snapshot of the open project (clips + the region/source maps needed to
+  // tell a video clip from an audio-only one), taken when the category opens and
+  // refreshed after an apply. The candidate count then recomputes locally as the
+  // user drags a slider instead of round-tripping the engine per keystroke.
+  const [clipFxProject, setClipFxProject] = useState(null)
+  const [clipFxStatus, setClipFxStatus] = useState({ state: 'idle', message: '' })
 
   useEffect(() => {
     setActiveCategory(normalizeCategory(initialCategory))
@@ -232,6 +319,31 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
   useEffect(() => {
     if (activeCategory === 'launchers') hydrateLaunchers()
   }, [activeCategory, hydrateLaunchers])
+
+  const refreshAudioDeviceInfo = useCallback(async () => {
+    const info = await getXleth()?.audio?.getDeviceInfo?.()
+    if (!info) return
+    setAudioBufferSizeState(info.bufferSize ?? null)
+    setAudioSampleRateState(info.sampleRate ?? null)
+    if (Array.isArray(info.bufferSizes) && info.bufferSizes.length > 0)
+      setAudioBufferSizes(info.bufferSizes)
+    setAudioDefaultBufferSize(typeof info.defaultBufferSize === 'number' ? info.defaultBufferSize : null)
+  }, [])
+
+  useEffect(() => {
+    if (activeCategory !== 'audio') return
+    async function loadAudio() {
+      const xl = getXleth()
+      const list = await xl?.audio?.getOutputDevices?.() ?? []
+      setAudioDevices(list)
+      const current = await xl?.audio?.getCurrentOutputDevice?.() ?? ''
+      setAudioSelectedDevice(current)
+      const rates = await xl?.audio?.getSupportedSampleRates?.() ?? []
+      setAudioSampleRates(rates)
+      await refreshAudioDeviceInfo()
+    }
+    loadAudio()
+  }, [activeCategory, refreshAudioDeviceInfo])
 
   useEffect(() => {
     const xl = getXleth()
@@ -251,6 +363,10 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
       .then(v => setFormantPreserve(!!v))
       .catch(() => {})
 
+    xl?.timeline?.getMotionBlur?.()
+      .then(m => setMotionBlur({ enabled: !!m?.enabled, shutterAngle: m?.shutterAngle ?? 180 }))
+      .catch(() => setMotionBlur({ enabled: false, shutterAngle: 180 }))
+
     xl?.settings?.get?.('spacebarMode')?.then(v => {
       setSpacebarMode(v === 'play-stop' ? 'play-stop' : 'play-pause')
     }).catch(() => {})
@@ -261,6 +377,24 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
 
     xl?.settings?.get?.('videoMode')?.then(v => {
       setVideoMode(['auto', 'software', 'hardware'].includes(v) ? v : 'auto')
+    }).catch(() => {})
+
+    // The engine is the source of truth for what is actually in effect (it
+    // holds the setting pushed at startup); the settings store is only read as
+    // a fallback if the engine call is unavailable.
+    xl?.proxy?.getCodec?.()?.then(state => {
+      if (state && (state.requested === 'h264' || state.requested === 'intra')) {
+        setProxyCodec(state.requested)
+        setProxyCodecState(state)
+      }
+    }).catch(() => {
+      xl?.settings?.get?.('proxyCodec')?.then(v => {
+        if (v === 'h264' || v === 'intra') setProxyCodec(v)
+      }).catch(() => {})
+    })
+
+    xl?.settings?.get?.('purgeRegenerableOnClose')?.then(v => {
+      setPurgeOnClose(v === true)
     }).catch(() => {})
 
     xl?.settings?.get?.('sampleNamingFormat')?.then(v => {
@@ -276,19 +410,29 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
       if (Number.isFinite(n)) setBrightness(Math.min(100, Math.max(0, n)))
     }).catch(() => {})
 
-    xl?.settings?.get?.('appearanceHue')?.then(v => {
-      const n = Number(v)
-      if (Number.isFinite(n)) setChromeHue(Math.min(359, Math.max(0, n)))
-    }).catch(() => {})
-
-    xl?.settings?.get?.('appearanceSaturation')?.then(v => {
-      const n = Number(v)
-      if (Number.isFinite(n)) setChromeSaturation(Math.min(300, Math.max(0, n)))
-    }).catch(() => {})
-
-    xl?.settings?.get?.('appearanceContrast')?.then(v => {
-      const n = Number(v)
-      if (Number.isFinite(n)) setTextContrast(Math.min(160, Math.max(60, n)))
+    // Hue / tint / contrast reopen where the user left them. Settings saved before the
+    // neutral ramp (no model version) are mapped once onto the current model; the saved
+    // theme file itself is untouched and keeps loading.
+    Promise.all([
+      xl?.settings?.get?.('appearanceModelVersion'),
+      xl?.settings?.get?.('appearanceHue'),
+      xl?.settings?.get?.('appearanceSaturation'),
+      xl?.settings?.get?.('appearanceContrast'),
+    ]).then(([version, hue, sat, contrast]) => {
+      const stored = { hue: Number(hue), saturation: Number(sat), contrast: Number(contrast) }
+      const knobs = Number(version) >= APPEARANCE_MODEL_VERSION
+        ? {
+            hue: Number.isFinite(stored.hue) ? Math.min(359, Math.max(0, stored.hue)) : DEFAULT_APPEARANCE_HUE,
+            saturation: Number.isFinite(stored.saturation) ? Math.min(APPEARANCE_TINT_MAX, Math.max(0, stored.saturation)) : DEFAULT_APPEARANCE_SATURATION,
+            contrast: Number.isFinite(stored.contrast) ? Math.min(APPEARANCE_CONTRAST_MAX, Math.max(APPEARANCE_CONTRAST_MIN, stored.contrast)) : DEFAULT_APPEARANCE_CONTRAST,
+          }
+        : migrateLegacyAppearance(stored)
+      if (Number(version) < APPEARANCE_MODEL_VERSION || version == null) {
+        console.debug(`[Theme] appearance knobs migrated: hue ${knobs.hue} tint ${knobs.saturation} contrast ${knobs.contrast}`)
+      }
+      setChromeHue(knobs.hue)
+      setChromeSaturation(knobs.saturation)
+      setTextContrast(knobs.contrast)
     }).catch(() => {})
 
     if (xl?.gpu?.getAvailableGpus) {
@@ -324,34 +468,31 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
     }
   }, [])
 
-  useEffect(() => {
-    void hydrateBackdropFxSettings()
-  }, [hydrateBackdropFxSettings])
-
-  useEffect(() => {
-    void hydrateBackdropMediaSettings()
-  }, [hydrateBackdropMediaSettings])
-
-  useEffect(() => {
-    const xl = getXleth()
-    const applyBackdropState = (state) => {
-      if (!state) return
-      setBackdropState(state)
-      syncBackdropMediaFromState(state)
-    }
-
-    applyBackdropState(xl?.backdrop?.current)
-    xl?.backdrop?.getState?.()
-      .then(applyBackdropState)
-      .catch((err) => console.warn('[Settings] backdrop.getState failed:', err?.message || err))
-
-    return xl?.backdrop?.onModeChanged?.(applyBackdropState)
-  }, [syncBackdropMediaFromState])
-
   const activeCategoryDef = useMemo(
     () => SETTINGS_CATEGORIES.find(category => category.id === activeCategory) || SETTINGS_CATEGORIES[0],
     [activeCategory]
   )
+
+  // The tab is derived from the selected category rather than held as its own
+  // state. Keeping a second source of truth invites the pair to disagree — a
+  // deep link straight to a category, or an alias resolving into the other
+  // tab, would otherwise land on a page its own tab strip says is not showing.
+  const activeTab = activeCategoryDef.tab
+  const activeTabDef = useMemo(
+    () => SETTINGS_TABS.find(tab => tab.id === activeTab) || SETTINGS_TABS[0],
+    [activeTab]
+  )
+  const visibleCategories = useMemo(
+    () => SETTINGS_CATEGORIES.filter(category => category.tab === activeTab),
+    [activeTab]
+  )
+
+  // Switching tabs selects that tab's first page, which is what makes the tab
+  // itself clickable at all — there is no "tab with nothing selected" state.
+  const selectTab = useCallback((tabId) => {
+    const first = SETTINGS_CATEGORIES.find(category => category.tab === tabId)
+    if (first) setActiveCategory(first.id)
+  }, [])
 
   function formatAdapterLine(a) {
     const vendor = a.vendor || 'Unknown'
@@ -412,6 +553,14 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
     await getXleth()?.settings?.set?.('defaultGlobalStretchMethod', method)
   }
 
+  async function applyMotionBlur(patch) {
+    const next = { ...(motionBlur ?? { enabled: false, shutterAngle: 180 }), ...patch }
+    console.log('[UISettings] project motionBlur changed:', next)
+    setMotionBlur(next)
+    const stored = await getXleth()?.timeline?.setMotionBlur?.(next)
+    if (stored) setMotionBlur({ enabled: !!stored.enabled, shutterAngle: stored.shutterAngle ?? 180 })
+  }
+
   async function applyFormant(v) {
     console.log('[UISettings] globalFormantPreserve changed:', v)
     setFormantPreserve(v)
@@ -436,130 +585,122 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
     await getXleth()?.settings?.set?.('videoMode', mode)
   }
 
-  async function applyBackdropMediaSource(value) {
-    const next = ['none', 'acrylic', 'image', 'video'].includes(value) ? value : 'none'
-    const settings = await setBackdropMediaSettings({ sourceType: next, lastError: '' })
-    setBackdropState(backdropMediaFromBackdropState({
-      mode: settings.sourceType === 'none'
-        ? 'off'
-        : settings.sourceType === 'acrylic'
-          ? 'native-acrylic'
-          : settings.sourceType,
-      preference: settings.sourceType,
-      imagePath: settings.imagePath,
-      videoPath: settings.videoPath,
-      lastError: settings.lastError,
-    }, settings))
-  }
-
-  async function chooseWorkspaceBackdropImage() {
-    try {
-      const picked = await openFilePicker({
-        mode: 'openFile',
-        title: 'Choose Workspace Backdrop',
-        subtitle: 'Select a PNG, JPEG, or WebP image for the workspace.',
-        actionLabel: 'Use Image',
-        filters: [{ name: 'Images', extensions: IMAGE_EXTENSIONS }],
-        legacyPicker: async () => {
-          const state = await getXleth()?.backdrop?.chooseImage?.()
-          return state?.imagePath || null
-        },
-      })
-      const filePath = getPickerPath(picked)
-      if (!filePath) return
-      const settings = await setBackdropMediaSettings({
-        sourceType: 'image',
-        imagePath: filePath,
-        lastError: '',
-      })
-      const state = getXleth()?.backdrop?.current || {
-        capability: backdropState?.capability || null,
-        preference: 'image',
-        mode: 'image',
-        imagePath: settings.imagePath || filePath,
-        imageUrl: null,
-        videoPath: settings.videoPath || null,
-        videoUrl: null,
-        lastError: settings.lastError || null,
-      }
-      setBackdropState(state)
-      syncBackdropMediaFromState(state)
-    } catch (err) {
-      console.warn('[Settings] workspace backdrop image chooser failed:', err?.message || err)
-    }
-  }
-
-  async function chooseWorkspaceBackdropVideo() {
-    try {
-      const picked = await openFilePicker({
-        mode: 'openFile',
-        title: 'Choose Workspace Background Video',
-        subtitle: 'Select an MP4 video loop for the workspace.',
-        actionLabel: 'Use Video',
-        filters: [{ name: 'MP4 Video', extensions: ['mp4'] }],
-        legacyPicker: async () => {
-          const state = await getXleth()?.backdrop?.chooseVideo?.()
-          return state?.videoPath || null
-        },
-      })
-      const filePath = getPickerPath(picked)
-      if (filePath) {
-        const settings = await setBackdropMediaSettings({
-          sourceType: 'video',
-          videoPath: filePath,
-          lastError: '',
-        })
-        const state = getXleth()?.backdrop?.current || {
-          capability: backdropState?.capability || null,
-          preference: 'video',
-          mode: 'video',
-          imagePath: settings.imagePath || null,
-          imageUrl: null,
-          videoPath: settings.videoPath || filePath,
-          videoUrl: null,
-          lastError: settings.lastError || null,
-        }
-        setBackdropState(state)
-        syncBackdropMediaFromState(state)
-        return
-      }
-      if (picked?.unavailable) backdropVideoInputRef.current?.click()
-    } catch (err) {
-      console.warn('[Settings] workspace backdrop video chooser failed:', err?.message || err)
-    }
-  }
-
-  async function handleBackdropVideoFileChange(event) {
-    const file = event.target.files?.[0]
-    event.target.value = ''
-    if (!file) return
+  async function applyProxyCodec(codec) {
+    setProxyCodec(codec)
     const xl = getXleth()
-    const filePath = xl?.getDroppedFilePath?.(file)
-      || xl?.file?.getPathForFile?.(file)
-      || ''
-    if (!filePath) {
-      await setBackdropMediaSettings({
-        sourceType: 'video',
-        lastError: 'Video backdrop could not be selected. The file path was unavailable.',
-      })
+    await xl?.settings?.set?.('proxyCodec', codec)
+    try {
+      const state = await xl?.proxy?.setCodec?.(codec)
+      if (state) setProxyCodecState(state)
+    } catch (e) {
+      console.error('[SettingsPanel] proxy.setCodec failed:', e)
+    }
+  }
+
+  async function applyPurgeOnClose(enabled) {
+    setPurgeOnClose(enabled)
+    setPurgeOnCloseError('')
+    const xl = getXleth()
+    await xl?.settings?.set?.('purgeRegenerableOnClose', enabled)
+    // The engine performs the purge, so it must hold the value too. It echoes the
+    // value in force; anything else means the call never landed.
+    try {
+      if (typeof xl?.project?.setPurgeOnClose !== 'function') {
+        throw new Error('window.xleth.project.setPurgeOnClose is not exposed')
+      }
+      const inForce = await xl.project.setPurgeOnClose(enabled)
+      if (inForce !== enabled) throw new Error(`engine reports ${JSON.stringify(inForce)}`)
+    } catch (e) {
+      console.error('[SettingsPanel] project.setPurgeOnClose failed:', e)
+      setPurgeOnCloseError('Could not apply this setting to the engine. Files will not be deleted on close until it is fixed.')
+    }
+  }
+
+  // ── Clip video-companion FX defaults ──────────────────────────────────────
+
+  const loadClipFxProject = useCallback(async () => {
+    const xl = getXleth()
+    if (!xl?.timeline?.getClips) { setClipFxProject(null); return null }
+    try {
+      const [clips, regions, sources] = await Promise.all([
+        xl.timeline.getClips(),
+        xl.timeline.getRegions(),
+        xl.timeline.getSources(),
+      ])
+      const regionsById = {}
+      ;(regions || []).forEach((r) => { regionsById[r.id] = r })
+      const sourcesById = {}
+      ;(sources || []).forEach((src) => { sourcesById[src.id] = src })
+      const next = { clips: clips || [], regionsById, sourcesById }
+      setClipFxProject(next)
+      return next
+    } catch (err) {
+      console.warn('[ClipVideoFxDefaults] project snapshot failed:', err?.message || err)
+      setClipFxProject(null)
+      return null
+    }
+  }, [])
+
+  // Declared after loadClipFxProject: the dep array is evaluated during render,
+  // so a useEffect above the useCallback would hit its temporal dead zone.
+  useEffect(() => {
+    if (activeCategory !== 'clipfx') return
+    hydrateClipVideoFxDefaults()
+    loadClipFxProject()
+    setClipFxStatus({ state: 'idle', message: '' })
+  }, [activeCategory, hydrateClipVideoFxDefaults, loadClipFxProject])
+
+  const clipFxCandidates = useMemo(() => (
+    clipFxProject
+      ? planClipVideoFxApply({
+          clips: clipFxProject.clips,
+          regionsById: clipFxProject.regionsById,
+          sourcesById: clipFxProject.sourcesById,
+          defaults: clipVideoFxDefaults,
+        })
+      : []
+  ), [clipFxProject, clipVideoFxDefaults])
+
+  async function applyClipVideoFxDefault(patch) {
+    await setClipVideoFxDefaults(patch)
+    // The candidate count is derived, so editing a default never leaves a stale
+    // 'applied to N clips' line standing next to a different N.
+    setClipFxStatus({ state: 'idle', message: '' })
+  }
+
+  async function applyClipVideoFxToProject() {
+    const snapshot = await loadClipFxProject()
+    if (!snapshot) {
+      setClipFxStatus({ state: 'error', message: 'No project is open.' })
       return
     }
-    const next = await setBackdropMediaSettings({
-      sourceType: 'video',
-      videoPath: filePath,
-      lastError: '',
+    const edits = planClipVideoFxApply({
+      clips: snapshot.clips,
+      regionsById: snapshot.regionsById,
+      sourcesById: snapshot.sourcesById,
+      defaults: clipVideoFxDefaults,
     })
-    setBackdropState({
-      capability: backdropState?.capability || null,
-      preference: 'video',
-      mode: 'video',
-      imagePath: next.imagePath || null,
-      imageUrl: null,
-      videoPath: next.videoPath || null,
-      videoUrl: null,
-      lastError: next.lastError || null,
-    })
+    if (edits.length === 0) {
+      setClipFxStatus({ state: 'done', message: 'Nothing to apply — every video clip already has it on.' })
+      return
+    }
+    setClipFxStatus({ state: 'applying', message: `Applying to ${edits.length} clip(s)…` })
+    try {
+      const updated = await getXleth()?.timeline?.setClipModulationBatch?.(edits)
+      const count = Array.isArray(updated) ? updated.length : edits.length
+      // One batch call is one undo entry; the timeline refetches off this event.
+      timelineEvents.dispatchEvent(new CustomEvent('timeline-clips-changed'))
+      await loadClipFxProject()
+      setClipFxStatus({
+        state: 'done',
+        message: `Applied to ${count} clip(s). Ctrl+Z undoes the whole sweep.`,
+      })
+    } catch (err) {
+      console.error('[ClipVideoFxDefaults] apply failed:', err)
+      setClipFxStatus({ state: 'error', message: err?.message || 'Apply failed.' })
+    }
   }
+
 
   async function applyNamingFormat(v) {
     const validated = VALID_NAMING_FORMATS.includes(v) ? v : 'sampleNameOnly'
@@ -567,8 +708,62 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
     await getXleth()?.settings?.set?.('sampleNamingFormat', validated)
   }
 
-  function applyBackdropFxSettings(patch) {
-    void setBackdropFxSettings(patch)
+  // ── Audio output device / buffer size / sample rate ───────────────────────
+
+  async function applyAudioDeviceChange(name) {
+    setAudioSelectedDevice(name)
+    const result = await getXleth()?.audio?.setOutputDevice?.(name)
+    if (result && !result.ok) {
+      console.error('[Settings] audio.setOutputDevice failed:', result.error)
+      return
+    }
+    await getXleth()?.settings?.set?.(SETTINGS_KEY_AUDIO_DEVICE, name)
+    // A device switch can change the supported-rate list and the reopened
+    // device's actual buffer/rate/latency — refresh everything this section shows.
+    const rates = await getXleth()?.audio?.getSupportedSampleRates?.() ?? []
+    setAudioSampleRates(rates)
+    await refreshAudioDeviceInfo()
+  }
+
+  async function applyAudioRescan() {
+    if (audioRescanning) return
+    setAudioRescanning(true)
+    try {
+      const list = await getXleth()?.audio?.rescanDevices?.() ?? []
+      setAudioDevices(list)
+      const current = await getXleth()?.audio?.getCurrentOutputDevice?.() ?? ''
+      setAudioSelectedDevice(current)
+      const rates = await getXleth()?.audio?.getSupportedSampleRates?.() ?? []
+      setAudioSampleRates(rates)
+      await refreshAudioDeviceInfo()
+    } finally {
+      setAudioRescanning(false)
+    }
+  }
+
+  async function applyAudioBufferSize(value) {
+    const size = parseInt(value, 10)
+    setAudioBufferSizeState(size) // optimistic — live latency value updates immediately
+    const result = await getXleth()?.audio?.setBufferSize?.(size)
+    if (result && !result.ok) {
+      console.error('[Settings] audio.setBufferSize failed:', result.error)
+      await refreshAudioDeviceInfo()
+      return
+    }
+    await getXleth()?.settings?.set?.(SETTINGS_KEY_AUDIO_BUFFER, size)
+    await refreshAudioDeviceInfo()
+  }
+
+  async function applyAudioSampleRate(value) {
+    const rate = parseFloat(value)
+    const result = await getXleth()?.audio?.setSampleRate?.(rate)
+    if (result && !result.ok) {
+      console.error('[Settings] audio.setSampleRate failed:', result.error)
+      await refreshAudioDeviceInfo()
+      return
+    }
+    await getXleth()?.settings?.set?.(SETTINGS_KEY_AUDIO_RATE, rate)
+    await refreshAudioDeviceInfo()
   }
 
   const applyAppearance = useCallback((accent, darkness, options = {}) => {
@@ -601,6 +796,7 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
       void xl?.settings?.set?.('appearanceHue', options.hue ?? DEFAULT_APPEARANCE_HUE)
       void xl?.settings?.set?.('appearanceSaturation', options.saturation ?? DEFAULT_APPEARANCE_SATURATION)
       void xl?.settings?.set?.('appearanceContrast', options.contrast ?? DEFAULT_APPEARANCE_CONTRAST)
+      void xl?.settings?.set?.('appearanceModelVersion', APPEARANCE_MODEL_VERSION)
     }, 400)
   }, [themeContext])
 
@@ -618,32 +814,33 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
     if (appearancePersistTimerRef.current) clearTimeout(appearancePersistTimerRef.current)
   }, [])
 
-  function handleAccentChange(event) {
-    const next = normalizeAccentHex(event.target.value)
+  // Each handler takes the control's value (the kit NumberBox hands over a number, the colour input its hex).
+  function handleAccentChange(value) {
+    const next = normalizeAccentHex(value)
     setAccentColor(next)
     applyAppearance(next, brightness, appearanceOptions())
   }
 
-  function handleBrightnessChange(event) {
-    const next = Math.min(100, Math.max(0, Number(event.target.value)))
+  function handleBrightnessChange(value) {
+    const next = Math.min(100, Math.max(0, Number(value)))
     setBrightness(next)
     applyAppearance(accentColor, next, appearanceOptions())
   }
 
-  function handleChromeHueChange(event) {
-    const next = Math.min(359, Math.max(0, Number(event.target.value)))
+  function handleChromeHueChange(value) {
+    const next = Math.min(359, Math.max(0, Number(value)))
     setChromeHue(next)
     applyAppearance(accentColor, brightness, appearanceOptions({ hue: next }))
   }
 
-  function handleChromeSaturationChange(event) {
-    const next = Math.min(300, Math.max(0, Number(event.target.value)))
+  function handleChromeSaturationChange(value) {
+    const next = Math.min(APPEARANCE_TINT_MAX, Math.max(0, Number(value)))
     setChromeSaturation(next)
     applyAppearance(accentColor, brightness, appearanceOptions({ saturation: next }))
   }
 
-  function handleTextContrastChange(event) {
-    const next = Math.min(160, Math.max(60, Number(event.target.value)))
+  function handleTextContrastChange(value) {
+    const next = Math.min(APPEARANCE_CONTRAST_MAX, Math.max(APPEARANCE_CONTRAST_MIN, Number(value)))
     setTextContrast(next)
     applyAppearance(accentColor, brightness, appearanceOptions({ contrast: next }))
   }
@@ -691,6 +888,34 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
     }
   }
 
+  const audioDeviceOptions = useMemo(
+    () => audioDevices.map(device => ({ value: device, label: device })),
+    [audioDevices]
+  )
+
+  const audioBufferSizeOptions = useMemo(() => {
+    const opts = []
+    if (typeof audioDefaultBufferSize === 'number')
+      opts.push({ value: audioDefaultBufferSize, label: `Default (${audioDefaultBufferSize} samples)` })
+    for (const size of audioBufferSizes) {
+      if (size === audioDefaultBufferSize) continue
+      opts.push({ value: size, label: `${size} samples` })
+    }
+    return opts
+  }, [audioBufferSizes, audioDefaultBufferSize])
+
+  const audioSampleRateOptions = useMemo(
+    () => audioSampleRates.map(rate => ({ value: rate, label: `${Math.round(rate)} Hz` })),
+    [audioSampleRates]
+  )
+
+  // Live estimate: recomputed on every render from local state, so it updates
+  // the instant a buffer size is picked rather than waiting on the device
+  // round trip. bufferSize / sampleRate is the resulting output latency.
+  const audioLiveLatencyMs = (typeof audioBufferSize === 'number' && typeof audioSampleRate === 'number' && audioSampleRate > 0)
+    ? (audioBufferSize / audioSampleRate) * 1000
+    : null
+
   const stretchOptions = projectStretchMethod == null
     ? [{ value: '', label: 'Loading...' }]
     : GLOBAL_STRETCH_METHOD_OPTIONS
@@ -700,480 +925,664 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
 
   const renderProject = () => (
     <>
-      <SettingsSection title="Clip Processing" index={0}>
+      <SettingsSection title="Clip processing">
         <SettingsRow
-          label="Global Clip Processing"
+          label="Global clip processing"
           htmlFor="settings-project-stretch-method"
           description="Applies to this project."
         >
-          <XlethSelect
+          <Select
             id="settings-project-stretch-method"
             value={projectStretchMethod ?? ''}
             options={stretchOptions}
             onChange={nextValue => applyProjectStretchMethod(Number(nextValue))}
             disabled={projectStretchMethod == null}
-            ariaLabel="Global Clip Processing"
-            className="settings-panel-select settings-panel-select--stretch-method"
+            ariaLabel="Global clip processing"
           />
         </SettingsRow>
         {projectStretchMethod === 5 && (
-          <div className="settings-panel-hint settings-panel-hint--inline">
+          <SettingsHint>
             Best for speech and vocal samples. Processes offline - parameter changes apply after a short analysis step.
-          </div>
+          </SettingsHint>
         )}
         <SettingsRow
-          label="New Project Default"
+          label="New project default"
           htmlFor="settings-default-stretch-method"
           description="Used only for newly created blank projects."
         >
-          <XlethSelect
+          <Select
             id="settings-default-stretch-method"
             value={defaultStretchMethod ?? ''}
             options={defaultStretchOptions}
             onChange={nextValue => applyDefaultStretchMethod(Number(nextValue))}
             disabled={defaultStretchMethod == null}
-            ariaLabel="New Project Default"
-            className="settings-panel-select settings-panel-select--stretch-method"
+            ariaLabel="New project default"
           />
         </SettingsRow>
         {defaultStretchMethod === 5 && (
-          <div className="settings-panel-hint settings-panel-hint--inline">
+          <SettingsHint>
             Best for speech and vocal samples. Processes offline - parameter changes apply after a short analysis step.
-          </div>
+          </SettingsHint>
         )}
         <SettingsRow
-          label="Formant Preservation"
+          label="Formant preservation"
           htmlFor="settings-formant-preserve"
           description="Preserves vocal character during global clip processing when supported."
         >
-          <input
-            id="settings-formant-preserve"
-            type="checkbox"
-            className="settings-panel-checkbox"
-            checked={formantPreserve}
-            onChange={e => applyFormant(e.target.checked)}
+          <OnOff id="settings-formant-preserve" label="Formant preservation" on={formantPreserve} onChange={applyFormant} />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title="Motion blur">
+        <SettingsRow
+          label="Lens and Roam motion blur"
+          htmlFor="settings-motion-blur"
+          description="Smears grid cells and fullscreen layers along their Lens, Sweep and Roam moves, in the preview and the export."
+        >
+          <OnOff
+            id="settings-motion-blur"
+            label="Lens and Roam motion blur"
+            on={!!motionBlur?.enabled}
+            onChange={next => applyMotionBlur({ enabled: next })}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Shutter angle"
+          description="How much of each frame the blur spans. 180° is the film look; 360° spans the whole frame."
+        >
+          <NumberBox
+            id="settings-motion-blur-shutter"
+            label="Shutter angle"
+            hideLabel
+            width={88}
+            min={1}
+            max={360}
+            step={1}
+            defaultValue={180}
+            format={v => `${Math.round(v)}°`}
+            parse={t => {
+              const v = Number.parseFloat(String(t).replace(/°/g, ''))
+              return Number.isFinite(v) ? v : null
+            }}
+            quantize={v => Math.round(v)}
+            value={motionBlur?.shutterAngle ?? 180}
+            disabled={!motionBlur?.enabled}
+            onCommit={v => applyMotionBlur({ shutterAngle: Math.round(v) })}
+          />
+        </SettingsRow>
+        <SettingsHint>
+          Zoom/pan/rot has its own motion blur on each track’s device, and this setting does not change it.
+        </SettingsHint>
+      </SettingsSection>
+
+      <SettingsSection title="Playback">
+        <SettingsRow
+          label="Spacebar behavior"
+          htmlFor="settings-spacebar-mode"
+          description="Play / Pause holds position when stopped. Play / Stop returns to where playback started."
+        >
+          <Select
+            id="settings-spacebar-mode"
+            value={spacebarMode}
+            options={SPACEBAR_OPTIONS}
+            onChange={applySpacebarMode}
+            ariaLabel="Spacebar behavior"
           />
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title="Project Safety" index={1}>
+      <SettingsSection title="Project safety">
         <SettingsRow
           label="Autosave"
           htmlFor="settings-autosave-interval"
           description="Automatically save recovery points while editing this project."
         >
-          <XlethSelect
+          <Select
             id="settings-autosave-interval"
             value={autosaveInterval}
             options={AUTOSAVE_OPTIONS}
             onChange={nextValue => applyAutosaveInterval(Number(nextValue))}
             ariaLabel="Autosave"
-            className="settings-panel-select"
+          />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title="Export naming">
+        <SettingsRow
+          label="Filename format"
+          htmlFor="settings-filename-format"
+          description="Controls generated sample and export names without changing project editing state."
+        >
+          <Select
+            id="settings-filename-format"
+            value={namingFormat}
+            options={NAMING_FORMAT_OPTIONS}
+            onChange={applyNamingFormat}
+            ariaLabel="Filename format"
           />
         </SettingsRow>
       </SettingsSection>
     </>
   )
 
-  const renderTransport = () => (
-    <SettingsSection title="Playback" index={0}>
-      <SettingsRow
-        label="Spacebar behavior"
-        htmlFor="settings-spacebar-mode"
-        description="Play/Pause holds position when stopped. Play/Stop returns to where playback started."
-      >
-        <XlethSelect
-          id="settings-spacebar-mode"
-          value={spacebarMode}
-          options={SPACEBAR_OPTIONS}
-          onChange={applySpacebarMode}
-          ariaLabel="Spacebar behavior"
-          className="settings-panel-select"
-        />
-      </SettingsRow>
-    </SettingsSection>
-  )
+  const renderClipFx = () => {
+    const d = clipVideoFxDefaults
+    const videoClipCount = clipFxProject
+      ? clipFxProject.clips.filter(c => clipHasVideo(c, clipFxProject.regionsById, clipFxProject.sourcesById)).length
+      : null
+    const nothingEnabled = !d.swirlEnabled && !d.waveEnabled
+
+    return (
+      <>
+        <SettingsSection title="Swirl with Vibrato">
+          <SettingsRow
+            label="Swirl with Vibrato"
+            htmlFor="settings-clipfx-swirl-enabled"
+            description="Include Swirl when applying defaults to the project. On a clip, Swirl only moves while that clip's Vibrato is on."
+          >
+            <OnOff
+              id="settings-clipfx-swirl-enabled"
+              label="Swirl with Vibrato"
+              on={d.swirlEnabled}
+              onChange={next => applyClipVideoFxDefault({ swirlEnabled: next })}
+            />
+          </SettingsRow>
+          <SettingsRow
+            label="Swirl"
+            description="Rotation the Vibrato LFO drives. Negative swirls the other way."
+          >
+            <NumberBox
+              id="settings-clipfx-swirl-amount"
+              label="Default Swirl amount"
+              hideLabel
+              width={88}
+              min={-1}
+              max={1}
+              step={0.01}
+              bipolar
+              centre={0}
+              defaultValue={0}
+              format={fmt2}
+              value={d.swirlAmount}
+              onCommit={v => applyClipVideoFxDefault({ swirlAmount: v })}
+            />
+          </SettingsRow>
+        </SettingsSection>
+
+        <SettingsSection title="Wave with Scratch">
+          <SettingsRow
+            label="Wave with Scratch"
+            htmlFor="settings-clipfx-wave-enabled"
+            description="Include Wave when applying defaults to the project. On a clip, Wave only moves while that clip's Scratch is on."
+          >
+            <OnOff
+              id="settings-clipfx-wave-enabled"
+              label="Wave with Scratch"
+              on={d.waveEnabled}
+              onChange={next => applyClipVideoFxDefault({ waveEnabled: next })}
+            />
+          </SettingsRow>
+          <SettingsRow label="Wave" description="Displacement the Scratch curve drives.">
+            <NumberBox
+              id="settings-clipfx-wave-amount"
+              label="Default Wave amount"
+              hideLabel
+              width={88}
+              min={-1}
+              max={1}
+              step={0.01}
+              bipolar
+              centre={0}
+              defaultValue={0}
+              format={fmt2}
+              value={d.waveAmount}
+              onCommit={v => applyClipVideoFxDefault({ waveAmount: v })}
+            />
+          </SettingsRow>
+          <SettingsRow label="Frequency" description="Ripples across the frame.">
+            <NumberBox
+              id="settings-clipfx-wave-frequency"
+              label="Default Wave frequency"
+              hideLabel
+              width={88}
+              min={0.25}
+              max={64}
+              step={0.25}
+              defaultValue={0.25}
+              format={v => `${v.toFixed(2)}×`}
+              value={d.waveFrequency}
+              onCommit={v => applyClipVideoFxDefault({ waveFrequency: v })}
+            />
+          </SettingsRow>
+          <SettingsRow label="Smear" description="Trails the displaced pixels along the wave.">
+            <NumberBox
+              id="settings-clipfx-smear-amount"
+              label="Default Smear amount"
+              hideLabel
+              width={88}
+              min={-1}
+              max={1}
+              step={0.01}
+              bipolar
+              centre={0}
+              defaultValue={0}
+              format={fmt2}
+              value={d.smearAmount}
+              onCommit={v => applyClipVideoFxDefault({ smearAmount: v })}
+            />
+          </SettingsRow>
+          <SettingsRow
+            label="Reverse wave with Scratch"
+            htmlFor="settings-clipfx-reverse-wave"
+            description="Flips the wave direction while the Scratch curve runs backwards."
+          >
+            <OnOff
+              id="settings-clipfx-reverse-wave"
+              label="Reverse wave with Scratch"
+              on={d.reverseWaveWithScratch}
+              onChange={next => applyClipVideoFxDefault({ reverseWaveWithScratch: next })}
+            />
+          </SettingsRow>
+        </SettingsSection>
+
+        <SettingsSection title="Apply to project">
+          <SettingsRow
+            label="Apply to video clips without it on"
+            description={
+              nothingEnabled
+                ? 'Turn on Swirl or Wave above to have something to apply.'
+                : videoClipCount == null
+                  ? 'Reading the open project.'
+                  : `${clipFxCandidates.length} of ${videoClipCount} video clip(s) would change. Clips that already have it on are left alone.`
+            }
+          >
+            <Button
+              onClick={applyClipVideoFxToProject}
+              disabled={nothingEnabled || clipFxStatus.state === 'applying' || clipFxCandidates.length === 0}
+            >
+              {clipFxStatus.state === 'applying' ? 'Applying…' : 'Apply to project'}
+            </Button>
+          </SettingsRow>
+          {clipFxStatus.message && (
+            <SettingsHint tone={clipFxStatus.state === 'error' ? 'warning' : 'default'}>{clipFxStatus.message}</SettingsHint>
+          )}
+          <SettingsHint>
+            These values also seed a clip&apos;s Swirl and Wave the first time you switch it on from the clip menu.
+          </SettingsHint>
+        </SettingsSection>
+      </>
+    )
+  }
 
   const renderAudio = () => (
-    <SettingsSection title="Audio Diagnostics" index={0} className="settings-panel-section--wide">
-      <AudioPerformanceDiagnosticsPanel />
-    </SettingsSection>
+    <>
+      <SettingsSection title="Output device">
+        <SettingsRow
+          label="Output device"
+          htmlFor="settings-audio-output-device"
+          description="The audio driver and device Xleth plays through."
+        >
+          <Select
+            id="settings-audio-output-device"
+            value={audioSelectedDevice}
+            options={audioDeviceOptions}
+            onChange={applyAudioDeviceChange}
+            ariaLabel="Audio output device"
+          />
+          <Button
+            onClick={applyAudioRescan}
+            disabled={audioRescanning}
+            hint="Rescan for connected audio devices"
+            glyph={<IcArrowsClockwise size={14} aria-hidden="true" className={audioRescanning ? settingsStyles.spin : ''} />}
+          >
+            {audioRescanning ? 'Rescanning…' : 'Rescan'}
+          </Button>
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title="Buffer and latency">
+        <SettingsRow
+          label="Buffer size"
+          htmlFor="settings-audio-buffer-size"
+          description="Trade latency for playback stability. Lower is snappier but more prone to crackle."
+        >
+          <Select
+            id="settings-audio-buffer-size"
+            value={audioBufferSize ?? ''}
+            options={audioBufferSizeOptions}
+            onChange={applyAudioBufferSize}
+            ariaLabel="Buffer size"
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Sample rate"
+          htmlFor="settings-audio-sample-rate"
+          description="The device's operating sample rate."
+        >
+          <Select
+            id="settings-audio-sample-rate"
+            value={audioSampleRate ?? ''}
+            options={audioSampleRateOptions}
+            onChange={applyAudioSampleRate}
+            ariaLabel="Sample rate"
+          />
+        </SettingsRow>
+        <SettingsRow label="Output latency">
+          <SettingsValue>
+            {typeof audioLiveLatencyMs === 'number' ? formatValue(audioLiveLatencyMs, 'ms') : '—'}
+          </SettingsValue>
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title="Audio diagnostics" wide>
+        <AudioPerformanceDiagnosticsPanel />
+      </SettingsSection>
+    </>
   )
 
   const renderPlugins = () => (
-    <SettingsSection title="VST3 Plugin Library" index={0} className="settings-panel-section--vst-browser">
+    <SettingsSection title="VST3 plugin library" wide>
       <VstBrowser embedded />
     </SettingsSection>
   )
 
   const renderGraphics = () => (
     <>
-      <SettingsSection title="Graphics Adapter" index={0}>
+      <SettingsSection title="Graphics adapter">
         <SettingsRow label="Graphics adapter">
-          <span
-            className={`settings-panel-value settings-panel-value--${gpuSummaryTone()}`}
+          <SettingsValue
+            tone={gpuSummaryTone()}
             data-gpu-state={gpuStatus.state}
             data-hw-encoder-state={hwEncoderStatus.state}
           >
             {gpuSummaryText()}
-          </span>
+          </SettingsValue>
         </SettingsRow>
         {gpuStatus.adapters.length > 0 && (
-          <ul className="settings-panel-hint settings-panel-list">
+          <ul className={settingsStyles.list}>
             {gpuStatus.adapters.map((a, i) => (
               <li key={i}>{formatAdapterLine(a)}</li>
             ))}
           </ul>
         )}
-        <div className="settings-panel-hint">
-          Confirm Xleth detects your graphics adapter correctly. NVIDIA, AMD, and Intel adapters are supported for hardware video encode/decode. If no hardware video encoder is found, Xleth uses software video encode/decode.
-        </div>
+        <SettingsHint>
+          Confirm Xleth detects your graphics adapter correctly. NVIDIA, AMD, and Intel adapters are supported for hardware video encode and decode. If no hardware video encoder is found, Xleth uses software video encode and decode.
+        </SettingsHint>
       </SettingsSection>
 
-      <SettingsSection title="Video Pipeline" index={1}>
+      <SettingsSection title="Video pipeline">
         <SettingsRow
-          label="Video encode/decode"
+          label="Video encode and decode"
           htmlFor="settings-video-mode"
           description="Auto uses hardware acceleration if available, falling back to software."
         >
-          <XlethSelect
+          <Select
             id="settings-video-mode"
             value={videoMode}
             options={VIDEO_MODE_OPTIONS}
             onChange={applyVideoMode}
-            ariaLabel="Video encode/decode"
-            className="settings-panel-select"
+            ariaLabel="Video encode and decode"
           />
         </SettingsRow>
-        <div className="settings-panel-hint">
-          Software always uses CPU-based encode/decode. Hardware only uses GPU acceleration and fails loudly if unavailable. Display compositing always uses OpenGL regardless of this setting.
-        </div>
+        <SettingsHint>
+          Software always uses CPU-based encode and decode. Hardware only uses GPU acceleration and fails loudly if unavailable. Display compositing always uses OpenGL regardless of this setting.
+        </SettingsHint>
       </SettingsSection>
 
-      <SettingsSection title="Visual Preview Diagnostics" index={2}>
+      <SettingsSection title="Preview proxies">
+        <SettingsRow
+          label="Proxy codec"
+          htmlFor="settings-proxy-codec"
+          description="Format of the small preview copies Xleth makes of your video sources."
+        >
+          <Select
+            id="settings-proxy-codec"
+            value={proxyCodec}
+            options={PROXY_CODEC_OPTIONS}
+            onChange={applyProxyCodec}
+            ariaLabel="Proxy codec"
+          />
+        </SettingsRow>
+        <SettingsHint>
+          H.264 proxies take about a tenth of the disk space. All-intra proxies seek instantly but are 10 to 20 times larger. The choice applies to new proxies. When H.264 is selected, opening a project converts its older all-intra proxies in the background.
+        </SettingsHint>
+        {proxyCodecState && proxyCodecState.requested === 'h264' && !proxyCodecState.h264Available && (
+          <SettingsHint tone="warning">
+            No H.264 encoder is available on this system (Windows N editions need the Media Feature Pack), so new proxies use all-intra.
+          </SettingsHint>
+        )}
+      </SettingsSection>
+
+      <SettingsSection title="Regenerable files">
+        <SettingsRow
+          label="Delete regenerable files when closing a project"
+          htmlFor="settings-purge-on-close"
+          description="Removes preview proxies, thumbnails and waveform caches when you close or switch projects, or quit."
+        >
+          <OnOff
+            id="settings-purge-on-close"
+            label="Delete regenerable files when closing a project"
+            on={purgeOnClose}
+            onChange={applyPurgeOnClose}
+          />
+        </SettingsRow>
+        <SettingsHint>
+          Saves disk space between sessions. Your source media and project file are never touched. Xleth rebuilds
+          whatever the project needs in the background the next time you open it — you can keep working meanwhile,
+          and the first playback may be slower until the previews are back. Previews whose source media is offline
+          are kept, because they cannot be rebuilt. File &gt; Clean up project removes leftovers on demand.
+        </SettingsHint>
+        {purgeOnCloseError && <SettingsHint tone="warning">{purgeOnCloseError}</SettingsHint>}
+      </SettingsSection>
+
+      <SettingsSection title="Visual preview diagnostics">
         <SettingsRow
           label="Visual preview diagnostic"
           description="Saves a plain-text report of the main preview and grid pipeline."
         >
-          <button
-            type="button"
-            className="settings-panel-button"
-            onClick={exportVisualPreviewDiagnostic}
-            disabled={diagState.status === 'working'}
-          >
-            {diagState.status === 'working' ? 'Exporting...' : 'Export Visual Preview Diagnostic Log...'}
-          </button>
+          <Button onClick={exportVisualPreviewDiagnostic} disabled={diagState.status === 'working'}>
+            {diagState.status === 'working' ? 'Exporting…' : 'Export diagnostic log…'}
+          </Button>
         </SettingsRow>
-        <div className="settings-panel-hint">
-          Send this file to support if the main preview is blank, black, or frozen. The Sample Selector preview and imported-video popup use a different code path.
-        </div>
+        <SettingsHint>
+          Send this file to support if the main preview is blank, black, or frozen. The sample selector preview and imported-video popup use a different code path.
+        </SettingsHint>
         {diagState.status === 'ok' && (
-          <div className="settings-panel-hint settings-panel-hint--success">
-            {diagState.message} {diagState.path}
-          </div>
+          <SettingsHint tone="success">{diagState.message} {diagState.path}</SettingsHint>
         )}
         {diagState.status === 'error' && (
-          <div className="settings-panel-hint settings-panel-hint--warning">
-            Export failed: {diagState.message}
-          </div>
+          <SettingsHint tone="warning">Export failed: {diagState.message}</SettingsHint>
         )}
       </SettingsSection>
     </>
   )
 
-  const renderAppearance = () => {
-    const backdropFxDisabled = !backdropFxSettings.enabled
-    const studioGridOverlayDisabled = backdropFxDisabled || backdropFxSettings.preset !== 'subtle-glass'
-    const backdropMediaSource = backdropMediaSettings.sourceType
-    const activeMediaPath = backdropMediaSource === 'video'
-      ? backdropMediaSettings.videoPath
-      : backdropMediaSource === 'image'
-        ? backdropMediaSettings.imagePath || backdropState?.imagePath
-        : ''
-    const mediaStatus = backdropMediaSettings.lastError || backdropState?.lastError || ''
-    return (
-      <>
-        <SettingsSection title="Theme" index={0}>
-          <SettingsRow
-            label="Accent color"
-            htmlFor="settings-appearance-accent"
-            description="Highlights, active controls, and selection across the app."
-          >
-            <div className="settings-panel-color-row">
-              <input
-                id="settings-appearance-accent"
-                type="color"
-                className="settings-panel-color-input"
-                value={accentColor}
-                onChange={handleAccentChange}
-                aria-label="Accent color"
-              />
-              <span className="settings-panel-range-value">{accentColor.toUpperCase()}</span>
-            </div>
-          </SettingsRow>
-          <SettingsRow
-            label="Brightness"
-            htmlFor="settings-appearance-brightness"
-            description="Lowest is near-black with light text; highest is light grey with dark text."
-          >
-            <div className="settings-panel-range-row">
-              <input
-                id="settings-appearance-brightness"
-                type="range"
-                min="0"
-                max="100"
-                step="1"
-                className="settings-panel-range"
-                value={brightness}
-                onChange={handleBrightnessChange}
-                aria-label="Brightness"
-              />
-              <span className="settings-panel-range-value">{brightness}%</span>
-            </div>
-          </SettingsRow>
-          <SettingsRow
-            label="Hue"
-            htmlFor="settings-appearance-hue"
-            description="Tints panels, text, and borders. Independent of the accent, so a warm chrome can carry a cool accent."
-          >
-            <div className="settings-panel-range-row">
-              <input
-                id="settings-appearance-hue"
-                type="range"
-                min="0"
-                max="359"
-                step="1"
-                className="settings-panel-range settings-panel-range--hue"
-                value={chromeHue}
-                onChange={handleChromeHueChange}
-                aria-label="Hue"
-              />
-              <span className="settings-panel-range-value">{chromeHue}&deg;</span>
-            </div>
-          </SettingsRow>
-          <SettingsRow
-            label="Saturation"
-            htmlFor="settings-appearance-saturation"
-            description="How strongly the hue reads. 0% is neutral grey; the default 100% is a faint cast."
-          >
-            <div className="settings-panel-range-row">
-              <input
-                id="settings-appearance-saturation"
-                type="range"
-                min="0"
-                max="300"
-                step="5"
-                className="settings-panel-range settings-panel-range--saturation"
-                // Track previews the chosen hue so the control shows what it does.
-                style={{
-                  '--range-track-image': `linear-gradient(to right, hsl(${chromeHue} 0% 45%), hsl(${chromeHue} 60% 45%))`,
-                }}
-                value={chromeSaturation}
-                onChange={handleChromeSaturationChange}
-                aria-label="Saturation"
-              />
-              <span className="settings-panel-range-value">{chromeSaturation}%</span>
-            </div>
-          </SettingsRow>
-          <SettingsRow
-            label="Text contrast"
-            htmlFor="settings-appearance-contrast"
-            description="Separation between text and its background. Body text stays above the WCAG AA floor at every setting."
-          >
-            <div className="settings-panel-range-row">
-              <input
-                id="settings-appearance-contrast"
-                type="range"
-                min="60"
-                max="160"
-                step="5"
-                className="settings-panel-range"
-                value={textContrast}
-                onChange={handleTextContrastChange}
-                aria-label="Text contrast"
-              />
-              <span className="settings-panel-range-value">{textContrast}%</span>
-            </div>
-          </SettingsRow>
-        </SettingsSection>
-
-        <SettingsSection title="Backdrop Media" index={1}>
-          <SettingsRow
-            label="Source"
-            htmlFor="settings-backdrop-media-source"
-            description="Workspace chrome behind panels."
-          >
-            <XlethSelect
-              id="settings-backdrop-media-source"
-              value={backdropMediaSource}
-              options={BACKDROP_MEDIA_SOURCE_TYPES}
-              onChange={applyBackdropMediaSource}
-              ariaLabel="Backdrop Media source"
-              className="settings-panel-select"
-            />
-          </SettingsRow>
-          {backdropMediaSource === 'image' && (
-            <SettingsRow
-              label="Image file"
-              description="Copies PNG, JPEG, or WebP files into XLETH/art."
-            >
-              <button
-                type="button"
-                className="settings-panel-button settings-panel-button--icon"
-                onClick={chooseWorkspaceBackdropImage}
-              >
-                <ImageIcon size={14} aria-hidden="true" />
-                <span>{activeMediaPath ? 'Change Image...' : 'Select Image...'}</span>
-              </button>
-            </SettingsRow>
-          )}
-          {backdropMediaSource === 'video' && (
-            <SettingsRow
-              label="Video file"
-              description="Selects a silent looping MP4 background video."
-            >
-              <button
-                type="button"
-                className="settings-panel-button settings-panel-button--icon"
-                onClick={chooseWorkspaceBackdropVideo}
-              >
-                <Film size={14} aria-hidden="true" />
-                <span>{activeMediaPath ? 'Change MP4...' : 'Select MP4...'}</span>
-              </button>
-            </SettingsRow>
-          )}
+  const renderAppearance = () => (
+    <>
+      <SettingsSection title="Theme">
+        <SettingsRow
+          label="Accent color"
+          htmlFor="settings-appearance-accent"
+          description="Highlights, active controls, and selection across the app."
+        >
           <input
-            ref={backdropVideoInputRef}
-            type="file"
-            accept=".mp4,video/mp4"
-            className="settings-panel-hidden-file-input"
-            aria-hidden="true"
-            tabIndex={-1}
-            onChange={handleBackdropVideoFileChange}
+            id="settings-appearance-accent"
+            type="color"
+            className={settingsStyles.color}
+            value={accentColor}
+            onChange={e => handleAccentChange(e.target.value)}
+            aria-label="Accent color"
           />
-          {activeMediaPath && (
-            <div className="settings-panel-hint">
-              Active file: {activeMediaPath}
-            </div>
-          )}
-          {backdropMediaSource === 'video' && (
-            <div className="settings-panel-hint">
-              Video is always muted and looped.
-            </div>
-          )}
-          {backdropMediaSource === 'acrylic' && backdropState?.capability && !backdropState.capability.supportsNativeSystemBackdrop && (
-            <div className="settings-panel-hint settings-panel-hint--warning">
-              Acrylic is unsupported on this system; Xleth is using the solid workspace background.
-            </div>
-          )}
-          {mediaStatus && (
-            <div className="settings-panel-hint settings-panel-hint--warning">
-              {mediaStatus}
-            </div>
-          )}
-          {backdropMediaSource === 'image' && !backdropState?.imageUrl && (
-            <div className="settings-panel-hint settings-panel-hint--warning">
-              No backdrop image was found in XLETH/art.
-            </div>
-          )}
-        </SettingsSection>
+          <span className={settingsStyles.mono}>{accentColor.toUpperCase()}</span>
+        </SettingsRow>
+        <SettingsRow
+          label="Brightness"
+          description="Lowest is near-black with light text; highest is light grey with dark text."
+        >
+          <NumberBox
+            id="settings-appearance-brightness"
+            label="Brightness"
+            hideLabel
+            width={88}
+            min={0}
+            max={100}
+            step={1}
+            unit="%"
+            defaultValue={DEFAULT_APPEARANCE_DARKNESS}
+            quantize={Math.round}
+            value={brightness}
+            onChange={handleBrightnessChange}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Tint hue"
+          description="Direction of the colour cast on panels, text, and borders. No effect while Tint is 0 %."
+        >
+          <NumberBox
+            id="settings-appearance-hue"
+            label="Tint hue"
+            hideLabel
+            width={88}
+            min={0}
+            max={359}
+            step={1}
+            format={v => `${Math.round(v)}°`}
+            defaultValue={DEFAULT_APPEARANCE_HUE}
+            quantize={Math.round}
+            value={chromeHue}
+            onChange={handleChromeHueChange}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Tint"
+          description="How strongly the hue reads. 0 % is neutral grey, which is what picture colour on the Preview is judged against; 100 % is the most cast that still reads as neutral. Past it the chrome is tinted."
+        >
+          <NumberBox
+            id="settings-appearance-saturation"
+            label="Tint"
+            hideLabel
+            width={88}
+            min={0}
+            max={APPEARANCE_TINT_MAX}
+            step={5}
+            unit="%"
+            defaultValue={DEFAULT_APPEARANCE_SATURATION}
+            quantize={v => Math.round(v / 5) * 5}
+            value={chromeSaturation}
+            onChange={handleChromeSaturationChange}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Text contrast"
+          description="Separation between text and its background. Body text stays above the WCAG AA floor at every setting."
+        >
+          <NumberBox
+            id="settings-appearance-contrast"
+            label="Text contrast"
+            hideLabel
+            width={88}
+            min={APPEARANCE_CONTRAST_MIN}
+            max={APPEARANCE_CONTRAST_MAX}
+            step={5}
+            unit="%"
+            defaultValue={DEFAULT_APPEARANCE_CONTRAST}
+            quantize={v => Math.round(v / 5) * 5}
+            value={textContrast}
+            onChange={handleTextContrastChange}
+          />
+        </SettingsRow>
+        <ChromeReadouts
+          values={themeContext?.resolved?.values ?? {}}
+          onNeutralize={() => {
+            setChromeSaturation(0)
+            applyAppearance(accentColor, brightness, appearanceOptions({ saturation: 0 }))
+          }}
+        />
+      </SettingsSection>
 
-        <SettingsSection title="Backdrop FX" index={2}>
+      {themeContext && (
+        <SettingsSection title="Theme editor">
           <SettingsRow
-            label="Enable reactive backdrop"
-            htmlFor="settings-backdrop-fx-enabled"
-            description="Adds restrained renderer-only effects behind workspace panels."
+            label="Edit themes"
+            description="Pick a shipped or saved theme, adjust the surface ramp and accent, or set every token by hand. Apply makes it the active theme; Save as new theme keeps a copy."
           >
-            <input
-              id="settings-backdrop-fx-enabled"
-              type="checkbox"
-              className="settings-panel-checkbox"
-              checked={backdropFxSettings.enabled}
-              onChange={event => applyBackdropFxSettings({ enabled: event.target.checked })}
-            />
+            <Button
+              aria-expanded={themeEditorOpen}
+              aria-controls="settings-theme-editor"
+              onClick={() => setThemeEditorOpen((open) => !open)}
+            >
+              {themeEditorOpen ? 'Close editor' : 'Open editor'}
+            </Button>
           </SettingsRow>
-          <SettingsRow label="Preset" htmlFor="settings-backdrop-fx-preset">
-            <XlethSelect
-              id="settings-backdrop-fx-preset"
-              value={backdropFxSettings.preset}
-              options={BACKDROP_FX_PRESETS}
-              onChange={preset => applyBackdropFxSettings({ preset })}
-              disabled={backdropFxDisabled}
-              ariaLabel="Backdrop FX preset"
-              className="settings-panel-select"
-            />
-          </SettingsRow>
-          <SettingsRow label="Studio Grid overlay" htmlFor="settings-backdrop-fx-studio-grid">
-            <input
-              id="settings-backdrop-fx-studio-grid"
-              type="checkbox"
-              className="settings-panel-checkbox"
-              checked={backdropFxSettings.studioGridOverlay}
-              disabled={studioGridOverlayDisabled}
-              onChange={event => applyBackdropFxSettings({ studioGridOverlay: event.target.checked })}
-            />
-          </SettingsRow>
-          <SettingsRow label="Quality" htmlFor="settings-backdrop-fx-quality">
-            <XlethSelect
-              id="settings-backdrop-fx-quality"
-              value={backdropFxSettings.quality}
-              options={BACKDROP_FX_QUALITIES}
-              onChange={quality => applyBackdropFxSettings({ quality })}
-              disabled={backdropFxDisabled}
-              ariaLabel="Backdrop FX quality"
-              className="settings-panel-select"
-            />
-          </SettingsRow>
-          <SettingsRow label="Intensity" htmlFor="settings-backdrop-fx-intensity">
-            <div className="settings-panel-range-row">
-              <input
-                id="settings-backdrop-fx-intensity"
-                type="range"
-                min="0"
-                max="100"
-                step="1"
-                className="settings-panel-range"
-                value={backdropFxSettings.intensity}
-                disabled={backdropFxDisabled}
-                onChange={event => applyBackdropFxSettings({ intensity: Number(event.target.value) })}
-              />
-              <span className="settings-panel-range-value">{backdropFxSettings.intensity}%</span>
-            </div>
-          </SettingsRow>
-          <SettingsRow label="React to cursor" htmlFor="settings-backdrop-fx-cursor">
-            <input
-              id="settings-backdrop-fx-cursor"
-              type="checkbox"
-              className="settings-panel-checkbox"
-              checked={backdropFxSettings.reactToCursor}
-              disabled={backdropFxDisabled}
-              onChange={event => applyBackdropFxSettings({ reactToCursor: event.target.checked })}
-            />
-          </SettingsRow>
-          <SettingsRow label="React to windows" htmlFor="settings-backdrop-fx-windows">
-            <input
-              id="settings-backdrop-fx-windows"
-              type="checkbox"
-              className="settings-panel-checkbox"
-              checked={backdropFxSettings.reactToWindows}
-              disabled={backdropFxDisabled}
-              onChange={event => applyBackdropFxSettings({ reactToWindows: event.target.checked })}
-            />
-          </SettingsRow>
-          <SettingsRow label="React to backdrop clicks" htmlFor="settings-backdrop-fx-clicks">
-            <input
-              id="settings-backdrop-fx-clicks"
-              type="checkbox"
-              className="settings-panel-checkbox"
-              checked={backdropFxSettings.reactToClicks}
-              disabled={backdropFxDisabled}
-              onChange={event => applyBackdropFxSettings({ reactToClicks: event.target.checked })}
-            />
-          </SettingsRow>
+          {themeEditorOpen && (
+            <MotionDiv recipe="page" id="settings-theme-editor" data-theme-editor-host className={settingsStyles.themeEditorHost}>
+              <ThemeEditorContent embedded onRequestClose={() => setThemeEditorOpen(false)} />
+            </MotionDiv>
+          )}
         </SettingsSection>
-      </>
-    )
-  }
+      )}
+
+      <SettingsSection title="Interface scale">
+        <SettingsRow
+          label="UI scale"
+          description="Scales the whole interface, text and controls together (100 % to 200 %). The Zoom In, Zoom Out and Reset Zoom commands and their shortcuts move this same value."
+        >
+          <NumberBox
+            id="settings-ui-scale"
+            label="UI scale"
+            hideLabel
+            width={88}
+            min={UI_SCALE_MIN}
+            max={UI_SCALE_MAX}
+            step={UI_SCALE_STEP}
+            unit="%"
+            defaultValue={UI_SCALE_DEFAULT}
+            quantize={v => Math.round(v / UI_SCALE_STEP) * UI_SCALE_STEP}
+            value={uiScalePercent}
+            onCommit={setUiScalePercent}
+          />
+          <Button onClick={() => setUiScalePercent(UI_SCALE_DEFAULT)} disabled={uiScalePercent === UI_SCALE_DEFAULT}>
+            Reset
+          </Button>
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title="Motion">
+        <SettingsRow
+          label="Interface motion"
+          description={motionOption.description}
+        >
+          <SegmentedControl
+            id="settings-motion-tier"
+            label="Interface motion"
+            value={motionTier}
+            onChange={setMotionTier}
+            options={MOTION_TIER_OPTIONS.map((option) => ({ value: option.value, label: option.label, hint: option.description }))}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Follow the system setting"
+          htmlFor="settings-motion-follow-system"
+          description="When Windows has animation effects turned off (Settings, Accessibility, Visual effects), use Flat whatever is chosen above."
+        >
+          <OnOff
+            id="settings-motion-follow-system"
+            label="Follow the system setting"
+            on={motionFollowSystem}
+            onChange={setMotionFollowSystem}
+          />
+        </SettingsRow>
+        {motionInForce !== motionTier ? (
+          <SettingsHint tone="warning">
+            Windows has animation effects turned off, so XLETH is using Flat. Turn off Follow the system setting to use {motionOption.label}.
+          </SettingsHint>
+        ) : null}
+        <SettingsHint>
+          The playhead, the meters and anything you drag are never animated, in any setting: they always show exactly where things are.
+        </SettingsHint>
+      </SettingsSection>
+    </>
+  )
 
   const renderLaunchers = () => {
     function basename(p) {
@@ -1239,151 +1648,81 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
     }
 
     return (
-      <SettingsSection title="Quick Launchers" index={0}>
-        {launchers.length === 0 && (
-          <div className="settings-panel-hint">No quick launchers configured.</div>
+      <SettingsSection title="Quick launchers">
+        {launchers.length === 0 && pendingLauncher == null && (
+          <SettingsHint>No quick launchers configured.</SettingsHint>
         )}
 
         {launchers.map((launcher) =>
           editingId === launcher.id ? (
-            <div key={launcher.id} className="settings-quick-launcher-edit-row">
-              <input
-                className="settings-panel-text-input"
+            <div key={launcher.id} className={settingsStyles.launcherEdit}>
+              <TextField
+                label="Launcher label"
                 value={editDraft.label}
                 placeholder="Label"
-                onChange={e => setEditDraft(d => ({ ...d, label: e.target.value }))}
+                onChange={label => setEditDraft(d => ({ ...d, label }))}
               />
-              <button
-                type="button"
-                className="settings-panel-button settings-panel-button--icon"
-                onClick={browseExeForEdit}
-                title={editDraft.exePath || 'Choose EXE...'}
-              >
-                <span>{editDraft.exePath ? basename(editDraft.exePath) : 'Choose EXE...'}</span>
-              </button>
-              <button
-                type="button"
-                className="settings-panel-button settings-panel-button--icon"
-                onClick={browsePngForEdit}
-                title={editDraft.iconPngPath || 'Choose PNG...'}
-              >
-                <span>{editDraft.iconPngPath ? basename(editDraft.iconPngPath) : 'Choose PNG...'}</span>
-              </button>
-              <button
-                type="button"
-                className="settings-panel-button"
-                onClick={confirmEdit}
-                disabled={!editDraft?.label || !editDraft?.exePath}
-              >
-                Save
-              </button>
-              <button
-                type="button"
-                className="settings-panel-button"
-                onClick={() => { setEditingId(null); setEditDraft(null) }}
-              >
-                Cancel
-              </button>
+              <Button onClick={browseExeForEdit} hint={editDraft.exePath || 'Choose EXE'}>
+                {editDraft.exePath ? basename(editDraft.exePath) : 'Choose EXE…'}
+              </Button>
+              <Button onClick={browsePngForEdit} hint={editDraft.iconPngPath || 'Choose PNG'}>
+                {editDraft.iconPngPath ? basename(editDraft.iconPngPath) : 'Choose PNG…'}
+              </Button>
+              <Button variant="primary" onClick={confirmEdit} disabled={!editDraft?.label || !editDraft?.exePath}>
+                Save launcher
+              </Button>
+              <Button onClick={() => { setEditingId(null); setEditDraft(null) }}>Cancel</Button>
             </div>
           ) : (
-            <div key={launcher.id} className="settings-quick-launcher-row">
-              <span className="settings-quick-launcher-label">{launcher.label}</span>
-              <span className="settings-quick-launcher-path" title={launcher.exePath}>{launcher.exePath}</span>
-              <button
-                type="button"
-                className="settings-panel-button"
+            <div key={launcher.id} className={settingsStyles.launcher}>
+              <span className={settingsStyles.label}>{launcher.label}</span>
+              <span className={settingsStyles.launcherPath} title={launcher.exePath}>{launcher.exePath}</span>
+              <Button
                 onClick={() => { setEditingId(launcher.id); setEditDraft({ label: launcher.label, exePath: launcher.exePath, iconPngPath: launcher.iconPngPath }) }}
               >
                 Edit
-              </button>
-              <button
-                type="button"
-                className="settings-panel-button"
-                onClick={() => removeLauncher(launcher.id)}
-              >
-                Remove
-              </button>
+              </Button>
+              <Button onClick={() => removeLauncher(launcher.id)}>Remove</Button>
             </div>
           )
         )}
 
         {pendingLauncher == null ? (
-          <button
-            type="button"
-            className="settings-panel-button settings-panel-button--icon"
-            onClick={() => setPendingLauncher({ label: '', exePath: '', iconPngPath: '' })}
-            style={{ marginTop: launchers.length > 0 ? '8px' : '0' }}
-          >
-            <span>Add Quick Launcher...</span>
-          </button>
+          <div className={settingsStyles.launcherEdit}>
+            <Button onClick={() => setPendingLauncher({ label: '', exePath: '', iconPngPath: '' })}>
+              Add quick launcher…
+            </Button>
+          </div>
         ) : (
-          <div className="settings-quick-launcher-edit-row">
-            <input
-              className="settings-panel-text-input"
+          <div className={settingsStyles.launcherEdit}>
+            <TextField
+              label="Launcher label"
               value={pendingLauncher.label}
               placeholder="Label (e.g. FL Studio)"
-              onChange={e => setPendingLauncher(p => ({ ...p, label: e.target.value }))}
+              onChange={label => setPendingLauncher(p => ({ ...p, label }))}
             />
-            <button
-              type="button"
-              className="settings-panel-button settings-panel-button--icon"
-              onClick={browseExeForPending}
-              title={pendingLauncher.exePath || 'Choose EXE...'}
-            >
-              <span>{pendingLauncher.exePath ? basename(pendingLauncher.exePath) : 'Choose EXE...'}</span>
-            </button>
-            <button
-              type="button"
-              className="settings-panel-button settings-panel-button--icon"
-              onClick={browsePngForPending}
-              title={pendingLauncher.iconPngPath || 'Choose PNG (optional)...'}
-            >
-              <span>{pendingLauncher.iconPngPath ? basename(pendingLauncher.iconPngPath) : 'Choose PNG (optional)...'}</span>
-            </button>
-            <button
-              type="button"
-              className="settings-panel-button"
-              onClick={confirmAdd}
-              disabled={!pendingLauncher.label || !pendingLauncher.exePath}
-            >
-              Add
-            </button>
-            <button
-              type="button"
-              className="settings-panel-button"
-              onClick={() => setPendingLauncher(null)}
-            >
-              Cancel
-            </button>
+            <Button onClick={browseExeForPending} hint={pendingLauncher.exePath || 'Choose EXE'}>
+              {pendingLauncher.exePath ? basename(pendingLauncher.exePath) : 'Choose EXE…'}
+            </Button>
+            <Button onClick={browsePngForPending} hint={pendingLauncher.iconPngPath || 'Choose PNG (optional)'}>
+              {pendingLauncher.iconPngPath ? basename(pendingLauncher.iconPngPath) : 'Choose PNG (optional)…'}
+            </Button>
+            <Button variant="primary" onClick={confirmAdd} disabled={!pendingLauncher.label || !pendingLauncher.exePath}>
+              Add launcher
+            </Button>
+            <Button onClick={() => setPendingLauncher(null)}>Cancel</Button>
           </div>
         )}
       </SettingsSection>
     )
   }
 
-  const renderAdvanced = () => (
-    <SettingsSection title="Export Naming" index={0}>
-      <SettingsRow
-        label="Filename Format"
-        htmlFor="settings-filename-format"
-        description="Controls generated sample/export names without changing project editing state."
-      >
-        <XlethSelect
-          id="settings-filename-format"
-          value={namingFormat}
-          options={NAMING_FORMAT_OPTIONS}
-          onChange={applyNamingFormat}
-          ariaLabel="Filename Format"
-          className="settings-panel-select"
-        />
-      </SettingsRow>
-    </SettingsSection>
-  )
-
   const renderActiveCategory = () => {
     switch (activeCategory) {
-      case 'transport':
-        return renderTransport()
+      case 'shortcuts':
+        return <ShortcutsSection />
+      case 'logs':
+        return <LogsSection />
       case 'audio':
         return renderAudio()
       case 'plugins':
@@ -1394,8 +1733,8 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
         return renderAppearance()
       case 'launchers':
         return renderLaunchers()
-      case 'advanced':
-        return renderAdvanced()
+      case 'clipfx':
+        return renderClipFx()
       case 'project':
       default:
         return renderProject()
@@ -1403,62 +1742,79 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
   }
 
   return (
-    <div
-      className="settings-panel-overlay"
+    <MotionDiv
+      recipe="scrim"
+      exit={{ scaleTarget: '[data-dialog-panel]' }}
+      className={settingsStyles.overlay}
       onMouseDown={event => {
         if (event.target === event.currentTarget) onClose?.()
       }}
     >
       <div
-        className="settings-panel"
+        {...panelEnter}
+        data-dialog-panel=""
+        className={settingsStyles.panel}
         role="dialog"
         aria-modal="true"
         aria-labelledby="settings-panel-title"
         onMouseDown={event => event.stopPropagation()}
       >
-        <div className="settings-panel-header">
-          <div>
-            <div id="settings-panel-title" className="settings-panel-title">Settings</div>
-            <div className="settings-panel-subtitle">{activeCategoryDef.summary}</div>
-          </div>
-          <button className="settings-panel-close" onClick={onClose} aria-label="Close Settings">
-            <X size={15} aria-hidden="true" />
-          </button>
+        <div className={settingsStyles.header}>
+          <h2 id="settings-panel-title" className={settingsStyles.title}>Settings</h2>
+          <IconButton label="Close Settings" onClick={onClose}>
+            <IcX aria-hidden="true" />
+          </IconButton>
         </div>
 
-        <div className="settings-panel-shell">
-          <nav className="settings-panel-categories" aria-label="Settings categories">
-            {SETTINGS_CATEGORIES.map(category => {
-              const selected = activeCategory === category.id
-              return (
-                <button
-                  key={category.id}
-                  type="button"
-                  className={`settings-panel-category${selected ? ' settings-panel-category--active' : ''}`}
-                  aria-current={selected ? 'page' : undefined}
-                  onClick={() => setActiveCategory(category.id)}
-                >
-                  <span>{category.label}</span>
-                </button>
-              )
-            })}
+        <div className={settingsStyles.body}>
+          <nav className={settingsStyles.nav} id="settings-panel-subnav" aria-label="Settings pages">
+            {SETTINGS_TABS.map(tab => (
+              <div
+                key={tab.id}
+                className={settingsStyles.navGroup}
+                role="group"
+                aria-labelledby={`settings-group-${tab.id}`}
+              >
+                <div id={`settings-group-${tab.id}`} className={settingsStyles.navGroupLabel}>{tab.label}</div>
+                <div className={settingsStyles.navGroupNote}>{tab.summary}</div>
+                {SETTINGS_CATEGORIES.filter(category => category.tab === tab.id).map(category => {
+                  const selected = activeCategory === category.id
+                  return (
+                    <button
+                      key={category.id}
+                      type="button"
+                      className={settingsStyles.navItem}
+                      aria-current={selected ? 'page' : undefined}
+                      onClick={() => setActiveCategory(category.id)}
+                    >
+                      {category.label}
+                    </button>
+                  )
+                })}
+              </div>
+            ))}
           </nav>
 
-          <div className="settings-panel-content-pane">
-            <div
+          <div className={settingsStyles.content}>
+            <MotionDiv
+              // key: each page is its own element, so the `page` recipe replays when the page
+              // changes (never for the page the dialog opens on: the dialog itself is entering).
               key={activeCategory}
-              className="settings-panel-content-animate"
+              recipe="page"
+              enter={afterMount}
+              className={settingsStyles.page}
               data-settings-category={activeCategory}
+              data-settings-tab={activeTabDef.id}
             >
-              <div className="settings-panel-category-heading">
-                <div className="settings-panel-category-title">{activeCategoryDef.label}</div>
-                <div className="settings-panel-category-description">{activeCategoryDef.summary}</div>
+              <div className={settingsStyles.pageHead}>
+                <h2 className={settingsStyles.pageTitle}>{activeCategoryDef.label}</h2>
+                <div className={settingsStyles.pageDescription}>{activeCategoryDef.summary}</div>
               </div>
               {renderActiveCategory()}
-            </div>
+            </MotionDiv>
           </div>
         </div>
       </div>
-    </div>
+    </MotionDiv>
   )
 }

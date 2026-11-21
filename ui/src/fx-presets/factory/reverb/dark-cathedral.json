@@ -1,0 +1,24 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "reverb",
+  "name": "Dark Cathedral",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "decay": 5,
+      "predelay": 40,
+      "size": 100,
+      "damping": 75,
+      "mod_rate": 30,
+      "mod_depth": 20,
+      "er_level": 25,
+      "er_late": 100,
+      "hicut": 4000,
+      "locut": 150,
+      "mix": 30,
+      "smoothness": 50,
+      "style": 3
+    }
+  }
+}

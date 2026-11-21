@@ -1,0 +1,132 @@
+/* VST3 plugin library (Settings > Plugins): a search field and the scan actions over a dense 24px-row table
+ * (name, vendor, format). Text is 11px or larger throughout. */
+@layer kit {
+  .root {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    min-width: 0;
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    color: var(--ui-ink);
+  }
+
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .search {
+    flex: 1 1 200px;
+  }
+
+  .count {
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .scroll {
+    max-height: 336px;
+    overflow: auto;
+    border: 1px solid var(--ui-g4);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g0);
+  }
+
+  .table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+  }
+
+  .table th,
+  .table td {
+    box-sizing: border-box;
+    height: var(--row-h);
+    padding: 0 var(--space-2);
+    overflow: hidden;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .table th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--ui-g2);
+    border-bottom: 1px solid var(--ui-g4);
+    font-size: var(--type-11);
+    font-weight: var(--weight-medium);
+    color: var(--ui-ink-2);
+  }
+
+  .table td {
+    font-size: var(--type-12);
+    color: var(--ui-ink);
+  }
+
+  .table tbody tr + tr td {
+    border-top: 1px solid var(--ui-g4);
+  }
+
+  .table tbody tr:hover td {
+    background: var(--ui-g1);
+  }
+
+  .colName { width: 46%; }
+  .colVendor { width: 38%; }
+  .colFormat { width: 16%; }
+
+  .vendor { color: var(--ui-ink-2); }
+  .format { color: var(--ui-ink-2); font-variant-numeric: tabular-nums; }
+
+  .empty {
+    padding: var(--space-3);
+    font-size: var(--type-12);
+    color: var(--ui-ink-2);
+  }
+
+  .failedList,
+  .paths {
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .failedItem,
+  .pathRow {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: var(--row-h);
+    padding: 0 var(--space-2);
+    font-size: var(--type-11);
+  }
+
+  .failedItem {
+    color: var(--theme-semantic-danger-text, var(--ui-rec-text));
+    font-family: var(--ui-font-mono);
+  }
+
+  .pathText {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--ui-font-mono);
+    color: var(--ui-ink-2);
+  }
+
+  .pathsHead {
+    font-size: var(--type-11);
+    font-weight: var(--weight-medium);
+    color: var(--ui-ink-2);
+  }
+}

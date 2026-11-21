@@ -1,0 +1,106 @@
+@layer kit {
+  /* Focus-curve handles over the resonance canvas. The overlay itself lets
+   * pointers through to nothing but its handles and its background rect. */
+  .overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    user-select: none;
+    touch-action: none;
+    color: var(--ui-ink);
+  }
+
+  .svg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    overflow: visible;
+  }
+
+  .bg {
+    pointer-events: auto;
+  }
+
+  .zero {
+    stroke: var(--ui-g4);
+    stroke-width: 1;
+    stroke-dasharray: 3 7;
+    pointer-events: none;
+  }
+
+  .rail {
+    stroke: var(--ui-ink-3);
+    stroke-width: 1;
+    stroke-dasharray: 4 6;
+    opacity: 0.5;
+    pointer-events: none;
+  }
+
+  /* Focus bands are told apart by their number, glyph shape and position, not
+   * by hue: they are detector weights, not crossover bands, so they wear the
+   * value colour, never the band palette. Boundaries are neutral. */
+  .rect,
+  .glyph {
+    pointer-events: auto;
+    cursor: grab;
+    fill: var(--ui-g0);
+    stroke: var(--ui-value);
+    stroke-width: 1.8;
+  }
+
+  .boundary .rect {
+    stroke: var(--ui-ink-2);
+  }
+
+  .hit {
+    pointer-events: auto;
+    cursor: grab;
+    fill: transparent;
+    stroke: transparent;
+  }
+
+  .rect:hover,
+  .band:hover .glyph {
+    stroke-width: 2.2;
+  }
+
+  .rect:focus-visible,
+  .hit:focus-visible {
+    outline: none;
+    stroke-width: 2.6;
+  }
+
+  .handle[data-active] .rect,
+  .handle[data-active] .glyph,
+  .band[data-selected] .glyph {
+    cursor: grabbing;
+    fill: var(--ui-value);
+    stroke: var(--ui-value);
+  }
+
+  .band[data-neutral]:not([data-selected]) .glyph {
+    opacity: 0.5;
+  }
+
+  .ring {
+    pointer-events: none;
+    fill: transparent;
+    stroke: var(--ui-value);
+    stroke-width: 2;
+  }
+
+  .label {
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+    font-weight: var(--weight-semibold);
+    fill: var(--ui-ink);
+    pointer-events: none;
+  }
+
+  .handle[data-active] .bandLabel,
+  .band[data-selected] .bandLabel {
+    fill: var(--ui-g0);
+  }
+}

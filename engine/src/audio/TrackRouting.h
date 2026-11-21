@@ -1,9 +1,12 @@
 #pragma once
 #include <functional>
 #include <string>
+#include <vector>
 
 class Timeline;
 struct SidechainRoute;
+struct TrackSend;
+struct TrackInfo;
 
 namespace xleth {
 
@@ -30,6 +33,10 @@ enum class RoutingValidationReason {
     duplicate_route,        // routeId already exists on the source track
     invalid_gain,           // gain is not finite
     unknown_route,          // routeId not found on the source track (remove/setParams)
+
+    // ── Multi-destination audio routes (sends) ────────────────────────────────
+    duplicate_target,       // the same destination appears twice in a route set
+    too_many_sends,         // more than kMaxTrackSends extra destinations
 };
 
 struct RoutingValidationResult {
@@ -52,6 +59,24 @@ struct RoutingValidationResult {
 RoutingValidationResult validateTrackOutputRoute(const Timeline& timeline,
                                                  int sourceTrackId,
                                                  int proposedTargetId);
+
+// ─── validateTrackRoutes ──────────────────────────────────────────────────────
+// Validates replacing sourceTrackId's WHOLE audible destination set: primary
+// output `proposedTargetId` (-1 = Master) plus extra `sends` (FL multi-wiring).
+// Rejects: master as source, unknown/visual-only/self targets, Master as a
+// send target (invalid_target), a destination listed twice (duplicate_target),
+// more than kMaxTrackSends sends, non-finite gains, and any cycle over the
+// union of every track's output + send + sidechain edges.
+RoutingValidationResult validateTrackRoutes(const Timeline& timeline,
+                                            int sourceTrackId,
+                                            int proposedTargetId,
+                                            const std::vector<TrackSend>& sends);
+
+// Fill a RoutePlanSlotInput (id, primary target, sends, mute/solo/visualOnly)
+// from a track. The ONE place the model → route-plan mapping lives, so every
+// plan builder (audio thread, PDC, envelope/LFO audibility) agrees.
+struct RoutePlanSlotInput;
+void fillRoutePlanSlotInput(RoutePlanSlotInput& in, const TrackInfo& t);
 
 // ─── Sidechain route validation (Prompt 4B) ───────────────────────────────────
 // A SidechainEffectResolver answers "does this effect instance currently resolve
@@ -111,18 +136,32 @@ float clampSidechainGain(float gain);
 // output routing only — sends and sidechain edges are deferred (Prompt 4+).
 
 struct RoutePlanSlotInput {
+    static constexpr int kMaxSends = 8;   // == kMaxTrackSends
+
     int  trackId             = -1;
     int  outputTargetTrackId = -1;     // -1 = Master (default)
     bool muted               = false;
     bool solo                = false;
     bool visualOnly          = false;
+
+    // Extra audible destinations (sends). Targets are trackIds (never Master).
+    int   sendCount = 0;
+    int   sendTargetTrackId[kMaxSends] = {};
+    float sendGain[kMaxSends]          = {};
 };
 
 struct RoutePlan {
     static constexpr int kMaxSlots = 64;
+    static constexpr int kMaxSends = RoutePlanSlotInput::kMaxSends;
 
     int  slotCount = 0;
     int  outputTargetSlot[kMaxSlots]; // resolved target slot; -1 = Master sum
+
+    // Resolved sends per slot (compacted: missing/self/visual-only/duplicate
+    // targets are dropped silently). sendTargetSlot is always a real slot.
+    int   sendCount[kMaxSlots];
+    int   sendTargetSlot[kMaxSlots][kMaxSends];
+    float sendGain[kMaxSlots][kMaxSends];
     int  topoOrder[kMaxSlots];        // slot indices in processing order (sources before targets)
     bool audible[kMaxSlots];          // mute/solo closure result per slot
 
@@ -139,8 +178,8 @@ struct RoutePlan {
 // safe: no heap allocation, no locks. `out` is fully overwritten.
 //
 // Topological order guarantees a source slot is processed (and summed into its
-// bus) before the bus slot runs its own chain. Each slot has at most one output
-// edge, so the route graph is a forest of in-trees pointing toward Master.
+// bus) before the bus slot runs its own chain. Edges are the primary output plus
+// every resolved send, so the route graph is a DAG pointing toward Master.
 //
 // Fail-closed contract (cycles are rejected at the mutation layer, so reaching
 // these paths is a programming error, not user input):
@@ -165,6 +204,11 @@ struct RoutePdcPlan {
     // Delay (samples) applied to this slot's processed buffer immediately before
     // summing it into its destination junction. 0 for non-contributing slots.
     int branchCompensationSamples[kMaxSlots];
+
+    // Same, per send edge (RoutePlan::sendTargetSlot[s][k]). A source feeding
+    // two junctions of different latency needs a different delay per edge —
+    // e.g. kick → Master AND kick → latent bus → Master.
+    int sendCompensationSamples[kMaxSlots][RoutePlan::kMaxSends];
 
     // Aligned latency of the routed input already summed into this slot's buffer
     // when its own chain runs (= max raw branch arrival over contributing

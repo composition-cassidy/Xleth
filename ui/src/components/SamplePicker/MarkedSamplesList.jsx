@@ -1,97 +1,105 @@
-import { Scissors, X } from 'lucide-react'
-import { labelColor, formatTime } from '../../constants/labels.js'
+import { EmptyState, IconButton, SplitSyllablesIcon } from '../../ui-kit'
+import { labelColor } from '../../constants/labels.js'
+import { formatSpan, formatTimecode } from './pickerFormat.js'
+import styles from './SamplePicker.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcEyeFill = iconComponent('eye', 'fill')
+const IcEyeSlashReg = iconComponent('eye-slash', 'regular')
+const IcX = iconComponent('x')
 
 /**
+ * The samples already marked on this source. Rows are 24px, the same row the
+ * Browser uses for a sample: the label's identity colour as an edge stripe, the
+ * name, then tabular numerals. Split and Remove are always visible (they used
+ * to appear on hover only).
+ *
  * Props:
- *   samples    – Array<{ id, sourceId, startTime, endTime, label, name }>
- *   selectedId – string | null
- *   onSelect   – (sample) => void
- *   onDelete   – (id) => void
- *   onSplit    – (sample) => void  — opens the Split Syllables panel (Quote rows)
+ *   samples           – Array<{ id, sourceId, startTime, endTime, label, name }>
+ *   selectedId        – id | null
+ *   onSelect          – (sample) => void   loads its In / Out and seeks to it
+ *   onDelete          – (id) => void
+ *   onSplit           – (sample) => void   opens Split Syllables (Quote rows)
+ *   showMarks         – boolean            marked samples are drawn on the waveform
+ *   onToggleShowMarks – () => void
  */
-export default function MarkedSamplesList({ samples, selectedId, onSelect, onDelete, onSplit }) {
+export default function MarkedSamplesList({
+  samples, selectedId, onSelect, onDelete, onSplit, showMarks, onToggleShowMarks,
+}) {
   return (
-    <div className="marked-samples-list">
-      {/* ── Header ───────────────────────────────────────────────────── */}
-      <div className="tab-placeholder-header">
-        <span className="tab-section-label">Marked Samples</span>
-        <span className="picker-samples-count">{samples.length}</span>
+    <div className={styles.marked} data-testid="picker-marked">
+      <div className={styles.markedHeader}>
+        <h3 className={styles.markedTitle}>Marked samples</h3>
+        <span className={styles.markedCount} aria-label={`${samples.length} marked`}>{samples.length}</span>
+        {onToggleShowMarks ? (
+          <IconButton
+            size="sm"
+            className={styles.markedToggle}
+            label="Show marked samples on the waveform"
+            pressed={!!showMarks}
+            onClick={onToggleShowMarks}
+            hint={showMarks
+              ? 'Marked samples are drawn on the waveform in their label colours. Click to hide them'
+              : 'Draw the marked samples on the waveform in their label colours'}
+            data-testid="picker-show-marks"
+          >
+            {showMarks ? <IcEyeFill aria-hidden="true" /> : <IcEyeSlashReg aria-hidden="true" />}
+          </IconButton>
+        ) : null}
       </div>
 
-      {/* ── Empty state ──────────────────────────────────────────────── */}
-      {samples.length === 0 && (
-        <div className="picker-samples-empty">
-          <p>No samples marked yet</p>
-          <p className="tab-placeholder-hint">Set In / Out points then click Add Sample</p>
-        </div>
-      )}
-
-      {/* ── Sample rows ──────────────────────────────────────────────── */}
-      <div className="marked-samples-rows">
-        {samples.map(sample => {
-          const dur = Math.abs(sample.endTime - sample.startTime)
-          return (
-            <div
-              key={sample.id}
-              className={`marked-sample-item ${sample.id === selectedId ? 'selected' : ''}`}
-              onClick={() => onSelect(sample)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault()
-                  onSelect(sample)
-                }
-              }}
-              role="button"
-              tabIndex={0}
-              aria-pressed={sample.id === selectedId}
-              title={`${sample.label} · ${formatTime(sample.startTime)} – ${formatTime(sample.endTime)}`}
-            >
-              {/* Label color dot */}
-              <span
-                className="marked-sample-dot"
-                style={{ background: labelColor(sample.label) }}
-              />
-
-              <span className="marked-sample-main">
-                <span className="marked-sample-name">{sample.name}</span>
-                <span className="marked-sample-time">
-                  {formatTime(sample.startTime)}-{formatTime(sample.endTime)}
-                </span>
-              </span>
-
-              {/* Swapped badge */}
-              {sample.hasSwappedAudio && (
-                <span className="marked-sample-swapped-badge">Swapped</span>
-              )}
-
-              {/* Duration badge */}
-              <span className="marked-sample-dur">{dur.toFixed(2)}s</span>
-
-              {/* Split syllables (Quote regions only) */}
-              {onSplit && sample.label === 'Quote' && (
+      {samples.length === 0 ? (
+        <EmptyState message="No samples marked yet. Mark In and Out on the waveform, then Add sample." />
+      ) : (
+        <ul className={styles.markedRows}>
+          {samples.map((sample) => {
+            const selected = sample.id === selectedId
+            const length = Math.abs(sample.endTime - sample.startTime)
+            return (
+              <li
+                key={sample.id}
+                className={styles.markedRow}
+                data-selected={selected || undefined}
+                style={{ '--picker-label-color': labelColor(sample.label) }}
+              >
                 <button
                   type="button"
-                  className="marked-sample-split"
-                  onClick={e => { e.stopPropagation(); onSplit(sample) }}
-                  title="Split syllables"
+                  className={styles.markedMain}
+                  onClick={() => onSelect(sample)}
+                  aria-pressed={selected}
+                  data-hint={`${sample.name}: ${sample.label}, ${formatTimecode(sample.startTime)} to ${formatTimecode(sample.endTime)}. Click to load its In and Out`}
+                  data-testid="picker-marked-row"
                 >
-                  <Scissors size={11} />
+                  <span className={styles.markedName}>{sample.name}</span>
+                  {sample.hasSwappedAudio ? <span className={styles.markedTag}>Swapped</span> : null}
+                  <span className={styles.markedTime}>{formatTimecode(sample.startTime, 2)}</span>
+                  <span className={styles.markedLength}>{formatSpan(length)}</span>
                 </button>
-              )}
-
-              {/* Delete */}
-              <button
-                type="button"
-                className="marked-sample-delete"
-                onClick={e => { e.stopPropagation(); onDelete(sample.id) }}
-                title="Remove sample"
-              >
-                <X size={11} />
-              </button>
-            </div>
-          )
-        })}
-      </div>
+                {onSplit && sample.label === 'Quote' ? (
+                  <IconButton
+                    size="sm"
+                    label={`Split syllables of ${sample.name}`}
+                    onClick={() => onSplit(sample)}
+                    hint="Open Split Syllables for this quote"
+                    data-testid="picker-marked-split"
+                  >
+                    <SplitSyllablesIcon aria-hidden="true" />
+                  </IconButton>
+                ) : null}
+                <IconButton
+                  size="sm"
+                  label={`Remove ${sample.name}`}
+                  onClick={() => onDelete(sample.id)}
+                  hint="Remove this sample from the project"
+                  data-testid="picker-marked-remove"
+                >
+                  <IcX aria-hidden="true" />
+                </IconButton>
+              </li>
+            )
+          })}
+        </ul>
+      )}
     </div>
   )
 }

@@ -1,10 +1,19 @@
 const HEX6 = /^#[0-9a-fA-F]{6}$/
 
+// Pass 7 (glass+hatch restyle) — desaturated ~30-40% and pulled toward mid
+// lightness from the original full-saturation swatches, so full-fill Clip
+// tracks don't glow against the dark UI. Custom user-picked colors are
+// untouched; only these 16 defaults changed.
+//
+// UI rebuild Phase 0: slots 4, 6, 8, 9, 13 and 16 were adjusted to satisfy the
+// identity-palette rules in ui/DESIGN.md section 3.4 (hue >= 20 deg from the
+// value/rec/solo/danger hues, label contrast >= 4.5:1). Must stay identical to
+// the --theme-track-palette-* values in shipped/xleth-default.json (tested).
 export const TRACK_PALETTE_FALLBACK = [
-  '#4CC9F0', '#7BD88F', '#FF9F5A', '#9B7BFF',
-  '#F472B6', '#FFD166', '#5B8DEF', '#2DD4BF',
-  '#FF6B6B', '#A3D65C', '#C084FC', '#38BDF8',
-  '#FBBF24', '#8EA4D2', '#6EE7B7', '#FB7185',
+  '#58B2CE', '#77BE87', '#DD925D', '#8D72E3',
+  '#D56DA3', '#C7C368', '#6186CF', '#4EB7A4',
+  '#DB6E3B', '#97BB65', '#A974DE', '#4CA9D3',
+  '#E99D50', '#8496BA', '#6DCAA5', '#D76A8F',
 ]
 
 export const TRACK_COLOR_MODE_AUTO = 'auto'
@@ -93,6 +102,32 @@ export function resolveTrackColor(track, visibleIndex, trackPalette, fallbackHex
 // paletteSlot assignment without modifying any call site.
 export function resolveAutoTrackColor(track, visibleIndex, trackPalette, fallbackHex) {
   return resolveTrackColor(track, visibleIndex, trackPalette, fallbackHex)
+}
+
+// Pattern-track "tinted glass" text/glyph color (Pass 7). Text on a pattern
+// clip/header sits directly on a mostly-dark backdrop (the fill is only a
+// ~10% tint), so the track color itself is used as the text color UNLESS its
+// WCAG relative luminance is too low to read against that dark backdrop, in
+// which case a near-white fallback takes over.
+const PATTERN_TEXT_NEAR_WHITE = '#F2F2F2'
+const PATTERN_TEXT_LUMINANCE_MIN = 0.32
+
+function srgbChannelToLinear(c8) {
+  const c = c8 / 255
+  return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+}
+
+// WCAG relative luminance (0..1).
+function relativeLuminance(hex) {
+  const r = srgbChannelToLinear(parseInt(hex.slice(1, 3), 16))
+  const g = srgbChannelToLinear(parseInt(hex.slice(3, 5), 16))
+  const b = srgbChannelToLinear(parseInt(hex.slice(5, 7), 16))
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+export function pickPatternAccentText(hex) {
+  if (!isHex6(hex)) return PATTERN_TEXT_NEAR_WHITE
+  return relativeLuminance(hex) >= PATTERN_TEXT_LUMINANCE_MIN ? hex : PATTERN_TEXT_NEAR_WHITE
 }
 
 // Build { [trackId]: resolvedHexColor } for all tracks in visible order.

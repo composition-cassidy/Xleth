@@ -1,156 +1,74 @@
-import { useEffect, useRef } from 'react'
+import { Menu, MenuCustom, SegmentedControl } from '../../ui-kit'
+import styles from './TimelineDisplayPopover.module.css'
 
-function SegmentGroup({ settingKey, options, value, onSet, disabled = false }) {
-  return (
-    <div className="tl-display-group">
-      {options.map(({ label, val }) => (
-        <button
-          key={val}
-          className={`tl-display-btn${value === val ? ' active' : ''}`}
-          disabled={disabled}
-          onClick={() => onSet(settingKey, val)}
-        >
-          {label}
-        </button>
-      ))}
-    </div>
-  )
-}
+// The timeline display popover (DESIGN.md 22): a kit Menu of eight settings, each a label over
+// a SegmentedControl in sentence case ("Minimal", "Gradient", "Medium", not "Min" and "Grad").
+// Values, keys and the onSet(settingKey, value) call are exactly what they were.
 
 const BODY_OPTIONS = [
-  { label: 'Min', val: 'minimal' },
-  { label: 'Plain', val: 'plain' },
-  { label: 'Grad', val: 'gradient' },
-  { label: 'Solid', val: 'solid' },
+  { label: 'Minimal', value: 'minimal' },
+  { label: 'Plain', value: 'plain' },
+  { label: 'Gradient', value: 'gradient' },
+  { label: 'Solid', value: 'solid' },
 ]
 
 const GRADIENT_OPTIONS = [
-  { label: 'Top', val: 'top' },
-  { label: 'Bottom', val: 'bottom' },
+  { label: 'Top', value: 'top' },
+  { label: 'Bottom', value: 'bottom' },
 ]
 
 const CONTRAST_OPTIONS = [
-  { label: 'Low', val: 'low' },
-  { label: 'Med', val: 'medium' },
-  { label: 'High', val: 'high' },
+  { label: 'Low', value: 'low' },
+  { label: 'Medium', value: 'medium' },
+  { label: 'High', value: 'high' },
 ]
 
 const VISIBILITY_OPTIONS = [
-  { label: 'Auto', val: 'auto' },
-  { label: 'Always', val: 'always' },
-  { label: 'Never', val: 'never' },
+  { label: 'Auto', value: 'auto', hint: 'Shown when the clip is large enough' },
+  { label: 'Always', value: 'always' },
+  { label: 'Never', value: 'never' },
+]
+
+const ROWS = [
+  { label: 'Clip body', key: 'timelineClipBodyMode', options: BODY_OPTIONS, hint: 'How audio and video clips are filled' },
+  { label: 'Pattern body', key: 'timelinePatternBodyMode', options: BODY_OPTIONS, hint: 'How pattern blocks are filled' },
+  { label: 'Gradient', key: 'timelineBodyGradientDirection', options: GRADIENT_OPTIONS, hint: 'Which edge a gradient body is darker toward', needsGradient: true },
+  { label: 'Contrast', key: 'timelineClipContrast', options: CONTRAST_OPTIONS, hint: 'Contrast of clip bodies against the lane' },
+  { label: 'Names', key: 'timelineShowClipNames', options: VISIBILITY_OPTIONS, hint: 'Clip names' },
+  { label: 'Metadata', key: 'timelineShowPitchShift', options: VISIBILITY_OPTIONS, hint: 'Pitch-shift chips on clips' },
+  { label: 'Waveforms', key: 'timelineShowWaveforms', options: VISIBILITY_OPTIONS, hint: 'Waveforms inside audio clips' },
+  { label: 'Pattern preview', key: 'timelineShowPatternPreview', options: VISIBILITY_OPTIONS, hint: 'A mini piano roll inside pattern blocks' },
 ]
 
 export default function TimelineDisplayPopover({ settings, onSet, onClose, triggerRef }) {
-  const popoverRef = useRef(null)
-
-  useEffect(() => {
-    function onMouseDown(e) {
-      const pop = popoverRef.current
-      const btn = triggerRef?.current
-      if (pop && pop.contains(e.target)) return
-      if (btn && btn.contains(e.target)) return
-      onClose()
-    }
-    function onKeyDown(e) {
-      if (e.key === 'Escape') onClose()
-    }
-    document.addEventListener('mousedown', onMouseDown)
-    document.addEventListener('keydown', onKeyDown)
-    return () => {
-      document.removeEventListener('mousedown', onMouseDown)
-      document.removeEventListener('keydown', onKeyDown)
-    }
-  }, [onClose, triggerRef])
+  const rect = triggerRef?.current?.getBoundingClientRect?.()
+  const x = rect ? rect.left : 0
+  const y = rect ? rect.bottom + 4 : 0
 
   const gradientDisabled =
     settings.timelineClipBodyMode !== 'gradient' &&
     settings.timelinePatternBodyMode !== 'gradient'
 
   return (
-    <div className="tl-display-popover" ref={popoverRef}>
-
-      <div className="tl-display-section">
-        <div className="tl-display-label">Clip body</div>
-        <SegmentGroup
-          settingKey="timelineClipBodyMode"
-          options={BODY_OPTIONS}
-          value={settings.timelineClipBodyMode}
-          onSet={onSet}
-        />
-      </div>
-
-      <div className="tl-display-section">
-        <div className="tl-display-label">Pattern body</div>
-        <SegmentGroup
-          settingKey="timelinePatternBodyMode"
-          options={BODY_OPTIONS}
-          value={settings.timelinePatternBodyMode}
-          onSet={onSet}
-        />
-      </div>
-
-      <div className="tl-display-section">
-        <div className="tl-display-label">Gradient</div>
-        <SegmentGroup
-          settingKey="timelineBodyGradientDirection"
-          options={GRADIENT_OPTIONS}
-          value={settings.timelineBodyGradientDirection}
-          onSet={onSet}
-          disabled={gradientDisabled}
-        />
-      </div>
-
-      <div className="tl-display-section">
-        <div className="tl-display-label">Contrast</div>
-        <SegmentGroup
-          settingKey="timelineClipContrast"
-          options={CONTRAST_OPTIONS}
-          value={settings.timelineClipContrast}
-          onSet={onSet}
-        />
-      </div>
-
-      <div className="tl-display-section">
-        <div className="tl-display-label">Names</div>
-        <SegmentGroup
-          settingKey="timelineShowClipNames"
-          options={VISIBILITY_OPTIONS}
-          value={settings.timelineShowClipNames}
-          onSet={onSet}
-        />
-      </div>
-
-      <div className="tl-display-section">
-        <div className="tl-display-label">Metadata</div>
-        <SegmentGroup
-          settingKey="timelineShowPitchShift"
-          options={VISIBILITY_OPTIONS}
-          value={settings.timelineShowPitchShift}
-          onSet={onSet}
-        />
-      </div>
-
-      <div className="tl-display-section">
-        <div className="tl-display-label">Waveforms</div>
-        <SegmentGroup
-          settingKey="timelineShowWaveforms"
-          options={VISIBILITY_OPTIONS}
-          value={settings.timelineShowWaveforms}
-          onSet={onSet}
-        />
-      </div>
-
-      <div className="tl-display-section">
-        <div className="tl-display-label">Pattern preview</div>
-        <SegmentGroup
-          settingKey="timelineShowPatternPreview"
-          options={VISIBILITY_OPTIONS}
-          value={settings.timelineShowPatternPreview}
-          onSet={onSet}
-        />
-      </div>
-
-    </div>
+    <Menu x={x} y={y} onClose={onClose} label="Timeline display" className={styles.menu}>
+      <MenuCustom>
+        <div className={`tl-display-popover ${styles.rows}`}>
+          {ROWS.map((row) => (
+            <div key={row.key} className={`tl-display-section ${styles.row}`}>
+              <span className={styles.label}>{row.label}</span>
+              <SegmentedControl
+                size="sm"
+                label={row.label}
+                value={settings[row.key]}
+                options={row.options}
+                onChange={(value) => onSet(row.key, value)}
+                disabled={row.needsGradient ? gradientDisabled : false}
+                hint={row.needsGradient && gradientDisabled ? 'Gradient: turn on a Gradient body first' : row.hint}
+              />
+            </div>
+          ))}
+        </div>
+      </MenuCustom>
+    </Menu>
   )
 }

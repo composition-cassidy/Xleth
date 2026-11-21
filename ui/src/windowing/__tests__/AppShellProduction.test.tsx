@@ -1,14 +1,13 @@
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  applyDemoShellMode,
-  configurePhase6bDemoPanels,
-  shouldRenderRealPanels,
-} from '../AppShell';
+import { AppShell, floatingPanelKey } from '../AppShell';
 import { createInitialPanelStates, usePanelRegistry } from '../registry/PanelRegistry';
+import { ACTIVE_PANEL_IDS, PANEL_IDS, WINDOW_PANEL_IDS } from '../registry/panelCatalog';
 
 const originalApplyPreset = usePanelRegistry.getState().applyPreset;
 
-describe('AppShell production boot', () => {
+describe('AppShell boot', () => {
   beforeEach(() => {
     usePanelRegistry.setState({
       panels: createInitialPanelStates(),
@@ -17,37 +16,54 @@ describe('AppShell production boot', () => {
     vi.restoreAllMocks();
   });
 
-  it('production uses the real wrapper render path without running demo configuration', async () => {
-    const applyPresetSpy = vi.fn((presetId: string) => originalApplyPreset(presetId));
-    usePanelRegistry.setState({ applyPreset: applyPresetSpy });
-
-    applyDemoShellMode('production');
-
-    expect(shouldRenderRealPanels('production')).toBe(true);
-    expect(applyPresetSpy).not.toHaveBeenCalled();
-  });
-
-  it('production does not overwrite restored registry state with the demo preset', async () => {
+  // The shell used to carry seven demo modes, one of which applied a preset on
+  // mount. Rendering must never rewrite the layout that was just restored from
+  // disk — there is now no mount-time path that could, and this pins that.
+  it('rendering the shell never mutates the restored layout', () => {
     const applyPresetSpy = vi.fn((presetId: string) => originalApplyPreset(presetId));
     const panels = createInitialPanelStates();
     panels.timeline.hidden = false;
     panels.timeline.mode = 'docked';
     usePanelRegistry.setState({ panels, applyPreset: applyPresetSpy });
 
-    applyDemoShellMode('production');
+    const before = JSON.stringify(usePanelRegistry.getState().panels);
+    renderToStaticMarkup(<AppShell />);
 
-    expect(usePanelRegistry.getState().panels.timeline.mode).toBe('docked');
     expect(applyPresetSpy).not.toHaveBeenCalled();
+    expect(JSON.stringify(usePanelRegistry.getState().panels)).toBe(before);
+    expect(usePanelRegistry.getState().panels.timeline.mode).toBe('docked');
   });
 
-  it('phase-6b-demo still uses the demo preset path', async () => {
-    const applyPresetSpy = vi.fn((presetId: string) => originalApplyPreset(presetId));
-    usePanelRegistry.setState({ applyPreset: applyPresetSpy });
+  it('renders every active window panel that is open and floating', () => {
+    const registry = usePanelRegistry.getState();
+    for (const id of WINDOW_PANEL_IDS) registry.openPanel(id);
 
-    expect(shouldRenderRealPanels('phase-6b-demo')).toBe(true);
-    configurePhase6bDemoPanels();
+    // Docked and open means "rendered by its region", not by the floating
+    // layer: the timeline (center) and the one detail-dock tab left open (the
+    // dock shows one panel at a time; the others close back to their tabs and
+    // are carried hidden here like any closed panel).
+    const panels = usePanelRegistry.getState().panels;
+    const dockedOpen = WINDOW_PANEL_IDS.filter((id) => panels[id].mode === 'docked' && !panels[id].hidden);
+    expect(dockedOpen).toContain('timeline');
+    const key = floatingPanelKey(panels);
+    expect(key.split('|').sort()).toEqual(WINDOW_PANEL_IDS.filter((id) => !dockedOpen.includes(id)).sort());
+  });
 
-    expect(applyPresetSpy).toHaveBeenCalledTimes(1);
-    expect(applyPresetSpy).toHaveBeenCalledWith('fl-compose');
+  it('mounts the center region and no empty work-area surface', () => {
+    const html = renderToStaticMarkup(<AppShell />);
+    expect(html).toContain('data-testid="xleth-dock-region-center"');
+    expect(html).toContain('data-docked-slot-id="timeline"');
+    expect(html).not.toContain('xleth-floating-work-area');
+    expect(html).not.toContain('data-backdrop-empty-surface');
+  });
+
+  it('never renders a quarantined panel or a drawer panel in the floating layer', () => {
+    const registry = usePanelRegistry.getState();
+    for (const id of PANEL_IDS) registry.openPanel(id);
+
+    const rendered = floatingPanelKey(usePanelRegistry.getState().panels).split('|');
+    expect(rendered).not.toContain('nodeEditor');
+    expect(rendered).not.toContain('sampleSelector');
+    expect(ACTIVE_PANEL_IDS).not.toContain('nodeEditor');
   });
 });

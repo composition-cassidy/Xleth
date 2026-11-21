@@ -3,9 +3,8 @@
 #include <atomic>
 #include <cstdint>
 #include <cstddef>
+#include <string>
 #include <vector>
-
-struct SwsContext;  // forward-declare (libswscale)
 
 // ─── FrameOutput ─────────────────────────────────────────────────────────────
 // Double-buffered RGBA frame output for zero-copy delivery to JS/Electron.
@@ -38,22 +37,25 @@ public:
     // that opens the same name (via OpenFileMappingA + MapViewOfFile) sees
     // the same physical pages. Control region is 64 bytes — layout:
     //   [BufferA: W*H*4] [BufferB: W*H*4] [int32 index | 60 bytes reserved].
-    bool initSharedMemory(const char* name, int width, int height);
+    //
+    // The SECTION is sized for capacityWidth x capacityHeight (defaulting to
+    // width x height), while the live frame is width x height. They differ
+    // because a named section's size is fixed when it is created: passing a
+    // bigger size to CreateFileMapping for a name that already exists is
+    // silently ignored (it returns the existing object with ERROR_ALREADY_
+    // EXISTS), and the reader process keeps that object alive between our
+    // teardown and re-create. Mapping a view larger than the section then
+    // fails with ERROR_ACCESS_DENIED and the preview dies permanently.
+    // So: create once at the maximum resolution the preview can ask for and
+    // let previewResolutionScale move width_/height_ around INSIDE it.
+    bool initSharedMemory(const char* name, int width, int height,
+                          int capacityWidth = 0, int capacityHeight = 0);
 
     void shutdown();
 
     bool isInitialized() const { return width_ > 0 && height_ > 0; }
 
     // ── Writer API (video thread only) ───────────────────────────────────────
-
-    // Convert a YUV420P frame to RGBA and write to back buffer, then swap.
-    void writeFrameYUV(const uint8_t* yPlane, const uint8_t* uPlane, const uint8_t* vPlane,
-                       int yStride, int uStride, int vStride,
-                       int srcWidth, int srcHeight);
-
-    // Write pre-composed RGBA data to back buffer, then swap.
-    // size must equal getBufferSize().
-    void writeFrameRGBA(const uint8_t* rgba, size_t size);
 
     // Get the back buffer pointer for manual compositing.
     // Call swapBuffers() after writing.
@@ -103,17 +105,16 @@ private:
     size_t   dataSize_ = 0;
 
     // Windows named-shared-memory handle (only when initSharedMemory was used).
-    void* hMapFile_   = nullptr;
-    void* shmView_    = nullptr;
+    // shmName_ lets a re-init recognise that the section we already hold is
+    // the one being asked for, so it can resize the frame in place instead of
+    // destroying and re-creating a section whose size is immutable.
+    void*       hMapFile_ = nullptr;
+    void*       shmView_  = nullptr;
+    std::string shmName_;
 
     // Pointer to the atomic index within data_ (at offset 2*bufferSize).
     // Aligned to 4 bytes since bufferSize = W*H*4 is always 4-byte aligned.
     std::atomic<int32_t>* indexPtr_ = nullptr;
-
-    // libswscale context for YUV→RGBA conversion (lazily created)
-    SwsContext* swsCtx_  = nullptr;
-    int         lastSrcW_ = 0;
-    int         lastSrcH_ = 0;
 
     int bufferSize() const { return width_ * height_ * 4; }
 };

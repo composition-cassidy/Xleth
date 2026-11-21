@@ -3,6 +3,7 @@ import {
   usePanelRegistry,
   type DockRegion,
 } from '../registry/PanelRegistry';
+import type { PointerGestureSource } from './pointerGesture';
 import { createEdgeResizeMachine } from './EdgeResizeMachine';
 
 export type DockRegionResizeAxis = 'horizontal' | 'vertical';
@@ -40,8 +41,9 @@ export function beginDockRegionResize(
   mouseX: number,
   mouseY: number,
   startSize: number,
+  source?: PointerGestureSource | null,
 ): void {
-  machine.begin(region, mouseX, mouseY, { region, axis, startSize });
+  machine.begin(region, mouseX, mouseY, { region, axis, startSize }, undefined, source);
 }
 
 export function updateDockRegionResize(mouseX: number, mouseY: number): void {

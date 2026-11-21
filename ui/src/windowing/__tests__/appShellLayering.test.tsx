@@ -2,7 +2,7 @@ import React from 'react';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import TitleBar, { TITLEBAR_MENUS } from '../../components/TitleBar.jsx';
 import { PanelFrame } from '../components/PanelFrame';
 import {
@@ -12,6 +12,15 @@ import {
   registerWorkAreaRect,
 } from '../managers/DragManager';
 import { createInitialPanelStates, usePanelRegistry } from '../registry/PanelRegistry';
+
+// TitleBar renders the toast status line, which requires a ToastProvider these
+// tests never mount. Stub the module rather than wrapping every render.
+vi.mock('../../components/Toast.jsx', () => ({
+  ToastProvider: ({ children }: { children: unknown }) => children,
+  ToastStatusText: () => null,
+  useToast: () => ({ dismiss: () => {}, showToast: () => undefined, toasts: [] }),
+}));
+
 
 function readUiSource(relativePath: string) {
   return readFileSync(path.resolve(process.cwd(), 'src', relativePath), 'utf8');
@@ -76,6 +85,28 @@ describe('App shell layer order', () => {
     expect(windowingCss).toContain('z-index: var(--xleth-z-window-snap-ghost);');
     expect(snapGhostSource).not.toContain('9999');
   });
+
+  it('keeps the floating-editor hosts free of a stacking context', () => {
+    const appCss = readUiSource('styles/app.css');
+
+    // Both hosts wrap `position: fixed` editor windows that carry their own
+    // z-index (200) and must be compared against the workspace panel layers in
+    // the ROOT stacking context. Giving a host `position` + `z-index` makes it a
+    // stacking context, which caps every window inside it at the host's own
+    // level — the Vibrato/Scratch host briefly had `position: relative;
+    // z-index: 0`, which painted both editors BELOW
+    // --xleth-z-workspace-panel-layer and made them invisible and click-through.
+    const workspacePanelLayer = cssVarNumber(appCss, '--xleth-z-workspace-panel-layer');
+    expect(workspacePanelLayer).toBeGreaterThan(0);
+
+    for (const host of ['.clip-fx-editor-host', '.effect-editor-host']) {
+      const block = appCss.match(new RegExp(`\\${host}\\s*\\{([^}]*)\\}`, 's'))?.[1] ?? '';
+      expect(block).not.toMatch(/position:\s*(relative|absolute|fixed|sticky)/);
+      expect(block).not.toMatch(/z-index:\s*-?\d/);
+      // A transform/filter/contain would create one just as surely.
+      expect(block).not.toMatch(/(transform|filter|backdrop-filter|contain|will-change):/);
+    }
+  });
 });
 
 describe('Workspace bounds layout contract', () => {
@@ -91,17 +122,18 @@ describe('Workspace bounds layout contract', () => {
     expect(appCss).toMatch(/--xleth-windowing-drawer-top-offset:\s*0(px)?;/);
   });
 
-  it('sample drawer width comes from the left dock region, not a fixed drawer width', () => {
+  it('sample drawer size comes from the panel\'s own dock region, not a fixed drawer width', () => {
     const appShellSource = readUiSource('windowing/AppShell.tsx');
     const drawerSource = readUiSource('windowing/components/SampleSelectorDrawer.tsx');
-    const appCss = readUiSource('styles/app.css');
+    const windowingCss = readUiSource('windowing/components/windowing.css');
 
-    expect(appShellSource).toContain('state.dockRegionSizes.left');
-    expect(appShellSource).toContain("useDockRegionResizePreview('left')");
+    expect(appShellSource).toContain('state.dockRegionSizes[sampleDockSide]');
+    expect(appShellSource).toContain('useDockRegionResizePreview(sampleDockSide)');
+    expect(appShellSource).toContain('useDockRegionResizePreview(sampleDockSide)');
     expect(appShellSource).toContain("'--xleth-sample-dock-width'");
     expect(appShellSource).not.toContain('sampleSelectorDockWidth');
     expect(drawerSource).not.toContain('sampleSelectorDockWidth');
-    const drawerBlock = appCss.match(/\.xleth-sample-selector-drawer,\s*\.xleth-sample-selector-drawer__body,\s*\.left-panel\s*\{([^}]*)\}/s)?.[1] ?? '';
+    const drawerBlock = windowingCss.match(/(?:^|\n)\.xleth-sample-selector-drawer\s*\{([^}]*)\}/)?.[1] ?? '';
     expect(drawerBlock).toContain('width: 100%');
     expect(drawerBlock).not.toContain('width: 258px');
   });
@@ -116,10 +148,14 @@ describe('Workspace bounds layout contract', () => {
 });
 
 describe('App shell grid layout contract', () => {
-  it('defines --xleth-top-chrome-height and --xleth-bottom-chrome-height tokens', () => {
+  it('defines the chrome row heights once, in the kit token sheet', () => {
+    const tokensCss = readUiSource('ui-kit/tokens.css');
     const appCss = readUiSource('styles/app.css');
-    expect(appCss).toMatch(/--xleth-top-chrome-height:\s*\d+px/);
-    expect(appCss).toMatch(/--xleth-bottom-chrome-height:\s*\d+px/);
+    expect(tokensCss).toMatch(/--shell-topbar-h:\s*36px/);
+    expect(tokensCss).toMatch(/--xleth-top-chrome-height:\s*var\(--shell-topbar-h\)/);
+    expect(tokensCss).toMatch(/--xleth-bottom-chrome-height:/);
+    // No legacy redefinition left to win or lose against the token layer.
+    expect(appCss).not.toMatch(/--xleth-(top|bottom)-chrome-height:/);
   });
 
   it('app shell uses CSS grid so chrome row heights are explicitly bounded', () => {
@@ -157,9 +193,14 @@ describe('App shell grid layout contract', () => {
 
   it('top chrome buttons and menu triggers carry no-drag so pointer events reach them', () => {
     const appCss = readUiSource('styles/app.css');
-    expect(appCss).toMatch(/\.titlebar-menu-trigger[^{]*\{[^}]*-webkit-app-region:\s*no-drag/s);
-    expect(appCss).toMatch(/\.titlebar-btn[^{]*\{[^}]*-webkit-app-region:\s*no-drag/s);
-    expect(appCss).toMatch(/\.titlebar-launcher-btn[^{]*\{[^}]*-webkit-app-region:\s*no-drag/s);
+    // Menu triggers and window controls are kit Button / IconButton, which opt out of the drag region.
+    expect(readUiSource('ui-kit/Button.module.css')).toMatch(/\.btn\s*\{[^}]*-webkit-app-region:\s*no-drag/s);
+    const titleBar = readUiSource('components/TitleBar.jsx');
+    expect(titleBar).toMatch(/<Button[^>]*titlebar-menu-trigger/s);
+    expect(titleBar).toMatch(/<IconButton[^>]*label="Minimize"/s);
+    // The panel toggles and the Tools menu are kit controls too, so they opt out the same way.
+    expect(appCss).not.toMatch(/titlebar-launcher/);
+    expect(readUiSource('components/TitleBarRegions.module.css')).toMatch(/\.regions\s*\{[^}]*-webkit-app-region:\s*no-drag/s);
   });
 });
 
@@ -171,16 +212,14 @@ describe('PanelFrame selector stability', () => {
   // ── Source-level verification ────────────────────────────────────────────
 
   it('PanelFrame selects primitives, not the panel object, to prevent getSnapshot reference churn', () => {
-    const src = readUiSource('windowing/components/PanelFrame.tsx');
-    // Must have individual primitive field selectors
-    expect(src).toContain("s.panels[id].hidden");
-    expect(src).toContain("s.panels[id].mode");
-    expect(src).toContain("s.panels[id].focused");
-    expect(src).toContain("s.panels[id].zIndex");
-    expect(src).toContain("s.panels[id].floating.x");
-    // Must NOT return a combined object from a selector
-    expect(src).not.toMatch(/usePanelRegistry\(\s*\(s\)\s*=>\s*s\.panels\[id\]\s*\)/);
-    expect(src).not.toMatch(/usePanelRegistry\(\s*\(state\)\s*=>\s*state\.panels\[id\]\s*\)/);
+    // The rule now lives in usePanelValue, which every windowing component
+    // goes through; PanelFrame must not reach past it into the raw store.
+    const panelFrameSource = readUiSource('windowing/components/PanelFrame.tsx');
+    const usePanelValueSource = readUiSource('windowing/registry/usePanelValue.ts');
+
+    expect(panelFrameSource).toContain("usePanelValue(id, (p) => p.hidden)");
+    expect(panelFrameSource).not.toMatch(/usePanelRegistry\(\s*\(s(tate)?\)\s*=>\s*s(tate)?\.panels\[id\]\s*\)/);
+    expect(usePanelValueSource).toContain('string | number | boolean | null | undefined');
   });
 
   it('registerWorkAreaRect is guarded against identical writes', () => {
@@ -198,7 +237,7 @@ describe('PanelFrame selector stability', () => {
 
   it('panel hidden and mode remain the same primitive values after an unrelated panel is focused', () => {
     const reg = usePanelRegistry.getState();
-    reg.openPanel('timeline');
+    reg.openPanel('preview');
     reg.openPanel('mixer');
 
     const mixerHiddenBefore = usePanelRegistry.getState().panels.mixer.hidden;
@@ -206,7 +245,7 @@ describe('PanelFrame selector stability', () => {
 
     // Focus timeline — changes timeline's focused/zIndex but should not change
     // mixer's hidden or mode values.
-    reg.focusPanel('timeline');
+    reg.focusPanel('preview');
 
     expect(usePanelRegistry.getState().panels.mixer.hidden).toBe(mixerHiddenBefore);
     expect(usePanelRegistry.getState().panels.mixer.mode).toBe(mixerModeBefore);
@@ -224,8 +263,8 @@ describe('PanelFrame selector stability', () => {
     // as a no-op.  Verify by checking the workAreaRect captured at drag-start.
     registerWorkAreaRect({ left: 100, top: 200, right: 900, bottom: 700, width: 800, height: 500 });
 
-    usePanelRegistry.getState().openPanel('timeline');
-    beginDrag('timeline', 500, 400, 100, 100);
+    usePanelRegistry.getState().openPanel('preview');
+    beginDrag('preview', 500, 400, 100, 100);
     const state1 = getDragState();
     expect(state1.state).toBe('dragging');
     if (state1.state === 'dragging') {
@@ -236,7 +275,7 @@ describe('PanelFrame selector stability', () => {
     // Now register a rect with a changed left coordinate — this must NOT be a
     // no-op; the new value should be picked up by the next drag.
     registerWorkAreaRect({ left: 50, top: 200, right: 900, bottom: 700, width: 850, height: 500 });
-    beginDrag('timeline', 500, 400, 100, 100);
+    beginDrag('preview', 500, 400, 100, 100);
     const state2 = getDragState();
     expect(state2.state).toBe('dragging');
     if (state2.state === 'dragging') {
@@ -249,10 +288,10 @@ describe('PanelFrame selector stability', () => {
 
   it('PanelFrame renders consistent HTML on consecutive calls without intervening mutations', () => {
     const reg = usePanelRegistry.getState();
-    reg.openPanel('timeline');
+    reg.openPanel('preview');
 
     const render = () => renderToStaticMarkup(
-      <PanelFrame id="timeline"><div>content</div></PanelFrame>
+      <PanelFrame id="preview"><div>content</div></PanelFrame>
     );
     const html1 = render();
     const html2 = render();
@@ -263,12 +302,12 @@ describe('PanelFrame selector stability', () => {
 
   it('PanelFrame renders correctly after an unrelated store mutation (simulates top-level rerender)', () => {
     const reg = usePanelRegistry.getState();
-    reg.openPanel('timeline');
+    reg.openPanel('preview');
     // Explicitly focus timeline so we can observe the focused→unfocused transition
-    reg.focusPanel('timeline');
+    reg.focusPanel('preview');
 
     const htmlBefore = renderToStaticMarkup(
-      <PanelFrame id="timeline"><div>x</div></PanelFrame>
+      <PanelFrame id="preview"><div>x</div></PanelFrame>
     );
     expect(htmlBefore).toContain('data-panel-mode="floating"');
     expect(htmlBefore).toContain('data-focused="true"');
@@ -279,7 +318,7 @@ describe('PanelFrame selector stability', () => {
     reg.openPanel('mixer');
 
     const htmlAfter = renderToStaticMarkup(
-      <PanelFrame id="timeline"><div>x</div></PanelFrame>
+      <PanelFrame id="preview"><div>x</div></PanelFrame>
     );
     // Both renders must produce valid markup — a throw here would indicate a
     // maximum-update-depth or getSnapshot-cache failure.

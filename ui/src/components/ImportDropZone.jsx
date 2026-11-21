@@ -1,11 +1,13 @@
 import { useState, useCallback, useRef } from 'react'
-import { Download } from 'lucide-react'
+import styles from './browser/Browser.module.css'
 
-const ALLOWED_EXT = /\.(mp4|avi|mov|mkv|wav|mp3|flac|mid|midi)$/i
-const MIDI_EXT = /\.(mid|midi)$/i
+const ALLOWED_EXT = /\.(mp4|avi|mov|mkv|wav|mp3|flac|mid|midi|flp)$/i
+// MIDI files and FL Studio projects both open the MIDI import dialog.
+const MIDI_EXT = /\.(mid|midi|flp)$/i
 
 /**
- * Wraps content with drag-and-drop file import.
+ * Wraps content with drag-and-drop file import. The whole wrapped region is the
+ * drop target; while a file is over it the region is outlined and says so.
  *
  * Props:
  *   onFilesDropped(paths: string[]) – called with array of A/V file paths
@@ -20,6 +22,9 @@ export default function ImportDropZone({ onFilesDropped, onMidiFileDropped, chil
   const onDragEnter = useCallback((e) => {
     e.preventDefault()
     e.stopPropagation()
+    // Only files from outside the app are imports; a sample or source being
+    // dragged around inside the Browser is not.
+    if (!Array.from(e.dataTransfer?.types ?? []).includes('Files')) return
     dragCounter.current++
     if (!disabled) setDragging(true)
   }, [disabled])
@@ -27,6 +32,7 @@ export default function ImportDropZone({ onFilesDropped, onMidiFileDropped, chil
   const onDragLeave = useCallback((e) => {
     e.preventDefault()
     e.stopPropagation()
+    if (!Array.from(e.dataTransfer?.types ?? []).includes('Files')) return
     dragCounter.current--
     if (dragCounter.current <= 0) {
       dragCounter.current = 0
@@ -52,11 +58,10 @@ export default function ImportDropZone({ onFilesDropped, onMidiFileDropped, chil
     // Electron 41+ removed File.path; use webUtils via the preload bridge.
     const getPath = (f) => window.xleth?.getDroppedFilePath?.(f) || f.path || f.name
 
-    // Route first .mid/.midi to the MIDI import dialog
+    // Route the first .mid/.midi/.flp to the MIDI import dialog
     const midiFile = files.find(f => MIDI_EXT.test(f.name))
     if (midiFile && onMidiFileDropped) {
       const path = getPath(midiFile)
-      console.log('[ProjectMedia] MIDI import requested (drop):', path)
       onMidiFileDropped(path)
     }
 
@@ -67,16 +72,15 @@ export default function ImportDropZone({ onFilesDropped, onMidiFileDropped, chil
       .filter(Boolean)
 
     if (avPaths.length > 0) {
-      console.log(`[ProjectMedia] Import requested (drop): ${avPaths.length} file(s)`)
       onFilesDropped(avPaths)
     } else if (!midiFile) {
-      console.log('[ProjectMedia] Drop ignored — no supported media files')
     }
   }, [disabled, onFilesDropped, onMidiFileDropped])
 
   return (
     <div
-      className={`import-dropzone ${dragging ? 'dragging' : ''}`}
+      className={styles.dropZone}
+      data-dragging={dragging ? 'true' : 'false'}
       onDragEnter={onDragEnter}
       onDragLeave={onDragLeave}
       onDragOver={onDragOver}
@@ -84,9 +88,8 @@ export default function ImportDropZone({ onFilesDropped, onMidiFileDropped, chil
     >
       {children}
       {dragging && (
-        <div className="import-dropzone-overlay">
-          <Download size={32} />
-          <span>Drop files to import</span>
+        <div className={styles.dropOverlay} role="status">
+          Drop files to import
         </div>
       )}
     </div>

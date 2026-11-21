@@ -1,7 +1,9 @@
 #include "audio/SourcePlayer.h"
 
+#include <chrono>
 #include <cmath>
 #include <iostream>
+#include <thread>
 #include <vector>
 
 extern "C" {
@@ -14,7 +16,17 @@ extern "C" {
 
 // ─────────────────────────────────────────────────────────────────────────────
 SourcePlayer::SourcePlayer()  = default;
-SourcePlayer::~SourcePlayer() { unloadSource(); }
+
+SourcePlayer::~SourcePlayer()
+{
+    unloadSource();
+    // Whatever is left is still pinned after the bounded wait: a callback that
+    // is stuck, or one that outlived this object. Leak it rather than free
+    // memory a thread may be reading; "never freed while pinned" has no
+    // exception, not even here.
+    for (auto& stillPinned : retired_)
+        (void) stillPinned.release();
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MAIN THREAD — blocks until decoding is complete
@@ -230,11 +242,12 @@ bool SourcePlayer::loadSource(const std::string& filePath, double engineSampleRa
     }
 
     // ── 7. Copy to juce::AudioBuffer ─────────────────────────────────────────
+    // Fill a fresh buffer off to the side; the callback only sees it once published.
     const int numSamples = static_cast<int>(chL.size());
-    decodedAudio_.setSize(2, numSamples, false, true, false);
-    std::memcpy(decodedAudio_.getWritePointer(0), chL.data(),
+    auto decoded = std::make_unique<Buffer>(2, numSamples);
+    std::memcpy(decoded->getWritePointer(0), chL.data(),
                 static_cast<size_t>(numSamples) * sizeof(float));
-    std::memcpy(decodedAudio_.getWritePointer(1), chR.data(),
+    std::memcpy(decoded->getWritePointer(1), chR.data(),
                 static_cast<size_t>(numSamples) * sizeof(float));
 
     totalSamples_ = numSamples;
@@ -243,6 +256,10 @@ bool SourcePlayer::loadSource(const std::string& filePath, double engineSampleRa
     playPosition_.store(0, std::memory_order_relaxed);
     previewEndSample_.store(-1, std::memory_order_relaxed);
     playing_.store(false, std::memory_order_relaxed);
+    decodedAudio_ = std::move(decoded);   // unloadSource() above already took the previous one
+    // release is enough to PUBLISH: a callback that misses this store just
+    // starts playing one block later. Only unpublishing needs seq_cst.
+    current_.store(decodedAudio_.get(), std::memory_order_release);
     loaded_.store(true, std::memory_order_release);
 
     double sizeMB = (2.0 * numSamples * sizeof(float)) / (1024.0 * 1024.0);
@@ -304,16 +321,64 @@ bool SourcePlayer::probeAudio(const std::string& filePath, double& outDurationSe
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+bool SourcePlayer::reclaimRetired()
+{
+    // seq_cst, like every read of the pin from this side: see processBlock.
+    const Buffer* const pinned = inUse_.load(std::memory_order_seq_cst);
+    std::erase_if(retired_, [pinned](const std::unique_ptr<Buffer>& b) { return b.get() != pinned; });
+    return retired_.empty();
+}
+
 void SourcePlayer::unloadSource()
 {
+    // Waiting on the callback from the callback would only ever time out, and
+    // anything freed here would be freed on the audio thread.
+    jassert(juce::Thread::getCurrentThreadId() != audioThreadId_.load(std::memory_order_relaxed));
+
     playing_.store(false, std::memory_order_release);
     loaded_.store(false, std::memory_order_release);
+
+    // Unpublish, then retire the buffer instead of freeing it. From here no
+    // block can pin it afresh (see processBlock for why), so the pin can only
+    // move OFF it, and once it has, the buffer is safe to free for good.
+    current_.store(nullptr, std::memory_order_seq_cst);
+    Buffer* const mine = decodedAudio_.get();
+    if (decodedAudio_)
+        retired_.push_back(std::move(decodedAudio_));
+
+    // The normal case: the callback lets go within the block it is mixing, in
+    // microseconds, so yield first and only then sleep. Buffers a previous
+    // unload had to park are swept up too, but only THIS call's buffer is
+    // waited for, so a buffer that stays stuck costs one wait and one log line,
+    // not one per call.
+    if (mine != nullptr)
+    {
+        const auto start    = std::chrono::steady_clock::now();
+        const auto deadline = start + std::chrono::milliseconds(kUnloadWaitMs);
+        while (inUse_.load(std::memory_order_seq_cst) == mine)
+        {
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= deadline)
+            {
+                // Still pinned: the device stalled mid-block. Do NOT free it;
+                // it stays on retired_ until a later load / unload finds the
+                // pin gone. Logged here, on the calling thread, once.
+                ++deferredFrees_;
+                std::cerr << "[SourcePlayer] unload: the audio callback still holds the buffer after "
+                          << kUnloadWaitMs << " ms; freeing it later\n";
+                break;
+            }
+            if (now - start < std::chrono::milliseconds(2)) std::this_thread::yield();
+            else std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+    reclaimRetired();
+
     playPosition_.store(0, std::memory_order_relaxed);
     previewEndSample_.store(-1, std::memory_order_relaxed);
     totalSamples_ = 0;
     duration_     = 0.0;
     loadedFilePath_.clear();
-    decodedAudio_.setSize(0, 0);
 }
 
 // ── Transport ────────────────────────────────────────────────────────────────
@@ -395,11 +460,45 @@ double SourcePlayer::getDuration() const
 
 void SourcePlayer::processBlock(juce::AudioBuffer<float>& outputBuffer, int numSamples)
 {
-    if (!playing_.load(std::memory_order_acquire))  return;
-    if (!loaded_.load(std::memory_order_acquire))   return;
+   #if JUCE_DEBUG
+    audioThreadId_.store(juce::Thread::getCurrentThreadId(), std::memory_order_relaxed);
+   #endif
 
+    if (!playing_.load(std::memory_order_acquire))  return;
+
+    // Pin the published buffer, then re-check it is still published: either
+    // unloadSource sees the pin and waits, or we see its swap and retry.
+    //
+    // ORDERING. This is store-then-load on both sides (here: store the pin,
+    // load current_; in unloadSource: store current_ = null, load the pin),
+    // the one pattern acquire/release cannot make safe. With them, each store
+    // may still be sitting in its core's store buffer when the other side's
+    // load runs, so we could read the old current_ while unloadSource reads the
+    // old (empty) pin, and it would free the buffer we are about to mix. That
+    // reordering is real on x86 too. seq_cst on all four operations puts them
+    // in one total order, in which at least one side sees the other's store:
+    // either we see current_ changed and retry, or unloadSource sees the pin.
+    // Keep the pin store and the re-check load seq_cst.
+    Buffer* src = current_.load(std::memory_order_seq_cst);
+    for (;;)
+    {
+        inUse_.store(src, std::memory_order_seq_cst);
+        Buffer* const again = current_.load(std::memory_order_seq_cst);
+        if (again == src) break;
+        src = again;
+    }
+    if (src != nullptr)
+        mixBlock(*src, outputBuffer, numSamples);
+    // Clearing the pin only ever lets a waiter proceed, and being seen late is
+    // harmless, so release is enough here.
+    inUse_.store(nullptr, std::memory_order_release);
+}
+
+void SourcePlayer::mixBlock(const Buffer& src, juce::AudioBuffer<float>& outputBuffer, int numSamples)
+{
+    const int64_t totalSamples = src.getNumSamples();
     int64_t pos = playPosition_.load(std::memory_order_acquire);
-    if (pos >= totalSamples_)
+    if (pos >= totalSamples)
     {
         playing_.store(false, std::memory_order_release);
         return;
@@ -408,8 +507,8 @@ void SourcePlayer::processBlock(juce::AudioBuffer<float>& outputBuffer, int numS
     const int64_t previewEnd = previewEndSample_.load(std::memory_order_acquire);
     const bool boundedPreview = previewEnd >= 0;
     const int64_t effectiveEnd = boundedPreview
-        ? std::min<int64_t>(previewEnd, totalSamples_)
-        : totalSamples_;
+        ? std::min<int64_t>(previewEnd, totalSamples)
+        : totalSamples;
     if (pos >= effectiveEnd)
     {
         playPosition_.store(effectiveEnd, std::memory_order_release);
@@ -419,18 +518,18 @@ void SourcePlayer::processBlock(juce::AudioBuffer<float>& outputBuffer, int numS
     }
 
     const int outChannels = outputBuffer.getNumChannels();
-    const int srcChannels = decodedAudio_.getNumChannels();  // always 2
+    const int srcChannels = src.getNumChannels();  // always 2
     const int available   = static_cast<int>(std::min<int64_t>(numSamples,
                                                                 effectiveEnd - pos));
 
     // Additive mix into the output buffer (other sources may already be mixed in)
     for (int ch = 0; ch < std::min(outChannels, srcChannels); ++ch)
     {
-        const float* src = decodedAudio_.getReadPointer(ch) + pos;
+        const float* in  = src.getReadPointer(ch) + pos;
         float*       dst = outputBuffer.getWritePointer(ch);
 
         for (int i = 0; i < available; ++i)
-            dst[i] += src[i];
+            dst[i] += in[i];
     }
 
     // If source is stereo but output is mono, skip the extra channel (already mixed ch 0).

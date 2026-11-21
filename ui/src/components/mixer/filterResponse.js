@@ -148,7 +148,14 @@ function cDiv(a, b) {
 function cAbs(a) { return Math.hypot(a[0], a[1]) }
 
 // Log-spaced 20 Hz .. 20 kHz, matching the engine's getResponseCurve grid.
+// Memoised per size: the panel asks for this on every animation frame and the
+// grid depends on nothing but `n`, so allocating a fresh array 30 times a second
+// would be pure garbage. The arrays are treated as read-only by every caller.
+const freqGridCache = new Map()
+
 export function responseFrequencies(n = RESPONSE_SIZE) {
+  const cached = freqGridCache.get(n)
+  if (cached) return cached
   const out = new Float64Array(n)
   const logMin = Math.log(FREQ_MIN)
   const logMax = Math.log(FREQ_MAX)
@@ -156,6 +163,7 @@ export function responseFrequencies(n = RESPONSE_SIZE) {
     const t = n > 1 ? i / (n - 1) : 0
     out[i] = Math.exp(logMin + t * (logMax - logMin))
   }
+  freqGridCache.set(n, out)
   return out
 }
 

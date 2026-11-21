@@ -1,0 +1,483 @@
+/* The sample editor (the picker sheet's contents): header, source picture,
+ * waveform + two control rows, marked list. Everything here is on the kit:
+ * tokens only, no gradients, no card shadows, no raw colours. The waveform is
+ * a canvas and reads the same tokens at draw time (PickerWaveform.jsx). */
+@layer kit {
+  .picker {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--ui-g1);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+  }
+
+  /* ── Header ─────────────────────────────────────────────────────────────── */
+
+  .header {
+    flex: none;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    height: var(--panel-header-h);
+    padding: 0 var(--space-1) 0 var(--space-2);
+    background: var(--ui-g2);
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .sourceGlyph {
+    flex: none;
+    display: inline-flex;
+    color: var(--ui-ink-2);
+  }
+
+  .title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--type-13);
+    font-weight: var(--weight-semibold);
+  }
+
+  .meta {
+    flex: none;
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+    color: var(--ui-ink-2);
+    white-space: nowrap;
+  }
+
+  /* Who has the keyboard. The words change with the state; the outline is the
+   * kit's selection mark, so "this is where your keys go" reads at a glance. */
+  .keys {
+    flex: none;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    height: 18px;
+    margin-left: auto;
+    padding: 0 var(--space-2);
+    border: 1px solid var(--ui-g4);
+    border-radius: var(--ui-radius-1);
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+    white-space: nowrap;
+  }
+
+  .picker[data-active="true"] .keys {
+    border-color: var(--ui-select);
+    color: var(--ui-ink);
+  }
+
+  .picker[data-active="false"] .title {
+    color: var(--ui-ink-2);
+  }
+
+  .close {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    height: var(--hit-min);
+    padding: 0 var(--space-2);
+    border: 0;
+    border-radius: var(--ui-radius-1);
+    background: transparent;
+    color: var(--ui-ink-2);
+    font: inherit;
+    font-size: var(--type-12);
+    cursor: pointer;
+  }
+
+  .close:hover {
+    background: var(--ui-g3);
+    color: var(--ui-ink);
+  }
+
+  .close:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  /* ── Workspace: picture | waveform + controls | marked list ─────────────── */
+
+  .workspace {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: clamp(160px, 20%, 224px) minmax(0, 1fr) clamp(200px, 24%, 264px);
+  }
+
+  .videoColumn {
+    box-sizing: border-box;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-2);
+    background: var(--ui-g0);
+    border-right: 1px solid var(--ui-g4);
+    overflow: hidden;
+  }
+
+  .videoStack {
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .videoPreview {
+    flex: 1 1 auto;
+    width: 100%;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .videoFrame {
+    display: block;
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: 100%;
+    aspect-ratio: var(--picker-video-aspect, 16 / 9);
+    object-fit: contain;
+    background: var(--ui-g0);
+    border: 1px solid var(--ui-g4);
+  }
+
+  .videoReadout {
+    flex: none;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-2);
+    min-height: 16px;
+    color: var(--ui-ink);
+    white-space: nowrap;
+  }
+
+  .frame {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--space-1);
+  }
+
+  .timecode {
+    font-family: var(--ui-font-mono);
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .videoPlaceholder,
+  .audioOnly {
+    color: var(--ui-ink-2);
+    font-size: var(--type-12);
+    text-align: center;
+  }
+
+  .audioOnly {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .audioOnly .timecode {
+    color: var(--ui-ink);
+  }
+
+  .center {
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ── Waveform ───────────────────────────────────────────────────────────── */
+
+  .wave {
+    position: relative;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 96px;
+    overflow: hidden;
+    background: var(--ui-g0);
+    cursor: crosshair;
+    user-select: none;
+    outline: none;
+  }
+
+  .wave:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  .waveCanvas {
+    position: absolute;
+    inset: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+  }
+
+  /* Transparent rows over the canvas: each documents itself to the hint bar. */
+  .zone {
+    position: absolute;
+    left: 0;
+    right: 0;
+  }
+
+  /* ── Control rows ───────────────────────────────────────────────────────── */
+
+  .controls {
+    flex: none;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+    padding: var(--space-1) var(--space-2);
+    background: var(--ui-g2);
+    border-top: 1px solid var(--ui-g4);
+  }
+
+  .row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1);
+    min-width: 0;
+    min-height: var(--ctl-h-sm);
+  }
+
+  .sep {
+    flex: none;
+    width: 1px;
+    height: 16px;
+    margin: 0 var(--space-1);
+    background: var(--ui-g4);
+  }
+
+  .spring {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .readout {
+    flex: none;
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--space-1);
+    padding: 0 var(--space-1);
+    font-size: var(--type-11);
+    white-space: nowrap;
+  }
+
+  .readoutLabel {
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+  }
+
+  .readoutValue {
+    min-width: 7ch;
+    font-size: var(--type-12);
+    font-weight: var(--weight-medium);
+    font-variant-numeric: tabular-nums;
+    color: var(--ui-ink);
+  }
+
+  /* The label's identity colour: the same one its waveform span, its bar in the
+   * marked lane and its row in the list wear. */
+  .swatch {
+    flex: none;
+    width: 8px;
+    height: 16px;
+    border-radius: var(--ui-radius-1);
+    background: var(--picker-label-tone);
+  }
+
+  /* The label hues are fixed and pastel. On a light ramp they are mixed toward
+   * the ink so a stripe or a swatch still reads against the panel (the canvas
+   * does the same for the waveform: legibleOn in PickerWaveform.jsx). */
+  .swatch,
+  .markedRow {
+    --picker-label-tone: var(--picker-label-color, var(--ui-ink-3));
+  }
+
+  :global([data-xleth-ramp="light"]) .swatch,
+  :global([data-xleth-ramp="light"]) .markedRow {
+    --picker-label-tone: color-mix(in srgb, var(--picker-label-color, var(--ui-ink-3)) 55%, var(--ui-ink));
+  }
+
+  .labelField {
+    flex: none;
+    width: 132px;
+  }
+
+  .nameField {
+    flex: 1 1 120px;
+    min-width: 96px;
+  }
+
+  .error {
+    padding: 0 var(--space-1);
+    font-size: var(--type-12);
+    color: var(--theme-semantic-danger-text, var(--ui-rec-text));
+  }
+
+  /* ── Marked samples ─────────────────────────────────────────────────────── */
+
+  .rail {
+    container-type: inline-size;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    overflow: hidden;
+    border-left: 1px solid var(--ui-g4);
+    background: var(--ui-g1);
+  }
+
+  .marked {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .markedHeader {
+    flex: none;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    height: var(--panel-header-h);
+    padding: 0 var(--space-1) 0 var(--space-2);
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .markedTitle {
+    margin: 0;
+    font-size: var(--type-12);
+    font-weight: var(--weight-semibold);
+    white-space: nowrap;
+  }
+
+  .markedCount {
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+    color: var(--ui-ink-2);
+  }
+
+  .markedToggle {
+    margin-left: auto;
+  }
+
+  .markedRows {
+    flex: 1 1 auto;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--ui-boundary) var(--ui-g1);
+  }
+
+  .markedRow {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    height: var(--row-h);
+    padding-right: 2px;
+    border-left: 2px solid var(--picker-label-tone);
+  }
+
+  .markedRow:hover {
+    background: var(--ui-g2);
+  }
+
+  /* Selected is an outline, never a fill alone. */
+  .markedRow[data-selected] {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+    background: var(--ui-g2);
+  }
+
+  .markedMain {
+    flex: 1 1 auto;
+    min-width: 0;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    height: 100%;
+    padding: 0 var(--space-1) 0 var(--space-2);
+    border: 0;
+    background: transparent;
+    color: var(--ui-ink);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .markedMain:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -2px;
+  }
+
+  .markedName {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .markedTime,
+  .markedLength {
+    flex: none;
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+    color: var(--ui-ink-2);
+    white-space: nowrap;
+  }
+
+  .markedLength {
+    min-width: 6ch;
+    text-align: right;
+  }
+
+  .markedTag {
+    flex: none;
+    padding: 0 3px;
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+  }
+
+  /* A narrow rail keeps the name and the length; the start time is in the row's hint. */
+  @container (max-width: 236px) {
+    .markedTime {
+      display: none;
+    }
+  }
+}

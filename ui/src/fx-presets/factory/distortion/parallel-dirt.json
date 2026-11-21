@@ -1,0 +1,19 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "distortion",
+  "name": "Parallel Dirt",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "mode": 3,
+      "drive": 24,
+      "tone": 5000,
+      "filter_pos": 1,
+      "mix": 18,
+      "symmetry": 100,
+      "bits": 16,
+      "downsample": 1
+    }
+  }
+}

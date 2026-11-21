@@ -1,0 +1,122 @@
+/* Edit Grid track rail, left of the picture: one 24px row per track (identity
+ * stripe, name, its cell), or the compositing layer order. It shares the stage
+ * with the picture, so it is a column, never a strip that takes picture height
+ * (ui/DESIGN.md 8.2). */
+@layer kit {
+  .rail {
+    box-sizing: border-box;
+    display: flex;
+    flex: 1 1 var(--pv-rail-min, 176px);
+    flex-direction: column;
+    gap: var(--space-2);
+    min-width: var(--pv-rail-min, 176px);
+    max-width: 240px;
+    min-height: 0;
+    padding: var(--space-1) var(--space-1) var(--space-1) 0;
+    overflow-y: auto;
+    background: var(--ui-g1);
+    border-right: 1px solid var(--ui-g4);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+  }
+
+  /* A SegmentedControl that fills the rail's width. */
+  .fill {
+    display: flex;
+    flex: none;
+    width: calc(100% - var(--space-1));
+    margin-left: var(--space-1);
+  }
+
+  .fill > button {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 0 var(--space-1);
+    font-size: var(--type-11);
+  }
+
+  .list {
+    display: flex;
+    flex-direction: column;
+    flex: none;
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    height: var(--row-h);
+    flex: none;
+    padding-right: var(--space-1);
+    border-left: 3px solid var(--track-color, var(--ui-g4));
+    color: var(--ui-ink-2);
+    cursor: grab;
+    user-select: none;
+  }
+
+  .row:hover {
+    background: var(--ui-g2);
+    color: var(--ui-ink);
+  }
+
+  .row:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  /* Tracks still to place read first: ink and semibold. Placed ones recede. */
+  .row[data-free] {
+    color: var(--ui-ink);
+    font-weight: var(--weight-semibold);
+  }
+
+  .grip {
+    flex: none;
+    color: var(--ui-ink-3);
+  }
+
+  .name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .where {
+    flex: none;
+    color: var(--ui-ink-3);
+    font-size: var(--type-11);
+    font-weight: var(--weight-regular, 400);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .row[data-free] .where {
+    color: var(--ui-ink-2);
+  }
+
+  .layers {
+    min-height: 0;
+    padding-left: var(--space-1);
+  }
+
+  .empty {
+    margin: 0;
+    padding: var(--space-1) var(--space-2);
+    color: var(--ui-ink-2);
+  }
+
+  /* Only when the rail is tall enough to hold it without scrolling. */
+  .helper {
+    display: none;
+    margin: 0;
+    padding: 0 var(--space-2);
+    color: var(--ui-ink-3);
+    font-size: var(--type-11);
+  }
+
+  @container pv-stage (min-height: 400px) {
+    .helper { display: block; }
+  }
+}

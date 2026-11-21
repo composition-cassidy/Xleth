@@ -12,7 +12,7 @@
 // A project is a directory with the layout:
 //   MyRemix/
 //   ├── project.json      (Timeline serialized to JSON)
-//   ├── proxies/          (DNxHR proxy files)
+//   ├── proxies/          (preview proxies — H.264 or all-intra — and posters)
 //   ├── exports/          (Exported sample audio files)
 //   └── swapped/          (Swapped/processed audio files)
 //
@@ -54,7 +54,69 @@
 //     linearly. Endpoints and the post-animation hold are unchanged; the
 //     interior of a zoom sweep differs by that reparameterization. A 1x→8x
 //     sweep now reads 2.83x at its midpoint instead of 4.5x.
-inline constexpr int XLETH_PROJECT_SCHEMA_VERSION = 6;
+// v7: Sample Sandbox workspace. project.json carries a "sandboxWorkspace"
+//     object — SandboxCore::toJson(), i.e. sandboxStackVersion + every layer's
+//     op-stack, mix params and DURABLE source reference (path + time range,
+//     NOT the SampleBank id, which is minted fresh on every load). Written only
+//     when the workspace has layers, so a project that never opened the Sandbox
+//     is byte-identical to a v6 one apart from schema_version. A v≤6 project
+//     has no key at all and loads with an empty workspace — an exact no-op.
+// v8: Lens + Roam (docs/XLETH_LENS_ROAM_SPEC.md, model/LensRoam.h). Every
+//     clip carries "lens" {base, keys}; every track "roam" {base, keys} and
+//     "trackLens" [{regionId, base, hitCurve}] (one entry per Pattern Track
+//     source, i.e. the {trackId, regionId} key). A v≤7 project loads with
+//     identity everywhere, which is fit = Stretch, today's output: clips with
+//     no "lens" key load as Stretch, and lensroam::migratePreLensProject gives
+//     every source a pattern track already plays an explicit Stretch entry (a
+//     source with no entry is NEW and gets fit = Cover). Bit-exact: no
+//     rendering reads Lens/Roam in this version.
+//     No existing data migrates (Ruling 2's "anything that is an effect stays
+//     an effect"): the per-track Zoom/pan/rot, Bounce and slide-note ZPR are
+//     per-note animated devices in the video device chain, and the chain's
+//     ZoomPanRotation entry is a chain effect. TrackInfo::videoX/Y/W/H are
+//     written but never rendered; they are left as they are.
+//     P5 (no bump, additive): a pattern note MAY carry "lensOverride"
+//     {mode: Nudge|Own, keys}. Written only when present; absent = Follow,
+//     so every older project loads with none and saves unchanged.
+//     P7 (no bump): keys are evaluated (model/KeyCurve.h). A key carries
+//     "interp" (Hold|Linear|EaseOut) in place of P1's never-evaluated bezier
+//     handles p1x..p2y; a key without it loads as Linear (what those default
+//     handles described) and the handles are ignored. Each trackLens entry
+//     carries "zones" {headTicks, tailTicks, shortNote: Squash|Cut}; missing
+//     = the spec default (120, 240, Squash). Nothing wrote keys before P7.
+//     Bezier keys (no bump, additive): "interp": "Bezier" plus "bez"
+//     [x1, y1, x2, y2] (CSS cubic-bezier handles; missing/malformed = the
+//     ease-in-out default). Written only on Bezier keys, so a project with
+//     none saves byte-identical. An OLDER build reads "Bezier" as an unknown
+//     interp and falls back to Linear.
+// v9: Motion view (docs/XLETH_MOTION_VIEW_DESIGN.md R16, 2.1-2.3). All
+//     additive and written only when set, so a project that uses none of it
+//     re-saves byte-identical apart from schema_version:
+//       - a track MAY carry "parentTrackId" (int, written only when >= 0;
+//         missing / malformed / < -1 / its own id -> -1 = no parent; a
+//         dangling id resolves as no parent);
+//       - "roam" MAY carry "masks" [{id, name, kind, base{shape{closed,
+//         vertices}, feather, expansion, opacity, mode, invert}, keys,
+//         shapeKeys}] (written only when non-empty; tolerant read, see
+//         lensroam::masksFromJson);
+//       - top-level "motionView": opaque Motion view UI state owned by the
+//         renderer (<= 256 KB), written only when a non-empty object, not
+//         undoable, not dirtying (like masterVolume).
+//     Missing fields load as identity: no masks, no parent, no UI state. No
+//     migration step. The bump makes an older build warn that unknown fields
+//     will be dropped on save.
+// v10: Clones (docs/XLETH_CLONE_SPEC.md, model/Clone.h). Additive, written only
+//     when used, so a project with no Clones re-saves byte-identical apart from
+//     schema_version and renders bit-identically:
+//       - a Clone track carries "cloneOf" (source track id), "cloneKind"
+//         (Voice|Trail) and, for a Voice clone, "lensMode" (Linked|Own); a Trail
+//         clone "delayTicks", "tint" ("#RRGGBB"), "opacity" and, when keyed,
+//         "opacityKeys" [{pos, value, interp, bez?}]. Its added Roam is the
+//         track's ordinary "roam". Missing / malformed "cloneOf" = an ordinary
+//         track; an unknown "cloneKind" (newer build) also loads as one;
+//       - a pattern note MAY carry "voicePin" (int >= 0; absent = Auto).
+//     No migration step.
+inline constexpr int XLETH_PROJECT_SCHEMA_VERSION = 10;
 
 class ProjectManager {
 public:
@@ -64,17 +126,33 @@ public:
 
     // Create a new project at projectDir with the given name.
     // Creates the directory structure and writes an initial empty project.json.
-    bool createProject(const std::string& projectDir, const std::string& projectName);
+    // videoWidth/videoHeight/videoFps/aspectRatio are the canvas settings chosen
+    // in the Welcome screen's New Project dialog; they default to XLETH's
+    // standing default (1920x1080, 30fps, 16:9) so existing 2-arg call sites
+    // are unaffected.
+    bool createProject(const std::string& projectDir, const std::string& projectName,
+                       int videoWidth = 1920, int videoHeight = 1080,
+                       double videoFps = 30.0, const std::string& aspectRatio = "16:9");
 
     // Serialize the given timeline to project.json in the active project dir.
     // Pass non-empty effectChains / masterEffectChain JSON to persist effect chains
     // inside project.json (under "effectChains" and "masterEffectChain" keys).
     // masterVolume is a MixEngine-only value (no Timeline field backs it), so it
     // has to be passed in explicitly to be persisted.
+    // sandboxWorkspace is SandboxCore::toJson(). Like masterVolume it has no
+    // Timeline field behind it — the Sample Sandbox workspace is not timeline
+    // content — so it has to be passed in explicitly to be persisted. Written
+    // only when it actually holds layers.
+    // motionViewState is the Motion view UI state (schema v9, top-level key
+    // "motionView"): opaque renderer-owned JSON with no Timeline field behind
+    // it, passed in explicitly like sandboxWorkspace and written only when it
+    // is a non-empty object.
     bool saveProject(const Timeline& timeline,
                      const nlohmann::json& effectChains     = nlohmann::json::object(),
                      const nlohmann::json& masterEffectChain = nlohmann::json(),
-                     float masterVolume = 1.0f);
+                     float masterVolume = 1.0f,
+                     const nlohmann::json& sandboxWorkspace = nlohmann::json(),
+                     const nlohmann::json& motionViewState = nlohmann::json());
 
     // Save the timeline to a NEW project directory with a NEW name.
     // Creates the directory structure (same as createProject) and writes
@@ -86,7 +164,9 @@ public:
                        const Timeline& timeline,
                        const nlohmann::json& effectChains      = nlohmann::json::object(),
                        const nlohmann::json& masterEffectChain = nlohmann::json(),
-                       float masterVolume = 1.0f);
+                       float masterVolume = 1.0f,
+                       const nlohmann::json& sandboxWorkspace = nlohmann::json(),
+                       const nlohmann::json& motionViewState = nlohmann::json());
 
     // Whether a project directory has been set (via create/load/saveAs).
     bool hasProjectDir() const;
@@ -109,6 +189,18 @@ public:
     // Master fader gain read during the last successful loadProject().
     // Defaults to 1.0 (0 dB) for projects saved before it was persisted.
     float getLoadedMasterVolume() const;
+
+    // Sample Sandbox workspace JSON read during the last successful
+    // loadProject(), in SandboxCore::fromJson's shape. An empty object for a
+    // project saved before v7 or one that never opened the Sandbox — both of
+    // which fromJson accepts as "no layers", not as an error.
+    const nlohmann::json& getLoadedSandboxWorkspace() const;
+
+    // Motion view UI state ("motionView", schema v9) read during the last
+    // successful loadProject(): the stored object, or null when the project
+    // has none. Reset to null at the start of every load and by resetToBlank,
+    // so a project never inherits the previous one's state.
+    const nlohmann::json& getLoadedMotionViewState() const;
 
     // Per-media validation result. Covers both Media Pool sources and the
     // per-region swapped/extracted audio that lives inside the project folder.
@@ -158,6 +250,14 @@ public:
     std::string getMediaDir()    const;   // <projectDir>/media (consolidated sources)
     std::string getSlotsDir()    const;   // <projectDir>/slots (per-slot layer audio)
 
+    // Canvas settings chosen at project creation (or read back from
+    // project.json for a project created before this existed, which defaults
+    // to 1920x1080/30fps/16:9 — XLETH's standing default).
+    int         getVideoWidth()  const { return videoWidth_; }
+    int         getVideoHeight() const { return videoHeight_; }
+    double      getVideoFps()    const { return videoFps_; }
+    std::string getAspectRatio() const { return aspectRatio_; }
+
     // <projectDir>/cache/audio — derived audio the project can always rebuild:
     // today, the sampler's per-slot PREP bakes. Safe to delete at any time;
     // anything missing is simply re-rendered on next use. Empty when no
@@ -180,6 +280,13 @@ private:
     nlohmann::json loadedEffectChains_      = nlohmann::json::object();
     nlohmann::json loadedMasterEffectChain_ = nlohmann::json();
     float          loadedMasterVolume_      = 1.0f;
+    nlohmann::json loadedSandboxWorkspace_  = nlohmann::json::object();
+    nlohmann::json loadedMotionViewState_   = nlohmann::json();   // null = none
+
+    int         videoWidth_  = 1920;
+    int         videoHeight_ = 1080;
+    double      videoFps_    = 30.0;
+    std::string aspectRatio_ = "16:9";
 
     void        ensureDirectories();
     std::string projectFilePath() const;

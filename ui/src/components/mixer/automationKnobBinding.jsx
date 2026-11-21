@@ -307,6 +307,7 @@ export function useKnobAutomation(paramId, automationTarget, { min, max, skew } 
   return {
     enabled,
     automated,
+    automatedNorm,
     automatedValue,
     writeBaseValue,
     onContextMenu: enabled ? onContextMenu : undefined,

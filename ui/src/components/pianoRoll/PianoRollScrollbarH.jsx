@@ -1,6 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef } from 'react'
+import styles from './PianoRoll.module.css'
 
-const SCROLLBAR_HEIGHT = 20
+const SCROLLBAR_HEIGHT = 14
 const ZOOM_GUTTER_HEIGHT = 10
 const MIN_THUMB_SIZE = 24
 
@@ -105,31 +106,28 @@ const PianoRollScrollbarH = forwardRef(function PianoRollScrollbarH({
   }, [onZoomDelta])
 
   return (
-    <div className="piano-roll-scrollbar-h-wrap" style={{ width: viewportWidth }}>
+    <div className={styles.hscrollWrap}>
       <div
         ref={trackRef}
-        className="piano-roll-scrollbar-h"
+        className={styles.hscroll}
         onMouseDown={handleTrackClick}
-        style={{ height: SCROLLBAR_HEIGHT, width: viewportWidth }}
+        data-hint="Time scroll"
+        data-hint-mods="Drag: scroll · Click: page · Wheel: scroll"
       >
         {hasOverflow && (
           <div
             ref={thumbRef}
-            className="piano-roll-scrollbar-thumb piano-roll-scrollbar-thumb-h"
+            className={styles.thumb}
             onMouseDown={handleThumbMouseDown}
-            style={{
-              left: thumbLeft,
-              width: thumbSize,
-              height: SCROLLBAR_HEIGHT - 2,
-            }}
+            style={{ left: thumbLeft, width: thumbSize }}
           />
         )}
       </div>
       <div
         ref={gutterRef}
-        className="piano-roll-zoom-gutter"
-        title="Scroll to zoom"
-        style={{ height: ZOOM_GUTTER_HEIGHT, width: viewportWidth }}
+        className={styles.zoomStrip}
+        data-hint="Time zoom"
+        data-hint-mods="Wheel: zoom in or out"
       />
     </div>
   )

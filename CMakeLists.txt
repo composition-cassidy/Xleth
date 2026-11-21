@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.28)
 
 # Use vcpkg toolchain if VCPKG_ROOT is set, else fall back to VS2022's bundled
-# vcpkg. Without a toolchain here, this is the ONLY place FFmpeg/GLEW/glfw3
+# vcpkg. Without a toolchain here, this is the ONLY place FFmpeg/nlohmann-json
 # ever get installed into build/vcpkg_installed — bridge/CMakeLists.txt and
 # engine/CMakeLists.txt both only *reuse* that pre-installed tree, they don't
 # bootstrap it. See the matching fallback in bridge/CMakeLists.txt.
@@ -29,3 +29,10 @@ enable_testing()
 add_subdirectory(engine)
 add_subdirectory(scanner)
 add_subdirectory(editor-host)
+
+# Crash/hang VST3 fixtures for smoke-testing the scanner failure path.
+# Test-only, never shipped, not part of build.bat's default flow.
+option(XLETH_BUILD_TEST_PLUGINS "Build the crash/hang VST3 scan fixtures (tools/test-plugins)" OFF)
+if(XLETH_BUILD_TEST_PLUGINS)
+    add_subdirectory(tools/test-plugins)
+endif()

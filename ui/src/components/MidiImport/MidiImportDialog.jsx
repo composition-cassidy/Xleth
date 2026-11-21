@@ -1,7 +1,11 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import MidiTrackRow from './MidiTrackRow.jsx'
-import { findMatchingSample, gmDrumName } from './filenameMatch.js'
+import { gmDrumName, findMatchingTrack } from './filenameMatch.js'
+import { MODE_NEW, MODE_UPDATE } from './MidiReimportModeSelect.jsx'
+import { resolveAutoAssignment, rememberAssignments } from './assignmentMemory.js'
 import { useToast } from '../Toast.jsx'
+import { Button, Checkbox, Dialog, Progress, SegmentedControl, Select } from '../../ui-kit'
+import styles from './MidiImport.module.css'
 import { PPQ } from '../../constants/timeline.js'
 import { getPickerPath, openFilePicker } from '../filePicker/filePickerService.js'
 
@@ -20,8 +24,73 @@ import {
   readDefaultMaxNoteLengthDenom,
   denomToTicks,
 } from './maxNoteLength.js'
+import { DEFAULT_TRANSPOSE_SEMITONES, clampTransposeSemitones } from './transpose.js'
+import { playheadClock } from '../../services/PlayheadClock.js'
+import { beatsToTicks } from '../../constants/timeline.js'
+import { iconComponent } from '../../ui-kit/icons'
+
+const IcCheckCircle = iconComponent('check-circle')
+const IcWarning = iconComponent('warning')
+
+// ── Placement (dialog-level, one set per import) ─────────────────────────────
+// Position and tile-to-fill apply to CREATE rows only; re-import (update) rows
+// always preserve the target track's existing block placements. "At playhead"
+// reads the renderer's existing playhead mirror (playheadClock, fed by
+// transport IPC via TimelineView) rather than adding a new bridge call, and
+// the resolved tick is sent explicitly in commitOptions -- the engine command
+// never reads transport state itself.
+export const POSITION_START = 'start'
+export const POSITION_PLAYHEAD = 'playhead'
 
 export const MIDI_BPM_MATCH_TOLERANCE = 0.05
+
+// ── FL Studio projects ───────────────────────────────────────────────────────
+// A .flp is converted to a temp MIDI file in the main process (flp.convert,
+// electron-main/flp-import.js) and then runs through the exact same midi.*
+// pipeline. One output row per FL channel, named after the channel.
+export const IMPORT_FILE_FILTERS = [
+  { name: 'MIDI and FL Studio projects', extensions: ['mid', 'midi', 'flp'] },
+  { name: 'MIDI Files', extensions: ['mid', 'midi'] },
+  { name: 'FL Studio projects', extensions: ['flp'] },
+]
+
+export function isFlpPath(fp) {
+  return /\.flp$/i.test(String(fp || ''))
+}
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
+
+// The detail lines an FLP import adds under the placement options. Pure, so the
+// wording is unit-tested without rendering the dialog.
+export function buildFlpDetails(info) {
+  if (!info) return []
+  const lines = []
+  if (info.pattern) {
+    lines.push(`Playlist is empty: importing pattern “${info.pattern.name}” from the start`)
+  }
+  if (info.hasTempoAutomation) {
+    lines.push(`Tempo automation: first tempo only (${Number(info.startBpm).toFixed(1)} BPM)`)
+  }
+  if (!info.includeMuted) {
+    const parts = []
+    if (info.mutedTracks?.length) parts.push(plural(info.mutedTracks.length, 'playlist track'))
+    if (info.mutedClips > 0) parts.push(plural(info.mutedClips, 'clip'))
+    if (parts.length) lines.push(`Muted, skipped: ${parts.join(', ')}`)
+  }
+  if (info.audioClipTracks > 0) {
+    lines.push('Audio clips: one hit per clip, from the sample start')
+  }
+  return lines
+}
+
+export function hasFlpMutedContent(info) {
+  return !!info && ((info.mutedTracks?.length || 0) > 0 || info.mutedClips > 0 || info.mutedNotes > 0)
+}
+
+export function flpVersionLabel(version) {
+  const [major, minor] = String(version || '').split('.')
+  return major ? `FL Studio ${major}${minor ? `.${minor}` : ''}` : 'FL Studio'
+}
 
 export function areBpmsEffectivelyEqual(sourceBpm, projectBpm, tolerance = MIDI_BPM_MATCH_TOLERANCE) {
   const source = Number(sourceBpm)
@@ -133,6 +202,7 @@ export function buildMidiImportOptions({
   outputTrackOptions,
   projectBpm,
   tempoOverride,
+  trimLeadingSilence = false,
 }) {
   const enabledTrackIndices = []
   const perTrackOptions = {}
@@ -156,6 +226,12 @@ export function buildMidiImportOptions({
     const denom = opts?.maxNoteLengthDenom ?? DEFAULT_MAX_NOTE_LENGTH_DENOM
     return denomToTicks(denom)
   })
+  // Drum sub-tracks never show a transpose control (transposing a routed drum
+  // note is meaningless), so they always carry the default of 0 (no shift).
+  const transposeByOutputTrack = outputTracks.map(ot => {
+    const opts = outputTrackOptions[ot.outputTrackIndex]
+    return clampTransposeSemitones(opts?.transposeSemitones ?? DEFAULT_TRANSPOSE_SEMITONES)
+  })
 
   return {
     enabledTrackIndices,
@@ -164,7 +240,30 @@ export function buildMidiImportOptions({
     projectTPQ: PPQ,
     projectBPM,
     maxNoteLengthByOutputTrack,
+    transposeByOutputTrack,
+    trimLeadingSilence: !!trimLeadingSilence,
   }
+}
+
+// ── Re-import mode ────────────────────────────────────────────────────────────
+// A row is either 'new' (create a fresh Pattern track, the original behaviour)
+// or 'update' (rewrite the notes of the pattern already on targetTrackId).
+// Defined by the control that sets them; re-exported here because the commit
+// payload builders below are the other half of the same contract.
+export { MODE_NEW, MODE_UPDATE } from './MidiReimportModeSelect.jsx'
+
+// Resolves one row's stored mode into the { mode, targetTrackId } pair the
+// engine expects. A row that says 'update' but whose target has disappeared
+// from the timeline since the dialog opened falls back to 'new': the engine
+// would hard-fail it otherwise, losing the notes entirely.
+export function resolveRowMode(opts, targets) {
+  if (opts?.mode !== MODE_UPDATE) return { mode: MODE_NEW, targetTrackId: -1 }
+  const targetId = Number(opts.targetTrackId)
+  const target = (targets || []).find(t => Number(t.trackId) === targetId)
+  if (!target || target.eligible === false) {
+    return { mode: MODE_NEW, targetTrackId: -1 }
+  }
+  return { mode: MODE_UPDATE, targetTrackId: targetId }
 }
 
 export function buildMidiCommitOptions({
@@ -173,18 +272,33 @@ export function buildMidiCommitOptions({
   outputTrackOptions,
   tempoOverride,
   projectBpm,
+  reimportTargets = [],
+  // Placement — resolved by the caller (handleImport) before this is built,
+  // since "at playhead" reads live renderer state and this function stays a
+  // pure mapper. Both are Create-row-only; the engine ignores them for update
+  // rows regardless of what is sent.
+  positionTicks = 0,
+  tileToFillProject = false,
 }) {
   return {
     tempoOverride: getEffectiveTempoOverride(tempoOverride, metadata?.sourceTempo ?? summary?.sourceTempo, projectBpm),
     sourceBPM: metadata?.sourceTempo ?? summary?.sourceTempo,
     projectTPQ: PPQ,
+    positionTicks: Math.max(0, Math.round(Number(positionTicks) || 0)),
+    tileToFillProject: !!tileToFillProject,
     outputTracks: (metadata?.outputTracks || []).map((ot, i) => {
       const userOpts = outputTrackOptions[i]
+      const { mode, targetTrackId } = resolveRowMode(userOpts, reimportTargets)
       return {
         outputTrackIndex: i,
+        // In update mode the engine keeps the track's OWN name (the user may
+        // have renamed it since the first import); this is still sent because
+        // it names a pattern seeded into a previously empty target track.
         name: userOpts?.name ?? ot.name,
         visualOnly: userOpts?.visualOnly ?? false,
         regionId: Number(userOpts?.sampleId ?? -1),
+        mode,
+        targetTrackId,
       }
     }),
   }
@@ -198,17 +312,28 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
   useEffect(() => { initialFilePathRef.current = initialFilePath }, [initialFilePath])
 
   const [phase, setPhase] = useState('idle') // idle | parsing | preview | importing | done | error
+  // filePath is what the engine reads (the .mid, or the temp .mid made from a
+  // .flp); sourcePath is what the user picked and what the dialog shows.
   const [filePath, setFilePath] = useState('')
+  const [sourcePath, setSourcePath] = useState('')
+  const [flpInfo, setFlpInfo] = useState(null)
   const [summary, setSummary] = useState(null)
   const [errorMsg, setErrorMsg] = useState('')
   const [projectBpm, setProjectBpm] = useState(null)
   const [tempoOverride, setTempoOverride] = useState(true)
+  // Placement (dialog-level, one set per import — Create rows only).
+  const [positionMode, setPositionMode] = useState(POSITION_START)
+  const [trimLeadingSilence, setTrimLeadingSilence] = useState(false)
+  const [tileToFillProject, setTileToFillProject] = useState(false)
   // Source-track-level: { [sourceTrackIndex]: { enabled, splitByNote } }
   const [trackOptions, setTrackOptions] = useState({})
   // Output-track-level: { [outputTrackIndex]: { _stableKey, enabled, visualOnly, sampleId, name } }
   const [outputTrackOptions, setOutputTrackOptions] = useState({})
   const [regions, setRegions] = useState([])
   const [sourceMedia, setSourceMedia] = useState([])
+  // Existing Pattern tracks that a row can be re-imported INTO, resolved
+  // engine-side (midi.getReimportTargets).
+  const [reimportTargets, setReimportTargets] = useState([])
 
   // Fetch project BPM whenever the dialog opens.
   useEffect(() => {
@@ -224,13 +349,19 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
 
     setPhase('idle')
     setFilePath('')
+    setSourcePath('')
+    setFlpInfo(null)
     setSummary(null)
     setErrorMsg('')
     setTempoOverride(true)
+    setPositionMode(POSITION_START)
+    setTrimLeadingSilence(false)
+    setTileToFillProject(false)
     setTrackOptions({})
     setOutputTrackOptions({})
     setRegions([])
     setSourceMedia([])
+    setReimportTargets([])
 
     let cancelled = false
 
@@ -239,10 +370,10 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
       if (!fp) {
         const picked = await openFilePicker({
           mode: 'openFile',
-          title: 'Import MIDI',
-          subtitle: 'Choose a MIDI file to map into the project.',
+          title: 'Import MIDI or FL Studio project',
+          subtitle: 'Choose a MIDI file or an FL Studio project (.flp) to map into the project.',
           actionLabel: 'Import',
-          filters: [{ name: 'MIDI Files', extensions: ['mid', 'midi'] }],
+          filters: IMPORT_FILE_FILTERS,
           legacyPicker: () => window.xleth?.dialog?.openMidiDialog?.(),
         })
         fp = getPickerPath(picked)
@@ -256,12 +387,39 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
       }
 
       console.log('[MidiImport] File selected:', fp)
-      setFilePath(fp)
+      setSourcePath(fp)
       setPhase('parsing')
+
+      // FLP: convert to a temp MIDI first. A project whose arrangement is all
+      // muted retries with muted content included, so there is something to
+      // show (the checkbox then reads ticked and can be cleared).
+      let enginePath = fp
+      if (isFlpPath(fp)) {
+        let flp
+        try {
+          flp = await window.xleth?.flp?.convert?.(fp, {})
+          if (flp && !flp.ok && flp.info?.mutedNotes > 0) {
+            flp = await window.xleth?.flp?.convert?.(fp, { includeMuted: true })
+          }
+        } catch (e) {
+          flp = { ok: false, reason: e?.message }
+        }
+        if (cancelled) return
+        if (!flp?.ok) {
+          console.warn('[MidiImport] FLP convert failure:', flp?.reason)
+          setPhase('error')
+          setErrorMsg(flp?.reason || "Couldn't read the FL Studio project")
+          return
+        }
+        console.log('[MidiImport] FLP converted:', flp.midiPath, flp.info)
+        enginePath = flp.midiPath
+        setFlpInfo(flp.info)
+      }
+      setFilePath(enginePath)
 
       let raw
       try {
-        raw = await window.xleth?.midi?.parseSummary?.(fp)
+        raw = await window.xleth?.midi?.parseSummary?.(enginePath)
       } catch (e) {
         if (cancelled) return
         console.error('[MidiImport] parseSummary error:', e)
@@ -293,10 +451,12 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
 
       let fetchedRegions = []
       let fetchedSources = []
+      let fetchedTargets = []
       try {
-        const [regionResult, sourceResult] = await Promise.allSettled([
+        const [regionResult, sourceResult, targetResult] = await Promise.allSettled([
           window.xleth?.timeline?.getRegions?.(),
           window.xleth?.timeline?.getSources?.(),
+          window.xleth?.midi?.getReimportTargets?.(),
         ])
         fetchedRegions = regionResult.status === 'fulfilled' && Array.isArray(regionResult.value)
           ? regionResult.value
@@ -304,13 +464,24 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
         fetchedSources = sourceResult.status === 'fulfilled' && Array.isArray(sourceResult.value)
           ? sourceResult.value
           : []
+        fetchedTargets = targetResult.status === 'fulfilled' && Array.isArray(targetResult.value)
+          ? targetResult.value
+          : []
+        if (targetResult.status !== 'fulfilled' || !Array.isArray(targetResult.value)) {
+          // Four-layer bridge: an unwired call resolves to undefined rather than
+          // throwing, so say so loudly instead of silently offering no targets.
+          console.warn('[MidiImport] getReimportTargets unavailable — re-import mode disabled',
+                       targetResult.status === 'rejected' ? targetResult.reason : targetResult.value)
+        }
       } catch (e) {
         console.warn('[MidiImport] timeline media fetch error:', e)
       }
       if (cancelled) return
 
+      console.log('[MidiImport] Re-import targets:', fetchedTargets)
       setRegions(fetchedRegions)
       setSourceMedia(fetchedSources)
+      setReimportTargets(fetchedTargets)
       setSummary(parsed)
       setTrackOptions(initSourceTrackOptions(parsed.tracks || []))
       // outputTrackOptions seeded by reconciliation effect watching outputTracks
@@ -321,6 +492,37 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
     run()
     return () => { cancelled = true }
   }, [isOpen]) // onClose intentionally omitted — stable ref not guaranteed
+
+  // FLP: switching arrangement or the muted filter re-converts and re-reads
+  // the summary. Rows reseed (auto-match runs again) because track indices
+  // change with the content.
+  const reloadFlp = useCallback(async (patch) => {
+    if (!flpInfo || !sourcePath) return
+    const options = {
+      arrangementIndex: flpInfo.arrangementIndex,
+      includeMuted: flpInfo.includeMuted,
+      patternIid: flpInfo.pattern?.iid ?? null,
+      ...patch,
+    }
+    setPhase('parsing')
+    try {
+      const res = await window.xleth.flp.convert(sourcePath, options)
+      if (!res?.ok) throw new Error(res?.reason || "Couldn't read the FL Studio project")
+      const raw = await window.xleth.midi.parseSummary(res.midiPath)
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
+      if (!parsed?.ok) throw new Error(parsed?.reason || 'Failed to read the converted project')
+      setFlpInfo(res.info)
+      setFilePath(res.midiPath)
+      setSummary(parsed)
+      setTrackOptions(initSourceTrackOptions(parsed.tracks || []))
+      setOutputTrackOptions({})
+      setPhase('preview')
+    } catch (e) {
+      console.warn('[MidiImport] FLP reload failed:', e)
+      setErrorMsg(String(e?.message ?? e))
+      setPhase('error')
+    }
+  }, [flpInfo, sourcePath])
 
   // Auto-close 2 s after done phase.
   useEffect(() => {
@@ -343,8 +545,10 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
   // ── Reconcile outputTrackOptions whenever outputTracks changes ──────────────
   // Carries forward existing entries by stableKey so user selections survive
   // splitByNote toggles and parent enable/disable. Seeds new entries via auto-match.
-  // regions captured from render closure — correct at the time outputTracks changes.
-  // regions intentionally excluded from deps — auto-match runs on seed only.
+  // regions and reimportTargets captured from the render closure — both are set
+  // in the same batch that sets summary, so they are populated by the time
+  // outputTracks first becomes non-empty.
+  // Deliberately excluded from deps — auto-match runs on seed only.
   useEffect(() => {
     setOutputTrackOptions(prev => {
       const prevByStableKey = {}
@@ -357,19 +561,43 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
         if (prevByStableKey[key]) {
           next[ot.outputTrackIndex] = prevByStableKey[key]
         } else {
-          const matched = findMatchingSample(ot.name, regions)
+          // Precedence: remembered assignment (from a prior import of this
+          // track name) first, then scored fuzzy match against the GM alias
+          // table and region names.
+          const { region: matched, source: matchSource } = resolveAutoAssignment(ot.name, regions)
           if (matched) {
-            console.log(`[MidiImport] Auto-match: "${ot.name}" → "${matched.name}" (regionId=${matched.id})`)
+            console.log(`[MidiImport] Auto-match (${matchSource}): "${ot.name}" → "${matched.name}" (regionId=${matched.id})`)
           } else {
             console.log(`[MidiImport] Auto-match: "${ot.name}" → none`)
           }
+
+          // Re-import: an existing Pattern track whose name matches becomes the
+          // default target, so the common case (same MIDI, edited in the DAW)
+          // needs no clicks. No match → 'new', the original behaviour.
+          const matchedTrack = findMatchingTrack(ot.name, reimportTargets)
+          if (matchedTrack) {
+            console.log(`[MidiImport] Track-match: "${ot.name}" → update trackId=${matchedTrack.trackId} ("${matchedTrack.name}")`)
+          }
+
+          // When updating, the track's CURRENT binding is ground truth and wins
+          // over the auto-match: it is what is actually playing on the timeline.
+          // regionId -1 on the target means "unassigned", in which case the
+          // auto-match still gets to suggest something.
+          const targetRegionId = Number(matchedTrack?.regionId ?? -1)
+          const seededSampleId = (matchedTrack && targetRegionId >= 0)
+            ? targetRegionId
+            : (matched?.id ?? null)
+
           next[ot.outputTrackIndex] = {
             _stableKey: key,
             enabled: true,
             visualOnly: false,
-            sampleId: matched?.id ?? null,
+            sampleId: seededSampleId,
             name: ot.name,
             maxNoteLengthDenom: readDefaultMaxNoteLengthDenom(),
+            transposeSemitones: DEFAULT_TRANSPOSE_SEMITONES,
+            mode: matchedTrack ? MODE_UPDATE : MODE_NEW,
+            targetTrackId: matchedTrack ? Number(matchedTrack.trackId) : -1,
           }
         }
       }
@@ -403,8 +631,16 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
 
     const effectiveTempoOverride = getEffectiveTempoOverride(tempoOverride, summary.sourceTempo, projectBpm)
 
+    // Resolved now, at click time, from the renderer's existing playhead
+    // mirror -- NOT read again later, and never by the engine command itself.
+    const resolvedPositionTicks = positionMode === POSITION_PLAYHEAD
+      ? Math.max(0, beatsToTicks(playheadClock.positionBeats))
+      : 0
+
     setPhase('importing')
-    console.log('[MidiImport] Import begin: tempoOverride=', effectiveTempoOverride, 'output tracks=', outputTracks.length)
+    console.log('[MidiImport] Import begin: tempoOverride=', effectiveTempoOverride, 'output tracks=', outputTracks.length,
+                'positionMode=', positionMode, 'positionTicks=', resolvedPositionTicks,
+                'trimLeadingSilence=', trimLeadingSilence, 'tileToFillProject=', tileToFillProject)
 
     // Two RAFs so phase='importing' paints before synchronous bridge calls freeze the renderer.
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))
@@ -419,6 +655,7 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
         outputTrackOptions,
         projectBpm,
         tempoOverride,
+        trimLeadingSilence,
       })
 
       console.log('[MidiImport] Import payload:', importOptions)
@@ -440,24 +677,66 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
         outputTrackOptions,
         tempoOverride,
         projectBpm,
+        reimportTargets,
+        positionTicks: resolvedPositionTicks,
+        tileToFillProject,
       })
+
+      const updateCount = commitOptions.outputTracks.filter(o => o.mode === MODE_UPDATE).length
+      console.log('[MidiImport] Commit payload:', updateCount, 'update row(s),',
+                  commitOptions.outputTracks.length - updateCount, 'new row(s)')
 
       await window.xleth.midi.executeImport(noteData, commitOptions)
       const t2 = performance.now()
       console.log('[MidiImport] executeImport complete:', (t2 - t1).toFixed(1), 'ms', 'total=', (t2 - t0).toFixed(1), 'ms')
 
-      showToast(`Imported ${enabledCount} track${enabledCount === 1 ? '' : 's'} — Ctrl+Z to undo`, 'success')
+      // Learn from this import: remember every enabled output track's final
+      // name → sample assignment, including manual overrides, so a re-import
+      // of the same (or similarly-named) tracks pre-fills next time.
+      const assignmentEntries = outputTracks
+        .filter(ot => outputTrackOptions[ot.outputTrackIndex]?.enabled !== false)
+        .map(ot => {
+          const opts = outputTrackOptions[ot.outputTrackIndex]
+          const regionId = opts?.sampleId
+          if (regionId == null || Number(regionId) < 0) return null
+          const region = regions.find(r => String(r.id) === String(regionId))
+          return {
+            trackName: opts?.name ?? ot.name,
+            regionId,
+            regionName: region?.name ?? '',
+          }
+        })
+        .filter(Boolean)
+      if (assignmentEntries.length) {
+        rememberAssignments(assignmentEntries)
+      }
+
+      const updatedRows = outputTracks.filter(ot => {
+        const opts = outputTrackOptions[ot.outputTrackIndex]
+        return opts?.enabled !== false
+          && resolveRowMode(opts, reimportTargets).mode === MODE_UPDATE
+      }).length
+      const createdRows = enabledCount - updatedRows
+      const summaryText = updatedRows === 0
+        ? `Imported ${createdRows} track${createdRows === 1 ? '' : 's'}`
+        : createdRows === 0
+          ? `Updated ${updatedRows} track${updatedRows === 1 ? '' : 's'}`
+          : `Updated ${updatedRows}, imported ${createdRows}`
+      showToast(`${summaryText} — Ctrl+Z to undo`, 'success')
       setPhase('done')
     } catch (err) {
       console.error('[MidiImport] Import failed:', err)
       setErrorMsg(String(err?.message ?? err))
       setPhase('error')
     }
-  }, [summary, filePath, canImport, tempoOverride, outputTracks, outputTrackOptions, trackOptions, enabledCount, projectBpm, showToast])
+  }, [summary, filePath, canImport, tempoOverride, outputTracks, outputTrackOptions, trackOptions, enabledCount, projectBpm, showToast, regions, reimportTargets, positionMode, trimLeadingSilence, tileToFillProject])
 
   if (!isOpen) return null
 
-  const fileName = filePath ? filePath.replace(/\\/g, '/').split('/').pop() : ''
+  const shownPath = sourcePath || filePath
+  const fileName = shownPath ? shownPath.replace(/\\/g, '/').split('/').pop() : ''
+  const isFlp = !!flpInfo
+  const flpDetails = buildFlpDetails(flpInfo)
   const filteredSourceTracks = summary ? (summary.tracks || []).filter(t => t.noteCount > 0) : []
   const tempoBpmMatches = areBpmsEffectivelyEqual(summary?.sourceTempo, projectBpm)
   const pitchBendTrackCount = filteredSourceTracks.filter(track => track.hasPitchBend).length
@@ -486,140 +765,204 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
     }
   }
 
+  const importing = phase === 'importing'
+  const dialogTitle = isFlp ? 'Import FL Studio project' : 'Import MIDI'
+  const readingFlp = isFlp || isFlpPath(sourcePath)
+  const importLabel = enabledCount === 1 ? 'Import 1 track' : `Import ${enabledCount} tracks`
+
   return (
-    <div className="midi-dialog-backdrop">
-      <div className="midi-dialog" onClick={e => e.stopPropagation()}>
+    <Dialog
+      title={dialogTitle}
+      width="xl"
+      flush
+      fill
+      dismissable={!importing}
+      onClose={onClose}
+      actions={
+        phase === 'done' ? (
+          <Button size="lg" variant="primary" onClick={onClose}>Close</Button>
+        ) : (
+          <>
+            <Button size="lg" onClick={onClose} disabled={importing}>Cancel</Button>
+            {phase === 'preview' && (
+              <Button size="lg" variant="primary" onClick={handleImport} disabled={!canImport}>
+                {importLabel}
+              </Button>
+            )}
+            {phase === 'error' && (
+              <>
+                <Button size="lg" onClick={() => setPhase('preview')}>Back</Button>
+                <Button size="lg" variant="primary" onClick={onClose}>Close</Button>
+              </>
+            )}
+          </>
+        )
+      }
+    >
+      <div className={styles.root}>
 
-        {/* ── Header ─────────────────────────────────────────────────────── */}
-        <div className="midi-dialog-header">
-          <span>Import MIDI</span>
-          <button className="midi-dialog-close" onClick={onClose} title="Close">×</button>
-        </div>
+        {(phase === 'idle' || phase === 'parsing') && (
+          <div className={styles.status}>
+            <Progress
+              label={readingFlp ? 'Opening FL Studio project' : 'Opening MIDI file'}
+              value={null}
+              text={phase === 'idle'
+                ? 'Opening file picker…'
+                : readingFlp ? 'Reading FL Studio project…' : 'Parsing MIDI file…'}
+            />
+          </div>
+        )}
 
-        {/* ── Body ───────────────────────────────────────────────────────── */}
-        <div className="midi-dialog-body">
+        {importing && (
+          <div className={styles.status}>
+            <Progress
+              label={isFlp ? 'Importing FL Studio project' : 'Importing MIDI'}
+              value={null}
+              text={isFlp ? 'Importing notes…' : 'Importing MIDI…'}
+            />
+            <span className={styles.statusSub}>This may take a few seconds for projects with multiple sources.</span>
+          </div>
+        )}
 
-          {(phase === 'idle' || phase === 'parsing') && (
-            <div className="midi-spinner-wrap">
-              <div className="midi-spinner" />
-              <span className="midi-spinner-label">
-                {phase === 'idle' ? 'Opening file picker…' : 'Parsing MIDI file…'}
+        {phase === 'error' && (
+          <div className={styles.status}>
+            <div className={styles.statusLine} data-tone="error" role="alert">
+              <IcWarning size={16} aria-hidden="true" />
+              <span>{errorMsg || 'An error occurred'}</span>
+            </div>
+          </div>
+        )}
+
+        {phase === 'done' && (
+          <div className={styles.status}>
+            <div className={styles.statusLine} data-tone="done">
+              <IcCheckCircle size={16} aria-hidden="true" />
+              <span>Import complete</span>
+            </div>
+          </div>
+        )}
+
+        {phase === 'preview' && summary && (
+          <>
+            {/* File + tempo info */}
+            <div className={styles.fileInfo}>
+              <span className={styles.fileName} title={shownPath}>{fileName}</span>
+              <span className={styles.tempo}>
+                {isFlp ? `${flpVersionLabel(flpInfo.version)} · ` : ''}
+                Source {summary.sourceTempo?.toFixed(1)} BPM
+                {projectBpm != null ? ` · Project ${projectBpm.toFixed(1)} BPM` : ''}
               </span>
             </div>
-          )}
 
-          {phase === 'importing' && (
-            <div className="midi-spinner-wrap">
-              <div className="midi-spinner" />
-              <span className="midi-spinner-label">Importing MIDI…</span>
-              <span className="midi-spinner-sub">This may take a few seconds for projects with multiple sources.</span>
+            <div className={styles.optionGroup}>
+              <Checkbox
+                checked={tempoBpmMatches ? false : tempoOverride}
+                onChange={setTempoOverride}
+                disabled={tempoBpmMatches}
+              >
+                Override project tempo to match source
+              </Checkbox>
+              {tempoBpmMatches && <span className={styles.note}>Already matches</span>}
             </div>
-          )}
 
-          {phase === 'error' && (
-            <div className="midi-status-wrap midi-status-wrap--error">
-              <span className="midi-status-icon">⚠</span>
-              <span className="midi-status-msg">{errorMsg || 'An error occurred'}</span>
-            </div>
-          )}
-
-          {phase === 'done' && (
-            <div className="midi-status-wrap midi-status-wrap--done">
-              <span className="midi-status-icon">✓</span>
-              <span className="midi-status-msg">Import complete</span>
-            </div>
-          )}
-
-          {phase === 'preview' && summary && (
-            <>
-              {/* File + tempo info */}
-              <div className="midi-file-info">
-                <span className="midi-file-name" title={filePath}>{fileName}</span>
-                <span className="midi-bpm-line">
-                  Source: {summary.sourceTempo?.toFixed(1)} BPM
-                  {projectBpm != null ? ` | Project: ${projectBpm.toFixed(1)} BPM` : ''}
-                </span>
-              </div>
-
-              <label className={`midi-tempo-override-row${tempoBpmMatches ? ' midi-tempo-override-row--inactive' : ''}`}>
-                <input
-                  type="checkbox"
-                  checked={tempoBpmMatches ? false : tempoOverride}
-                  onChange={e => setTempoOverride(e.target.checked)}
-                  disabled={tempoBpmMatches}
+            {/* Placement — Create rows only; re-import rows always keep their
+                existing block placement (see the per-row note below). */}
+            <div className={styles.options} role="group" aria-label="Import placement">
+              <div className={styles.optionGroup}>
+                <span className={styles.label}>Position</span>
+                <SegmentedControl
+                  label="Import position"
+                  options={[
+                    { value: POSITION_START, label: 'Start of timeline' },
+                    { value: POSITION_PLAYHEAD, label: 'At playhead' },
+                  ]}
+                  value={positionMode}
+                  onChange={setPositionMode}
                 />
-                <span className="midi-tempo-override-text">Override project tempo to match source</span>
-                {tempoBpmMatches && (
-                  <span className="midi-tempo-override-note">Already matches</span>
-                )}
-              </label>
-
-              {(summary.hasMidFileTempoChanges || pitchBendTrackCount > 0 || unassignedOutputCount > 0) && (
-                <div className="midi-import-details" aria-label="Import details">
-                  {summary.hasMidFileTempoChanges && (
-                    <span>MIDI tempo changes: first tempo only</span>
-                  )}
-                  {pitchBendTrackCount > 0 && (
-                    <span>Pitch bend: skipped on {pitchBendTrackCount} track{pitchBendTrackCount === 1 ? '' : 's'}</span>
-                  )}
-                  {unassignedOutputCount > 0 && (
-                    <span>Unassigned outputs: {unassignedOutputCount}</span>
-                  )}
-                </div>
-              )}
-
-              {/* Track list (zero-note tracks already excluded) */}
-              <div className="midi-track-list">
-                {filteredSourceTracks.map(track => (
-                  <MidiTrackRow
-                    key={track.index}
-                    track={track}
-                    parentOptions={trackOptions[track.index] ?? { enabled: true, splitByNote: !!track.isDrum }}
-                    outputOptions={resolveOutputOptionsForSourceTrack(track)}
-                    onParentChange={patch => setTrackOptions(prev => ({
-                      ...prev,
-                      [track.index]: { ...prev[track.index], ...patch },
-                    }))}
-                    onOutputChange={(outputTrackIndex, patch) => setOutputTrackOptions(prev => ({
-                      ...prev,
-                      [outputTrackIndex]: { ...prev[outputTrackIndex], ...patch },
-                    }))}
-                    sampleItems={sampleItems}
-                  />
-                ))}
               </div>
-            </>
-          )}
+              <Checkbox checked={trimLeadingSilence} onChange={setTrimLeadingSilence}>Trim leading silence</Checkbox>
+              <Checkbox checked={tileToFillProject} onChange={setTileToFillProject}>Loop pattern to fill project</Checkbox>
+            </div>
 
-        </div>
+            {/* FL Studio source: which arrangement to read, and whether muted
+                playlist tracks and clips come along. Both re-read the project. */}
+            {isFlp && (flpInfo.arrangements.length > 1 || flpInfo.patterns?.length > 1 || hasFlpMutedContent(flpInfo)) && (
+              <div className={styles.options} role="group" aria-label="FL Studio project">
+                {flpInfo.arrangements.length > 1 && (
+                  <div className={styles.optionGroup}>
+                    <span className={styles.label}>Arrangement</span>
+                    <Select
+                      size="sm"
+                      ariaLabel="FL Studio arrangement"
+                      value={flpInfo.arrangementIndex}
+                      options={flpInfo.arrangements.map(a => ({ value: a.index, label: a.name }))}
+                      onChange={(index) => reloadFlp({ arrangementIndex: index })}
+                    />
+                  </div>
+                )}
+                {flpInfo.pattern && flpInfo.patterns.length > 1 && (
+                  <div className={styles.optionGroup}>
+                    <span className={styles.label}>Pattern</span>
+                    <Select
+                      size="sm"
+                      ariaLabel="FL Studio pattern"
+                      value={flpInfo.pattern.iid}
+                      options={flpInfo.patterns.map(x => ({ value: x.iid, label: x.name }))}
+                      onChange={(iid) => reloadFlp({ patternIid: iid })}
+                    />
+                  </div>
+                )}
+                {hasFlpMutedContent(flpInfo) && (
+                  <Checkbox
+                    checked={flpInfo.includeMuted}
+                    onChange={(checked) => reloadFlp({ includeMuted: checked })}
+                  >
+                    Include muted tracks and clips
+                  </Checkbox>
+                )}
+              </div>
+            )}
 
-        {/* ── Footer ─────────────────────────────────────────────────────── */}
-        <div className="midi-dialog-footer">
-          {phase === 'done' ? (
-            <button className="midi-btn-primary" onClick={onClose}>Close</button>
-          ) : (
-            <>
-              <button onClick={onClose}>Cancel</button>
-              {phase === 'preview' && (
-                <button
-                  className="midi-btn-primary"
-                  onClick={handleImport}
-                  disabled={!canImport}
-                >
-                  Import
-                </button>
-              )}
-              {phase === 'error' && (
-                <>
-                  <button onClick={() => setPhase('preview')}>Back</button>
-                  <button className="midi-btn-primary" onClick={onClose}>Close</button>
-                </>
-              )}
-            </>
-          )}
-        </div>
+            {(summary.hasMidFileTempoChanges || pitchBendTrackCount > 0 || unassignedOutputCount > 0 || flpDetails.length > 0) && (
+              <div className={styles.details} role="group" aria-label="Import details">
+                {flpDetails.map(line => <span key={line}>{line}</span>)}
+                {summary.hasMidFileTempoChanges && !isFlp && (
+                  <span>MIDI tempo changes: first tempo only</span>
+                )}
+                {pitchBendTrackCount > 0 && (
+                  <span>Pitch bend: skipped on {pitchBendTrackCount} track{pitchBendTrackCount === 1 ? '' : 's'}</span>
+                )}
+                {unassignedOutputCount > 0 && (
+                  <span>Unassigned outputs: {unassignedOutputCount}</span>
+                )}
+              </div>
+            )}
+
+            {/* Track list (zero-note tracks already excluded) */}
+            <div className={styles.tracks}>
+              {filteredSourceTracks.map(track => (
+                <MidiTrackRow
+                  key={track.index}
+                  track={track}
+                  parentOptions={trackOptions[track.index] ?? { enabled: true, splitByNote: !!track.isDrum }}
+                  outputOptions={resolveOutputOptionsForSourceTrack(track)}
+                  onParentChange={patch => setTrackOptions(prev => ({
+                    ...prev,
+                    [track.index]: { ...prev[track.index], ...patch },
+                  }))}
+                  onOutputChange={(outputTrackIndex, patch) => setOutputTrackOptions(prev => ({
+                    ...prev,
+                    [outputTrackIndex]: { ...prev[outputTrackIndex], ...patch },
+                  }))}
+                  sampleItems={sampleItems}
+                  reimportTargets={reimportTargets}
+                />
+              ))}
+            </div>
+          </>
+        )}
 
       </div>
-    </div>
+    </Dialog>
   )
 }

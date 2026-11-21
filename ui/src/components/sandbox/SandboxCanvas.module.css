@@ -1,0 +1,66 @@
+/* Wrapper rules for the Sample Sandbox canvases (waveform, spectrogram, overlays, ruler, overview strip).
+ * The drawing itself stays canvas; these only stack and size the layers. */
+@layer kit {
+  .area {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .ruler {
+    flex: 0 0 auto;
+    display: block;
+    width: 100%;
+    /* Clickable: placing the cursor is what a ruler is for. */
+    cursor: pointer;
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  /* Always mounted while there is audio (see SandboxOverviewStrip): the ruler and waveform under it never
+     shift when the view zooms. */
+  .overview {
+    flex: 0 0 auto;
+    display: block;
+    width: 100%;
+    background: var(--ui-g1);
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .stack {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 100%;
+  }
+
+  .layer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  /* Swapped to ew-resize by the canvas itself over a draggable selection edge. */
+  .overlay { cursor: text; }
+
+  /* The playhead is the topmost layer and never a pointer target: it moves at rAF rate and must not interrupt
+     a drag that happens to pass under it. */
+  .playhead {
+    pointer-events: none;
+    z-index: 2;
+  }
+
+  /* The envelope, spectral paint, region select and pitch overlays are inert until their tool is armed:
+     disarmed they are a read-only picture, and every pointer event belongs to the selection layer under them.
+     The pitch overlay is also pointer-active in Manual autotune mode (the graph IS the editor there). */
+  .inert { pointer-events: none; }
+
+  .inert[data-editing] {
+    pointer-events: auto;
+    cursor: crosshair;
+  }
+}

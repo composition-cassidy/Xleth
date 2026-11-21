@@ -1,6 +1,7 @@
-import { TRACK_HEIGHT, PPQ, pixelToBeat, snapBeatToGrid, beatsToTicks, findFreePosition } from '../../../constants/timeline.js'
+import { PPQ, pixelToBeat, snapBeatToGrid, beatsToTicks, ticksToBeats, findFreePosition } from '../../../constants/timeline.js'
 import { labelHexColor } from '../../../constants/labels.js'
 import { drawGhostPreview } from '../timelineDrawing.js'
+import { buildTrackIdToIndex, hitTestBlockAt, trackIndexAtY } from '../blockGeometry.js'
 import { createSelectTool } from './selectTool.js'
 
 /**
@@ -11,6 +12,7 @@ export function createPencilTool(deps) {
   const {
     clipsRef, tracksRef, regionsRef,
     pixelsPerBeatRef, scrollOffsetRef,
+    trackIdToIndexRef, trackColorOf,
     activeSampleIdRef, stickyNoteLengthRef, pencilTemplateRef,
     snapGranularityRef,
     onCreateClip, onDeleteClip, setStickyNoteLength,
@@ -27,40 +29,29 @@ export function createPencilTool(deps) {
   // Resolve a Y to a track index via the row layout when present (lane bands map
   // to their parent track — child lanes never accept drawn audio/pattern clips).
   function idxAtY(y) {
-    const layout = trackLayoutRef?.current
-    if (layout && typeof layout.trackIndexAtY === 'function') return layout.trackIndexAtY(y)
-    return Math.floor(y / TRACK_HEIGHT)
+    return trackIndexAtY(y, trackLayoutRef?.current)
+  }
+
+  // Pointer geometry for the current viewport (see blockGeometry.js).
+  function currentView() {
+    return {
+      scrollOffset: scrollOffsetRef.current,
+      ppb: pixelsPerBeatRef.current,
+      trackIdToIndex: trackIdToIndexRef?.current ?? buildTrackIdToIndex(tracksRef.current),
+    }
   }
 
   let ghost = null // { beat, trackIndex, durationBeats, color, name }
   let delegatedToSelect = false
 
-  function hitTestClip(beat, trackIndex) {
-    const clips = clipsRef.current
-    const tracks = tracksRef.current
-    if (!clips || !tracks) return null
-    for (let i = 0; i < clips.length; i++) {
-      const clip = clips[i]
-      const clipBeat = clip.positionTicks / PPQ
-      const clipEnd = clipBeat + clip.durationTicks / PPQ
-      const clipTrackIdx = tracks.findIndex((t) => t.id === clip.trackId)
-      if (beat >= clipBeat && beat < clipEnd && trackIndex === clipTrackIdx) return clip
-    }
-    return null
+  function hitTestClip(localX, trackIndex) {
+    if (!tracksRef.current) return null
+    return hitTestBlockAt(clipsRef.current, localX, trackIndex, currentView())
   }
 
-  function hitTestPatternBlock(beat, trackIndex) {
-    const blocks = patternBlocksRef?.current
-    const tracks = tracksRef.current
-    if (!blocks || !tracks) return null
-    for (let i = 0; i < blocks.length; i++) {
-      const b = blocks[i]
-      const bBeat = b.positionTicks / PPQ
-      const bEnd = bBeat + b.durationTicks / PPQ
-      const bTrackIdx = tracks.findIndex((t) => t.id === b.trackId)
-      if (beat >= bBeat && beat < bEnd && trackIndex === bTrackIdx) return b
-    }
-    return null
+  function hitTestPatternBlock(localX, trackIndex) {
+    if (!tracksRef.current) return null
+    return hitTestBlockAt(patternBlocksRef?.current, localX, trackIndex, currentView())
   }
 
   function getActiveRegion() {
@@ -82,7 +73,7 @@ export function createPencilTool(deps) {
 
       // ── Pattern track branch ────────────────────────────────────────────
       if (track?.type === 'Pattern' && e.button === 0) {
-        const hitBlock = hitTestPatternBlock(beat, trackIndex)
+        const hitBlock = hitTestPatternBlock(localX, trackIndex)
         if (hitBlock) {
           ghost = null
           delegatedToSelect = true
@@ -102,7 +93,7 @@ export function createPencilTool(deps) {
         return
       }
 
-      const hitClip = hitTestClip(beat, trackIndex)
+      const hitClip = hitTestClip(localX, trackIndex)
 
       if (e.button === 0) {
         // Left click
@@ -163,9 +154,10 @@ export function createPencilTool(deps) {
       const modifiers = { alt: e.altKey, shift: e.shiftKey, ctrl: e.ctrlKey }
       const snappedBeat = snapBeatToGrid(Math.max(0, beat), modifiers, snapGranularityRef?.current)
       const track = tracks[trackIndex]
-      const hoveringExisting = track?.type === 'Pattern'
-        ? hitTestPatternBlock(beat, trackIndex)
-        : hitTestClip(beat, trackIndex)
+      const onPatternTrack = track?.type === 'Pattern'
+      const hoveringExisting = onPatternTrack
+        ? hitTestPatternBlock(localX, trackIndex)
+        : hitTestClip(localX, trackIndex)
 
       selectTool.onMouseMove(localX, localY, e)
 
@@ -175,17 +167,38 @@ export function createPencilTool(deps) {
         return
       }
 
-      const template = pencilTemplateRef?.current
-      const region = template
-        ? regionsRef.current?.[template.regionId]
-        : getActiveRegion()
-
-      ghost = {
-        beat: snappedBeat,
-        trackIndex,
-        durationBeats: stickyNoteLengthRef.current / PPQ,
-        color: region ? labelHexColor(region.label) : '#888',
-        name: region?.name || '',
+      // The ghost previews exactly what a click here creates, in the colour it
+      // will be painted in (the destination track's).
+      const proposedTicks = beatsToTicks(snappedBeat)
+      if (onPatternTrack) {
+        // A pattern block of the track's current pattern, at its full length.
+        // No current pattern means a click creates nothing, so no ghost.
+        const patternId = currentPatternIdByTrackRef?.current?.[track.id]
+        const hasPattern = patternId != null && patternId >= 0
+        const pattern = hasPattern ? patternsRef?.current?.[patternId] : null
+        ghost = !hasPattern ? null : {
+          beat: snappedBeat,
+          trackIndex,
+          durationBeats: ticksToBeats(pattern?.lengthTicks || beatsToTicks(4)),
+          color: trackColorOf?.(track.id) || '#888888',
+          name: pattern?.name || '',
+        }
+      } else {
+        const template = pencilTemplateRef?.current
+        const region = template
+          ? regionsRef.current?.[template.regionId]
+          : getActiveRegion()
+        // Same placement rule as the click: slide right past whatever the new
+        // clip would overlap on this track.
+        const durationTicks = stickyNoteLengthRef.current
+        const positionTicks = findFreePosition(track.id, proposedTicks, durationTicks, clipsRef.current)
+        ghost = {
+          beat: ticksToBeats(positionTicks),
+          trackIndex,
+          durationBeats: ticksToBeats(durationTicks),
+          color: trackColorOf?.(track.id) || (region ? labelHexColor(region.label) : '#888888'),
+          name: region?.name || '',
+        }
       }
       redrawOverlay()
     },
@@ -198,19 +211,18 @@ export function createPencilTool(deps) {
 
     onContextMenu(localX, localY, e) {
       e.preventDefault()
-      const beat = pixelToBeat(localX, scrollOffsetRef.current, pixelsPerBeatRef.current)
       const trackIndex = idxAtY(localY)
       const tracks = tracksRef.current
       const track = tracks?.[trackIndex]
       if (track?.type === 'Pattern') {
-        const hitBlock = hitTestPatternBlock(beat, trackIndex)
+        const hitBlock = hitTestPatternBlock(localX, trackIndex)
         if (hitBlock) {
           console.log(`[PencilTool] Right-click delete pattern block ${hitBlock.id}`)
           onDeletePatternBlock?.(hitBlock.id)
         }
         return
       }
-      const hitClip = hitTestClip(beat, trackIndex)
+      const hitClip = hitTestClip(localX, trackIndex)
       if (hitClip) {
         console.log(`[PencilTool] Right-click delete clip ${hitClip.id}`)
         onDeleteClip(hitClip.id)

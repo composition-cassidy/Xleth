@@ -1220,6 +1220,24 @@ static void testProgressForSample() {
                0.5, eps, "Bezier shaping preserves a zero-left pin");
 }
 
+// ─── Quick Notation 32nd offset lives on the syllable and survives a save ─────
+static void testSyllableQuickOffsetRoundTrip() {
+    std::cout << "[SQ] Syllable quickOffsetPercent persistence\n";
+    SampleRegion::Syllable s;
+    s.startTime = 1.0; s.endTime = 2.0; s.number = 2; s.text = "lo";
+    s.quickOffsetPercent = 37.5;
+
+    const nlohmann::json j = s;
+    const auto back = j.get<SampleRegion::Syllable>();
+    CHECK_NEAR(back.quickOffsetPercent, 37.5, 1e-9, "offset survives to_json/from_json");
+    CHECK(back.text == "lo" && back.number == 2, "other syllable fields unchanged");
+
+    // A project saved before the field existed must still load, at the old default.
+    const nlohmann::json legacy = {{"startTime", 0.0}, {"endTime", 1.0}, {"number", 1}, {"text", "hel"}};
+    CHECK_NEAR(legacy.get<SampleRegion::Syllable>().quickOffsetPercent, 50.0, 1e-9,
+               "legacy syllable (no field) loads at 50%");
+}
+
 // ─── Snapshot transition — cue.transition persistence + hard-cut omission ─────
 // setCueTransition round-trips every live field; an enabled=false transition writes NO
 // `transition` key (byte-compatible hard cut); a cue whose JSON lacks the key
@@ -2260,6 +2278,7 @@ int main() {
     // ── [TR] Snapshot transition — timing + persistence + resolver ─────────────
     testProgressForSample();
     testCueTransitionRoundTrip();
+    testSyllableQuickOffsetRoundTrip();
     testTransitionResolver();
 
     // ── Results ───────────────────────────────────────────────────────────────

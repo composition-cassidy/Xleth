@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react'
-import { customAspectMismatch, buildExportConfig, describeExportSummary } from './presets.js'
+import { Button, NumberBox, SegmentedControl, TextField } from '../../ui-kit'
+import { customAspectMismatch, buildExportConfig, describeExportSummary, resolveAudioCodec } from './presets.js'
+import { ExportSelect, Row, exportStyles as styles } from './exportKit.jsx'
 
 const CUSTOM_DEFAULTS = {
   videoCodec:    'h264',
@@ -42,25 +44,62 @@ export function makeCustomDefaults(projectCanvas) {
   }
 }
 
+const CODEC_OPTIONS = [
+  { value: 'h264', label: 'H.264' },
+  { value: 'h265', label: 'H.265 / HEVC' },
+  { value: 'av1', label: 'AV1' },
+  { value: 'prores', label: 'ProRes' },
+  { value: 'dnxhd', label: 'DNxHD' },
+]
+const MODE_OPTIONS = [
+  { value: 'auto', label: 'Auto' },
+  { value: 'software', label: 'Software encoder' },
+  { value: 'hardware', label: 'Hardware encoder only' },
+]
+const RESOLUTION_OPTIONS = [
+  { value: '1920x1080', label: '1920 × 1080' },
+  { value: '1280x720', label: '1280 × 720' },
+  { value: '3840x2160', label: '3840 × 2160 (4K)' },
+  { value: 'custom', label: 'Custom…' },
+]
+const AUDIO_CODEC_OPTIONS = [
+  { value: 'aac', label: 'AAC' },
+  // No Opus: the bundled FFmpeg has no libopus (presets.js, EXPORT_AUDIO_CODECS).
+  { value: 'flac', label: 'FLAC' },
+  { value: 'pcm_s16le', label: 'PCM (uncompressed)' },
+]
+const SAMPLE_RATE_OPTIONS = [
+  { value: 48000, label: '48 000 Hz' },
+  { value: 44100, label: '44 100 Hz' },
+]
+const AUDIO_BITRATE_OPTIONS = [128, 192, 256, 384].map((v) => ({ value: v, label: `${v} kbps` }))
+const FIT_MODES_UI = [
+  { id: 'crop',    label: 'Crop to fill',   hint: 'Preserve proportions, fill output, crop edges.' },
+  { id: 'stretch', label: 'Stretch to fit', hint: 'Scale directly into output, allowing distortion.' },
+  { id: 'bars',    label: 'Fit with bars',  hint: 'Preserve proportions, letterbox / pillarbox.' },
+]
+
 /**
  * Custom preset tab — exposes only what the FFmpegMuxer backend actually
- * supports (MP4 container, H.264/H.265/AV1/DNxHD/ProRes video, AAC/Opus/FLAC/PCM
- * audio). Save/Load/Delete preset controls live at the bottom.
+ * supports (MP4 container, H.264/H.265/AV1/DNxHD/ProRes video, AAC/FLAC/PCM
+ * audio). Save/Load/Delete preset controls live at the top.
  */
 export default function CustomTab({
   settings,
   onChange,
-  outputPath,
-  onBrowse,
   running,
   projectCanvas,      // { canvasWidth, canvasHeight, canvasAspectRatio, previewFps }
   presets,            // array of { name, settings }
   onSavePreset,       // (name, settings) => void
   onLoadPreset,       // (name) => void
   onDeletePreset,     // (name) => void
+  videoModeOverride,        // 'auto' | 'software' | 'hardware' — global encode-mode preference
+  onVideoModeOverrideChange, // (mode) => void
 }) {
   const [availableEncoders, setAvailableEncoders] = useState([])
   const [selectedPreset, setSelectedPreset] = useState('')
+  const [naming, setNaming] = useState(false)
+  const [presetName, setPresetName] = useState('')
 
   // Refetch encoders whenever the codec changes.
   useEffect(() => {
@@ -81,10 +120,14 @@ export default function CustomTab({
     if (name) onLoadPreset(name)
   }
 
-  const handleSavePreset = () => {
-    const name = window.prompt('Save preset as:')
+  // An inline name field instead of window.prompt, which Electron does not provide.
+  const commitSavePreset = () => {
+    const name = presetName.trim()
     if (!name) return
-    onSavePreset(name.trim(), settings)
+    onSavePreset(name, settings)
+    setSelectedPreset(name)
+    setNaming(false)
+    setPresetName('')
   }
 
   const handleDeletePreset = () => {
@@ -105,211 +148,157 @@ export default function CustomTab({
     videoModeOverride: 'auto', projectCanvas,
   }))
 
+  const presetOptions = [{ value: '', label: 'None' }, ...presets.map((p) => ({ value: p.name, label: p.name }))]
+  const encoderOptions = availableEncoders.length === 0
+    ? [{ value: '', label: 'Software only' }]
+    : availableEncoders.map((e) => ({ value: e.name, label: e.displayName || e.name }))
+  const fpsValues = [60, 30, 24]
+  const fpsOptions = [
+    ...(fpsValues.includes(Number(settings.fps)) ? [] : [{ value: settings.fps, label: `${settings.fps} fps` }]),
+    ...fpsValues.map((v) => ({ value: v, label: `${v} fps` })),
+  ]
+  const activeFit = FIT_MODES_UI.find((m) => m.id === settings.fitMode)
+
   return (
-    <div className="export-tab-panel">
-      <div className="export-tab-desc">
+    <div className={styles.panel}>
+      <div className={styles.desc}>
         Custom export settings for codec, resolution, frame rate, quality, and audio.
       </div>
 
       {/* ── Preset row ─────────────────────────────────────────────────────── */}
-      <div className="export-row">
-        <label>Preset</label>
-        <div className="custom-preset-row">
-          <select value={selectedPreset}
-                  onChange={(e) => loadSelected(e.target.value)}
-                  disabled={running}>
-            <option value="">— None —</option>
-            {presets.map((p) => (
-              <option key={p.name} value={p.name}>{p.name}</option>
-            ))}
-          </select>
-          <button onClick={handleSavePreset} disabled={running}>Save…</button>
-          <button onClick={handleDeletePreset} disabled={running || !selectedPreset}>Delete</button>
-        </div>
-      </div>
-
-      <div className="export-row">
-        <label>Video Codec</label>
-        <select value={settings.videoCodec}
-                onChange={(e) => onChange({ videoCodec: e.target.value })}
-                disabled={running}>
-          <option value="h264">H.264</option>
-          <option value="h265">H.265 / HEVC</option>
-          <option value="av1">AV1</option>
-          <option value="prores">ProRes</option>
-          <option value="dnxhd">DNxHD</option>
-        </select>
-      </div>
-
-      <div className="export-row">
-        <label>Encoder Device</label>
-        <select value={settings.hwEncoder}
-                onChange={(e) => onChange({ hwEncoder: e.target.value })}
-                disabled={running || !availableEncoders.length}>
-          {availableEncoders.length === 0 && <option value="">Software only</option>}
-          {availableEncoders.map((e) => (
-            <option key={e.name} value={e.name}>{e.displayName || e.name}</option>
-          ))}
-        </select>
-      </div>
-
-      <div className="export-row">
-        <label>Resolution</label>
-        <select value={settings.resolution}
-                onChange={(e) => onChange({ resolution: e.target.value })}
-                disabled={running}>
-          <option value="1920x1080">1920 × 1080</option>
-          <option value="1280x720">1280 × 720</option>
-          <option value="3840x2160">3840 × 2160 (4K)</option>
-          <option value="custom">Custom…</option>
-        </select>
-      </div>
-
-      {settings.resolution === 'custom' && (
-        <div className="export-row">
-          <label>Size</label>
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            <input type="number" min={128} max={7680} step={2}
-                   value={settings.customWidth}
-                   onChange={(e) => onChange({ customWidth: Number(e.target.value) })}
-                   disabled={running} style={{ width: 80 }} />
-            <span style={{ opacity: 0.5 }}>×</span>
-            <input type="number" min={128} max={4320} step={2}
-                   value={settings.customHeight}
-                   onChange={(e) => onChange({ customHeight: Number(e.target.value) })}
-                   disabled={running} style={{ width: 80 }} />
-          </div>
-        </div>
+      <Row label="Preset">
+        <ExportSelect label="Preset" value={selectedPreset} options={presetOptions} disabled={running} onChange={loadSelected} />
+        <Button onClick={() => setNaming((v) => !v)} disabled={running}>Save preset…</Button>
+        <Button onClick={handleDeletePreset} disabled={running || !selectedPreset}>Delete preset</Button>
+      </Row>
+      {naming && (
+        <Row label="Preset name">
+          <TextField
+            data-fill=""
+            label="Preset name"
+            value={presetName}
+            placeholder="My preset"
+            onChange={setPresetName}
+            onKeyDown={(e) => { if (e.key === 'Enter') commitSavePreset() }}
+            autoFocus
+          />
+          <Button variant="primary" onClick={commitSavePreset} disabled={!presetName.trim()}>Save preset</Button>
+          <Button onClick={() => { setNaming(false); setPresetName('') }}>Cancel</Button>
+        </Row>
       )}
 
-      <div className="export-row">
-        <label>Frame Rate</label>
-        <select value={settings.fps}
-                onChange={(e) => onChange({ fps: Number(e.target.value) })}
-                disabled={running}>
-          {![60, 30, 24].includes(Number(settings.fps)) && (
-            <option value={settings.fps}>{settings.fps} fps</option>
+      <div className={styles.columns}>
+        {/* ── Video ────────────────────────────────────────────────────── */}
+        <div className={styles.column}>
+          <h3 className={styles.groupTitle}>Video</h3>
+
+          <Row label="Video codec">
+            <ExportSelect label="Video codec" value={settings.videoCodec} options={CODEC_OPTIONS} disabled={running} onChange={(v) => onChange({ videoCodec: v })} />
+          </Row>
+
+          {onVideoModeOverrideChange && (
+            <Row label="Encoder mode">
+              <ExportSelect label="Encoder mode" value={videoModeOverride || 'auto'} options={MODE_OPTIONS} disabled={running} onChange={onVideoModeOverrideChange} />
+            </Row>
           )}
-          <option value={60}>60 fps</option>
-          <option value={30}>30 fps</option>
-          <option value={24}>24 fps</option>
-        </select>
-      </div>
 
-      {/* ── Fit mode — only when the output aspect differs from the project ──── */}
-      {aspectMismatch && (
-        <div className="export-row export-row-fit">
-          <label>Fit to canvas</label>
-          <div className="custom-fit-modes">
-            <div className="custom-fit-buttons">
-              {[
-                { id: 'crop',    label: 'Crop to fill',  hint: 'Preserve proportions, fill output, crop edges.' },
-                { id: 'stretch', label: 'Stretch to fit', hint: 'Scale directly into output, allowing distortion.' },
-                { id: 'bars',    label: 'Fit with bars',  hint: 'Preserve proportions, letterbox / pillarbox.' },
-              ].map((m) => (
-                <button key={m.id} type="button"
-                        className={`custom-fit-btn ${settings.fitMode === m.id ? 'active' : ''}`}
-                        onClick={() => onChange({ fitMode: m.id })}
-                        disabled={running}
-                        title={m.hint}>
-                  {m.label}
-                </button>
-              ))}
-            </div>
-            <div className={`custom-fit-hint ${settings.fitMode ? '' : 'required'}`}>
-              {settings.fitMode
-                ? ({ crop: 'Preserve proportions, fill output, crop edges.',
-                     stretch: 'Scale directly into output, allowing distortion.',
-                     bars: 'Preserve proportions, letterbox / pillarbox.' }[settings.fitMode])
-                : `Output aspect differs from the project (${projectCanvas?.canvasAspectRatio || 'canvas'}). Choose a fit mode to export.`}
-            </div>
-          </div>
+          <Row label="Encoder device">
+            <ExportSelect
+              label="Encoder device"
+              value={settings.hwEncoder}
+              options={encoderOptions}
+              disabled={running || !availableEncoders.length}
+              onChange={(v) => onChange({ hwEncoder: v })}
+            />
+          </Row>
+
+          <Row label="Resolution">
+            <ExportSelect label="Resolution" value={settings.resolution} options={RESOLUTION_OPTIONS} disabled={running} onChange={(v) => onChange({ resolution: v })} />
+          </Row>
+
+          <Row label="Frame rate">
+            <ExportSelect label="Frame rate" value={settings.fps} options={fpsOptions} disabled={running} onChange={(v) => onChange({ fps: Number(v) })} />
+          </Row>
+
+          {settings.resolution === 'custom' && (
+            <Row label="Size">
+              <NumberBox
+                label="Width" width={96} min={128} max={7680} step={2} quantize={Math.round}
+                format={(v) => `${Math.round(v)} px`} disabled={running} value={settings.customWidth}
+                onCommit={(v) => onChange({ customWidth: v })}
+              />
+              <span aria-hidden="true">×</span>
+              <NumberBox
+                label="Height" width={96} min={128} max={4320} step={2} quantize={Math.round}
+                format={(v) => `${Math.round(v)} px`} disabled={running} value={settings.customHeight}
+                onCommit={(v) => onChange({ customHeight: v })}
+              />
+            </Row>
+          )}
+
+          {/* ── Fit mode — only when the output aspect differs from the project ── */}
+          {aspectMismatch && (
+            <Row label="Fit to canvas">
+              <SegmentedControl
+                label="Fit to canvas"
+                options={FIT_MODES_UI.map((m) => ({ value: m.id, label: m.label, hint: m.label, hintMods: m.hint }))}
+                value={settings.fitMode || ''}
+                disabled={running}
+                onChange={(id) => onChange({ fitMode: id })}
+              />
+              <div className={styles.fitHint} data-required={settings.fitMode ? undefined : ''}>
+                {activeFit
+                  ? activeFit.hint
+                  : `Output aspect differs from the project (${projectCanvas?.canvasAspectRatio || 'canvas'}). Choose a fit mode to export.`}
+              </div>
+            </Row>
+          )}
+
+          <Row label="Rate control">
+            <SegmentedControl
+              label="Rate control"
+              options={[{ value: 'crf', label: 'Quality (CRF)' }, { value: 'bitrate', label: 'Target bitrate' }]}
+              value={settings.useCrf ? 'crf' : 'bitrate'}
+              disabled={running}
+              onChange={(v) => onChange({ useCrf: v === 'crf' })}
+            />
+            {settings.useCrf ? (
+              <NumberBox
+                label="CRF" width={72} min={0} max={51} step={1} quantize={Math.round} defaultValue={18}
+                disabled={running} value={settings.crf} onCommit={(v) => onChange({ crf: v })}
+              />
+            ) : (
+              <NumberBox
+                label="Video bitrate" width={96} min={1} max={200} step={1} unit="Mbps" quantize={Math.round}
+                defaultValue={20} disabled={running} value={settings.videoBitrate}
+                onCommit={(v) => onChange({ videoBitrate: v })}
+              />
+            )}
+          </Row>
         </div>
-      )}
 
-      <div className="export-row">
-        <label>Rate Control</label>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-          <label><input type="radio" checked={settings.useCrf}
-                         onChange={() => onChange({ useCrf: true })}
-                         disabled={running} /> Quality (CRF)</label>
-          <label><input type="radio" checked={!settings.useCrf}
-                         onChange={() => onChange({ useCrf: false })}
-                         disabled={running} /> Target Bitrate</label>
-        </div>
-      </div>
+        {/* ── Audio ────────────────────────────────────────────────────── */}
+        <div className={styles.column}>
+          <h3 className={styles.groupTitle}>Audio</h3>
 
-      {settings.useCrf ? (
-        <div className="export-row">
-          <label>Quality (CRF)</label>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <input type="range" min={0} max={51} step={1} value={settings.crf}
-                   onChange={(e) => onChange({ crf: Number(e.target.value) })}
-                   disabled={running} style={{ flex: 1 }} />
-            <span style={{ minWidth: 28, textAlign: 'right' }}>{settings.crf}</span>
-          </div>
-        </div>
-      ) : (
-        <div className="export-row">
-          <label>Target Bitrate (Mbps)</label>
-          <input type="number" min={1} max={200} step={1}
-                 value={settings.videoBitrate}
-                 onChange={(e) => onChange({ videoBitrate: Number(e.target.value) })}
-                 disabled={running} />
-        </div>
-      )}
+          <Row label="Audio codec">
+            <ExportSelect label="Audio codec" value={resolveAudioCodec(settings.audioCodec)} options={AUDIO_CODEC_OPTIONS} disabled={running} onChange={(v) => onChange({ audioCodec: v })} />
+          </Row>
 
-      <div style={{ borderTop: '1px solid var(--theme-border-subtle)', margin: '4px 0', opacity: 0.3 }} />
+          <Row label="Sample rate">
+            <ExportSelect label="Audio sample rate" value={settings.sampleRate} options={SAMPLE_RATE_OPTIONS} disabled={running} onChange={(v) => onChange({ sampleRate: Number(v) })} />
+          </Row>
 
-      <div className="export-row">
-        <label>Audio Codec</label>
-        <select value={settings.audioCodec}
-                onChange={(e) => onChange({ audioCodec: e.target.value })}
-                disabled={running}>
-          <option value="aac">AAC</option>
-          <option value="opus">Opus</option>
-          <option value="flac">FLAC</option>
-          <option value="pcm_s16le">PCM (uncompressed)</option>
-        </select>
-      </div>
-
-      <div className="export-row">
-        <label>Sample Rate</label>
-        <select value={settings.sampleRate}
-                onChange={(e) => onChange({ sampleRate: Number(e.target.value) })}
-                disabled={running}>
-          <option value={48000}>48 000 Hz</option>
-          <option value={44100}>44 100 Hz</option>
-        </select>
-      </div>
-
-      {(settings.audioCodec === 'aac' || settings.audioCodec === 'opus') && (
-        <div className="export-row">
-          <label>Audio Bitrate</label>
-          <select value={settings.audioBitrate}
-                  onChange={(e) => onChange({ audioBitrate: Number(e.target.value) })}
-                  disabled={running}>
-            <option value={128}>128 kbps</option>
-            <option value={192}>192 kbps</option>
-            <option value={256}>256 kbps</option>
-            <option value={384}>384 kbps</option>
-          </select>
-        </div>
-      )}
-
-      <div className="export-row">
-        <label></label>
-        <div className="export-bitrate-readout" title="Final encoded output">
-          {outputSummary}
+          {resolveAudioCodec(settings.audioCodec) === 'aac' && (
+            <Row label="Audio bitrate">
+              <ExportSelect label="Audio bitrate" value={settings.audioBitrate} options={AUDIO_BITRATE_OPTIONS} disabled={running} onChange={(v) => onChange({ audioBitrate: Number(v) })} />
+            </Row>
+          )}
         </div>
       </div>
 
-      <div className="export-row export-row-path">
-        <label>Output File</label>
-        <div className="export-path-group">
-          <input type="text" value={outputPath} readOnly placeholder="Click Browse…" disabled={running} />
-          <button onClick={onBrowse} disabled={running}>Browse…</button>
-        </div>
+      <div className={styles.readout} title="Final encoded output">
+        {outputSummary}
       </div>
     </div>
   )

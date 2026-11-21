@@ -1,0 +1,19 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "distortion",
+  "name": "Lo-Fi Drums 10-Bit",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "mode": 4,
+      "drive": 4,
+      "tone": 12000,
+      "filter_pos": 1,
+      "mix": 100,
+      "symmetry": 100,
+      "bits": 10,
+      "downsample": 6
+    }
+  }
+}

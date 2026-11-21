@@ -33,14 +33,8 @@ import {
   pickLimiterGrLabels,
   smoothLimiterDisplayHistory,
 } from '../visualizers/limiterPainter.js'
-import {
-  getPresetOptionsForSource,
-  isPresetAllowedForSource,
-  resolveSafePresetForSource,
-} from '../../designer/inspectors/inspectorHelpers.js'
 import { LIMITER_MANIFEST } from '../../manifests/limiter.js'
 import { COMPRESSOR_MANIFEST } from '../../manifests/compressor.js'
-import { getVizSourceOptions } from '../../designer/BindingPicker.jsx'
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -367,61 +361,7 @@ describe('Limiter meter values', () => {
 
 // ── Inspector helpers / preset gating ──────────────────────────────────────
 
-describe('Limiter visualizer inspector helpers', () => {
-  it('lists Limiter presets for limiter.realtime source', () => {
-    const options = getPresetOptionsForSource('limiter.realtime', null)
-    const keys = options.map(o => o.value)
-    expect(keys).toContain('limiterRealtime')
-    // Must NOT mix in compressor presets.
-    expect(keys.every(k => k.startsWith('limiter'))).toBe(true)
-  })
-
-  it('lists Compressor presets for compressor.combined source', () => {
-    const options = getPresetOptionsForSource('compressor.combined', null)
-    const keys = options.map(o => o.value)
-    // Must NOT mix in limiter presets.
-    expect(keys.every(k => !k.startsWith('limiter'))).toBe(true)
-  })
-
-  it('isPresetAllowedForSource enforces source-preset matching across plugins', () => {
-    expect(isPresetAllowedForSource('limiterRealtime', 'limiter.realtime')).toBe(true)
-    expect(isPresetAllowedForSource('limiterRealtime', 'compressor.combined')).toBe(false)
-    expect(isPresetAllowedForSource('levelHistory',    'limiter.realtime')).toBe(false)
-  })
-
-  it('resolveSafePresetForSource returns the documented default for limiter.realtime', () => {
-    expect(resolveSafePresetForSource('limiter.realtime')).toBe('limiterRealtime')
-    expect(LIMITER_SOURCE_DEFAULT_PRESET['limiter.realtime']).toBe('limiterRealtime')
-  })
-
-  it('LIMITER_VISUALIZER_PRESETS exports a limiterRealtime preset bound to limiter.realtime', () => {
-    const preset = LIMITER_VISUALIZER_PRESETS.limiterRealtime
-    expect(preset).toBeTruthy()
-    expect(preset.sources).toContain('limiter.realtime')
-  })
-})
-
 // ── BindingPicker source listing ───────────────────────────────────────────
-
-describe('BindingPicker viz source options', () => {
-  it('lists limiter.realtime for the Limiter manifest', () => {
-    const opts = getVizSourceOptions(LIMITER_MANIFEST, null)
-    const values = opts.map(o => o.value)
-    expect(values).toContain('limiter.realtime')
-  })
-
-  it('does not list compressor sources for the Limiter manifest', () => {
-    const opts = getVizSourceOptions(LIMITER_MANIFEST, null)
-    const values = opts.map(o => o.value)
-    for (const v of values) expect(v.startsWith('compressor.')).toBe(false)
-  })
-
-  it('does not list limiter sources for the Compressor manifest', () => {
-    const opts = getVizSourceOptions(COMPRESSOR_MANIFEST, null)
-    const values = opts.map(o => o.value)
-    for (const v of values) expect(v.startsWith('limiter.')).toBe(false)
-  })
-})
 
 // ── DynamicsVisualizerCanvas dispatch (unit) ──────────────────────────────
 // We don't actually mount the canvas here — we just verify that the dispatch

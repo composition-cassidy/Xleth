@@ -1,0 +1,768 @@
+/* Sample Sandbox chrome, on kit controls and tokens. The waveform and spectrogram stay canvas (their own
+ * wrapper rules live in SandboxCanvas.module.css). Type: 13, 12, 11 only (16 for the transport clock);
+ * sentence case; mono only for timecodes, sample counts and key caps.
+ *
+ * Bands, top to bottom (SandboxPanelContent.jsx): action bar, tool bar, body (display + sidebar), transport,
+ * status line. Only the display takes its height from the display. */
+@layer kit {
+  .root {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    color: var(--ui-ink);
+    background: var(--ui-g1);
+    container: sandbox / inline-size;
+  }
+
+  .edbody {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+  }
+
+  .spacer { flex: 1 1 auto; }
+
+  /* ── Action bar: commands ───────────────────────────────────────────── */
+  .actionbar {
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    row-gap: 2px;
+    padding: 2px var(--space-2);
+    background: var(--ui-g2);
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .actionGroup {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .menuCat {
+    padding: var(--space-1) var(--space-2) 0;
+    font-size: var(--type-11);
+    font-weight: var(--weight-semibold);
+    color: var(--ui-ink-2);
+  }
+
+  .itemLine {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    width: 100%;
+  }
+
+  .itemBadge {
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Tool bar: modes of the display under it ────────────────────────── */
+  .toolbar {
+    flex: 0 0 auto;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px var(--space-2);
+    min-height: var(--ctl-h-md);
+    padding: 2px var(--space-2);
+    background: var(--ui-g1);
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .toolGroup { gap: 2px; }
+
+  /* The armed tool's own settings, beside the tools. */
+  .toolOptions {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px var(--space-1);
+    padding-left: var(--space-2);
+    border-left: 1px solid var(--ui-g4);
+  }
+
+  .optionLabel {
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+  }
+
+  /* ── Transport: listen, where, send ─────────────────────────────────── */
+  .transport {
+    flex: 0 0 auto;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1) var(--space-2);
+    padding: var(--space-1) var(--space-2);
+    background: var(--ui-g2);
+    border-top: 1px solid var(--ui-g4);
+  }
+
+  .transportGroup {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px var(--space-1);
+  }
+
+  /* The position readout: a recessed well, like every other display in the app. The value keeps a fixed
+     width so the digits hold still while the playhead runs. */
+  .clock {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    height: var(--ctl-h-md);
+    margin-left: var(--space-1);
+    padding: 0 var(--space-2);
+    background: var(--ui-g0);
+    border: 1px solid var(--ui-g4);
+    border-radius: var(--ui-radius-1);
+    line-height: calc(var(--ctl-h-md) - 2px);
+    white-space: nowrap;
+  }
+
+  .clockLabel {
+    min-width: 42px;
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+  }
+
+  .clockValue {
+    min-width: 8ch;
+    font-family: var(--ui-font-mono);
+    font-size: var(--type-16);
+    font-weight: var(--weight-medium);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    color: var(--ui-ink);
+  }
+
+  .clock[data-playing] .clockLabel { color: var(--ui-ink); }
+
+  .swapSelect { min-width: 220px; }
+
+  .note {
+    flex: 1 1 100%;
+    font-size: var(--type-11);
+    line-height: 1.4;
+    color: var(--ui-ink-2);
+  }
+
+  .note[data-tone="error"] { color: var(--theme-semantic-danger-text, var(--ui-rec-text)); }
+
+  .baked {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1);
+    width: 100%;
+  }
+
+  .bakedRow {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding-left: var(--space-2);
+    border: 1px solid var(--ui-g4);
+    border-radius: var(--ui-radius-1);
+    font-size: var(--type-11);
+  }
+
+  .bakedName {
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* ── Status line ────────────────────────────────────────────────────── */
+  .status {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    min-height: var(--row-h);
+    padding: 0 var(--space-1) 0 var(--space-2);
+    background: var(--ui-g1);
+    border-top: 1px solid var(--ui-g4);
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .hint {
+    flex: 1 1 0;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .readouts {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+  }
+
+  .readout { white-space: nowrap; }
+
+  .mono {
+    font-family: var(--ui-font-mono);
+    color: var(--ui-ink);
+  }
+
+  /* The Keys list: groups in two columns, a key cap and what it does per row. Wider than the kit menu's
+     360px cap (doubled class: it has to outrank the kit rule whatever order the two sheets load in). */
+  .keysMenu.keysMenu { max-width: min(520px, calc(100vw - 8px)); }
+
+  .keys {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    white-space: nowrap;
+    gap: var(--space-2) var(--space-4);
+    padding: var(--space-2) var(--space-3);
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+  }
+
+  .keyGroup {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    align-content: start;
+    gap: 2px var(--space-2);
+  }
+
+  .keyRow { display: contents; }
+
+  .keysTitle {
+    grid-column: 1 / -1;
+    font-weight: var(--weight-semibold);
+    color: var(--ui-ink);
+  }
+
+  .kbd {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    justify-self: start;
+    min-width: 20px;
+    height: 18px;
+    padding: 0 5px;
+    border: 1px solid var(--ui-boundary);
+    border-bottom-width: 2px;
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g3);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+    font-weight: var(--weight-medium);
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  /* ── Render chip (per layer and the mix) ────────────────────────────── */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    white-space: nowrap;
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+  }
+
+  .chipDot {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border: 1px solid var(--ui-boundary);
+    border-radius: 50%;
+  }
+
+  .chip[data-state="ready"] { color: var(--ui-ink); }
+  .chip[data-state="ready"] .chipDot { background: var(--ui-signal-events); border-color: var(--ui-signal-events); }
+  .chip[data-state="rendering"] { color: var(--ui-ink); }
+  .chip[data-state="rendering"] .chipDot { background: var(--ui-value); border-color: var(--ui-value); }
+  .chip[data-state="error"] { color: var(--theme-semantic-danger-text, var(--ui-rec-text)); }
+  .chip[data-state="error"] .chipDot { background: var(--ui-clip); border-color: var(--ui-clip); }
+
+  /* Turns only while the motion tier lets ambient loops run (ui-kit/motion.css). */
+  .spin {
+    animation: sandboxSpin var(--mo-loop) linear infinite;
+    animation-play-state: var(--mo-ambient, paused);
+  }
+
+  @keyframes sandboxSpin {
+    to { transform: rotate(360deg); }
+  }
+
+  /* ── Sidebar: layers, then the active layer's edit stack ────────────── */
+  .sidebar {
+    flex: 0 0 332px;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    background: var(--ui-g1);
+    border-left: 1px solid var(--ui-g4);
+  }
+
+  .layers {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    max-height: 46%;
+  }
+
+  .layerList {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .layer { border-bottom: 1px solid var(--ui-g4); }
+
+  .layer[data-active] { background: color-mix(in srgb, var(--ui-value) 24%, var(--ui-g3)); }
+
+  .layerRow {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    min-height: 28px;
+    padding: 0 var(--space-1);
+    cursor: pointer;
+  }
+
+  .layer:not([data-active]) .layerRow:hover { background: var(--ui-g2); }
+
+  .layer[data-muted] .layerName,
+  .layer[data-muted] .layerMeta { opacity: var(--ui-mute-opacity); }
+
+  .layerName {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: var(--weight-medium);
+  }
+
+  .layerMeta {
+    flex: 0 0 auto;
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .layer[data-active] .layerMeta { color: var(--ui-ink); }
+
+  .layerButtons {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  /* The active layer's mix values, labelled, on a second line of its own row. */
+  .layerMix {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1);
+    padding: 0 var(--space-2) var(--space-2);
+  }
+
+  .layerHint {
+    padding: var(--space-1) var(--space-2);
+    font-size: var(--type-11);
+    line-height: 1.4;
+    color: var(--ui-ink-2);
+  }
+
+  .stack {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    border-top: 1px solid var(--ui-g4);
+  }
+
+  .opList {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .empty {
+    padding: var(--space-2);
+    font-size: var(--type-11);
+    line-height: 1.4;
+    color: var(--ui-ink-2);
+  }
+
+  .op {
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .op[data-selected] { background: color-mix(in srgb, var(--ui-value) 24%, var(--ui-g3)); }
+  .op[data-dragging] { opacity: 0.5; }
+  .op[data-drop="above"] { box-shadow: inset 0 2px 0 var(--ui-select); }
+  .op[data-drop="below"] { box-shadow: inset 0 -2px 0 var(--ui-select); }
+
+  .op[data-bypassed] .opLabel { opacity: var(--ui-mute-opacity); }
+
+  .opRow {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    min-height: 36px;
+    padding: 0 var(--space-1) 0 var(--space-2);
+    cursor: pointer;
+  }
+
+  .op:not([data-selected]) .opRow:hover { background: var(--ui-g2); }
+
+  .grip { flex: 0 0 auto; color: var(--ui-ink-3); cursor: grab; }
+
+  .opIndex {
+    flex: 0 0 auto;
+    font-family: var(--ui-font-mono);
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+  }
+
+  .opLabel {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .opType {
+    font-size: var(--type-12);
+    font-weight: var(--weight-medium);
+    color: var(--ui-ink);
+  }
+
+  .opParams {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .op[data-selected] .opParams,
+  .op[data-selected] .opIndex { color: var(--ui-ink); }
+
+  .refusalBadge {
+    display: inline-flex;
+    color: var(--theme-semantic-danger-text, var(--ui-rec-text));
+  }
+
+  .refusal {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    width: 100%;
+    font-size: var(--type-11);
+    color: var(--theme-semantic-danger-text, var(--ui-rec-text));
+  }
+
+  .params {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: var(--space-2);
+    padding: var(--space-1) var(--space-2) var(--space-2) var(--space-5);
+  }
+
+  .field {
+    display: inline-flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .fieldLabel {
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+  }
+
+  .params .readout {
+    width: 100%;
+    font-size: var(--type-11);
+    line-height: 1.4;
+    color: var(--ui-ink-2);
+    white-space: normal;
+  }
+
+  .op[data-selected] .fieldLabel,
+  .op[data-selected] .params .readout { color: var(--ui-ink); }
+
+  .keyboardRow {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--space-2);
+    width: 100%;
+  }
+
+  .keyboard {
+    position: relative;
+    flex: 0 0 168px;
+    height: 48px;
+  }
+
+  .keyboardWhites { display: flex; height: 100%; }
+
+  .keyboardBlacks { position: absolute; inset: 0 0 auto 0; height: 30px; pointer-events: none; }
+
+  .keyWhite,
+  .keyBlack {
+    box-sizing: border-box;
+    padding: 0;
+    border: 1px solid var(--ui-boundary);
+    cursor: pointer;
+  }
+
+  .keyWhite {
+    position: relative;
+    flex: 1 1 0;
+    background: var(--ui-ink);
+    border-radius: 0 0 var(--ui-radius-1) var(--ui-radius-1);
+  }
+
+  .keyBlack {
+    position: absolute;
+    top: 0;
+    width: 14%;
+    height: 100%;
+    transform: translateX(-50%);
+    background: var(--ui-g0);
+    border-radius: 0 0 var(--ui-radius-1) var(--ui-radius-1);
+    pointer-events: auto;
+  }
+
+  .keyWhite[data-on] { background: var(--ui-value); }
+  .keyBlack[data-on] { background: var(--ui-value); border-color: var(--ui-ink); }
+
+  /* The root is marked with a dot, so it does not rely on colour. */
+  .keyWhite[data-root]::after,
+  .keyBlack[data-root]::after {
+    content: "";
+    position: absolute;
+    bottom: 3px;
+    left: 50%;
+    width: 6px;
+    height: 6px;
+    margin-left: -3px;
+    border-radius: 50%;
+    background: var(--ui-g0);
+    border: 1px solid var(--ui-ink);
+  }
+
+  .keyWhite:focus-visible,
+  .keyBlack:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 1px;
+    z-index: 2;
+  }
+
+  /* ── Editor pane ────────────────────────────────────────────────────── */
+  .editorPane {
+    position: relative;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--ui-g0);
+  }
+
+  .dropZone {
+    flex: 1 1 auto;
+    margin: var(--space-3);
+    padding: var(--space-4);
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: flex-start;
+    gap: var(--space-1);
+    border: 1px dashed var(--ui-boundary);
+    color: var(--ui-ink-2);
+    font-size: var(--type-12);
+  }
+
+  .dropZone[data-over] { border-color: var(--ui-select); color: var(--ui-ink); }
+
+  .dropTitle {
+    font-size: var(--type-13);
+    font-weight: var(--weight-semibold);
+    color: var(--ui-ink);
+  }
+
+  .dropHint { font-size: var(--type-12); line-height: 1.4; color: var(--ui-ink-2); }
+
+  /* Drop feedback while layers already exist: the empty-state drop zone is not mounted then. */
+  .dropOverlay {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    background: var(--ui-scrim);
+    border: 1px dashed var(--ui-select);
+    color: var(--ui-ink);
+    font-size: var(--type-13);
+    font-weight: var(--weight-semibold);
+  }
+
+  /* ── Separation strip and spectral selection bar ────────────────────── */
+  .sep {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    background: var(--ui-g2);
+    border-top: 1px solid var(--ui-g4);
+  }
+
+  .sepRow {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1) var(--space-2);
+    padding: var(--space-1) var(--space-2);
+  }
+
+  .sepRow + .sepRow { border-top: 1px solid var(--ui-g4); }
+
+  .sepTitle {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    font-size: var(--type-12);
+    font-weight: var(--weight-semibold);
+  }
+
+  .sepProgress { flex: 1 1 240px; min-width: 160px; }
+
+  .sepMeta {
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .sepStatus {
+    flex: 1 1 200px;
+    min-width: 0;
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+    overflow-wrap: anywhere;
+  }
+
+  .sepError { color: var(--theme-semantic-danger-text, var(--ui-rec-text)); }
+
+  .sepDevice {
+    font-family: var(--ui-font-mono);
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+  }
+
+  .sepLicenseText {
+    flex: 1 1 280px;
+    min-width: 0;
+    font-size: var(--type-11);
+    line-height: 1.4;
+  }
+
+  .sepLink {
+    font-size: var(--type-11);
+    color: var(--ui-ink);
+    text-decoration: underline;
+  }
+
+  .sepFootnote {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1) var(--space-2);
+    padding: var(--space-1) var(--space-2);
+    border-top: 1px solid var(--ui-g4);
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+  }
+
+  .divider {
+    align-self: stretch;
+    width: 1px;
+    margin: 2px 0;
+    background: var(--ui-g4);
+  }
+
+  .selbar {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 6;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1) var(--space-2);
+    padding: var(--space-1) var(--space-2);
+    background: var(--ui-g2);
+    border-top: 1px solid var(--ui-g4);
+  }
+
+  .selbarCount {
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+  }
+
+  /* ── Narrow panel (docked in a column, or a small floating window) ──── */
+  /* Under 760px the sidebar cannot sit beside the display without starving it, so it goes underneath, with
+     the layers and the edit stack side by side. The status line drops its readouts before its hint. */
+  @container sandbox (max-width: 760px) {
+    .edbody { flex-direction: column; }
+
+    .sidebar {
+      flex: 0 0 42%;
+      flex-direction: row;
+      border-left: 0;
+      border-top: 1px solid var(--ui-g4);
+    }
+
+    .layers {
+      flex: 1 1 0;
+      min-width: 0;
+      max-height: none;
+    }
+
+    .stack {
+      flex: 1 1 0;
+      min-width: 0;
+      border-top: 0;
+      border-left: 1px solid var(--ui-g4);
+    }
+
+    .readouts .readout { display: none; }
+  }
+
+  @container sandbox (max-width: 480px) {
+    .sidebar { flex-direction: column; flex-basis: 50%; }
+    .layers { flex: 0 0 auto; max-height: 46%; }
+    .stack { border-left: 0; border-top: 1px solid var(--ui-g4); }
+    .clockLabel { display: none; }
+  }
+}

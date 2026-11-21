@@ -1,0 +1,21 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "compressor",
+  "name": "Peak Catcher",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "threshold": -8,
+      "ratio": 10,
+      "attack": 0.1,
+      "release": 40,
+      "knee": 2,
+      "makeup": 0,
+      "mix": 100,
+      "mix_linked": 1,
+      "detect_mode": 0,
+      "lookahead": 3
+    }
+  }
+}

@@ -1,49 +1,52 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
-import {
-  AudioWaveform,
-  Folder,
-  Layout,
-  Minus,
-  Pencil,
-  Redo2,
-  Settings,
-  Square,
-  Trash2,
-  Undo2,
-  Video,
-  X,
-  ZoomIn,
-  ZoomOut,
-} from 'lucide-react'
+import { Fragment, useState, useEffect, useRef, useCallback } from 'react'
+import { ToastStatusText } from './Toast.jsx'
 import { usePanelRegistry } from '../windowing/registry/PanelRegistry'
-import { PANEL_CATALOG_ORDER } from '../windowing/registry/panelCatalog'
-import { useQuickLaunchersStore } from '../stores/quickLaunchersStore.js'
-import { XlethButton, XlethIconButton } from './common/XlethButton.jsx'
+import { LAYOUT_PRESETS } from '../windowing/managers/PresetManager'
+import { Button, IconButton, motionMs, useMotionEnter } from '../ui-kit'
+import { CLEANUP_PROJECT_LABEL } from './projectCleanup.js'
+import TransportBar from './TransportBar.jsx'
+import TitleBarRegions from './TitleBarRegions.jsx'
+import styles from './TitleBar.module.css'
+import { iconComponent } from '../ui-kit/icons'
+
+const IcArrowUUpLeft = iconComponent('arrow-u-up-left')
+const IcArrowUUpRight = iconComponent('arrow-u-up-right')
+const IcMagnifyingGlassMinus = iconComponent('magnifying-glass-minus')
+const IcMagnifyingGlassPlus = iconComponent('magnifying-glass-plus')
+const IcMinus = iconComponent('minus')
+const IcSquare = iconComponent('square')
+const IcTrash = iconComponent('trash')
+const IcX = iconComponent('x')
 
 const DROPDOWN_OPEN_DELAY_MS = 40
-const DROPDOWN_CLOSE_MS = 80
+// How long a closing dropdown stays mounted: the exit channel of the motion tier in force
+// (ui-kit/motion.css; 0 in the flat tier and in tests), so the CSS fade and this timer agree.
+const dropdownCloseMs = () => motionMs('--mo-exit')
 
 const EXPORT_AUDIO_LABEL = 'Export Audio\u2026'
 const EXPORT_VIDEO_LABEL = 'Export Video\u2026'
 
 export const FILE_DROPDOWN_ITEMS = [
-  { label: 'New Project', shortcut: 'Ctrl+N' },
-  { label: 'Open Project', shortcut: 'Ctrl+O' },
-  { label: 'Save', shortcut: 'Ctrl+S' },
-  { label: 'Save As...', shortcut: 'Ctrl+Shift+S' },
-  { label: 'Import Source', shortcut: 'Ctrl+I' },
-  { label: 'Export as ZIP…' },
+  { label: 'New Project', shortcut: 'Ctrl+N', group: 0 },
+  { label: 'Open Project', shortcut: 'Ctrl+O', group: 0 },
+  { label: 'Save', shortcut: 'Ctrl+S', group: 0 },
+  { label: 'Save As...', shortcut: 'Ctrl+Shift+S', group: 0 },
+  { label: 'Import Source', shortcut: 'Ctrl+I', group: 1 },
+  { label: EXPORT_AUDIO_LABEL, shortcut: 'Ctrl+E', group: 2 },
+  { label: EXPORT_VIDEO_LABEL, shortcut: 'Ctrl+Shift+E', group: 2 },
+  { label: 'Export as ZIP…', group: 2 },
+  { label: CLEANUP_PROJECT_LABEL, group: 3 },
 ]
 
 export const EDIT_DROPDOWN_ACTIONS = [
-  { label: 'Undo', action: 'Undo', icon: Undo2, shortcut: 'Ctrl+Z' },
-  { label: 'Redo', action: 'Redo', icon: Redo2, shortcut: 'Ctrl+Shift+Z' },
-  { label: 'Delete', action: 'Delete', icon: Trash2, shortcut: 'Delete' },
+  { label: 'Undo', action: 'Undo', icon: IcArrowUUpLeft, shortcut: 'Ctrl+Z', group: 0 },
+  { label: 'Redo', action: 'Redo', icon: IcArrowUUpRight, shortcut: 'Ctrl+Shift+Z', group: 0 },
+  { label: 'Delete', action: 'Delete', icon: IcTrash, shortcut: 'Delete', group: 1 },
 ]
 
 export const VIEW_DROPDOWN_ACTIONS = [
-  { label: 'Zoom In', action: 'Zoom In', icon: ZoomIn, shortcut: 'Ctrl++' },
-  { label: 'Zoom Out', action: 'Zoom Out', icon: ZoomOut, shortcut: 'Ctrl+-' },
+  { label: 'Zoom In', action: 'Zoom In', icon: IcMagnifyingGlassPlus, shortcut: 'Ctrl++' },
+  { label: 'Zoom Out', action: 'Zoom Out', icon: IcMagnifyingGlassMinus, shortcut: 'Ctrl+-' },
   { label: 'RESET', action: 'Reset Zoom', text: true, shortcut: 'Ctrl+0' },
 ]
 
@@ -70,155 +73,108 @@ export const TITLEBAR_MENUS = [
   },
 ]
 
-const TITLEBAR_MENU_ICONS = {
-  File: Folder,
-  Edit: Pencil,
-  View: Layout,
-  Settings,
+export const RESET_LAYOUT_ID = 'reset'
+export const RESET_LAYOUT_LABEL = 'Reset layout'
+
+/** View -> Layouts: apply a preset by id, or RESET_LAYOUT_ID for the default. */
+export function applyLayoutChoice(presetId, registry = usePanelRegistry.getState()) {
+  if (presetId === RESET_LAYOUT_ID) registry.resetLayout()
+  else registry.applyPreset(presetId)
 }
 
 export function isDirectTitlebarMenu(menu) {
   return !menu.dropdown
 }
 
+const MENU_NAV_KEYS = ['ArrowDown', 'ArrowUp', 'Home', 'End']
+
+/** Arrow / Home / End move between the rows of an open titlebar menu. */
+function onMenuKeyDown(e) {
+  if (!MENU_NAV_KEYS.includes(e.key)) return
+  const rows = Array.from(e.currentTarget.querySelectorAll('[role="menuitem"]'))
+  if (!rows.length) return
+  const i = rows.indexOf(document.activeElement)
+  let next
+  if (e.key === 'Home') next = 0
+  else if (e.key === 'End') next = rows.length - 1
+  else if (e.key === 'ArrowDown') next = i < 0 ? 0 : (i + 1) % rows.length
+  else next = i < 0 ? rows.length - 1 : (i - 1 + rows.length) % rows.length
+  e.preventDefault()
+  rows[next].focus()
+}
+
+// One compact menu surface for File / Edit / View: 24px rows, 12px text, the label
+// on the left and its shortcut on the right (same grammar as the kit Menu).
+function MenuPanel({ label, children, ...rest }) {
+  // Enters with the `pop` recipe (ui-kit/motion.css); the `.titlebar-dropdown` wrapper fades the exit.
+  const enter = useMotionEnter('pop')
+  return (
+    <div {...enter} className={styles.panel} role="menu" aria-label={label} onKeyDown={onMenuKeyDown} {...rest}>
+      {children}
+    </div>
+  )
+}
+
+function MenuRow({ label, shortcut, onSelect }) {
+  return (
+    <button type="button" role="menuitem" className={styles.row} onClick={onSelect}>
+      <span>{label}</span>
+      {shortcut ? <kbd className={styles.keys}>{shortcut}</kbd> : null}
+    </button>
+  )
+}
+
+function MenuRule() {
+  return <div role="separator" className={styles.sep} />
+}
+
+/** Items carry a `group` number; a rule is drawn wherever it changes. */
+function GroupedRows({ items, onSelect }) {
+  return items.map((item, i) => (
+    <Fragment key={item.label}>
+      {i > 0 && item.group !== items[i - 1].group ? <MenuRule /> : null}
+      <MenuRow label={item.label} shortcut={item.shortcut} onSelect={() => onSelect(item)} />
+    </Fragment>
+  ))
+}
+
 function FileDropdown({ onAction }) {
   return (
-    <div className="titlebar-dropdown-panel titlebar-dropdown-panel--file" role="menu">
-      {FILE_DROPDOWN_ITEMS.map((item) => (
-        <XlethButton
-          type="button"
-          key={item.label}
-          className="titlebar-dropdown-item"
-          onClick={() => {
-            if (item.label === 'New Project') console.log('[Test] click fired')
-            onAction(item.label)
-          }}
-          role="menuitem"
-        >
-          <span>{item.label}</span>
-        </XlethButton>
+    <MenuPanel label="File">
+      <GroupedRows items={FILE_DROPDOWN_ITEMS} onSelect={(item) => onAction(item.action || item.label)} />
+    </MenuPanel>
+  )
+}
+
+function EditDropdown({ onAction }) {
+  return (
+    <MenuPanel label="Edit">
+      <GroupedRows items={EDIT_DROPDOWN_ACTIONS} onSelect={(item) => onAction(item.action)} />
+    </MenuPanel>
+  )
+}
+
+// View: zoom, then View -> Layouts. Layouts act on the panel registry directly;
+// they are not file/edit actions and never reach XlethRoot.
+function ViewDropdown({ onAction, onLayout }) {
+  return (
+    <MenuPanel label="View">
+      {VIEW_DROPDOWN_ACTIONS.map((item) => (
+        <MenuRow key={item.action} label={item.action} shortcut={item.shortcut} onSelect={() => onAction(item.action)} />
       ))}
-      <div className="titlebar-export-row" role="group" aria-label="Export">
-        <span className="titlebar-export-label">Export:</span>
-        <div className="titlebar-export-actions">
-          <XlethIconButton
-            type="button"
-            className="titlebar-toolbar-btn"
-            onClick={() => onAction(EXPORT_AUDIO_LABEL)}
-            title="Export Audio (Ctrl+E)"
-            aria-label="Export Audio"
-          >
-            <AudioWaveform size={18} strokeWidth={2} aria-hidden="true" />
-          </XlethIconButton>
-          <XlethIconButton
-            type="button"
-            className="titlebar-toolbar-btn"
-            onClick={() => onAction(EXPORT_VIDEO_LABEL)}
-            title="Export Video (Ctrl+Shift+E)"
-            aria-label="Export Video"
-          >
-            <Video size={18} strokeWidth={2} aria-hidden="true" />
-          </XlethIconButton>
-        </div>
+      <MenuRule />
+      <div role="group" aria-label="Layouts" data-testid="titlebar-view-layouts" className={styles.group}>
+        <span className={styles.groupLabel}>Layouts</span>
+        {LAYOUT_PRESETS.map((preset) => (
+          <MenuRow key={preset.id} label={preset.label} onSelect={() => onLayout(preset.id)} />
+        ))}
+        <MenuRow label={RESET_LAYOUT_LABEL} onSelect={() => onLayout(RESET_LAYOUT_ID)} />
       </div>
-    </div>
-  )
-}
-
-function ToolbarDropdown({ actions, label, onAction }) {
-  return (
-    <div className="titlebar-dropdown-panel titlebar-dropdown-panel--toolbar" role="menu" aria-label={label}>
-      <div className="titlebar-action-strip" role="group" aria-label={label}>
-        {actions.map((item) => {
-          const Icon = item.icon
-          return (
-            <XlethButton
-              type="button"
-              key={item.action}
-              className={`titlebar-toolbar-btn ${item.text ? 'titlebar-toolbar-btn--text' : ''}`}
-              onClick={() => onAction(item.action)}
-              title={item.shortcut ? `${item.label} (${item.shortcut})` : item.label}
-              aria-label={item.label}
-              role="menuitem"
-            >
-              {Icon ? <Icon size={18} strokeWidth={2} aria-hidden="true" /> : item.label}
-            </XlethButton>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-function TitleBarLauncherButton({ entry }) {
-  const panelHidden = usePanelRegistry((state) => state.panels[entry.id].hidden)
-  const Icon = entry.icon
-  const panelVisible = !panelHidden
-
-  return (
-    <XlethIconButton
-      type="button"
-      className="titlebar-launcher-btn"
-      active={panelVisible}
-      data-active={String(panelVisible)}
-      style={{ '--xleth-windowing-panel-color': `var(${entry.typeColorToken})` }}
-      onClick={() => usePanelRegistry.getState().togglePanel(entry.id)}
-      title={`${entry.title} (${entry.fKey})`}
-      aria-label={`Toggle ${entry.title}`}
-      aria-pressed={panelVisible}
-    >
-      <Icon size={22} strokeWidth={2} aria-hidden="true" />
-    </XlethIconButton>
-  )
-}
-
-function QuickLauncherButton({ launcher }) {
-  const iconUrl = window.xleth?.launcher?.buildIconUrl?.(launcher.iconPngPath || '')
-
-  function handleClick() {
-    window.xleth?.launcher?.spawnDetached?.(launcher.exePath)
-  }
-
-  return (
-    <XlethIconButton
-      type="button"
-      className="titlebar-launcher-btn"
-      active={false}
-      data-active="false"
-      onClick={handleClick}
-      title={launcher.label}
-      aria-label={`Launch ${launcher.label}`}
-    >
-      {iconUrl ? (
-        <img
-          src={iconUrl}
-          alt=""
-          aria-hidden="true"
-          className="titlebar-quick-launcher-icon"
-          onError={e => {
-            e.currentTarget.style.display = 'none'
-            const fb = e.currentTarget.nextSibling
-            if (fb) fb.style.display = 'block'
-          }}
-        />
-      ) : null}
-      <span
-        className="titlebar-quick-launcher-fallback"
-        style={{ display: iconUrl ? 'none' : 'block' }}
-        aria-hidden="true"
-      >
-        {(launcher.label || '?').charAt(0).toUpperCase()}
-      </span>
-    </XlethIconButton>
+    </MenuPanel>
   )
 }
 
 export default function TitleBar({ projectName = 'Untitled Project', onAction, activeMenuLabel = null }) {
-  const quickLaunchers = useQuickLaunchersStore((state) => state.launchers)
-  const hydrateQuickLaunchers = useQuickLaunchersStore((state) => state.hydrate)
-
-  useEffect(() => { hydrateQuickLaunchers() }, [hydrateQuickLaunchers])
-
   const [renderedMenu, setRenderedMenu] = useState(null)
   const [openMenu, setOpenMenu] = useState(null)
   const [dropdownState, setDropdownState] = useState('closed')
@@ -237,9 +193,7 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction, a
   }, [])
 
   const scheduleOpenDropdown = useCallback((idx) => {
-    const menu = TITLEBAR_MENUS[idx]
     openTimerRef.current = setTimeout(() => {
-      console.log(`[MenuDropdown] open:${menu.label}`)
       setRenderedMenu(idx)
       setDropdownState('opening')
       enterTimerRef.current = setTimeout(() => {
@@ -255,20 +209,15 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction, a
       setOpenMenu(null)
       return
     }
-    const menu = TITLEBAR_MENUS[renderedMenu]
-    console.log(`[MenuDropdown] close:${menu.label}`)
     setOpenMenu(null)
     setDropdownState('closing')
     closeTimerRef.current = setTimeout(() => {
       setRenderedMenu(null)
       setDropdownState('closed')
-    }, DROPDOWN_CLOSE_MS)
+    }, dropdownCloseMs())
   }, [clearDropdownTimers, dropdownState, renderedMenu])
 
-  useEffect(() => {
-    console.log('[MenuBar] mount')
-    return clearDropdownTimers
-  }, [clearDropdownTimers])
+  useEffect(() => clearDropdownTimers, [clearDropdownTimers])
 
   useEffect(() => {
     if (renderedMenu === null) return
@@ -297,15 +246,13 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction, a
     }
 
     if (renderedMenu !== null && dropdownState !== 'closing') {
-      const currentMenu = TITLEBAR_MENUS[renderedMenu]
-      console.log(`[MenuDropdown] close:${currentMenu.label}`)
       setOpenMenu(null)
       setDropdownState('closing')
       closeTimerRef.current = setTimeout(() => {
         setRenderedMenu(null)
         setDropdownState('closed')
         scheduleOpenDropdown(idx)
-      }, DROPDOWN_CLOSE_MS)
+      }, dropdownCloseMs())
       return
     }
 
@@ -321,10 +268,13 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction, a
     if (onAction) onAction(label)
   }, [closeDropdown, onAction])
 
+  const handleLayout = useCallback((presetId) => {
+    closeDropdown()
+    applyLayoutChoice(presetId)
+  }, [closeDropdown])
+
   const handleMenuClick = useCallback((idx) => {
     const menu = TITLEBAR_MENUS[idx]
-    console.log('[MenuBar] pill click:', menu.label)
-    if (idx === 0) console.log('[TitleBar] fix verified — FILE click fires')
     if (isDirectTitlebarMenu(menu)) {
       closeDropdown()
       if (onAction) onAction(menu.action || menu.label)
@@ -336,21 +286,20 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction, a
   const renderDropdown = useCallback((menu) => {
     if (menu.dropdown === 'file') return <FileDropdown onAction={handleAction} />
     if (menu.dropdown === 'edit') {
-      return <ToolbarDropdown actions={EDIT_DROPDOWN_ACTIONS} label="Edit actions" onAction={handleAction} />
+      return <EditDropdown onAction={handleAction} />
     }
     if (menu.dropdown === 'view') {
-      return <ToolbarDropdown actions={VIEW_DROPDOWN_ACTIONS} label="View zoom actions" onAction={handleAction} />
+      return <ViewDropdown onAction={handleAction} onLayout={handleLayout} />
     }
     return null
-  }, [handleAction])
+  }, [handleAction, handleLayout])
 
   return (
-    <div className="titlebar" ref={barRef}>
-      <div className="titlebar-left">
+    <div className={`titlebar ${styles.bar}`} ref={barRef}>
+      <div className={`titlebar-left ${styles.left}`}>
         <nav className="titlebar-menus" aria-label="Application menu">
           {TITLEBAR_MENUS.map((menu, idx) => {
             const direct = isDirectTitlebarMenu(menu)
-            const MenuIcon = TITLEBAR_MENU_ICONS[menu.label]
             const menuIsRendered = renderedMenu === idx
             const menuIsOpen = openMenu === idx
             const menuIsActive = menuIsOpen || activeMenuLabel === menu.label
@@ -359,17 +308,19 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction, a
                 key={menu.label}
                 className={`titlebar-menu ${menuIsOpen ? 'open' : ''}${menuIsActive ? ' active' : ''}`}
               >
-                <XlethButton
-                  type="button"
-                  className="titlebar-menu-trigger"
-                  active={menuIsActive}
+                {/* `titlebar-menu-trigger` is kept as a plain hook class (no styles): the
+                    window manager tests and dropdown positioning look it up. */}
+                <Button
+                  variant="ghost"
+                  className={`titlebar-menu-trigger ${styles.menuTrigger}`}
+                  data-open={menuIsActive ? 'true' : undefined}
                   onClick={() => handleMenuClick(idx)}
                   aria-haspopup={direct ? undefined : 'menu'}
                   aria-expanded={direct ? undefined : menuIsOpen}
+                  hint={direct ? `${menu.label}` : `${menu.label} menu`}
                 >
-                  {MenuIcon && <MenuIcon className="titlebar-menu-icon" size={20} strokeWidth={2} aria-hidden="true" />}
-                  <span>{menu.label}</span>
-                </XlethButton>
+                  {menu.label}
+                </Button>
                 {!direct && menuIsRendered && (
                   <div className="titlebar-dropdown" data-state={dropdownState}>
                     {renderDropdown(menu)}
@@ -379,47 +330,41 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction, a
             )
           })}
         </nav>
+        <ToastStatusText />
       </div>
 
-      <div className="titlebar-launchers">
-        {PANEL_CATALOG_ORDER
-          .filter((entry) => entry.id !== 'sampleSelector')
-          .map((entry) => <TitleBarLauncherButton key={entry.id} entry={entry} />)}
-
-        {quickLaunchers.length > 0 && (
-          <div className="titlebar-launchers-divider" aria-hidden="true" />
-        )}
-
-        {quickLaunchers.map((launcher) => (
-          <QuickLauncherButton key={launcher.id} launcher={launcher} />
-        ))}
+      <div className={styles.center}>
+        <TransportBar />
       </div>
 
-      <div className="titlebar-controls">
-        <XlethIconButton
-          type="button"
-          className="titlebar-btn"
-          onClick={() => window.xleth.window.minimize()}
-          aria-label="Minimize"
-        >
-          <Minus size={14} />
-        </XlethIconButton>
-        <XlethIconButton
-          type="button"
-          className="titlebar-btn"
-          onClick={() => window.xleth.window.maximize()}
-          aria-label="Maximize"
-        >
-          <Square size={14} />
-        </XlethIconButton>
-        <XlethIconButton
-          type="button"
-          className="titlebar-btn titlebar-btn-close"
-          onClick={() => window.xleth.window.close()}
-          aria-label="Close"
-        >
-          <X size={14} />
-        </XlethIconButton>
+      <div className={styles.right}>
+        <TitleBarRegions className={styles.dock} />
+
+        <div className={styles.controls}>
+          <IconButton
+            label="Minimize"
+            onClick={() => window.xleth.window.minimize()}
+            hint="Minimize the window"
+          >
+            <IcMinus size={14} />
+          </IconButton>
+          <IconButton
+            label="Maximize"
+            onClick={() => window.xleth.window.maximize()}
+            hint="Maximize or restore the window"
+            hintMods="Double-click an empty part of the top bar"
+          >
+            <IcSquare size={14} />
+          </IconButton>
+          <IconButton
+            className={styles.close}
+            label="Close"
+            onClick={() => window.xleth.window.close()}
+            hint="Close Xleth"
+          >
+            <IcX size={14} />
+          </IconButton>
+        </div>
       </div>
     </div>
   )

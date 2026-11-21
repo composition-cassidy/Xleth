@@ -1,0 +1,19 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "uniflange",
+  "name": "SFX Swirl",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "order": 5,
+      "depth": 100,
+      "speed": 85,
+      "delay": 15,
+      "spread": 100,
+      "cross": 30,
+      "dry": 40,
+      "wet": 70
+    }
+  }
+}

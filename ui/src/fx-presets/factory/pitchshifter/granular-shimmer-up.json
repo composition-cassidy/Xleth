@@ -1,0 +1,17 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "pitchshifter",
+  "name": "Granular Shimmer Up",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "mode": 0,
+      "mix": 0.3,
+      "semitones": 12,
+      "cents": 0,
+      "size": 80,
+      "formant": 1
+    }
+  }
+}

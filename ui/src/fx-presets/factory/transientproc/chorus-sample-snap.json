@@ -1,0 +1,17 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "transientproc",
+  "name": "Chorus Sample Snap",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "attack": 50,
+      "sustain": -20,
+      "attack_speed": 5,
+      "threshold": -60,
+      "mix": 100,
+      "midi_detect": 1
+    }
+  }
+}

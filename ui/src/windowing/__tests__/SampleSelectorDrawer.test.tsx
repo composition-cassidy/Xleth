@@ -13,6 +13,13 @@ import {
   createInitialPanelStates,
   usePanelRegistry,
 } from '../registry/PanelRegistry';
+import {
+  DRAWER_PANEL_IDS,
+  PANEL_CATALOG,
+  WINDOW_PANEL_IDS,
+} from '../registry/panelCatalog';
+import { floatingPanelKey } from '../AppShell';
+import { DockRegion } from '../components/DockRegion';
 
 vi.mock('../../components/Toast.jsx', () => ({
   ToastProvider: ({ children }: { children: unknown }) => children,
@@ -55,7 +62,7 @@ describe('SampleSelectorDrawer', () => {
     expect(html).not.toContain('left-panel-tabs');
   });
 
-  it('opens through the drawer helper and normalizes to docked-left state', () => {
+  it('opens through the drawer helper and preserves the panel\'s existing dock side', () => {
     const panels = createInitialPanelStates();
     panels.sampleSelector.hidden = true;
     panels.sampleSelector.mode = 'floating';
@@ -67,8 +74,29 @@ describe('SampleSelectorDrawer', () => {
     const panel = usePanelRegistry.getState().panels.sampleSelector;
     expect(panel.hidden).toBe(false);
     expect(panel.mode).toBe('docked');
+    expect(panel.docked.region).toBe('right');
+    expect(panel.docked.orderInRegion).toBe(0);
+  });
+
+  it('opens on the default left side for a fresh panel with no prior placement', () => {
+    openSampleSelectorDrawer();
+
+    const panel = usePanelRegistry.getState().panels.sampleSelector;
+    expect(panel.hidden).toBe(false);
+    expect(panel.mode).toBe('docked');
     expect(panel.docked.region).toBe('left');
     expect(panel.docked.orderInRegion).toBe(0);
+  });
+
+  it('redocks to a new side via dockPanel and the change survives a close/open cycle', () => {
+    openSampleSelectorDrawer();
+    usePanelRegistry.getState().dockPanel('sampleSelector', 'bottom');
+    expect(usePanelRegistry.getState().panels.sampleSelector.docked.region).toBe('bottom');
+
+    collapseSampleSelectorDrawer();
+    openSampleSelectorDrawer();
+
+    expect(usePanelRegistry.getState().panels.sampleSelector.docked.region).toBe('bottom');
   });
 
   it('renders the production shell with a reserved sample dock column when open', () => {
@@ -77,14 +105,14 @@ describe('SampleSelectorDrawer', () => {
     const appShellSource = readUiSource('windowing/AppShell.tsx');
 
     expect(appShellSource).toContain('sample-dock-open');
-    expect(appShellSource).toContain('<SampleSelectorDrawer />');
+    expect(appShellSource).toContain('<SampleSelectorDrawer');
     expect(appShellSource).toContain('data-testid="xleth-app-workarea"');
-    expect(appShellSource.indexOf('<SampleSelectorDrawer />')).toBeLessThan(
+    expect(appShellSource.indexOf('<SampleSelectorDrawer')).toBeLessThan(
       appShellSource.indexOf('data-testid="xleth-app-workarea"'),
     );
   });
 
-  it('collapses to only the reserved edge-tab column and lets WorkArea expand', () => {
+  it('collapses to only the reserved edge-tab strip and lets WorkArea expand', () => {
     openSampleSelectorDrawer();
     collapseSampleSelectorDrawer();
 
@@ -92,9 +120,9 @@ describe('SampleSelectorDrawer', () => {
     const css = readUiSource('windowing/components/windowing.css');
 
     expect(html).toContain('xleth-sample-selector-drawer__edge-toggle--collapsed');
-    expect(css).toMatch(/\.xleth-windowing-shell\s*\{[\s\S]*grid-template-columns:\s*var\(--xleth-sample-dock-width\)\s+minmax\(0,\s*1fr\)/);
-    expect(css).toMatch(/\.xleth-windowing-shell\s*\{[\s\S]*transition:\s*grid-template-columns\s+180ms\s+cubic-bezier\(0\.16,\s*1,\s*0\.3,\s*1\)/);
-    expect(css).toMatch(/\.xleth-windowing-shell\.sample-dock-collapsed\s*\{[\s\S]*grid-template-columns:\s*var\(--xleth-sample-dock-handle-width\)\s+minmax\(0,\s*1fr\)/);
+    expect(css).toMatch(/\.xleth-sample-selector-drawer-host\s*\{[\s\S]*flex:\s*0 0 var\(--xleth-sample-dock-width\)/);
+    expect(css).toMatch(/\.xleth-sample-selector-drawer-host\s*\{[\s\S]*transition:\s*flex-basis\s+180ms\s+cubic-bezier\(0\.16,\s*1,\s*0\.3,\s*1\)/);
+    expect(css).toMatch(/\.xleth-windowing-shell\.sample-dock-collapsed \.xleth-sample-selector-drawer-host\s*\{[\s\S]*flex-basis:\s*var\(--xleth-sample-dock-handle-width\)/);
   });
 
   it('disables the drawer tween when reduced motion is requested', () => {
@@ -121,13 +149,26 @@ describe('SampleSelectorDrawer', () => {
   });
 
   it('keeps Sample Selector out of normal floating and maximized panel mounting paths', () => {
-    const appShellSource = readUiSource('windowing/AppShell.tsx');
+    // Enforced by the catalog's presentation flag rather than by a hand-kept
+    // exclusion list, so assert the outcome instead of the spelling.
     const sampleSelectorPanelSource = readUiSource('windowing/panels/SampleSelectorPanel.tsx');
-
-    expect(appShellSource).toContain('<SampleSelectorDrawer />');
-    expect(appShellSource).toContain('DRAWER_PANEL_IDS.has(panelId)');
-    expect(appShellSource).toContain('excludePanelIds={drawerPanelIds}');
+    expect(PANEL_CATALOG.sampleSelector.presentation).toBe('drawer');
+    expect(WINDOW_PANEL_IDS).not.toContain('sampleSelector');
+    expect(DRAWER_PANEL_IDS).toContain('sampleSelector');
     expect(sampleSelectorPanelSource).toContain('return null');
+
+    // Open it every way a panel can be opened; it still never reaches the
+    // floating layer, and its mode is pinned to docked.
+    const registry = usePanelRegistry.getState();
+    registry.openPanel('sampleSelector');
+    expect(floatingPanelKey(usePanelRegistry.getState().panels).split('|'))
+      .not.toContain('sampleSelector');
+
+    registry.maximizePanel('sampleSelector');
+    expect(usePanelRegistry.getState().panels.sampleSelector.mode).toBe('maximized');
+    registry.restorePanel('sampleSelector');
+    expect(floatingPanelKey(usePanelRegistry.getState().panels).split('|'))
+      .not.toContain('sampleSelector');
   });
 
   it('renders the existing internal tabs inside the expanded drawer', () => {
@@ -136,8 +177,9 @@ describe('SampleSelectorDrawer', () => {
     const html = renderToStaticMarkup(<SampleSelectorDrawer />);
 
     expect(html).toContain('xleth-sample-selector-drawer');
-    expect(html).toContain('Project Media');
-    expect(html).toContain('Sample Selector');
+    expect(html).toContain('role="tablist" aria-label="Browser"');
+    expect(html).toContain('data-text="Media"');
+    expect(html).toContain('data-text="Samples"');
     // The GRID tab (Grid Settings) was removed in Phase 3 — grid/canvas/track
     // video settings now live in the Timeline's Video tab, not the left drawer.
     expect(html).not.toContain('Grid Settings');
@@ -146,17 +188,27 @@ describe('SampleSelectorDrawer', () => {
     expect(html).toContain('aria-label="Collapse Sample Selector drawer"');
   });
 
-  it('renders a drawer resize handle for the left dock region', () => {
+  it('renders a shared DockRegionResizer for the panel\'s current dock side', () => {
     openSampleSelectorDrawer();
 
     const html = renderToStaticMarkup(<SampleSelectorDrawer />);
     const source = readUiSource('windowing/components/SampleSelectorDrawer.tsx');
 
-    expect(html).toContain('xleth-sample-selector-drawer__resize-handle');
-    expect(html).toContain('data-testid="xleth-sample-selector-drawer-resize-handle"');
-    expect(source).toContain("beginDockRegionResize('left', 'horizontal'");
-    expect(source).toContain('state.dockRegionSizes.left');
+    expect(html).toContain('data-testid="xleth-dock-region-resizer-left"');
+    expect(source).toContain('<DockRegionResizer region={side} currentSize={drawerSize} />');
+    expect(source).toContain('state.dockRegionSizes[side]');
     expect(source).not.toContain('sampleSelectorDockWidth');
+  });
+
+  it('renders the resizer for whichever side the panel is docked to', () => {
+    const panels = createInitialPanelStates();
+    panels.sampleSelector.hidden = false;
+    panels.sampleSelector.docked.region = 'bottom';
+    usePanelRegistry.setState({ panels });
+
+    const html = renderToStaticMarkup(<SampleSelectorDrawer />);
+
+    expect(html).toContain('data-testid="xleth-dock-region-resizer-bottom"');
   });
 
   it('collapses through the drawer helper', () => {
@@ -175,11 +227,47 @@ describe('SampleSelectorDrawer', () => {
     expect(countRegistryNotifications(() => collapseSampleSelectorDrawer())).toBe(0);
   });
 
-  it('production shell does not render sample selector as a normal PanelFrame', () => {
+  it('shell mounts the drawer and excludes the panel from every dock region', () => {
     const appShellSource = readUiSource('windowing/AppShell.tsx');
+    expect(appShellSource).toContain('<SampleSelectorDrawer');
+    expect(appShellSource).toContain('excludePanelIds={DRAWER_PANEL_IDS}');
 
-    expect(appShellSource).toContain('<SampleSelectorDrawer />');
-    expect(appShellSource).toContain('DRAWER_PANEL_IDS.has(panelId)');
-    expect(appShellSource).toContain('excludePanelIds={drawerPanelIds}');
+    // Docking it by hand must still not put a PanelFrame in the region.
+    usePanelRegistry.getState().openPanel('sampleSelector');
+    usePanelRegistry.getState().dockPanel('sampleSelector', 'left');
+    const html = renderToStaticMarkup(
+      <DockRegion side="left" excludePanelIds={DRAWER_PANEL_IDS} />,
+    );
+    expect(html).not.toContain('data-panel-id="sampleSelector"');
+  });
+
+  // Compose (ui/DESIGN.md 8.1): the edge region on the Browser's side is stacked above the
+  // drawer in the drawer's own column, outside the drawer's visibility scope.
+  it('hosts a stacked region above the drawer, and keeps it when the Browser collapses', () => {
+    openSampleSelectorDrawer();
+    const stacked = <DockRegion side="left" stacked excludePanelIds={DRAWER_PANEL_IDS} />;
+    usePanelRegistry.getState().applyPreset('xleth-compose');
+
+    const open = renderToStaticMarkup(<SampleSelectorDrawer stackedRegion={stacked} />);
+    expect(open).toContain('data-stacked="true"');
+    expect(open).toContain('xleth-dock-region--stacked');
+    expect(open).toContain('data-docked-slot-id="preview"');
+    // Stacked: no inline width (it takes the column's) and no fill slot.
+    expect(open).not.toMatch(/xleth-dock-region--stacked[^>]*style="[^"]*width/);
+    expect(open).not.toContain('xleth-docked-panel-slot--fill');
+    expect(open.indexOf('xleth-dock-region--stacked')).toBeLessThan(open.indexOf('class="xleth-sample-selector-drawer"'));
+
+    collapseSampleSelectorDrawer();
+    const collapsed = renderToStaticMarkup(<SampleSelectorDrawer stackedRegion={stacked} />);
+    expect(collapsed).toContain('data-docked-slot-id="preview"');
+    expect(collapsed).toContain('aria-label="Browser, collapsed"');
+    expect(collapsed).toMatch(/aria-label="Browser, collapsed"[^>]*aria-orientation="horizontal"/);
+  });
+
+  it('without a stacked region the host is unchanged', () => {
+    openSampleSelectorDrawer();
+    const html = renderToStaticMarkup(<SampleSelectorDrawer />);
+    expect(html).not.toContain('data-stacked');
+    expect(html).not.toContain('xleth-dock-region--stacked');
   });
 });

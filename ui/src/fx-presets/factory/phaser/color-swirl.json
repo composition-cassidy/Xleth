@@ -1,0 +1,21 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "phaser",
+  "name": "Color Swirl",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "rate": 0.3,
+      "depth": 90,
+      "stages": 2,
+      "feedback": 40,
+      "resonance": 1,
+      "width": 0,
+      "mix": 85,
+      "freq_low": 150,
+      "freq_high": 2500,
+      "spread": 0
+    }
+  }
+}

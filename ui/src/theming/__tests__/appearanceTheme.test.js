@@ -19,7 +19,13 @@
 // the fix is not to relax the threshold.
 
 import { describe, it, expect } from 'vitest';
-import { buildAppearanceTheme } from '../runtime/appearanceTheme';
+import {
+  APPEARANCE_CONTRAST_MIN,
+  NEUTRAL_TINT_CAP_CHROMA,
+  buildAppearanceTheme,
+} from '../runtime/appearanceTheme';
+import { resolveTheme } from '../runtime/applyTheme';
+import { TINT_CHROMA_CAP, findTintedSurfaces } from '../runtime/chromeTint';
 
 // ── WCAG color math (independent of the implementation under test) ──────────
 
@@ -112,9 +118,16 @@ describe('appearance brightness — text stays legible', () => {
     // only ever land that close to an exact target. Measured, not padded to
     // make this pass — anything larger would hide a real regression.
     const QUANTIZATION_EPSILON = 0.1;
-    const shipped = tokensAt(0);
+    // The promise is the neutral ramp's own ink-2 / ink-3 against its panel (g1 #1A1A1A).
+    // (Phase 7: it is no longer read back from this builder's own 0% output, because the
+    // tiers are now solved against the least favourable surface and carry headroom there.)
+    const SHIPPED_ANCHOR = {
+      '--theme-text-muted': '#B4B4B4',
+      '--theme-text-subtle': '#9A9A9A',
+      '--theme-text-placeholder': '#9A9A9A',
+    };
     for (const tier of ['--theme-text-muted', '--theme-text-subtle', '--theme-text-placeholder']) {
-      const promised = contrast(shipped[tier], shipped['--theme-bg-surface']);
+      const promised = contrast(SHIPPED_ANCHOR[tier], '#1A1A1A');
       for (const d of STEPS) {
         const t = tokensAt(d);
         const bg = t['--theme-bg-surface'];
@@ -135,7 +148,10 @@ describe('appearance brightness — text stays legible', () => {
       // Near the polarity switchover primary clamps to a pole and muted can
       // draw level with it, so this is >= rather than >.
       expect(primary + 0.05).toBeGreaterThanOrEqual(muted);
-      expect(muted).toBeGreaterThan(subtle);
+      // Both de-emphasized tiers now carry the 4.5:1 floor, so at the polarity
+      // switchover (where white or black only reaches ~4.58) they can both sit on the
+      // pole and tie. The order may therefore be level, never inverted.
+      expect(muted + 0.05).toBeGreaterThanOrEqual(subtle);
     }
   });
 });
@@ -156,23 +172,25 @@ describe('appearance brightness — borders survive the light theme', () => {
 });
 
 describe('appearance brightness — endpoints match the shipped palette', () => {
-  it('reproduces the shipped dark anchors at 0%', () => {
+  it('reproduces the neutral ramp anchors at 0%', () => {
     const t = tokensAt(0);
-    // Surfaces are an exact linear identity at darkness=0.
-    expect(t['--theme-bg-primary']).toBe('#0A0A0F');
-    expect(t['--theme-bg-surface']).toBe('#1A1A24');
-    expect(t['--theme-bg-inset'].toUpperCase()).toBe('#0D0D14');
+    // Surfaces are an exact linear identity at darkness=0, and exact greys.
+    expect(t['--theme-bg-primary']).toBe('#0F0F0F');
+    expect(t['--theme-bg-surface']).toBe('#1A1A1A');
+    expect(t['--theme-bg-inset'].toUpperCase()).toBe('#0F0F0F');
     // Text is solved from a luminance target, so allow 8-bit rounding drift.
     for (const [tier, want] of [
-      ['--theme-text', '#E8E8ED'],
-      ['--theme-text-muted', '#8888A0'],
-      ['--theme-text-subtle', '#555566'],
+      ['--theme-text', '#E6E6E6'],
+      ['--theme-text-muted', '#B4B4B4'],
+      ['--theme-text-subtle', '#9A9A9A'],
     ]) {
       const got = hexToRgb(t[tier]);
       const expected = hexToRgb(want);
-      expect(Math.abs(got.r - expected.r)).toBeLessThanOrEqual(2);
-      expect(Math.abs(got.g - expected.g)).toBeLessThanOrEqual(2);
-      expect(Math.abs(got.b - expected.b)).toBeLessThanOrEqual(2);
+      // Solved against the panel (g1), nudged outward only where g3 would fall under 4.5:1.
+      expect(got.r).toBeGreaterThanOrEqual(expected.r - 2);
+      expect(got.r).toBeLessThanOrEqual(expected.r + 2);
+      expect(got.r).toBe(got.g);
+      expect(got.g).toBe(got.b);
     }
   });
 
@@ -204,8 +222,13 @@ describe('appearance hue and saturation', () => {
     return { sat: d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1)), l: l * 100 };
   };
 
-  it('omitting options is identical to the shipped blue-grey cast', () => {
+  it('omitting options is exact neutral grey (no hue cast by default)', () => {
     for (const d of [0, 37, 100]) {
+      const t = buildAppearanceTheme('#33CED6', d).tokens;
+      for (const tier of ['--theme-bg-primary', '--theme-bg-surface', '--theme-bg-inset', '--theme-text', '--theme-border-subtle']) {
+        const { r, g, b } = hexToRgb(t[tier]);
+        expect(r === g && g === b, `${tier} @${d} = ${t[tier]}`).toBe(true);
+      }
       expect(JSON.stringify(buildAppearanceTheme('#33CED6', d, {}).tokens))
         .toBe(JSON.stringify(buildAppearanceTheme('#33CED6', d).tokens));
     }
@@ -255,8 +278,11 @@ describe('appearance text contrast knob', () => {
     // Primary saturates against the pole at high settings, so the observable
     // knob response lives in the tiers that have headroom.
     for (const tier of ['--theme-text-muted', '--theme-text-subtle']) {
-      expect(ratioAt(60, tier)).toBeLessThan(ratioAt(100, tier));
-      expect(ratioAt(100, tier)).toBeLessThan(ratioAt(140, tier));
+      // The 4.5:1 floor on every ramp surface binds the low end, so neighbouring settings
+      // can tie there; the response is never inverted and the full range still opens up.
+      expect(ratioAt(APPEARANCE_CONTRAST_MIN, tier)).toBeLessThanOrEqual(ratioAt(100, tier));
+      expect(ratioAt(100, tier)).toBeLessThanOrEqual(ratioAt(140, tier));
+      expect(ratioAt(APPEARANCE_CONTRAST_MIN, tier)).toBeLessThan(ratioAt(140, tier));
     }
   });
 
@@ -289,7 +315,7 @@ describe('appearance knobs — combined safety envelope', () => {
     for (let hue = 0; hue < 360; hue += 30) {
       for (const saturation of [0, 100, 200, 300]) {
         for (let d = 0; d <= 100; d += 10) {
-          for (const c of [60, 100, 160]) {
+          for (const c of [80, 100, 160]) {
             const t = buildAppearanceTheme('#33CED6', d, { hue, saturation, contrast: c }).tokens;
             const ratio = contrast(t['--theme-text'], t['--theme-bg-surface']);
             if (ratio < worst) {
@@ -314,5 +340,49 @@ describe('appearance knobs — combined safety envelope', () => {
         }
       }
     }
+  });
+});
+
+// ── Phase 7: the chrome is neutral, and the floors hold on every ramp surface ─────
+
+describe('appearance — neutral chrome and the DAW Floor (Phase 7)', () => {
+  const ratio = (a, b) => contrast(a, b);
+
+  it('the tint cap equals the one the theme editor warns on', () => {
+    expect(NEUTRAL_TINT_CAP_CHROMA).toBe(TINT_CHROMA_CAP);
+  });
+
+  it('is not tinted at the default knobs, and is tinted past the cap', () => {
+    const at = (saturation) => {
+      const file = buildAppearanceTheme('#33CED6', 30, { hue: 330, saturation });
+      return findTintedSurfaces(resolveTheme(file).values).length;
+    };
+    expect(at(0)).toBe(0);
+    expect(at(100)).toBe(0); // right at the cap is still neutral
+    expect(at(250)).toBeGreaterThan(0);
+  });
+
+  it('every ink and the boundary clear their floor on g0..g3 across the whole slider', () => {
+    let worstInk = Infinity;
+    let worstBoundary = Infinity;
+    for (const saturation of [0, 100]) {
+      for (const c of [APPEARANCE_CONTRAST_MIN, 100, 160]) {
+        for (let d = 0; d <= 100; d += 5) {
+          const { values } = resolveTheme(buildAppearanceTheme('#33CED6', d, { contrast: c, saturation, hue: 200 }));
+          const surfaces = ['g0', 'g1', 'g2', 'g3'].map((k) => values[`--theme-ui-${k}`]);
+          for (const s of surfaces) {
+            for (const k of ['ink', 'ink-2', 'ink-3']) worstInk = Math.min(worstInk, ratio(values[`--theme-ui-${k}`], s));
+            worstBoundary = Math.min(worstBoundary, ratio(values['--theme-ui-boundary'], s));
+          }
+        }
+      }
+    }
+    expect(worstInk).toBeGreaterThanOrEqual(4.5);
+    expect(worstBoundary).toBeGreaterThanOrEqual(3);
+  });
+
+  it('names the ramp that matches its polarity, so ink-2 / ink-3 step toward the surface', () => {
+    expect(buildAppearanceTheme('#33CED6', 0).ramp).toBe('dark');
+    expect(buildAppearanceTheme('#33CED6', 100).ramp).toBe('light');
   });
 });

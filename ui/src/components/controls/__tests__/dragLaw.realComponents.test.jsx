@@ -13,7 +13,25 @@ import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Knob from '../../sampler/Knob.jsx'
-import VolumeFader from '../../mixer/VolumeFader.jsx'
+import Fader, { linearToPos, gainFromPos } from '../Fader.jsx'
+
+// The mixer no longer has its own VolumeFader (Phase 5 moved the strips onto the
+// kit); this is the same shared Fader configured the way that wrapper did.
+function VolumeFader({ value, onChange }) {
+  return (
+    <Fader
+      orientation="vertical"
+      value={value}
+      toNorm={linearToPos}
+      fromNorm={gainFromPos}
+      defaultValue={1.0}
+      detents={[1.0]}
+      fill
+      thickness={22}
+      onLiveChange={onChange}
+    />
+  )
+}
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 

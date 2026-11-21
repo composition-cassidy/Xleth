@@ -1,0 +1,15 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "varimu",
+  "name": "Driven Squash",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "input": 16,
+      "output": -10,
+      "time_constant": 6,
+      "mode": 0
+    }
+  }
+}

@@ -1,0 +1,107 @@
+@layer kit {
+  /* Shared layout for the Phase 4b device bodies. The Compressor's own module
+   * keeps its copy; these are the same few shapes (a pair or stack of knobs, a
+   * display host, a small readout) so every device reads as one hand. */
+
+  /* Hosts an existing canvas edge to edge inside the display well. */
+  .display {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    touch-action: none;
+  }
+
+  .display > :global(*) {
+    height: 100%;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .pair {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .stack {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .column {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    align-self: stretch;
+    justify-content: center;
+    gap: var(--space-1);
+    padding: 0 var(--space-1);
+  }
+
+  /* A meter that takes the section's spare height. */
+  .grow {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .row {
+    display: flex;
+    align-items: stretch;
+    align-self: stretch;
+    flex: 1 1 auto;
+    gap: var(--space-2);
+    min-height: 0;
+    padding: var(--space-1);
+  }
+
+  .readouts {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    gap: var(--space-1);
+  }
+
+  /* A cell that stays narrow while its section is wider (a select under a knob). */
+  .cell {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .caption {
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+    line-height: 1.2;
+    text-align: center;
+    white-space: nowrap;
+  }
+
+  .readout {
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  /* A small canvas (a filter curve) that needs a box of its own. */
+  .curve {
+    position: relative;
+    align-self: stretch;
+    height: 64px;
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g0);
+    overflow: hidden;
+  }
+
+  .curve > :global(canvas) {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+}

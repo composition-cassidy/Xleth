@@ -1,0 +1,17 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "flanger",
+  "name": "Fast Wobble",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "rate": 5,
+      "depth": 50,
+      "delay": 1,
+      "feedback": 40,
+      "width": 80,
+      "mix": 45
+    }
+  }
+}

@@ -361,7 +361,7 @@ function drawLevelGrid(ctx, x, y, w, h, theme) {
     ctx.textBaseline = 'middle'
     for (const db of gridDb) {
       const yy = transientLevelToY(db, h)
-      ctx.fillText(`${db}`, w - 6, clamp(yy, 7, h - 7))
+      ctx.fillText(db < 0 ? `−${-db}` : `${db}`, w - 6, clamp(yy, 7, h - 7))
     }
   }
   ctx.restore()
@@ -535,15 +535,15 @@ function drawThresholdLine(ctx, x, y, w, h, theme, thresholdDb) {
 function drawGainBadge(ctx, x, y, w, h, ring, theme) {
   if (w < 100 || h < 32) return
   const meter = meterValuesForContext(ctx, ring)
-  const sign = meter.gainDb >= 0 ? '+' : ''
-  const text = `${sign}${meter.gainDb.toFixed(1)} dB`
+  const sign = meter.gainDb >= 0 ? '+' : '−'
+  const text = `${sign}${Math.abs(meter.gainDb).toFixed(1)} dB`
   const color = meter.gainDb >= 0
     ? ((theme && theme.accent) ? theme.accent : TRANSIENT_DISPLAY.gainChange.boostColor)
     : TRANSIENT_DISPLAY.gainChange.cutColor
 
   ctx.save()
   ctx.translate(x, y)
-  ctx.font = '11px ui-monospace, "SF Mono", Menlo, Consolas, monospace'
+  ctx.font = uiCanvasFont('11px')
   ctx.textAlign = 'right'
   ctx.textBaseline = 'top'
   const padX = 6
@@ -606,6 +606,19 @@ function drawOutputEnvelope(ctx, x, y, w, h, columns, theme) {
   strokeLinePath(ctx, columns, (c) => transientLevelToY(c.outputDb, h), lineColor, 2, 0.92)
 }
 
+// Nothing has arrived (transport stopped, nothing playing): say so instead of
+// leaving an empty well. Never a fabricated shape.
+function drawNoSignal(ctx, w, h, theme) {
+  if (w < 80 || h < 32) return
+  ctx.save()
+  ctx.fillStyle = theme?.textMuted || '#929292'
+  ctx.font = uiCanvasFont('11px')
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillText('Play to see transients', w / 2, h / 2)
+  ctx.restore()
+}
+
 // ── Top-level painters (preset entry points) ────────────────────────────────
 
 export function drawTransientShaper(ctx, w, h, ring, theme) {
@@ -637,6 +650,7 @@ export function drawTransientEnvelope(ctx, w, h, ring, theme) {
   drawLevelGrid(ctx, 0, 0, w, h, theme)
   drawEnvelopeLayer(ctx, 0, 0, w, h, columns, hasEnvelope, theme)
   drawInputOutputLayer(ctx, 0, 0, w, h, columns, theme)
+  if (columns.length === 0) drawNoSignal(ctx, w, h, theme)
 }
 
 export function drawTransientGainChange(ctx, w, h, ring, theme) {
@@ -645,6 +659,7 @@ export function drawTransientGainChange(ctx, w, h, ring, theme) {
   const columns = buildTransientDisplayHistory(ring, w)
   drawGainChangeStrip(ctx, 0, 0, w, h, columns, theme)
   drawGainBadge(ctx, 0, 0, w, h, ring, theme)
+  if (columns.length === 0) drawNoSignal(ctx, w, h, theme)
 }
 
 // ── Preset registries ───────────────────────────────────────────────────────

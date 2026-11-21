@@ -1,10 +1,17 @@
 import React, { useEffect, useState } from 'react'
+import { SegmentedControl } from '../../ui-kit'
 import {
   YOUTUBE_QUALITY_STOPS,
   YOUTUBE_RESOLUTIONS,
   computeYoutubeBitrate,
   formatBitrateMbps,
 } from './presets.js'
+import { ExportSelect, Row, exportStyles as styles } from './exportKit.jsx'
+
+const FPS_OPTIONS = [
+  { value: 60, label: '60 fps' },
+  { value: 30, label: '30 fps' },
+]
 
 /**
  * YouTube preset — MP4/H.264/AAC 48 kHz 384 kbps, sub-linear bitrate scaling
@@ -13,8 +20,6 @@ import {
 export default function YouTubeTab({
   settings,       // { resolution, fps, quality, hwEncoder }
   onChange,       // (patch) => void
-  outputPath,
-  onBrowse,
   running,
 }) {
   const [availableEncoders, setAvailableEncoders] = useState([])
@@ -43,73 +48,43 @@ export default function YouTubeTab({
   const qualityLabel = YOUTUBE_QUALITY_STOPS.find((s) => s.value === settings.quality)?.label
                      || 'Great'
 
+  const resolutionOptions = YOUTUBE_RESOLUTIONS.map((r) => ({ value: r.id, label: `${r.label} (${r.width}×${r.height})` }))
+  const encoderOptions = availableEncoders.length === 0
+    ? [{ value: '', label: 'Auto' }]
+    : availableEncoders.map((e) => ({ value: e.name, label: e.displayName || e.name }))
+
   return (
-    <div className="export-tab-panel">
-      <div className="export-tab-desc">
-        MP4 · H.264 · AAC 48 kHz 384 kbps. Tuned for YouTube upload.
+    <div className={styles.panel}>
+      <div className={styles.desc}>MP4 · H.264 · AAC 48 kHz 384 kbps. Tuned for YouTube upload.</div>
+
+      <div className={styles.grid}>
+        <Row label="Resolution">
+          <ExportSelect label="Resolution" value={settings.resolution} options={resolutionOptions} disabled={running} onChange={(v) => onChange({ resolution: v })} />
+        </Row>
+        <Row label="Frame rate">
+          <ExportSelect label="Frame rate" value={settings.fps} options={FPS_OPTIONS} disabled={running} onChange={(v) => onChange({ fps: Number(v) })} />
+        </Row>
       </div>
 
-      <div className="export-row">
-        <label>Resolution</label>
-        <select value={settings.resolution}
-                onChange={(e) => onChange({ resolution: e.target.value })}
-                disabled={running}>
-          {YOUTUBE_RESOLUTIONS.map((r) => (
-            <option key={r.id} value={r.id}>{r.label} ({r.width}×{r.height})</option>
-          ))}
-        </select>
-      </div>
+      <Row label="Encoder">
+        <ExportSelect
+          label="Encoder"
+          value={settings.hwEncoder || ''}
+          options={encoderOptions}
+          disabled={running || !availableEncoders.length}
+          onChange={(v) => onChange({ hwEncoder: v })}
+        />
+      </Row>
 
-      <div className="export-row">
-        <label>Frame Rate</label>
-        <select value={settings.fps}
-                onChange={(e) => onChange({ fps: Number(e.target.value) })}
-                disabled={running}>
-          <option value={60}>60 fps</option>
-          <option value={30}>30 fps</option>
-        </select>
-      </div>
-
-      <div className="export-row">
-        <label>Encoder</label>
-        <select value={settings.hwEncoder || ''}
-                onChange={(e) => onChange({ hwEncoder: e.target.value })}
-                disabled={running || !availableEncoders.length}>
-          {availableEncoders.length === 0 && <option value="">auto</option>}
-          {availableEncoders.map((e) => (
-            <option key={e.name} value={e.name}>{e.displayName || e.name}</option>
-          ))}
-        </select>
-      </div>
-
-      <div className="export-row">
-        <label>Quality</label>
-        <div className="quality-stops">
-          {YOUTUBE_QUALITY_STOPS.map((s) => (
-            <button key={s.value}
-                    className={`quality-stop ${settings.quality === s.value ? 'active' : ''}`}
-                    onClick={() => onChange({ quality: s.value })}
-                    disabled={running}>
-              {s.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="export-row">
-        <label></label>
-        <div className="export-bitrate-readout">
-          {qualityLabel} — ~{formatBitrateMbps(bitrate)}
-        </div>
-      </div>
-
-      <div className="export-row export-row-path">
-        <label>Output File</label>
-        <div className="export-path-group">
-          <input type="text" value={outputPath} readOnly placeholder="Click Browse…" disabled={running} />
-          <button onClick={onBrowse} disabled={running}>Browse…</button>
-        </div>
-      </div>
+      <Row label="Quality" note={`${qualityLabel}: about ${formatBitrateMbps(bitrate)}`}>
+        <SegmentedControl
+          label="Quality"
+          options={YOUTUBE_QUALITY_STOPS.map((s) => ({ value: s.value, label: s.label }))}
+          value={settings.quality}
+          disabled={running}
+          onChange={(v) => onChange({ quality: v })}
+        />
+      </Row>
     </div>
   )
 }

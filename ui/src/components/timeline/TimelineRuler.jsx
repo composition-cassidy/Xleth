@@ -3,6 +3,7 @@ import { drawRuler, resolveTimelinePalette } from './timelineDrawing.js'
 import { RULER_HEIGHT, pixelToBeat, snapBeatToGrid, beatToPlayheadPixel, beatToPixel } from '../../constants/timeline.js'
 import { playheadClock } from '../../services/PlayheadClock.js'
 
+import { subscribeDpr } from '../../ui-kit/dpr'
 const PLAYHEAD_LINE_WIDTH = 1
 
 /**
@@ -68,9 +69,9 @@ const TimelineRuler = forwardRef(function TimelineRuler(
 
   function sizeAndDraw(container) {
     const w = Math.floor(container.clientWidth)
-    if (w === 0 || w === sizeRef.current.w) return
-    sizeRef.current = { w }
     const dpr = window.devicePixelRatio || 1
+    if (w === 0 || (w === sizeRef.current.w && dpr === sizeRef.current.dpr)) return
+    sizeRef.current = { w, dpr }
     if (bgCanvasRef.current) applySize(bgCanvasRef.current, w, RULER_HEIGHT, dpr)
     redraw()
     positionPlayhead(playheadBeatRef.current)
@@ -84,7 +85,8 @@ const TimelineRuler = forwardRef(function TimelineRuler(
     const timerId = setTimeout(() => sizeAndDraw(container), 50)
     const observer = new ResizeObserver(() => sizeAndDraw(container))
     observer.observe(container)
-    return () => { clearTimeout(timerId); observer.disconnect() }
+    const offDpr = subscribeDpr(() => sizeAndDraw(container))
+    return () => { clearTimeout(timerId); observer.disconnect(); offDpr() }
   }, [])
 
   // ── Click to seek ──────────────────────────────────────────────────────────

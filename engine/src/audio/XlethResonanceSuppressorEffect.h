@@ -3,6 +3,7 @@
 #include "audio/XlethEffectBase.h"
 #include "audio/viz/DynamicsVizCollector.h"
 #include "audio/viz/DynamicsVizFrame.h"
+#include "dsp/ResonanceCore.h"
 
 #include <juce_dsp/juce_dsp.h>
 
@@ -46,6 +47,19 @@
 // Visualization emits schema-v2 ResonanceBucket payloads only while explicitly
 // enabled. Buckets are log-frequency summaries of spectrum, reduction, and
 // weighting arrays; they are display-only and never feed back into DSP.
+//
+// High Quality engines (parameter hq_engine, only read in High Quality mode):
+//   Classic (0, default) = the WolaProcessor above, bit-identical to before.
+//   New     (1)          = xleth::dsp::resonance::Core (dsp/ResonanceCore.h);
+//                          contract: ResonanceCore.md, "Using the core in the
+//                          Resonance Suppressor".
+// Structural changes (processing_mode, hq_engine, stereo_mode, and quality for
+// Classic) never allocate or touch DSP state on the message thread: every
+// engine is built in prepareEffect(), the audio thread notices the new
+// structure at a block boundary, fades the output out (5 ms), resets the
+// target engine and fades its INPUT in (5 ms). A quality change on the New
+// engine is Core::requestTier() (hold + 5 ms crossfade inside the core).
+// Latency is published on the message thread at the request.
 //
 // pluginId: "resonancesuppressor"
 
@@ -142,15 +156,16 @@ public:
         if (xml && xml->hasTagName(apvts_.state.getType()))
         {
             bool hasProcessingMode = false;
+            bool hasHqEngine = false;
             for (auto* child : xml->getChildIterator())
             {
-                if (child != nullptr
-                    && child->hasTagName("PARAM")
-                    && child->getStringAttribute("id") == "processing_mode")
-                {
+                if (child == nullptr || !child->hasTagName("PARAM"))
+                    continue;
+                const auto id = child->getStringAttribute("id");
+                if (id == "processing_mode")
                     hasProcessingMode = true;
-                    break;
-                }
+                else if (id == "hq_engine")
+                    hasHqEngine = true;
             }
 
             if (!hasProcessingMode)
@@ -161,12 +176,23 @@ public:
                 xml->addChildElement(legacyMode.release());
             }
 
+            // A state saved before hq_engine existed is a Classic state. Without
+            // this element APVTS would KEEP the instance's current value (it does
+            // not reset missing parameters to their default).
+            if (!hasHqEngine)
+            {
+                auto legacyEngine = std::make_unique<juce::XmlElement>("PARAM");
+                legacyEngine->setAttribute("id", "hq_engine");
+                legacyEngine->setAttribute("value", "0.0");
+                xml->addChildElement(legacyEngine.release());
+            }
+
             apvts_.replaceState(juce::ValueTree::fromXml(*xml));
-            preparedHighQualityQualityIndex_ = -1;
-            pendingHighQualityReprepare_ = true;
-            reprepareHighQualityStateForCurrentQuality();
-            activeEngine_ = ProcessingEngine::None;
-            wetStateCleared_ = false;
+            // No DSP state is touched here (this may run while the audio thread
+            // processes): every engine is already built; the audio thread clears
+            // them and adopts the restored structure at its next block, without
+            // a fade (a restore is a fresh start, as before).
+            pendingStateRequest_.fetch_or(kRequestRestoreSnap, std::memory_order_acq_rel);
             refreshLatencyState();
         }
     }
@@ -176,9 +202,18 @@ public:
         sampleRate_   = sampleRate;
         maxBlockSize_ = maxBlockSize;
 
-        preparedHighQualityQualityIndex_ = -1;
-        pendingHighQualityReprepare_ = true;
-        reprepareHighQualityStateForCurrentQuality();
+        // EVERY engine the structure can select is built here (message thread,
+        // not processing), so no engine / quality / mode / stereo-mode change
+        // ever allocates, frees or reconstructs anything later.
+        //   Classic: one WolaProcessor per quality (Fast / Normal / High) and a
+        //            dry delay sized for the longest of them.
+        //   New:     one Core with all three frame tiers (Core::prepare builds them).
+        for (int q = 0; q < kNumQualities; ++q)
+            wolaByQuality_[static_cast<std::size_t>(q)].prepare(q, maxBlockSize_, sampleRate_);
+        dryDelay_.prepare(latencyForQualityIndex(kNumQualities - 1), maxBlockSize_);
+        delayedDry_.setSize(2, std::max(1, maxBlockSize_), false, true, true);
+        prepareCoreEngine();
+
         lowLatency_.prepare(maxBlockSize, sampleRate);
         liveDry_.setSize(2, std::max(1, maxBlockSize), false, true, true);
         msComponent_.assign(static_cast<std::size_t>(std::max(1, maxBlockSize)), 0.0f);
@@ -186,22 +221,33 @@ public:
             ? static_cast<float>(1.0 / (sampleRate * 0.005))
             : 1.0f;
         deltaMix_ = readBoolParam("delta", false) ? 1.0f : 0.0f;
-        activeEngine_ = ProcessingEngine::None;
-        wetStateCleared_ = false;
+        structureFadeLen_ = sampleRate > 0.0
+            ? std::max(1, static_cast<int>(std::lround(sampleRate * (kStructureFadeMs * 0.001))))
+            : 1;
+
+        // Start on the structure the parameters ask for, without a fade.
+        pendingStateRequest_.store(0, std::memory_order_relaxed);
+        adoptStructure(readTargetStructure(), false);
         refreshLatencyState();
 
 #ifdef XLETH_DEBUG
         DBG("[ResonanceSuppressor] prepareEffect sr=" + juce::String(sampleRate)
             + " blockSize=" + juce::String(maxBlockSize)
-            + " fftSize=" + juce::String(wola_.getFftSize())
-            + " hopSize=" + juce::String(wola_.getHopSize())
-            + " latency=" + juce::String(wola_.getLatencySamples()));
+            + " fftSize=" + juce::String(activeWola().getFftSize())
+            + " hopSize=" + juce::String(activeWola().getHopSize())
+            + " latency=" + juce::String(activeWola().getLatencySamples()));
 #endif
     }
 
     void releaseEffect() override
     {
-        wola_.release();
+        for (auto& w : wolaByQuality_)
+            w.release();
+        core_.release();
+        coreDry_.setSize(0, 0);
+        coreDryMono_.clear();
+        coreAuxIn_.clear();
+        coreAuxOut_.clear();
         lowLatency_.release();
         dryDelay_.release();
         delayedDry_.setSize(0, 0);
@@ -210,16 +256,40 @@ public:
         setLatencySamples(0);
         activeEngine_ = ProcessingEngine::None;
         wetStateCleared_ = false;
+        alignedBypass_ = false;
     }
 
     void resetEffect() override
     {
+        // A reset is a fresh start: a structural change still fading is
+        // completed at once (no fade: the output restarts from cleared state).
+        adoptStructure(readTargetStructure(), false);
         clearWetProcessingState();
         std::fill(msComponent_.begin(), msComponent_.end(), 0.0f);
         deltaMix_ = readBoolParam("delta", false) ? 1.0f : 0.0f;
         activeEngine_ = ProcessingEngine::None;
         wetStateCleared_ = false;
     }
+
+    // The instance index used for the New engine's hop phase offset
+    // (Core::hopPhaseOffsetForInstance). -1 (default) = assigned from a static
+    // counter at the first prepare. Tests and the bench pin it (0 = the core's
+    // historical frame grid) so their output does not depend on how many other
+    // instances were prepared before. Message thread, before prepareToPlay.
+    void setCoreInstanceIndex(int index) noexcept { coreInstanceIndex_ = index; }
+    int getCoreInstanceIndex() const noexcept { return coreInstanceIndex_; }
+    // Number of structural transitions (fade-out / reset / fade-in) completed
+    // since construction (audio thread writes, any thread reads; diagnostics).
+    std::uint64_t getStructureSwitchCount() const noexcept
+    {
+        return structureSwitchCount_.load(std::memory_order_relaxed);
+    }
+    // Read-only view of the New engine (tests / bench introspection; the
+    // atomics in it are any-thread, the rest belongs to the audio thread).
+    const xleth::dsp::resonance::Core& getCoreForTest() const noexcept { return core_; }
+    // The weight curve the New engine passes to the core (numBands() floats on
+    // the core's band grid; valid after the first New-engine block).
+    const float* getCoreWeightCurveForTest() const noexcept { return coreWeights_.data(); }
 
     void processEffect(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& /*midi*/) override
     {
@@ -264,6 +334,14 @@ public:
         }
 
         const int processedChannels = std::min(numCh, 2);
+
+        // Structure (audio thread): message-thread requests, a new target
+        // structure (starts the fade-out), and the input fade-in after a switch.
+        // The peak meters above keep showing the real input.
+        consumePendingStateRequest();
+        beginStructureBlock();
+        applyInputFadeIn(buffer, processedChannels, numSamples);
+
         if (processedChannels > 0 && liveDry_.getNumSamples() >= numSamples)
         {
             for (int ch = 0; ch < processedChannels; ++ch)
@@ -273,10 +351,11 @@ public:
         const ProcessorSettings settings = readProcessorSettings();
         const bool dryOnlyTarget = shouldOutputLiveDry();
         float gainReductionActivity = 0.0f;
+        const bool newEngineActive = activeIsNewEngine();
 
         if (processedChannels > 0)
         {
-            if (dryOnlyTarget)
+            if (dryOnlyTarget && !newEngineActive)
             {
                 advanceOutputSmoothers(numSamples);
                 deltaMix_ = 0.0f;
@@ -291,10 +370,15 @@ public:
                 for (int ch = 0; ch < processedChannels; ++ch)
                     buffer.copyFrom(ch, 0, liveDry_, ch, 0, numSamples);
             }
-            else if (readProcessingMode() == 1)
+            else if (newEngineActive)
             {
-                ensureHighQualityStateForCurrentQuality();
-                if (!wola_.isPrepared())
+                processNewEngineBlock(buffer, processedChannels, numSamples,
+                                      settings, dryOnlyTarget, gainReductionActivity);
+            }
+            else if (active_.mode == 1)
+            {
+                auto& wola = activeWola();
+                if (!wola.isPrepared())
                 {
                     buffer.clear();
                     writeMeterValue(0, peakL);
@@ -316,39 +400,41 @@ public:
                                              delayedDry_.getWritePointer(ch),
                                              numSamples);
 
-                const int stereoMode = std::clamp(static_cast<int>(settings.stereoMode), 0, 2);
+                // The stereo mode in effect is the ACTIVE structure's: a change is
+                // a structural transition (fade-out, reset, fade-in).
+                const int stereoMode = active_.stereo;
                 if (stereoMode != lastStereoMode_)
                 {
-                    wola_.reset();
+                    wola.reset();
                     lastStereoMode_ = stereoMode;
                 }
 
                 const bool timeWola = isRealtimeTimingEnabled();
                 const std::uint64_t wolaStartNs = timeWola ? realtimeNowNs() : 0;
 
-                wola_.beginBlock(settings, vizActive_.load(std::memory_order_acquire));
+                wola.beginBlock(settings, vizActive_.load(std::memory_order_acquire));
 
                 if (processedChannels == 2 && stereoMode == 1)
                     processHighQualityMidMode(buffer, numSamples);
                 else if (processedChannels == 2 && stereoMode == 2)
                     processHighQualitySideMode(buffer, numSamples);
                 else if (processedChannels == 2)
-                    wola_.processStereo(buffer.getWritePointer(0),
-                                        buffer.getWritePointer(1),
-                                        numSamples);
+                    wola.processStereo(buffer.getWritePointer(0),
+                                       buffer.getWritePointer(1),
+                                       numSamples);
                 else if (processedChannels == 1)
                 {
                     if (stereoMode == 2)
                         processHighQualityMonoSideMode(buffer, numSamples);
                     else
-                        wola_.processMono(buffer.getWritePointer(0), numSamples);
+                        wola.processMono(buffer.getWritePointer(0), numSamples);
                 }
 
                 if (timeWola)
                     recordRealtimeSection("rs_wola", realtimeNowNs() - wolaStartNs);
 
                 applyOutputStage(buffer, delayedDry_, processedChannels, numSamples);
-                gainReductionActivity = wola_.getGainReductionActivityForMeter();
+                gainReductionActivity = wola.getGainReductionActivityForMeter();
             }
             else if (lowLatency_.isPrepared())
             {
@@ -393,9 +479,16 @@ public:
             deltaMix_ = readBoolParam("delta", false) ? 1.0f : 0.0f;
         }
 
+        // Output fade-out of a pending structural change; when it completes the
+        // new structure is adopted at this block boundary.
+        finishStructureBlock(buffer, processedChannels, numSamples);
+
         writeMeterValue(0, peakL);
         writeMeterValue(1, peakR);
         writeMeterValue(2, gainReductionActivity);
+        // Slot 3 (New engine only, 0 otherwise): the core's largest applied band
+        // reduction of the last frame, dB (Core::lastMaxReductionDb).
+        writeMeterValue(3, newEngineActive && activeIsNewEngine() ? core_.lastMaxReductionDb() : 0.0f);
 
 #if defined(XLETH_DEBUG) && defined(XLETH_RESONANCE_SUPPRESSOR_AUDIO_LOG)
         if (rsLogThis)
@@ -411,7 +504,7 @@ public:
                          "[ResonanceSuppressor] processEffect call=%llu prepared=%d nCh=%d nS=%d "
                          "inPeak=%.4f outPeak=%.4f deltaMix=%.2f gr=%.3f\n",
                          (unsigned long long)rsCallNo,
-                         (int)wola_.isPrepared(), numCh, numSamples,
+                         (int)activeWola().isPrepared(), numCh, numSamples,
                          rsInPeakBefore, rsOutPeak, deltaMix_,
                          readMeterValue(2));
             std::fflush(stderr);
@@ -420,15 +513,27 @@ public:
     }
 
 protected:
+    // Classic / Low Latency: false (bypass and mix 0 report zero latency and the
+    // base class blends the live input, as before). The New engine keeps its
+    // latency CONSTANT through bypass, so while it is active (and while any
+    // structural transition runs, so a bypassed output never steps) the
+    // bypassed output is this effect's own aligned dry: the core's dryOut for
+    // New, the live input for Classic / Low Latency, both with the transition
+    // gain applied. Read by the base on the audio thread.
     bool usesLatencyAlignedBypassDry() const override
     {
-        return false;
+        return alignedBypass_;
     }
 
     bool copyLatencyAlignedBypassDry(juce::AudioBuffer<float>& dest, int numSamples) override
     {
-        juce::ignoreUnused(dest, numSamples);
-        return false;
+        const auto& src = bypassDrySource();
+        const int channels = std::min({ dest.getNumChannels(), src.getNumChannels(), 2 });
+        if (channels <= 0 || src.getNumSamples() < numSamples || dest.getNumSamples() < numSamples)
+            return false;
+        for (int ch = 0; ch < channels; ++ch)
+            dest.copyFrom(ch, 0, src, ch, 0, numSamples);
+        return true;
     }
 
 private:
@@ -440,47 +545,107 @@ private:
     };
 
     static constexpr float kDryOnlyMixThresholdPct = 1.0e-4f;
+    static constexpr int kNumQualities = 3;
+    static constexpr int kHqEngineClassic = 0;
+    static constexpr int kHqEngineNew = 1;
+    static constexpr float kStructureFadeMs = 5.0f;
+
+    // Message thread -> audio thread requests (bit mask, consumed at the start
+    // of the next processEffect; no DSP state is touched on the message thread).
+    //   kRequestClearToDry: bypass engaged / mix reached the dry-only shortcut.
+    //     Classic and Low Latency clear their wet state and remember it was
+    //     cleared (the historical behaviour, now applied on the audio thread);
+    //     ignored while the New engine is active (it keeps running so its
+    //     latency and its aligned dry stay continuous).
+    //   kRequestRestoreSnap: a state restore. Every engine is cleared and the
+    //     restored structure is adopted at once, without a fade.
+    static constexpr int kRequestClearToDry  = 1;
+    static constexpr int kRequestRestoreSnap = 2;
+
+    // The engine selection the audio thread is running. Low Latency ignores
+    // engine / stereo / quality (the LL engine reads stereo_mode per block, as
+    // before); Classic selects one preallocated WolaProcessor per quality; New
+    // takes quality as a live Core::requestTier.
+    struct Structure
+    {
+        int mode = 0;      // processing_mode: 0 Low Latency, 1 High Quality
+        int engine = 0;    // hq_engine: 0 Classic, 1 New
+        int stereo = 0;    // stereo_mode: 0 Stereo, 1 Mid, 2 Side
+        int quality = 1;   // quality: 0 Fast, 1 Normal, 2 High
+    };
+
+    // The New engine's visualization tap. Set on the core in prepareEffect and
+    // always attached (it also feeds meter slot 2); called by the core on the
+    // audio thread, inside process(), once per hop and channel.
+    struct CoreVizSink final : xleth::dsp::resonance::VizSink
+    {
+        explicit CoreVizSink(XlethResonanceSuppressorEffect& o) noexcept : owner(o) {}
+        void onResonanceFrame(const xleth::dsp::resonance::VizFrame& frame) noexcept override
+        {
+            owner.onCoreVizFrame(frame);
+        }
+        XlethResonanceSuppressorEffect& owner;
+    };
+
+    static bool sameStructure(const Structure& a, const Structure& b) noexcept
+    {
+        if (a.mode != b.mode)
+            return false;
+        if (a.mode == 0)
+            return true;
+        if (a.engine != b.engine || a.stereo != b.stereo)
+            return false;
+        if (a.engine == kHqEngineClassic)
+            return a.quality == b.quality;
+        return true;
+    }
+
+    Structure readTargetStructure() const noexcept
+    {
+        Structure s;
+        s.mode = readProcessingMode();
+        s.engine = std::clamp(readChoiceParam("hq_engine", kHqEngineClassic), 0, 1);
+        s.stereo = std::clamp(readChoiceParam("stereo_mode", 0), 0, 2);
+        s.quality = readQualityForPrepare();
+        return s;
+    }
+
+    bool activeIsNewEngine() const noexcept
+    {
+        return active_.mode == 1 && active_.engine == kHqEngineNew;
+    }
+
+    static xleth::dsp::resonance::Core::FrameTier tierForQuality(int qualityIndex) noexcept
+    {
+        return static_cast<xleth::dsp::resonance::Core::FrameTier>(std::clamp(qualityIndex, 0, 2));
+    }
 
     void onBypassChanged(bool bypassed) override
     {
         if (bypassed)
-        {
-            clearWetProcessingState();
-            activeEngine_ = ProcessingEngine::None;
-            wetStateCleared_ = true;
-        }
+            pendingStateRequest_.fetch_or(kRequestClearToDry, std::memory_order_acq_rel);
 
         refreshLatencyState();
     }
 
     void onParameterValueChanged(const std::string& paramId, float /*value*/) override
     {
-        if (paramId == "processing_mode")
-        {
-            clearWetProcessingState();
-            activeEngine_ = ProcessingEngine::None;
-            wetStateCleared_ = false;
-        }
-        else if (paramId == "quality")
-        {
-            clearWetProcessingState();
-            preparedHighQualityQualityIndex_ = -1;
-            pendingHighQualityReprepare_ = true;
-            reprepareHighQualityStateForCurrentQuality();
-            activeEngine_ = ProcessingEngine::None;
-            wetStateCleared_ = false;
-        }
-        else if ((paramId == "mix" || paramId == "delta") && shouldOutputLiveDry())
-        {
-            clearWetProcessingState();
-            activeEngine_ = ProcessingEngine::None;
-            wetStateCleared_ = true;
-        }
+        // processing_mode / hq_engine / stereo_mode / quality: the audio thread
+        // sees the new structure at its next block (fade-out, reset of the target
+        // engine, fade-in; for the New engine a quality change is a requestTier).
+        // Nothing is prepared, reset or allocated here.
+        if ((paramId == "mix" || paramId == "delta") && shouldOutputLiveDry())
+            pendingStateRequest_.fetch_or(kRequestClearToDry, std::memory_order_acq_rel);
 
+        // Latency is published HERE, at the request (message thread). The audio
+        // output reaches it after the structural fade-out (5 ms) or, for a New
+        // engine quality change, after the core's hold + crossfade (<= 3 hops +
+        // 5 ms, about 37 ms at 48 kHz going to High): the documented window.
         if (paramId == "mix"
             || paramId == "delta"
             || paramId == "processing_mode"
-            || paramId == "quality")
+            || paramId == "quality"
+            || paramId == "hq_engine")
         {
             refreshLatencyState();
         }
@@ -519,23 +684,25 @@ private:
 
     int computeDesiredLatencySamples() const noexcept
     {
+        // New engine: constant at the requested tier's latency, also while
+        // bypassed and at mix 0 (the output is then the core's aligned dry), so
+        // toggling bypass or mix never retargets PDC.
+        if (readProcessingMode() == 1
+            && std::clamp(readChoiceParam("hq_engine", kHqEngineClassic), 0, 1) == kHqEngineNew)
+        {
+            return xleth::dsp::resonance::Core::latencyFor(
+                sampleRate_ > 0.0 ? sampleRate_ : 44100.0,
+                tierForQuality(readQualityForPrepare()));
+        }
+
         if (isBypassed() || shouldOutputLiveDry())
             return 0;
 
         if (readProcessingMode() == 0)
             return 0;
 
-        const int targetQuality = readQualityForPrepare();
-        if (pendingHighQualityReprepare_ || preparedHighQualityQualityIndex_ != targetQuality)
-        {
-            return wola_.isPrepared()
-                ? wola_.getLatencySamples()
-                : latencyForQualityIndex(targetQuality);
-        }
-
-        return wola_.isPrepared()
-            ? wola_.getLatencySamples()
-            : latencyForQualityIndex(targetQuality);
+        // Classic: WolaProcessor latency == its FFT size at every rate.
+        return latencyForQualityIndex(readQualityForPrepare());
     }
 
     bool refreshLatencyState()
@@ -549,39 +716,204 @@ private:
         return true;
     }
 
-    void ensureHighQualityStateForCurrentQuality()
+    // ── Structure transitions (audio thread) ────────────────────────────────
+
+    void consumePendingStateRequest() noexcept
     {
-        const int targetQuality = readQualityForPrepare();
-        if (!pendingHighQualityReprepare_
-            && preparedHighQualityQualityIndex_ == targetQuality
-            && wola_.isPrepared())
+        if (pendingStateRequest_.load(std::memory_order_relaxed) == 0)
+            return;
+        const int req = pendingStateRequest_.exchange(0, std::memory_order_acq_rel);
+
+        if ((req & kRequestRestoreSnap) != 0)
         {
+            adoptStructure(readTargetStructure(), false);
+            clearWetProcessingState();
+            activeEngine_ = ProcessingEngine::None;
+            wetStateCleared_ = false;
             return;
         }
 
-        pendingHighQualityReprepare_ = true;
-        recordRealtimeEvent("rs_audio_thread_reprepare_blocked");
+        if ((req & kRequestClearToDry) != 0 && !activeIsNewEngine())
+        {
+            clearWetProcessingState();
+            activeEngine_ = ProcessingEngine::None;
+            wetStateCleared_ = true;
+        }
     }
 
-    void reprepareHighQualityStateForCurrentQuality()
+    // alignedBypass_ is read by the base class at the START of a block, before
+    // processEffect, so it is always computed for the NEXT block (end of
+    // finishStructureBlock). A structural change seen in a block whose bypass
+    // dry the base did not take from us waits one block, so the base mixes our
+    // (faded) dry from the first faded sample on: no step even inside a bypass
+    // crossfade.
+    void beginStructureBlock() noexcept
     {
-        if (sampleRate_ <= 0.0 || maxBlockSize_ <= 0)
+        blockBypassDryIsCore_ = activeIsNewEngine();
+        const bool baseUsesOurDry = alignedBypass_;
+        targetStructure_ = readTargetStructure();
+        if (!structureFadingOut_ && baseUsesOurDry && !sameStructure(targetStructure_, active_))
         {
-            pendingHighQualityReprepare_ = true;
+            structureFadingOut_ = true;
+            structureFadePos_ = 0;
+        }
+    }
+
+    // Fades the INPUT in after a switch: the target engine was reset, so its
+    // history is silence; ramping what enters it (and the dry it mixes with)
+    // makes its output start as a 5 ms ramp after its latency instead of a step.
+    void applyInputFadeIn(juce::AudioBuffer<float>& buffer, int channels, int numSamples) noexcept
+    {
+        if (inputFadePos_ >= structureFadeLen_ || channels <= 0)
             return;
+
+        const float inv = 1.0f / static_cast<float>(structureFadeLen_);
+        int pos = inputFadePos_;
+        for (int s = 0; s < numSamples && pos < structureFadeLen_; ++s, ++pos)
+        {
+            const float r = static_cast<float>(pos + 1) * inv;
+            for (int ch = 0; ch < channels; ++ch)
+                buffer.getWritePointer(ch)[s] *= r;
+        }
+        inputFadePos_ = pos;
+    }
+
+    // Applies the fade-out gain (1 -> 0 over 5 ms) of a pending structural
+    // change to the output and to this block's bypass dry, and adopts the
+    // target structure once the output has reached zero (block boundary; the
+    // rest of that block is silence). Then decides alignedBypass_ for the next
+    // block.
+    void finishStructureBlock(juce::AudioBuffer<float>& buffer, int channels, int numSamples) noexcept
+    {
+        if (structureFadingOut_)
+        {
+            auto& bypassDry = blockBypassDryIsCore_ ? coreDry_ : liveDry_;
+            const bool scaleBypassDry = bypassDry.getNumSamples() >= numSamples;
+            const int bypassChannels = std::min(channels, bypassDry.getNumChannels());
+            const float inv = 1.0f / static_cast<float>(structureFadeLen_);
+            int pos = structureFadePos_;
+            for (int s = 0; s < numSamples; ++s)
+            {
+                const float g = pos < structureFadeLen_
+                    ? 1.0f - static_cast<float>(pos + 1) * inv
+                    : 0.0f;
+                if (pos < structureFadeLen_)
+                    ++pos;
+                for (int ch = 0; ch < channels; ++ch)
+                    buffer.getWritePointer(ch)[s] *= g;
+                if (scaleBypassDry)
+                    for (int ch = 0; ch < bypassChannels; ++ch)
+                        bypassDry.getWritePointer(ch)[s] *= g;
+            }
+            structureFadePos_ = pos;
+
+            if (structureFadePos_ >= structureFadeLen_)
+                adoptStructure(targetStructure_, true);
         }
 
-        const int targetQuality = readQualityForPrepare();
-        wola_.prepare(targetQuality, maxBlockSize_, sampleRate_);
-        dryDelay_.prepare(wola_.getLatencySamples(), maxBlockSize_);
-        delayedDry_.setSize(2, std::max(1, maxBlockSize_), false, true, true);
-        preparedHighQualityQualityIndex_ = targetQuality;
-        pendingHighQualityReprepare_ = false;
+        alignedBypass_ = activeIsNewEngine()
+                      || structureFadingOut_
+                      || inputFadePos_ < structureFadeLen_
+                      || !sameStructure(targetStructure_, active_);
+    }
+
+    // Makes `s` the active structure: resets the engine it selects (and its
+    // dry path), forgets which engine ran last, and optionally starts the
+    // input fade-in. RT-safe: nothing is allocated (every engine was built in
+    // prepareEffect). Also used by prepare / reset / state restore (no fade).
+    void adoptStructure(const Structure& s, bool fadeIn) noexcept
+    {
+        active_ = s;
+        targetStructure_ = s;
+        structureFadingOut_ = false;
+        structureFadePos_ = 0;
+        inputFadePos_ = fadeIn ? 0 : structureFadeLen_;
+
+        if (s.mode == 1 && s.engine == kHqEngineClassic)
+        {
+            activeWola().reset();
+            dryDelay_.setDelay(latencyForQualityIndex(s.quality));
+            dryDelay_.reset();
+            delayedDry_.clear();
+            lastStereoMode_ = -1;
+        }
+        else if (s.mode == 1)
+        {
+            resetCoreOnTier(s.quality);
+        }
+        else
+        {
+            lowLatency_.reset();
+        }
+
+        activeEngine_ = ProcessingEngine::None;
+        wetStateCleared_ = false;
+        alignedBypass_ = activeIsNewEngine() || fadeIn;
+        if (fadeIn)
+            structureSwitchCount_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    // ── New engine (xleth::dsp::resonance::Core) ────────────────────────────
+
+    void prepareCoreEngine()
+    {
+        const int quality = readQualityForPrepare();
+        if (coreInstanceIndex_ < 0)
+            coreInstanceIndex_ = sCoreInstanceCounter_.fetch_add(1, std::memory_order_relaxed);
+
+        // Hop phase (ResonanceCore.md 8.7 / 9.5): instance i of any number gets
+        // the van der Corput offset i, so the hops (all of the FFT / detector work)
+        // of instances in one thread land in different blocks: 8 Normal instances
+        // at 48 kHz complete at most 2 frames in any 64-sample block.
+        const auto tier = tierForQuality(quality);
+        const int hop = xleth::dsp::resonance::Core::fftSizeFor(sampleRate_, tier) / 4;
+        core_.setFrameTier(tier);
+        core_.setHopPhaseOffset(xleth::dsp::resonance::Core::hopPhaseOffsetForInstance(coreInstanceIndex_, hop));
+        core_.setVizSink(&coreVizSink_);
+        core_.prepare(sampleRate_, std::max(1, maxBlockSize_), 2);
+        coreRequestedQuality_ = quality;
+
+        const int cap = std::max(1, maxBlockSize_);
+        coreDry_.setSize(2, cap, false, true, true);
+        coreDryMono_.assign(static_cast<std::size_t>(cap), 0.0f);
+        coreAuxIn_.assign(static_cast<std::size_t>(cap), 0.0f);
+        coreAuxOut_.assign(static_cast<std::size_t>(cap), 0.0f);
+        prepareCoreVizTables();
+        coreWeightsValid_ = false;
+    }
+
+    // Puts the core on `quality`'s tier with cleared state, without a tier
+    // crossfade: a pending request is adopted by a zero-length process() and the
+    // transition it starts is completed at once by reset() (ResonanceCore.md
+    // 9.7: reset() completes a running transition on the requested tier).
+    void resetCoreOnTier(int quality) noexcept
+    {
+        coreRequestedQuality_ = quality;
+        coreBlockActivity_ = 0.0f;
+        coreMeterActivity_ = 0.0f;
+        if (core_.sampleRate() <= 0.0)
+            return;
+        if (static_cast<int>(core_.targetFrameTier()) != std::clamp(quality, 0, 2))
+        {
+            core_.requestTier(tierForQuality(quality));
+            float* none[1] = { coreDryMono_.empty() ? nullptr : coreDryMono_.data() };
+            if (none[0] != nullptr)
+                core_.process(none, 1, 0, xleth::dsp::resonance::Params{});
+        }
+        core_.reset();
+    }
+
+    // The dry the base class mixes while bypassed (when alignedBypass_): latched
+    // per block, so a block in which the structure switches still hands out the
+    // dry of the engine that produced it.
+    juce::AudioBuffer<float>& bypassDrySource() noexcept
+    {
+        return blockBypassDryIsCore_ ? coreDry_ : liveDry_;
     }
 
     void clearHighQualityState()
     {
-        wola_.reset();
+        activeWola().reset();
         dryDelay_.reset();
         delayedDry_.clear();
         lastStereoMode_ = -1;
@@ -630,12 +962,20 @@ private:
         void prepare(int delaySamplesToUse, int maxBlockSize)
         {
             delaySamples = std::max(0, delaySamplesToUse);
+            maxBlock = std::max(0, maxBlockSize);
             const int needed = std::max(1, delaySamples + maxBlockSize + 1);
             ringSize = nextPowerOfTwo(needed);
             ringMask = ringSize - 1;
             for (auto& ch : ring)
                 ch.assign(static_cast<std::size_t>(ringSize), 0.0f);
             reset();
+        }
+
+        // Changes the delay inside the prepared ring (no allocation). The ring
+        // was sized for the longest delay in prepare(); larger values clamp.
+        void setDelay(int delaySamplesToUse) noexcept
+        {
+            delaySamples = std::clamp(delaySamplesToUse, 0, std::max(0, ringSize - maxBlock - 1));
         }
 
         void release()
@@ -685,6 +1025,7 @@ private:
         }
 
         std::array<std::vector<float>, 2> ring;
+        int maxBlock = 0;
         int delaySamples = 0;
         int ringSize = 0;
         int ringMask = 0;
@@ -992,6 +1333,7 @@ private:
             }
         }
 
+    public:
         static bool weightingSettingsEqual(const ProcessorSettings& a,
                                            const ProcessorSettings& b) noexcept
         {
@@ -1013,6 +1355,7 @@ private:
             return true;
         }
 
+    private:
         void updateDerivedSettings() noexcept
         {
             detectorThresholdOffsetDb_ = 2.0f + settings_.selectivity * 14.0f;
@@ -1408,15 +1751,17 @@ private:
         }
 #endif
 
-    private:
-        float weightingForFrequency(float freq) const noexcept
+        // The focus (weighting) curve at one frequency: the single definition
+        // both High Quality engines use (Classic per bin, New per core band
+        // and per viz bucket). Pure; any thread.
+        static float weightingForFrequencyImpl(const ProcessorSettings& settings,
+                                               double sampleRate,
+                                               float freq) noexcept
         {
-            if (config_.fftSize <= 0 || sampleRate_ <= 0.0)
-                return 0.0f;
-
-            const float nyquist = static_cast<float>(sampleRate_ * 0.5);
+            const float nyquist = static_cast<float>(sampleRate * 0.5);
             freq = std::clamp(freq, 1.0f, nyquist);
 
+            const auto& settings_ = settings;
             const float hp = std::clamp(settings_.wcHp, 20.0f, std::max(20.0f, nyquist * 0.98f));
             const float lp = std::clamp(settings_.wcLp, hp * 1.01f, std::max(hp * 1.01f, nyquist));
 
@@ -1485,6 +1830,14 @@ private:
             const float nodeWeight = std::clamp(1.0f + nodeOffset, 0.0f, 2.5f);
             const float weight = nodeWeight * hpGate * lpGate;
             return std::isfinite(weight) ? std::clamp(weight, 0.0f, 2.5f) : 0.0f;
+        }
+
+    private:
+        float weightingForFrequency(float freq) const noexcept
+        {
+            if (config_.fftSize <= 0 || sampleRate_ <= 0.0)
+                return 0.0f;
+            return weightingForFrequencyImpl(settings_, sampleRate_, freq);
         }
 
         void applyReductionMask(SpectralChannelState& ch, const SpectralChannelState* linkedChannel)
@@ -1814,11 +2167,48 @@ private:
         }
 
     private:
+        // Fixed-size transposed-direct-form-II biquad (RT-safe: no heap, no
+        // ref-counting). Replaces juce::dsp::IIR::Filter, whose coefficients are a
+        // ref-counted `Coefficients` object (heap + juce::Array buffer) that the
+        // old code re-created with makeBandPass/makePeakFilter every block (audit
+        // RT1/RT2). Coefficients come from juce::dsp::IIR::ArrayCoefficients, the
+        // same formulas the old make*() calls wrapped, and are normalised by a0
+        // exactly as Coefficients::assignImpl does, so the result is the same
+        // arithmetic; processSample mirrors IIR::Filter<float>::processSample for
+        // order 2, operation for operation. State persists across coefficient
+        // writes, as it did across the old pointer swaps.
+        struct Biquad
+        {
+            float b0 = 1.0f, b1 = 0.0f, b2 = 0.0f, a1 = 0.0f, a2 = 0.0f;
+            float s1 = 0.0f, s2 = 0.0f;
+
+            void reset() noexcept { s1 = 0.0f; s2 = 0.0f; }
+
+            void setCoefficients(const std::array<float, 6>& v) noexcept
+            {
+                const float a0 = v[3];
+                const float a0Inv = ! juce::approximatelyEqual(a0, 0.0f) ? 1.0f / a0 : 0.0f;
+                b0 = v[0] * a0Inv;
+                b1 = v[1] * a0Inv;
+                b2 = v[2] * a0Inv;
+                a1 = v[4] * a0Inv;
+                a2 = v[5] * a0Inv;
+            }
+
+            float processSample(float x) noexcept
+            {
+                const float out = (b0 * x) + s1;
+                s1 = (b1 * x) - (a1 * out) + s2;
+                s2 = (b2 * x) - (a2 * out);
+                return out;
+            }
+        };
+
         struct BandState
         {
-            juce::dsp::IIR::Filter<float> detectorNarrow;
-            juce::dsp::IIR::Filter<float> detectorWide;
-            juce::dsp::IIR::Filter<float> wetFilter;
+            Biquad detectorNarrow;
+            Biquad detectorWide;
+            Biquad wetFilter;
             float narrowEnv = 0.0f;
             float wideEnv = 0.0f;
             float reductionDb = 0.0f;
@@ -1965,10 +2355,10 @@ private:
             {
                 auto& band = channels_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i)];
                 const float freq = bandFreqs_[static_cast<std::size_t>(i)];
-                band.detectorNarrow.coefficients =
-                    juce::dsp::IIR::Coefficients<float>::makeBandPass(sampleRate_, freq, detectorQ);
-                band.detectorWide.coefficients =
-                    juce::dsp::IIR::Coefficients<float>::makeBandPass(sampleRate_, freq, contextQ);
+                band.detectorNarrow.setCoefficients(
+                    juce::dsp::IIR::ArrayCoefficients<float>::makeBandPass(sampleRate_, freq, detectorQ));
+                band.detectorWide.setCoefficients(
+                    juce::dsp::IIR::ArrayCoefficients<float>::makeBandPass(sampleRate_, freq, contextQ));
             }
         }
 
@@ -2132,9 +2522,9 @@ private:
             {
                 auto& band = channels_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i)];
                 const float cutGain = juce::Decibels::decibelsToGain(-band.reductionDb);
-                band.wetFilter.coefficients =
-                    juce::dsp::IIR::Coefficients<float>::makePeakFilter(
-                        sampleRate_, bandFreqs_[static_cast<std::size_t>(i)], filterQ, cutGain);
+                band.wetFilter.setCoefficients(
+                    juce::dsp::IIR::ArrayCoefficients<float>::makePeakFilter(
+                        sampleRate_, bandFreqs_[static_cast<std::size_t>(i)], filterQ, cutGain));
             }
 
             for (int s = 0; s < numSamples; ++s)
@@ -2155,6 +2545,365 @@ private:
         std::array<float, kNumBands> bandWeights_ {};
         std::array<std::array<BandState, kNumBands>, 2> channels_ {};
     };
+
+    // ── New engine visualization (schema v3 ResonanceBucket, unchanged) ─────
+    //
+    // The core hands one VizFrame per hop and channel (96 ERB-spaced bands). It
+    // is resampled to the existing 128 log-frequency buckets: bucket i is
+    // centred at 20 Hz x 1000^(i / 127) (20 Hz .. 20 kHz, the painter's axis),
+    // linearly interpolated between the two neighbouring band centres on log f
+    // (96 < 128: interpolate, never max-pool, or buckets would stay empty).
+    //   spectrum  = (levelDb + offset(N) + 120) / 120, clamped 0..1. levelDb is
+    //               the core's 40 ms AVERAGED level in per-octave units (pink
+    //               noise reads flat), uncalibrated: it carries the unnormalised
+    //               FFT gain 10 log10(N / 2) and the per-octave weight f. The
+    //               offset, calibrated once per tier, is -10 log10(N / 2) -
+    //               10 log10(1000 Hz): white noise of RMS r reads 20 log10(r)
+    //               dBFS in the 1 kHz bucket at every tier. The Classic display
+    //               is the INSTANTANEOUS per-bin |X|^2 of one frame (white noise
+    //               flat), uncalibrated (about 10 log10(N / 2) dB hotter: +27 dB
+    //               at Normal, so it sits at 1.0 on most program material) and
+    //               max-pooled per bucket. The New spectrum is smoother, lower
+    //               and does not change level with the quality.
+    //   reduction = reductionDb / 24 (the applied cut after every stage).
+    //   weighting = the focus curve evaluated at the bucket centre.
+    //   activity  = mean of the 12 largest band reductions / 24 (Classic meaning).
+    //   sampleClock = hopIndex x hop (frames of the tier in use), bucketSamples
+    //               = hop, fftSize = 4 x hop, qualityIndex = that tier.
+    // Audio thread, inside core_.process(): no allocation, no lock, no log.
+
+    void prepareCoreVizTables() noexcept
+    {
+        const int bands = core_.numBands();
+        const float lo = 20.0f;
+        const float ratio = 1000.0f;
+        const auto n = coreVizBucketHz_.size();
+        for (std::size_t i = 0; i < n; ++i)
+        {
+            const float f = lo * std::pow(ratio, static_cast<float>(i) / static_cast<float>(n - 1));
+            coreVizBucketHz_[i] = f;
+
+            int idx = 0;
+            float frac = 0.0f;
+            if (bands >= 2)
+            {
+                if (f <= core_.bandCentreHz(0))
+                {
+                    idx = 0; frac = 0.0f;
+                }
+                else if (f >= core_.bandCentreHz(bands - 1))
+                {
+                    idx = bands - 2; frac = 1.0f;
+                }
+                else
+                {
+                    int b = 0;
+                    while (b < bands - 2 && core_.bandCentreHz(b + 1) <= f)
+                        ++b;
+                    const float a = std::log2(core_.bandCentreHz(b));
+                    const float c = std::log2(core_.bandCentreHz(b + 1));
+                    idx = b;
+                    frac = c > a ? std::clamp((std::log2(f) - a) / (c - a), 0.0f, 1.0f) : 0.0f;
+                }
+            }
+            coreVizBandIdx_[i] = idx;
+            coreVizBandFrac_[i] = frac;
+        }
+
+        for (int t = 0; t < 3; ++t)
+        {
+            const int fft = xleth::dsp::resonance::Core::fftSizeFor(sampleRate_, tierForQuality(t));
+            coreTierFftSize_[static_cast<std::size_t>(t)] = fft;
+            coreTierLevelOffsetDb_[static_cast<std::size_t>(t)] = static_cast<float>(
+                -10.0 * std::log10(0.5 * static_cast<double>(std::max(2, fft))) - 30.0);
+        }
+    }
+
+    void onCoreVizFrame(const xleth::dsp::resonance::VizFrame& frame) noexcept
+    {
+        const int bands = std::clamp(frame.numBands, 0, xleth::dsp::resonance::kGridBands);
+
+        std::array<float, 12> top {};
+        for (int b = 0; b < bands; ++b)
+        {
+            const float v = frame.reductionDb[b];
+            if (!(v > top.back()))
+                continue;
+            top.back() = v;
+            for (int i = static_cast<int>(top.size()) - 1; i > 0; --i)
+            {
+                if (top[static_cast<std::size_t>(i)] <= top[static_cast<std::size_t>(i - 1)])
+                    break;
+                std::swap(top[static_cast<std::size_t>(i)], top[static_cast<std::size_t>(i - 1)]);
+            }
+        }
+        float topSum = 0.0f;
+        int topCount = 0;
+        for (float v : top)
+        {
+            if (v <= 0.0f)
+                break;
+            topSum += v;
+            ++topCount;
+        }
+        float activity = topCount > 0 ? std::clamp(topSum / static_cast<float>(topCount) / 24.0f, 0.0f, 1.0f) : 0.0f;
+        if (!std::isfinite(activity))
+            activity = 0.0f;
+        coreBlockActivity_ = std::max(coreBlockActivity_, activity);
+
+        auto* collector = coreVizCollector_;
+        if (collector == nullptr || bands < 2)
+            return;
+
+        xleth::viz::ResonanceBucket bucket {};
+        const int hop = std::max(1, frame.hopSize);
+        const int fft = hop * 4;
+        bucket.hdr.sampleClock = static_cast<std::uint64_t>(std::max<long long>(0, frame.hopIndex))
+                               * static_cast<std::uint64_t>(hop);
+        bucket.hdr.bucketSamples = static_cast<std::uint32_t>(hop);
+        bucket.hdr.flags = 0;
+        bucket.sampleRate = static_cast<float>(sampleRate_);
+        bucket.fftSize = static_cast<float>(fft);
+        int quality = 1;
+        for (int t = 0; t < 3; ++t)
+            if (coreTierFftSize_[static_cast<std::size_t>(t)] == fft)
+                quality = t;
+        bucket.qualityIndex = static_cast<float>(quality);
+        const float levelOffsetDb = coreTierLevelOffsetDb_[static_cast<std::size_t>(quality)];
+        bucket.stereoMode = static_cast<float>(active_.stereo);
+        bucket.activity = activity;
+        bucket.bucketCount = static_cast<float>(xleth::viz::kResonanceVizBucketCount);
+        bucket.maxReductionDb = coreVizCeilingDb_;
+
+        for (std::size_t i = 0; i < xleth::viz::kResonanceVizBucketCount; ++i)
+        {
+            const int b0 = std::clamp(coreVizBandIdx_[i], 0, bands - 2);
+            const float t = coreVizBandFrac_[i];
+            const float level = frame.levelDb[b0] + t * (frame.levelDb[b0 + 1] - frame.levelDb[b0]);
+            const float red = frame.reductionDb[b0] + t * (frame.reductionDb[b0 + 1] - frame.reductionDb[b0]);
+            const float spectrum = (level + levelOffsetDb + 120.0f) * (1.0f / 120.0f);
+            const float reduction = red * (1.0f / 24.0f);
+            bucket.spectrum[i] = std::isfinite(spectrum) ? std::clamp(spectrum, 0.0f, 1.0f) : 0.0f;
+            bucket.reduction[i] = std::isfinite(reduction) ? std::clamp(reduction, 0.0f, 1.0f) : 0.0f;
+            bucket.weighting[i] = std::clamp(coreVizWeights_[i], 0.0f, 2.5f);
+        }
+
+        collector->push(bucket);
+    }
+
+    // ── New engine processing (audio thread) ────────────────────────────────
+
+    static float finiteOr(float v, float fallback) noexcept
+    {
+        return std::isfinite(v) ? v : fallback;
+    }
+
+    // ResonanceCore.md 8.8: the RS parameters in the core's units. Finite values
+    // only (the core sanitises again at intake). Raw APVTS values, exactly what
+    // the Classic engine reads per block; the core needs no smoothing for click
+    // safety (8.6).
+    xleth::dsp::resonance::Params makeCoreParams(const ProcessorSettings& settings) const noexcept
+    {
+        xleth::dsp::resonance::Params p;
+        p.depth       = std::clamp(finiteOr(settings.depth, 0.5f), 0.0f, 1.0f);
+        p.sensitivity = std::clamp(1.0f - finiteOr(settings.selectivity, 0.5f), 0.0f, 1.0f);
+        p.sharpness   = std::clamp(finiteOr(settings.sharpness, 0.5f), 0.0f, 1.0f);
+        p.hardKnee    = settings.hardMode;
+        p.attackMs    = finiteOr(settings.attackMs, 15.0f);
+        p.releaseMs   = finiteOr(settings.releaseMs, 200.0f);
+        p.stereoLink  = std::clamp(finiteOr(settings.stereoLink, 1.0f), 0.0f, 1.0f);
+        p.weightCurve = coreWeights_.data();
+        return p;
+    }
+
+    // The focus curve on the core's band grid (and on the 128 viz buckets),
+    // evaluated with the same weightingForFrequency the Classic engine uses per
+    // bin. Only when a weighting setting changed (pre-sized arrays: no
+    // allocation). The RS default curve is NOT flat (0 below 40 Hz, ramp to
+    // 80 Hz, ramp down above 16 kHz), so the curve is always passed.
+    void refreshCoreWeights(const ProcessorSettings& settings) noexcept
+    {
+        if (coreWeightsValid_ && WolaProcessor::weightingSettingsEqual(settings, coreWeightSettings_))
+            return;
+
+        const int bands = std::min(core_.numBands(), static_cast<int>(coreWeights_.size()));
+        for (int b = 0; b < bands; ++b)
+            coreWeights_[static_cast<std::size_t>(b)] =
+                WolaProcessor::weightingForFrequencyImpl(settings, sampleRate_, core_.bandCentreHz(b));
+        for (std::size_t i = 0; i < coreVizWeights_.size(); ++i)
+            coreVizWeights_[i] =
+                WolaProcessor::weightingForFrequencyImpl(settings, sampleRate_, coreVizBucketHz_[i]);
+
+        coreWeightSettings_ = settings;
+        coreWeightsValid_ = true;
+    }
+
+    void processNewEngineBlock(juce::AudioBuffer<float>& buffer,
+                               int processedChannels,
+                               int numSamples,
+                               const ProcessorSettings& settings,
+                               bool dryOnlyTarget,
+                               float& gainReductionActivity) noexcept
+    {
+        const int cap = coreDry_.getNumSamples();
+        if (core_.sampleRate() <= 0.0 || numSamples > cap
+            || static_cast<int>(coreAuxIn_.size()) < numSamples
+            || static_cast<int>(msComponent_.size()) < numSamples)
+        {
+            // Not prepared, or a block larger than prepared (hosts never do this;
+            // the base class's own dry buffer has the same limit).
+            buffer.clear();
+            coreDry_.clear();
+            return;
+        }
+
+        wetStateCleared_ = false;
+        activeEngine_ = ProcessingEngine::HighQuality;
+
+        // Quality on the New engine is a live tier request, never a reprepare.
+        const int quality = readQualityForPrepare();
+        if (quality != coreRequestedQuality_)
+        {
+            core_.requestTier(tierForQuality(quality));
+            coreRequestedQuality_ = quality;
+        }
+
+        refreshCoreWeights(settings);
+        const xleth::dsp::resonance::Params params = makeCoreParams(settings);
+
+        coreVizCollector_ = vizActive_.load(std::memory_order_acquire);
+        coreVizCeilingDb_ = params.depth * (params.hardKnee ? 24.0f : 12.0f);
+        coreBlockActivity_ = 0.0f;
+
+        float* outL = buffer.getWritePointer(0);
+        float* outR = processedChannels > 1 ? buffer.getWritePointer(1) : nullptr;
+        float* dryL = coreDry_.getWritePointer(0);
+        float* dryR = coreDry_.getWritePointer(1);
+        float* comp = msComponent_.data();
+        float* aux = coreAuxIn_.data();
+        float* auxOut = coreAuxOut_.data();
+        float* dryMono = coreDryMono_.data();
+        const int stereoMode = active_.stereo;
+
+        // Telemetry: the New engine's own section, next to the Classic "rs_wola".
+        const bool timeCore = isRealtimeTimingEnabled();
+        const std::uint64_t coreStartNs = timeCore ? realtimeNowNs() : 0;
+
+        if (processedChannels == 2 && stereoMode == 1)
+        {
+            // Mid: M processed as the core's channel 0, S delay-only through the
+            // aux channel (ResonanceCore.md 8.3 / 9.2), recombined on the dry
+            // timeline: L' = M' + S_d, R' = M' - S_d.
+            for (int s = 0; s < numSamples; ++s)
+            {
+                comp[s] = 0.5f * (outL[s] + outR[s]);
+                aux[s]  = 0.5f * (outL[s] - outR[s]);
+            }
+            float* ch[1] = { comp };
+            float* dry[1] = { dryMono };
+            core_.process(ch, 1, numSamples, params, dry, aux, auxOut);
+            for (int s = 0; s < numSamples; ++s)
+            {
+                const float side = auxOut[s];
+                outL[s] = comp[s] + side;
+                outR[s] = comp[s] - side;
+                dryL[s] = dryMono[s] + side;
+                dryR[s] = dryMono[s] - side;
+            }
+        }
+        else if (processedChannels == 2 && stereoMode == 2)
+        {
+            // Side: S processed, M delay-only: L' = M_d + S', R' = M_d - S'.
+            for (int s = 0; s < numSamples; ++s)
+            {
+                comp[s] = 0.5f * (outL[s] - outR[s]);
+                aux[s]  = 0.5f * (outL[s] + outR[s]);
+            }
+            float* ch[1] = { comp };
+            float* dry[1] = { dryMono };
+            core_.process(ch, 1, numSamples, params, dry, aux, auxOut);
+            for (int s = 0; s < numSamples; ++s)
+            {
+                const float mid = auxOut[s];
+                outL[s] = mid + comp[s];
+                outR[s] = mid - comp[s];
+                dryL[s] = mid + dryMono[s];
+                dryR[s] = mid - dryMono[s];
+            }
+        }
+        else if (processedChannels == 2)
+        {
+            float* ch[2] = { outL, outR };
+            float* dry[2] = { dryL, dryR };
+            core_.process(ch, 2, numSamples, params, dry);
+        }
+        else if (processedChannels == 1)
+        {
+            if (stereoMode == 2)
+            {
+                // Mono Side: there is no side to process. Zeros keep the detector
+                // fed (as the Classic engine does); the input passes delay-only.
+                std::fill(comp, comp + numSamples, 0.0f);
+                std::copy(outL, outL + numSamples, aux);
+                float* ch[1] = { comp };
+                float* dry[1] = { dryMono };
+                core_.process(ch, 1, numSamples, params, dry, aux, dryL);
+                std::copy(dryL, dryL + numSamples, outL);
+            }
+            else
+            {
+                float* ch[1] = { outL };
+                float* dry[1] = { dryL };
+                core_.process(ch, 1, numSamples, params, dry);
+            }
+        }
+
+        if (timeCore)
+            recordRealtimeSection("rs_core", realtimeNowNs() - coreStartNs);
+
+        if (dryOnlyTarget)
+        {
+            // Dry-only shortcut: the aligned dry (the latency stays the tier's).
+            advanceOutputSmoothers(numSamples);
+            deltaMix_ = 0.0f;
+            for (int ch = 0; ch < processedChannels; ++ch)
+                buffer.copyFrom(ch, 0, coreDry_, ch, 0, numSamples);
+        }
+        else
+        {
+            applyOutputStage(buffer, coreDry_, processedChannels, numSamples);
+        }
+
+        gainReductionActivity = coreGainReductionActivityForMeter();
+    }
+
+    // Meter slot 2 for the New engine: the Classic definition (mean of the 12
+    // largest band reductions / 24, peak-hold with a 0.92-per-block decay), fed
+    // from the core's frames instead of the WolaProcessor's bins.
+    float coreGainReductionActivityForMeter() noexcept
+    {
+        if (coreBlockActivity_ > coreMeterActivity_)
+            coreMeterActivity_ = coreBlockActivity_;
+        else
+            coreMeterActivity_ *= 0.92f;
+
+        if (!std::isfinite(coreMeterActivity_) || coreMeterActivity_ < 1.0e-6f)
+            coreMeterActivity_ = 0.0f;
+
+        return std::clamp(coreMeterActivity_, 0.0f, 1.0f);
+    }
+
+    // The Classic WolaProcessor of the active structure's quality (declared
+    // here, after the WolaProcessor class, which a return type needs complete).
+    WolaProcessor& activeWola() noexcept
+    {
+        return wolaByQuality_[static_cast<std::size_t>(std::clamp(active_.quality, 0, kNumQualities - 1))];
+    }
+
+    const WolaProcessor& activeWola() const noexcept
+    {
+        return wolaByQuality_[static_cast<std::size_t>(std::clamp(active_.quality, 0, kNumQualities - 1))];
+    }
 
     float readPercentParam(const char* paramId, float fallback) const noexcept
     {
@@ -2267,7 +3016,7 @@ private:
         for (int s = 0; s < numSamples; ++s)
             msComponent_[static_cast<std::size_t>(s)] = 0.5f * (inL[s] + inR[s]);
 
-        wola_.processMono(msComponent_.data(), numSamples);
+        activeWola().processMono(msComponent_.data(), numSamples);
 
         float* outL = buffer.getWritePointer(0);
         float* outR = buffer.getWritePointer(1);
@@ -2293,7 +3042,7 @@ private:
         for (int s = 0; s < numSamples; ++s)
             msComponent_[static_cast<std::size_t>(s)] = 0.5f * (inL[s] - inR[s]);
 
-        wola_.processMono(msComponent_.data(), numSamples);
+        activeWola().processMono(msComponent_.data(), numSamples);
 
         float* outL = buffer.getWritePointer(0);
         float* outR = buffer.getWritePointer(1);
@@ -2315,7 +3064,7 @@ private:
             return;
 
         std::fill(msComponent_.begin(), msComponent_.begin() + numSamples, 0.0f);
-        wola_.processMono(msComponent_.data(), numSamples);
+        activeWola().processMono(msComponent_.data(), numSamples);
 
         float* out = buffer.getWritePointer(0);
         const float* dry = delayedDry_.getReadPointer(0);
@@ -2577,13 +3326,23 @@ private:
                 Nar{-12.0f, 12.0f,   0.0f, 1.0f},          0.0f,     "dB"),
             std::make_unique<Apf>(Pid{"wc_b8_q",      1}, "Band 8 Q",
                 Nar{0.25f, 4.0f,     0.0f, 0.5f},           1.0f,    ""),
+
+            // ── High Quality engine (only read when processing_mode = High Quality) ──
+            // Classic = the WolaProcessor (default: every existing state and every
+            // new instance keeps it); New = xleth::dsp::resonance::Core. Appended
+            // last so every existing parameter keeps its index. States saved
+            // without it restore as Classic (setStateInformation).
+            std::make_unique<Apc>(Pid{"hq_engine",   1}, "HQ Engine",
+                juce::StringArray{"Classic", "New"},          0),
         };
     }
 
     double sampleRate_   = 44100.0;
     int    maxBlockSize_ = 0;
     int    lastStereoMode_ = -1;
-    WolaProcessor wola_;
+    // Classic High Quality: one WolaProcessor per quality, all built in
+    // prepareEffect (a quality change selects another one on the audio thread).
+    std::array<WolaProcessor, kNumQualities> wolaByQuality_;
     LowLatencyProcessor lowLatency_;
     DryDelayLine dryDelay_;
     juce::AudioBuffer<float> delayedDry_;
@@ -2593,8 +3352,41 @@ private:
     float deltaRampPerSample_ = 1.0f;
     ProcessingEngine activeEngine_ = ProcessingEngine::None;
     bool wetStateCleared_ = false;
-    bool pendingHighQualityReprepare_ = false;
-    int preparedHighQualityQualityIndex_ = -1;
+    // Structure (audio thread; see adoptStructure / beginStructureBlock).
+    Structure active_;
+    Structure targetStructure_;
+    bool structureFadingOut_ = false;
+    int structureFadePos_ = 0;
+    int structureFadeLen_ = 1;
+    int inputFadePos_ = 1;
+    bool alignedBypass_ = false;          // value the base reads at the next block start
+    bool blockBypassDryIsCore_ = false;   // this block's bypass dry source (latched)
+    std::atomic<int> pendingStateRequest_ { 0 };
+    std::atomic<std::uint64_t> structureSwitchCount_ { 0 };
+
+    // New High Quality engine.
+    xleth::dsp::resonance::Core core_;
+    CoreVizSink coreVizSink_ { *this };
+    juce::AudioBuffer<float> coreDry_;    // aligned dry in L / R (the mix stage's dry, the bypass dry)
+    std::vector<float> coreDryMono_;      // dryOut of the core's channel 0 in Mid / Side
+    std::vector<float> coreAuxIn_;        // Mid / Side: the unprocessed component
+    std::vector<float> coreAuxOut_;       // ... on the dryOut timeline
+    std::array<float, xleth::dsp::resonance::kGridBands> coreWeights_ {};
+    std::array<float, xleth::viz::kResonanceVizBucketCount> coreVizWeights_ {};
+    std::array<float, xleth::viz::kResonanceVizBucketCount> coreVizBucketHz_ {};
+    std::array<int, xleth::viz::kResonanceVizBucketCount> coreVizBandIdx_ {};
+    std::array<float, xleth::viz::kResonanceVizBucketCount> coreVizBandFrac_ {};
+    std::array<int, 3> coreTierFftSize_ {};
+    std::array<float, 3> coreTierLevelOffsetDb_ {};
+    ProcessorSettings coreWeightSettings_;
+    xleth::viz::DynamicsVizCollector<xleth::viz::ResonanceBucket>* coreVizCollector_ = nullptr;
+    float coreVizCeilingDb_ = 0.0f;
+    float coreBlockActivity_ = 0.0f;
+    float coreMeterActivity_ = 0.0f;
+    int coreRequestedQuality_ = 1;
+    int coreInstanceIndex_ = -1;
+    bool coreWeightsValid_ = false;
+    inline static std::atomic<int> sCoreInstanceCounter_ { 0 };
     std::atomic<std::uint64_t> processBlockLatencyUpdateCount_{0};
     std::atomic<std::uint64_t> nonRealtimeLatencyUpdateCount_{0};
     const std::string mixParamId_ {"mix"};

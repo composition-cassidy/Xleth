@@ -1,0 +1,19 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "uniflange",
+  "name": "Wide Ensemble",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "order": 6,
+      "depth": 55,
+      "speed": 30,
+      "delay": 45,
+      "spread": 100,
+      "cross": 0,
+      "dry": 50,
+      "wet": 80
+    }
+  }
+}

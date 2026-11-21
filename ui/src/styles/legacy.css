@@ -1,0 +1,3 @@
+/* app.css, layered without editing it. Imported from main.jsx at the position
+ * app.css always had, so the relative order of all legacy sheets is unchanged. */
+@import './app.css' layer(legacy);

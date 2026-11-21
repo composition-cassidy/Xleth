@@ -887,6 +887,7 @@ static IntResult runWrappedRouteScenario(const juce::File& dir, const IntScenari
         const int n = std::min(512, kIntRender - pos);
         juce::AudioBuffer<float> block(2, n);
         block.clear();
+        engine->refreshTimelineSnapshot();   // the bridge publishes after every edit
         engine->processBlock(block, n, t);
         for (int ch = 0; ch < 2; ++ch)
             r.master.copyFrom(ch, pos, block, ch, 0, n);

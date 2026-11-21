@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { SegmentedControl } from '../../ui-kit'
 import {
   DISCORD_TIER_LABELS,
   DISCORD_WARN_VIDEO_BITRATE,
@@ -10,16 +11,21 @@ import {
   formatBytesMB,
   formatDuration,
 } from './presets.js'
+import { Banner, ExportSelect, Row, exportStyles as styles } from './exportKit.jsx'
+
+const FPS_OPTIONS = [
+  { value: 60, label: '60 fps' },
+  { value: 30, label: '30 fps' },
+  { value: 24, label: '24 fps' },
+]
 
 /**
- * Discord preset — MP4/H.264/Opus 44.1 kHz 256 kbps, auto bitrate to hit the
+ * Discord preset — MP4/H.264/AAC 48 kHz 256 kbps, auto bitrate to hit the
  * tier limit with 12% headroom. Warns when quality would be unusable.
  */
 export default function DiscordTab({
   settings,       // { tier, fps, hwEncoder }
   onChange,
-  outputPath,
-  onBrowse,
   running,
 }) {
   const [availableEncoders, setAvailableEncoders] = useState([])
@@ -63,66 +69,44 @@ export default function DiscordTab({
   const belowMin = videoBitrate < DISCORD_MIN_VIDEO_BITRATE
   const belowWarn = !belowMin && videoBitrate < DISCORD_WARN_VIDEO_BITRATE
 
+  const encoderOptions = availableEncoders.length === 0
+    ? [{ value: '', label: 'Auto' }]
+    : availableEncoders.map((e) => ({ value: e.name, label: e.displayName || e.name }))
+
   return (
-    <div className="export-tab-panel">
-      <div className="export-tab-desc">
-        MP4 · H.264 · Opus 44.1 kHz 256 kbps. Auto-fitted to the chosen tier.
-      </div>
+    <div className={styles.panel}>
+      <div className={styles.desc}>MP4 · H.264 · AAC 48 kHz 256 kbps. Auto-fitted to the chosen tier.</div>
 
-      <div className="export-row">
-        <label>Tier</label>
-        <div className="tier-radio-group">
-          {Object.entries(DISCORD_TIER_LABELS).map(([k, label]) => (
-            <label key={k} className={`tier-radio ${settings.tier === k ? 'active' : ''}`}>
-              <input type="radio"
-                     name="discord-tier"
-                     value={k}
-                     checked={settings.tier === k}
-                     onChange={() => onChange({ tier: k })}
-                     disabled={running} />
-              {label}
-            </label>
-          ))}
-        </div>
-      </div>
+      <Row label="Tier">
+        <SegmentedControl
+          label="Discord tier"
+          options={Object.entries(DISCORD_TIER_LABELS).map(([k, label]) => ({ value: k, label }))}
+          value={settings.tier}
+          disabled={running}
+          onChange={(k) => onChange({ tier: k })}
+        />
+      </Row>
 
-      <div className="export-row">
-        <label>Frame Rate</label>
-        <select value={settings.fps}
-                onChange={(e) => onChange({ fps: Number(e.target.value) })}
-                disabled={running}>
-          <option value={60}>60 fps</option>
-          <option value={30}>30 fps</option>
-          <option value={24}>24 fps</option>
-        </select>
-      </div>
+      <Row label="Frame rate">
+        <ExportSelect label="Frame rate" value={settings.fps} options={FPS_OPTIONS} disabled={running} onChange={(v) => onChange({ fps: Number(v) })} />
+      </Row>
 
-      <div className="export-row">
-        <label>Encoder</label>
-        <select value={settings.hwEncoder || ''}
-                onChange={(e) => onChange({ hwEncoder: e.target.value })}
-                disabled={running || !availableEncoders.length}>
-          {availableEncoders.length === 0 && <option value="">auto</option>}
-          {availableEncoders.map((e) => (
-            <option key={e.name} value={e.name}>{e.displayName || e.name}</option>
-          ))}
-        </select>
-      </div>
+      <Row label="Encoder">
+        <ExportSelect
+          label="Encoder"
+          value={settings.hwEncoder || ''}
+          options={encoderOptions}
+          disabled={running || !availableEncoders.length}
+          onChange={(v) => onChange({ hwEncoder: v })}
+        />
+      </Row>
 
-      <div className="export-row export-row-path">
-        <label>Output File</label>
-        <div className="export-path-group">
-          <input type="text" value={outputPath} readOnly placeholder="Click Browse…" disabled={running} />
-          <button onClick={onBrowse} disabled={running}>Browse…</button>
-        </div>
-      </div>
-
-      <div className="discord-readout">
+      <div className={styles.readoutList}>
         <div>Range length: {formatDuration(durationSeconds)}</div>
         {videoBitrate > 0 ? (
           <>
             <div>Video bitrate: {formatBitrateMbps(videoBitrate)}</div>
-            <div>Estimated size: ~{formatBytesMB(estimatedBytes)} of {formatBytesMB(limitBytes)} budget</div>
+            <div>Estimated size: about {formatBytesMB(estimatedBytes)} of {formatBytesMB(limitBytes)} budget</div>
           </>
         ) : (
           <div>Estimated size: — (set an export range with clips)</div>
@@ -130,14 +114,10 @@ export default function DiscordTab({
       </div>
 
       {belowWarn && (
-        <div className="export-banner warn">
-          Video quality will be low. Consider a higher tier or a shorter clip.
-        </div>
+        <Banner tone="warn">Video quality will be low. Consider a higher tier or a shorter clip.</Banner>
       )}
       {belowMin && (
-        <div className="export-banner error">
-          Clip too long for this tier. Pick a higher tier or trim the range.
-        </div>
+        <Banner tone="error">Clip too long for this tier. Pick a higher tier or trim the range.</Banner>
       )}
     </div>
   )

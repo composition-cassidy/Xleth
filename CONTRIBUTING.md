@@ -10,10 +10,11 @@ Xleth is a **Windows-only** application with three build layers:
 
 ## What CI checks
 
-Every pull request and every push to `main` runs [.github/workflows/ci.yml](.github/workflows/ci.yml), which has two jobs (both pinned to `windows-2022` — the VS 2022 generator and its bundled CMake 3.x are load-bearing):
+Every pull request and every push to `main` runs [.github/workflows/ci.yml](.github/workflows/ci.yml), which has three jobs (all pinned to `windows-2022` — the VS 2022 generator and its bundled CMake 3.x are load-bearing):
 
-1. **Engine + bridge (MSVC x64)** — *gating.* Configures and builds the full CMake project (engine libraries, scanner, editor-host, and the engine test executables), then builds the bridge addon with cmake-js and verifies `xleth_native.node` was produced. If this job is red, the PR broke the native build.
-2. **UI (Vite build + vitest)** — the Vite production build is *gating*; the vitest suite runs on every PR but is currently **non-blocking** because it has known pre-existing failures (see `AUDIT.md` §3.5). A red vitest step is visible in the job log but does not fail the workflow. Once the suite is green, the `continue-on-error` line in the workflow should be removed so tests gate merges too.
+1. **Engine + bridge (MSVC x64)** — *gating.* Configures and builds the full CMake project (engine libraries, scanner, editor-host, and the engine test executables), then builds the bridge addon with cmake-js and verifies `xleth_native.node` was produced. If this job is red, the PR broke the native build. It then runs `ctest`, which fails the job on any red that is not listed (with a reason and a date) in [engine/known-ctest-failures.json](engine/known-ctest-failures.json); listed tests are excluded, so delete the entry when you fix the test.
+2. **Bridge contract tests** — runs `bridge/run_contract_tests.js` against the addon the first job built. It fails on any red that is not listed in [bridge/known-failures.json](bridge/known-failures.json) (a listed test that now passes is reported so its entry can go; `flaky` entries get one retry). GitHub's Windows runners have no audio device, so most scripts cannot run there: the runner reports them as **skipped**, never as passed, and the log and job summary say how many ("N of M bridge tests SKIPPED: no audio device").
+3. **UI (Vite build + vitest)** — the Vite production build is *gating*; the vitest suite runs on every PR but is currently **non-blocking** because it has known pre-existing failures (see `AUDIT.md` §3.5). A red vitest step is visible in the job log but does not fail the workflow. Once the suite is green, the `continue-on-error` line in the workflow should be removed so tests gate merges too.
 
 The first CI run on a cold cache is slow (~1–2 h) because vcpkg compiles FFmpeg from source; compiled packages are stored in the GitHub Actions cache, so subsequent runs skip that.
 
@@ -86,7 +87,7 @@ Engine (`ctest`, 43/47 passed, baseline 2026-07-14):
 | `test_flip_orientation_golden` | assertion failure (GPU shader golden) |
 | `test_effects` | assertion failure |
 | `test_reverb` | assertion failure |
-| `test_real_render` | segfault — also hardcodes the project path `C:\Users\Krasen\Desktop\XLETH\test`, so it can only ever run on that machine |
+| `test_real_render` | segfault — also hardcodes the project path `%USERPROFILE%\Desktop\XLETH\test` (the original dev machine's repo `test\` folder), so it only runs there unless you pass `--project <dir>` |
 
 `test_video_flip_applier` and `test_frame_collector`, previously listed here, now pass on the current build — in particular `test_frame_collector` runs Tests 1–6 to `ALL TESTS PASSED` and the old `0xc0000409` fail-fast crash no longer reproduces. The suite is now 47 tests because the snapshot-transition feature added `test_snapshot_transition` (passing).
 
@@ -97,7 +98,7 @@ Bridge (`npm test` → `run_contract_tests.js`, 12/15 passed, baseline 2026-07-1
 | Script | Failure |
 |--------|---------|
 | `test_dynamics_viz.js` | `drain.schema === 1 (got 2)` — schema version mismatch |
-| `test_midi_import.js` | expects `C:\Users\Krasen\Desktop\XLETH\test.wav` (missing on disk) and sampler-metadata round-trip fails (`rootNote`/`attackMs` come back `undefined`) |
+| `test_midi_import.js` | expects `test.wav` at the repo root (missing on disk) and sampler-metadata round-trip fails (`rootNote`/`attackMs` come back `undefined`) |
 | `test_pdc_live_presentation_refresh.js` | `EPERM` deleting its scratch copy under `diagnostics\pdc-stage7c\` during cleanup |
 
 `test_patterns.js`, previously listed here, now passes on the current build. `test_snapshot_transition_preview_contract.js` (the snapshot-transition live preview seam) passes.

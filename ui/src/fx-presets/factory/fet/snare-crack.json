@@ -1,0 +1,16 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "fet",
+  "name": "Snare Crack",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "input": 2,
+      "output": 2,
+      "attack": 4,
+      "release": 6.5,
+      "ratio": 0
+    }
+  }
+}

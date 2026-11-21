@@ -1,13 +1,9 @@
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { timelineEvents } from './timelineEvents.js'
 import TitleBar from './components/TitleBar.jsx'
-import TransportBar from './components/TransportBar.jsx'
-import SamplePicker from './components/SamplePicker/SamplePicker.jsx'
-import ExportDialog from './components/ExportDialog.jsx'
+import RenderDialog from './components/RenderDialog.jsx'
 import ExportZipDialog from './components/ExportZipDialog.jsx'
 import MidiImportDialog from './components/MidiImport/MidiImportDialog.jsx'
-import VideoExportDialog from './components/VideoExportDialog.jsx'
-import useSamplerPanelStore from './stores/samplerPanelStore.js'
 import SettingsPanel from './components/SettingsPanel.jsx'
 import MissingPluginsDialog from './components/MissingPluginsDialog.jsx'
 import MissingMediaDialog from './components/MissingMediaDialog.jsx'
@@ -15,16 +11,28 @@ import DevThemeSwitcher from './components/debug/DevThemeSwitcher.jsx'
 import { ToastProvider, useToast } from './components/Toast.jsx'
 import UpdateBanner from './components/UpdateBanner.jsx'
 import { showUnsavedChangesDialog } from './components/UnsavedChangesDialog.jsx'
+import { showCleanupProjectDialog } from './components/CleanupProjectDialog.jsx'
+import { CLEANUP_PROJECT_LABEL, reportPurgeOnClose, runCleanupProject } from './components/projectCleanup.js'
 import XlethFilePickerProvider from './components/filePicker/XlethFilePickerProvider.jsx'
 import { getPickerPath, getPickerPaths, openFilePicker as openXlethFilePicker } from './components/filePicker/filePickerService.js'
 import usePianoRollStore from './stores/usePianoRollStore.js'
+import { useUiScaleStore } from './stores/uiScaleStore.js'
 import useWorldProcessingStore from './stores/worldProcessingStore.js'
 import AppShell from './windowing/AppShell.tsx'
+import HintBar from './components/HintBar.jsx'
 import XlethRootContext from './windowing/contexts/XlethRootContext.jsx'
 import { usePanelRegistry } from './windowing/registry/PanelRegistry'
 import { runEditorCommand } from './windowing/managers/EditorCommandRegistry'
+import { comboFromEvent } from './windowing/managers/shortcutCatalog.ts'
+import { load as loadShortcutOverrides, resolveCombos } from './windowing/managers/shortcutOverrides.ts'
 import { ElectronAdapter } from './windowing/managers/StatePersistence'
 import * as StatePersistence from './windowing/managers/StatePersistence'
+import { DEFAULT_PRESET_ID } from './windowing/managers/PresetManager'
+import {
+  beforeMotionViewProjectSwitch,
+  cancelMotionViewProjectSwitch,
+  flushMotionViewState,
+} from './components/motionView/motionViewSession.js'
 
 const EXPORT_AUDIO_LABEL = 'Export Audio…'
 const EXPORT_VIDEO_LABEL = 'Export Video…'
@@ -32,7 +40,6 @@ const EXPORT_ZIP_LABEL = 'Export as ZIP…'
 const ZOOM_IN_LABEL = 'Zoom In'
 const ZOOM_OUT_LABEL = 'Zoom Out'
 const RESET_ZOOM_LABEL = 'Reset Zoom'
-export const ROOT_APP_SHELL_MODE = 'production'
 
 const MEDIA_IMPORT_FILTERS = [
   { name: 'All Supported', extensions: ['mp4', 'avi', 'mov', 'mkv', 'wav', 'mp3', 'flac', 'ogg', 'aac', 'm4a'] },
@@ -59,13 +66,6 @@ async function currentProjectRoot(xl = window.xleth) {
   } catch {
     return ''
   }
-}
-
-export function getWorkspaceBackdropClassName(mode) {
-  if (mode === 'native-acrylic') return 'xleth-backdrop-native-acrylic'
-  if (mode === 'image') return 'xleth-backdrop-image'
-  if (mode === 'video') return 'xleth-backdrop-video'
-  return 'xleth-backdrop-off'
 }
 
 /**
@@ -95,6 +95,8 @@ async function saveCurrentProject(showToast, setProjectName, openFilePicker = op
       const dir = getPickerPath(picked)
       if (!dir) return 'cancelled'
       const name = dir.split(/[\\/]/).pop() || 'Untitled'
+      // A Motion view change still in its push debounce goes into this save.
+      await flushMotionViewState()
       const ok = await xl.project.saveAs(dir, name)
       if (ok) {
         setProjectName(name)
@@ -103,6 +105,7 @@ async function saveCurrentProject(showToast, setProjectName, openFilePicker = op
       showToast?.('Save failed - could not write to the chosen folder.', 'error')
       return false
     }
+    await flushMotionViewState()
     const ok = await xl.project.save()
     if (!ok) {
       showToast?.('Save failed. Check that the project folder is writable.', 'error')
@@ -123,38 +126,54 @@ export async function hydrateProductionLayout({
   statePersistence.setPersistenceAdapter(adapter)
   const hydrated = await statePersistence.loadPersistedState()
   if (!hydrated) {
-    panelRegistry.getState().applyPreset('fl-compose')
+    panelRegistry.getState().applyPreset(DEFAULT_PRESET_ID)
   }
   return hydrated
+}
+
+// ─── Global menu shortcuts ──────────────────────────────────────────────────
+// The command ids come from shortcutCatalog; the menu labels are the ones
+// handleXlethRootMenuAction dispatches on, declared as constants above. This
+// map is the only place the two meet, so a rebind in Settings changes which
+// key reaches a menu action without touching either side.
+const MENU_LABEL_BY_COMMAND = {
+  'file.new': 'New Project',
+  'file.open': 'Open Project',
+  'file.save': 'Save',
+  'file.saveAs': 'Save As...',
+  'file.importSource': 'Import Source',
+  'file.exportAudio': EXPORT_AUDIO_LABEL,
+  'file.exportVideo': EXPORT_VIDEO_LABEL,
+  'view.zoomIn': ZOOM_IN_LABEL,
+  'view.zoomOut': ZOOM_OUT_LABEL,
+  'view.resetZoom': RESET_ZOOM_LABEL,
 }
 
 export function getFileMenuShortcutLabel(e) {
   const target = e.target
   if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return null
 
-  const ctrl = e.ctrlKey || e.metaKey
-  if (!ctrl) return null
+  const combo = comboFromEvent(e)
+  if (!combo) return null
 
-  const key = e.key.toLowerCase()
-  if (key === 'n' && !e.shiftKey && !e.altKey) return 'New Project'
-  if (key === 'o' && !e.shiftKey && !e.altKey) return 'Open Project'
-  if (key === 's' && e.shiftKey && !e.altKey) return 'Save As...'
-  if (key === 's' && !e.shiftKey && !e.altKey) return 'Save'
-  if (key === 'i' && !e.shiftKey && !e.altKey) return 'Import Source'
-  if (key === 'e' && e.shiftKey && !e.altKey) return EXPORT_VIDEO_LABEL
-  if (key === 'e' && !e.shiftKey && !e.altKey) return EXPORT_AUDIO_LABEL
-  if ((key === '=' || key === '+') && !e.altKey) return ZOOM_IN_LABEL
-  if ((key === '-' || key === '_') && !e.altKey) return ZOOM_OUT_LABEL
-  if (key === '0' && !e.shiftKey && !e.altKey) return RESET_ZOOM_LABEL
-  return null
+  // Longest-combo-first so Ctrl+Shift+E (Export Video) is tested before
+  // Ctrl+E (Export Audio) — resolveCombos returns exact strings, but a user
+  // override could legitimately make one command's combo a prefix of
+  // another's, and matching the more specific one is always the right answer.
+  const ids = Object.keys(MENU_LABEL_BY_COMMAND)
+  let best = null
+  for (const id of ids) {
+    if (!resolveCombos(id).includes(combo)) continue
+    if (!best || combo.length > best.combo.length) best = { id, combo }
+  }
+  return best ? MENU_LABEL_BY_COMMAND[best.id] : null
 }
 
 export async function handleXlethRootMenuAction(label, {
   xl = window.xleth,
   showToast,
   setProjectName,
-  setExportDialogOpen,
-  setVideoExportDialogOpen,
+  openRenderDialog,
   setActiveSampleId,
   setPickerSource,
   setCurrentPatternIdByTrack,
@@ -187,11 +206,23 @@ export async function handleXlethRootMenuAction(label, {
         }
       }
 
-      const res = await xl.project.newBlank?.()
+      // Motion view: the pending push lands in THIS project, then pushes wait
+      // for the new project's state to load (no old view in the new project).
+      await beforeMotionViewProjectSwitch()
+      let res
+      try {
+        res = await xl.project.switchToNew?.()
+      } catch (e) {
+        cancelMotionViewProjectSwitch()
+        throw e
+      }
       if (!res || !res.ok) {
+        cancelMotionViewProjectSwitch()
         showToast?.(`New Project failed: ${res?.error || 'unknown error'}`, 'error')
         return
       }
+      // "Delete regenerable files when closing a project": say what it freed.
+      await reportPurgeOnClose({ xl, showToast })
 
       setProjectName?.('Untitled Project')
 
@@ -201,7 +232,6 @@ export async function handleXlethRootMenuAction(label, {
       pianoRollStore.setActiveCenterTab('timeline')
       usePanelRegistry.getState().closePanel('pianoRoll')
 
-      useSamplerPanelStore.getState().setRegionId(null)
       usePanelRegistry.getState().closePanel('sampler')
       setActiveSampleId?.(null)
       setPickerSource?.(null)
@@ -226,7 +256,20 @@ export async function handleXlethRootMenuAction(label, {
       })
       const dir = getPickerPath(picked)
       if (!dir) return
-      await xl.project.load(dir)
+      await beforeMotionViewProjectSwitch()
+      let loaded
+      try {
+        loaded = await xl.project.switchToLoad(dir)
+      } catch (e) {
+        cancelMotionViewProjectSwitch()
+        throw e
+      }
+      // switchToLoad resolves false (or { ok: false }) when the project did not open.
+      if (loaded === false || (loaded && typeof loaded === 'object' && loaded.ok === false)) {
+        cancelMotionViewProjectSwitch()
+      }
+      // "Delete regenerable files when closing a project": say what it freed.
+      await reportPurgeOnClose({ xl, showToast })
       const info = await xl.project.getInfo()
       setProjectName?.(info?.projectName || dir.split(/[\\/]/).pop() || 'Project')
       timelineEvents.dispatchEvent(new Event('timeline-sources-changed'))
@@ -274,6 +317,7 @@ export async function handleXlethRootMenuAction(label, {
       const dir = getPickerPath(picked)
       if (!dir) return
       const name = dir.split(/[\\/]/).pop() || 'Untitled'
+      await flushMotionViewState()
       const ok = await xl.project.saveAs(dir, name)
       if (ok) {
         setProjectName?.(name)
@@ -311,13 +355,16 @@ export async function handleXlethRootMenuAction(label, {
       break
     }
     case EXPORT_AUDIO_LABEL:
-      setExportDialogOpen?.(true)
+      openRenderDialog?.('audio')
       break
     case EXPORT_VIDEO_LABEL:
-      setVideoExportDialogOpen?.(true)
+      openRenderDialog?.('video')
       break
     case EXPORT_ZIP_LABEL:
       setExportZipOpen?.(true)
+      break
+    case CLEANUP_PROJECT_LABEL:
+      await runCleanupProject({ xl, showToast, confirm: showCleanupProjectDialog })
       break
     case ZOOM_IN_LABEL:
       xl.window.zoomIn?.()
@@ -329,13 +376,15 @@ export async function handleXlethRootMenuAction(label, {
       xl.window.resetZoom?.()
       break
     case 'Undo':
-      await xl.undo.undo()
+      // The arrangement owns the gesture: it pops a compound edit (a paste is
+      // an overwrite plus an insert) as one step, exactly as Ctrl+Z does.
+      if (!(await runEditorCommand('undo', 'timeline'))) await xl.undo.undo()
       timelineEvents.dispatchEvent(new Event('timeline-tracks-changed'))
       timelineEvents.dispatchEvent(new Event('timeline-track-layout-changed'))
       timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
       break
     case 'Redo':
-      await xl.undo.redo()
+      if (!(await runEditorCommand('redo', 'timeline'))) await xl.undo.redo()
       timelineEvents.dispatchEvent(new Event('timeline-tracks-changed'))
       timelineEvents.dispatchEvent(new Event('timeline-track-layout-changed'))
       timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
@@ -355,6 +404,35 @@ export async function handleXlethRootMenuAction(label, {
   }
 }
 
+// P2 (docs/PLUGIN_HOSTING_LOG.md): if the previous engine died while loading a
+// third-party plugin, the engine recovered its breadcrumb at start and
+// quarantined that plugin. Show ONE notice for it. Reading the record consumes
+// it, so the module-level promise keeps a StrictMode double-mount from
+// swallowing it on the first (discarded) mount.
+let lastLoadCrashNotice = null
+
+export function reportLastPluginLoadCrash({ xl, showToast }) {
+  if (!lastLoadCrashNotice) {
+    lastLoadCrashNotice = Promise.resolve()
+      .then(() => xl?.audio?.getLastLoadCrash?.())
+      .then((crash) => {
+        if (!crash || typeof crash.name !== 'string') return false
+        const by = crash.vendor ? ` by ${crash.vendor}` : ''
+        showToast?.(
+          `XLETH's engine stopped while loading ${crash.name}${by} last session. ` +
+          'It is quarantined: projects keep it as a placeholder until you retry it.',
+          'error',
+        )
+        return true
+      })
+      .catch((e) => {
+        console.warn('[PluginHost] getLastLoadCrash failed:', e)
+        return false
+      })
+  }
+  return lastLoadCrashNotice
+}
+
 export default function XlethRoot() {
   return (
     <ToastProvider>
@@ -367,17 +445,6 @@ export default function XlethRoot() {
 
 function XlethRootInner() {
   const { showToast } = useToast()
-  const [workspaceBackdropMode, setWorkspaceBackdropMode] = useState(() => (
-    ['native-acrylic', 'image', 'video'].includes(window.xleth?.backdrop?.current?.mode)
-      ? window.xleth.backdrop.current.mode
-      : 'off'
-  ))
-  const [workspaceBackdropImageUrl, setWorkspaceBackdropImageUrl] = useState(() => (
-    window.xleth?.backdrop?.current?.mode === 'image'
-      ? window.xleth.backdrop.current.imageUrl || ''
-      : ''
-  ))
-
   // TODO: lift to Zustand in 6d. These root-owned UI selections still bridge
   // the production windowing wrappers with the legacy app components.
   const [pickerSource, setPickerSource] = useState(null)
@@ -386,8 +453,9 @@ function XlethRootInner() {
   const [allPatterns, setAllPatterns] = useState({})
 
   const [projectName, setProjectName] = useState('Untitled Project')
-  const [exportDialogOpen, setExportDialogOpen] = useState(false)
-  const [videoExportDialogOpen, setVideoExportDialogOpen] = useState(false)
+  const [renderDialogOpen, setRenderDialogOpen] = useState(false)
+  const [renderDialogHint, setRenderDialogHint] = useState(null) // 'audio' | 'video' | null
+  const [renderDialogRequestNonce, setRenderDialogRequestNonce] = useState(0)
   const [exportZipOpen, setExportZipOpen] = useState(false)
   const [midiImportOpen, setMidiImportOpen] = useState(false)
   const [midiInitialPath, setMidiInitialPath] = useState(null)
@@ -403,21 +471,15 @@ function XlethRootInner() {
     usePianoRollStore.getState().init()
   }, [])
 
+  // Mirror the global UI scale (window zoom) so Settings and the canvases follow it.
   useEffect(() => {
-    const applyBackdropState = (state) => {
-      const mode = ['native-acrylic', 'image', 'video'].includes(state?.mode) ? state.mode : 'off'
-      setWorkspaceBackdropMode(mode)
-      setWorkspaceBackdropImageUrl(mode === 'image' ? state?.imageUrl || '' : '')
-      document.documentElement.setAttribute('data-xleth-backdrop', mode)
-    }
-
-    applyBackdropState(window.xleth?.backdrop?.current)
-    window.xleth?.backdrop?.getState?.()
-      .then(applyBackdropState)
-      .catch((e) => console.warn('[XlethRoot] backdrop state failed:', e?.message || e))
-
-    return window.xleth?.backdrop?.onModeChanged?.(applyBackdropState)
+    useUiScaleStore.getState().hydrate()
   }, [])
+
+  // One notice for a plugin whose load killed the previous engine (P2).
+  useEffect(() => {
+    void reportLastPluginLoadCrash({ xl: window.xleth, showToast })
+  }, [showToast])
 
   useEffect(() => {
     const offStart = window.xleth?.audio?.onWorldProcessingStart?.(({ clipId }) =>
@@ -469,8 +531,7 @@ function XlethRootInner() {
   useEffect(() => {
     const onOpen = (e) => {
       const regionId = e.detail?.regionId ?? null
-      useSamplerPanelStore.getState().setRegionId(regionId)
-      usePanelRegistry.getState().openPanel('sampler')
+      usePanelRegistry.getState().openPanel('sampler', { regionId })
     }
     const onClose = () => {
       usePanelRegistry.getState().closePanel('sampler')
@@ -521,12 +582,17 @@ function XlethRootInner() {
     }
   }, [allPatterns, pianoRollPatternId])
 
+  const openRenderDialog = useCallback((hint) => {
+    setRenderDialogHint(hint)
+    setRenderDialogRequestNonce((n) => n + 1)
+    setRenderDialogOpen(true)
+  }, [])
+
   const handleMenuAction = useCallback(async (label) => {
     await handleXlethRootMenuAction(label, {
       showToast,
       setProjectName,
-      setExportDialogOpen,
-      setVideoExportDialogOpen,
+      openRenderDialog,
       setActiveSampleId,
       setPickerSource,
       setCurrentPatternIdByTrack,
@@ -537,7 +603,13 @@ function XlethRootInner() {
       setShowSettings,
       setSettingsInitialCategory,
     })
-  }, [showToast])
+  }, [showToast, openRenderDialog])
+
+  // Persisted shortcut overrides, read once at startup. Until this resolves
+  // every command answers to its catalog default, which is also what a user
+  // who has never rebound anything gets — so a slow read degrades to shipped
+  // behavior rather than to no shortcuts at all.
+  useEffect(() => { loadShortcutOverrides() }, [])
 
   useEffect(() => {
     const onKeyDown = (e) => {
@@ -565,21 +637,29 @@ function XlethRootInner() {
 
   const rootContextValue = useMemo(() => ({
     onOpenPicker: handleOpenPicker,
+    pickerSource,
+    onClosePicker: handleClosePicker,
     activeSampleId,
     setActiveSampleId,
     currentPatternIdByTrack,
     setCurrentPatternIdByTrack,
     activeCenterTab,
     availablePatterns,
+    // Every pattern in the project, by id: what the Piano Roll and Sampler tabs fall back on
+    // when nothing was chosen for them (windowing/panels/dockTabFallback.ts).
+    allPatterns,
     onSwitchPattern: handleSwitchPattern,
     onNewPattern: handleNewPatternFromPianoRoll,
     onOpenMidiImport,
   }), [
     handleOpenPicker,
+    pickerSource,
+    handleClosePicker,
     activeSampleId,
     currentPatternIdByTrack,
     activeCenterTab,
     availablePatterns,
+    allPatterns,
     handleSwitchPattern,
     handleNewPatternFromPianoRoll,
     onOpenMidiImport,
@@ -591,21 +671,17 @@ function XlethRootInner() {
 
   const handleAppDrop = useCallback((e) => {
     const files = Array.from(e.dataTransfer.files)
-    const midiFile = files.find(f => /\.(mid|midi)$/i.test(f.name))
+    const midiFile = files.find(f => /\.(mid|midi|flp)$/i.test(f.name))
     if (midiFile) {
       e.preventDefault()
-      onOpenMidiImport(midiFile.path || midiFile.name)
+      // Electron 41+ removed File.path; the preload bridge resolves it.
+      onOpenMidiImport(window.xleth?.getDroppedFilePath?.(midiFile) || midiFile.path || midiFile.name)
     }
   }, [onOpenMidiImport])
 
   return (
     <div
-      className={`app ${getWorkspaceBackdropClassName(workspaceBackdropMode)}`}
-      style={{
-        '--xleth-workspace-backdrop-image': workspaceBackdropImageUrl
-          ? `url("${workspaceBackdropImageUrl.replace(/"/g, '\\"')}")`
-          : 'none',
-      }}
+      className="app"
       onDragOver={handleAppDragOver}
       onDrop={handleAppDrop}
     >
@@ -615,22 +691,23 @@ function XlethRootInner() {
         activeMenuLabel={showSettings ? 'Settings' : null}
       />
 
+      {/* One shell, always mounted. The sample picker is a sheet inside it
+          (windowing/components/PickerSheet), so the arrangement stays visible. */}
       <div className="app-body" style={{ position: 'relative' }}>
-        {pickerSource && (
-          <SamplePicker source={pickerSource} onClose={handleClosePicker} />
-        )}
-
-        <div style={{ display: pickerSource ? 'none' : 'contents' }}>
-          <XlethRootContext.Provider value={rootContextValue}>
-            <AppShell mode={ROOT_APP_SHELL_MODE} backdropImageUrl={workspaceBackdropImageUrl} />
-          </XlethRootContext.Provider>
-        </div>
+        <XlethRootContext.Provider value={rootContextValue}>
+          <AppShell />
+        </XlethRootContext.Provider>
       </div>
 
-      <TransportBar />
+      <HintBar />
 
-      <ExportDialog isOpen={exportDialogOpen} onClose={() => setExportDialogOpen(false)} />
-      <VideoExportDialog isOpen={videoExportDialogOpen} onClose={() => setVideoExportDialogOpen(false)} />
+      <RenderDialog
+        isOpen={renderDialogOpen}
+        onClose={() => setRenderDialogOpen(false)}
+        destinationHint={renderDialogHint}
+        requestNonce={renderDialogRequestNonce}
+        projectName={projectName}
+      />
       <ExportZipDialog isOpen={exportZipOpen} onClose={() => setExportZipOpen(false)} />
       <MidiImportDialog
         isOpen={midiImportOpen}

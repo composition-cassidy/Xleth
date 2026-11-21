@@ -15,6 +15,7 @@
 #include "Transport.h"
 #include "audio/MixEngine.h"
 #include "audio/SourcePlayer.h"
+#include "audio/Metronome.h"
 
 class AudioEngine : public juce::AudioIODeviceCallback
 {
@@ -31,7 +32,7 @@ public:
                                          const juce::AudioIODeviceCallbackContext& context) override;
     void audioDeviceStopped() override;
 
-    bool initialize(bool recordToFile = false);
+    bool initialize();
     void shutdown();
 
     // Connect the sample bank. Call from main thread before playback starts.
@@ -44,6 +45,7 @@ public:
     AudioScheduler& getAudioScheduler() { return audioScheduler_; }
     MixEngine&      getMixEngine()       { return mixEngine_; }
     SourcePlayer&   getSourcePlayer()    { return sourcePlayer_; }
+    xleth::Metronome& getMetronome()     { return metronome_; }
 
     struct LivePresentationLatencyDiagnostics
     {
@@ -117,16 +119,81 @@ public:
     };
     static bool shouldAttemptRecovery(const WatchdogInputs& in);
 
+    // Pure watchdog bookkeeping — the other half of checkDeviceHealth(), split
+    // out for the same reason. reopenAudioDevice() blocks for *seconds* on a
+    // real driver (WASAPI rescan + reinit measured at 3.7-5.9 s on a Ryzen
+    // 7520U laptop), so every deadline it writes has to be stamped from a clock
+    // read *after* the reopen returns. Stamping them from the pre-reopen `now`
+    // hands the reopened device a progress age already older than the
+    // starvation window and a backoff deadline already in the past, so the very
+    // next poll tears the device down again before it can deliver its first
+    // block — a self-sustaining reopen loop that never exits and, because the
+    // poll runs on the RPC thread, wedges every other engine call behind it.
+    struct WatchdogRecoveryState
+    {
+        int64_t lastProgressMs = 0; // new baseline for the progress age
+        int64_t nextAttemptMs  = 0; // earliest the watchdog may reopen again
+        int     failedAttempts = 0;
+    };
+    static WatchdogRecoveryState afterRecoveryAttempt(bool    recovered,
+                                                      int     failedAttempts,
+                                                      int64_t lastProgressMs,
+                                                      int64_t completedAtMs);
+
     // Raises the "system just resumed" flag, shortening the watchdog's
     // starvation window on the next poll. Safe to call from any thread — it
     // stores a single atomic and does no device work. Called by the OS power
     // notification, and directly by tests.
     void notifySystemResume() { resumeFromSleepPending_.store(true, std::memory_order_release); }
 
-    bool   analyzeRecording(const juce::File& wavFile) const;
     double getSampleRate()  const { return sampleRate_; }
     int    getBufferSize()  const { return bufferSize_; }
-    double getLatencyMs()   const;
+
+    // ── Device-layer truth ───────────────────────────────────────────────────
+    // JUCE device-type name of the device that is ACTUALLY open ("ASIO",
+    // "Windows Audio", "Windows Audio (Exclusive Mode)", ...). Empty when no
+    // device is open. Never a label the engine made up.
+    std::string getCurrentDriverName() const;
+
+    // Output latency in ms, SINGLE-counted: exactly what the driver reports.
+    // JUCE's getOutputLatencyInSamples() already includes the buffer for every
+    // backend (WASAPI adds currentBufferSizeSamples itself, ASIO's
+    // getLatencies() includes it by spec), so nothing is added here.
+    double getLatencyMs() const;
+
+    // The callback period the device really runs at, in ms. WASAPI shared: the
+    // fixed Windows engine period (GetDevicePeriod), independent of the buffer
+    // size requested. Every other backend: the buffer size. 0 with no device.
+    double getDevicePeriodMs() const;
+
+    // Deadline the realtime telemetry judges each callback against (ms), and
+    // where it came from. See chooseRealtimeDeadline().
+    enum class DeadlineSource { BufferSize, DevicePeriod };
+    double         getRealtimeDeadlineMs() const;
+    DeadlineSource getRealtimeDeadlineSource() const
+    {
+        return realtimeDeadlineFromPeriod_.load(std::memory_order_relaxed)
+            ? DeadlineSource::DevicePeriod : DeadlineSource::BufferSize;
+    }
+
+    // Pure policy — which quantity is the real callback deadline. Split out so
+    // it can be tested without an audio device; audioDeviceAboutToStart() calls
+    // exactly this.
+    //   * WASAPI shared ("Windows Audio"): the endpoint holds ~one engine period
+    //     of audio, so a callback that outruns the period underruns whatever the
+    //     app-side buffer size is — a 2048-sample callback still has ~10 ms, not
+    //     46 ms, and a 132-sample callback is not judged against 3 ms.
+    //   * ASIO / WASAPI exclusive / low-latency: one buffer per period, so the
+    //     buffer duration is the deadline.
+    struct RealtimeDeadline
+    {
+        DeadlineSource source  = DeadlineSource::BufferSize;
+        int            samples = 0;   // in the SESSION sample rate
+    };
+    static RealtimeDeadline chooseRealtimeDeadline(const std::string& driverName,
+                                                   int bufferSizeSamples,
+                                                   int devicePeriodSamples);
+    static bool isWasapiSharedDriver(const std::string& driverName);
 
     // ── Audio-health instrumentation ─────────────────────────────────────────
     // [XRun] Current device hardware x-run (under/overflow) count, or -1 when the
@@ -141,6 +208,41 @@ public:
     std::string              setOutputDevice(const std::string& deviceName);
     void                     setPreferredOutputDevice(const std::string& name) { preferredOutputDevice_ = name; }
 
+    // Re-scans every registered device type (WASAPI/ASIO/etc.) for hardware
+    // changes — a hot-plugged interface, an unplugged one — and returns the
+    // refreshed output device list, same shape as getOutputDevices(). If the
+    // currently selected output device no longer exists in that list, falls
+    // back to the current driver's default output device via the same
+    // setAudioDeviceSetup(..., true) reconfigure path setOutputDevice uses.
+    // Message/RPC thread only — see checkDeviceHealth()'s threading note.
+    std::vector<std::string> rescanDevices();
+
+    // Sample rates the CURRENT device reports as supported — query fresh per
+    // call since the answer depends on getCurrentAudioDevice(), not a cached
+    // list. Buffer size has no analogous device query surfaced here: callers
+    // offer a fixed ladder (128/256/512/1024/2048) and let setBufferSize's
+    // returned error string report an unsupported choice, same as ASIO's own
+    // fixed-buffer devices already do today via kTargetBuf/kMaxBuf fallback.
+    std::vector<double>      getSupportedSampleRates() const;
+
+    // Buffer sizes (in samples) the CURRENT device reports as supported, and
+    // the device's own preferred default. Empty when there is no current
+    // device — callers fall back to the fixed 128/256/512/1024/2048 ladder,
+    // same as getSupportedSampleRates() callers do for sample rate.
+    std::vector<int>         getAvailableBufferSizes() const;
+    int                      getDefaultBufferSize()    const;
+
+    // Both reuse the exact reconfigure path setOutputDevice already does:
+    // mutate the AudioDeviceSetup, hand it to setAudioDeviceSetup(..., true),
+    // which — when the value actually changed — stops and restarts the
+    // device. The restart's audioDeviceAboutToStart() is what re-reads
+    // sampleRate_/bufferSize_, retunes the transport and re-prepares
+    // MixEngine; neither setter duplicates any of that here. A per-machine
+    // preference, never a per-project one — the caller persists it the same
+    // way previewResolutionScale is persisted.
+    std::string              setBufferSize(int bufferSize);
+    std::string              setSampleRate(double sampleRate);
+
 private:
     juce::AudioDeviceManager deviceManager_;
     juce::AudioFormatManager formatManager_;
@@ -152,10 +254,7 @@ private:
     AudioScheduler           audioScheduler_;
     MixEngine                mixEngine_;
     SourcePlayer             sourcePlayer_;
-
-    juce::TimeSliceThread                                    writerThread_ { "WavWriter" };
-    std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> wavWriter_;
-    juce::File                                               recordingFile_;
+    xleth::Metronome         metronome_;
 
     double sampleRate_  = 44100.0;
     int    bufferSize_  = 256;
@@ -190,6 +289,14 @@ private:
     void unregisterPowerNotification();
     void* powerNotifyHandle_ = nullptr;
 
-    void*       mmcssHandle_        = nullptr;
+    // Published by audioDeviceAboutToStart (message/RPC thread), read by the
+    // reporting getters. The MixEngine holds the audio-thread copy.
+    std::atomic<int64_t> realtimeDeadlineNs_{ 0 };
+    std::atomic<bool>    realtimeDeadlineFromPeriod_{ false };
+
+    // One line: driver | device | rate | buffer | latency | period. `what`
+    // names the event ("Buffer size changed", "Sample rate changed", ...).
+    void logDeviceState(const std::string& what) const;
+
     std::string preferredOutputDevice_;
 };

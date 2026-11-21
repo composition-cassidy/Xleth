@@ -1,0 +1,24 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "reverb",
+  "name": "Small Room",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "decay": 0.6,
+      "predelay": 5,
+      "size": 30,
+      "damping": 50,
+      "mod_rate": 30,
+      "mod_depth": 20,
+      "er_level": 70,
+      "er_late": 60,
+      "hicut": 9000,
+      "locut": 120,
+      "mix": 15,
+      "smoothness": 20,
+      "style": 1
+    }
+  }
+}

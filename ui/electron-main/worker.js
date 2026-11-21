@@ -43,8 +43,45 @@ let worker = null;
 let nextMsgId = 1;
 const pending = new Map();
 
+// P2 (docs/PLUGIN_HOSTING_LOG.md): the engine keeps
+// %APPDATA%\Xleth\plugin-load-inflight.json on disk around every third-party
+// plugin load. If the worker dies while that file names its pid, the plugin it
+// was loading is what killed it.
+let lastExitPlugin = null; // { plugin, vendor, phase } of the last engine death, or null
+
+function readPluginLoadInflight(workerPid) {
+  try {
+    const file = path.join(app.getPath('appData'), 'Xleth', 'plugin-load-inflight.json');
+    if (!fs.existsSync(file)) return null;
+    const crumb = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (!crumb || typeof crumb.name !== 'string') return null;
+    if (workerPid && crumb.pid && crumb.pid !== workerPid) {
+      log(`[PluginHost] load breadcrumb belongs to pid ${crumb.pid}, not the worker (${workerPid}) - ignored`);
+      return null;
+    }
+    return crumb;
+  } catch (err) {
+    log(`[PluginHost] could not read plugin-load-inflight.json: ${err.message}`);
+    return null;
+  }
+}
+
+// node/xleth-host/node.exe is node.exe re-stamped with the XLETH icon and name
+// (ui/scripts/brand-engine-host.cjs). The worker owns the audio device, so the
+// exe it runs under is what Volume Mixer / Task Manager show. Prefer it over a
+// plain node.exe in both packaged and dev runs. It must keep the node.exe
+// filename: the addon's N-API imports name "node.exe", and a renamed host
+// binds them to a second Node loaded from disk and crashes on require().
+function brandedEngineHost() {
+  if (process.platform !== 'win32') return null;
+  const p = runtimeResource('node', 'xleth-host', 'node.exe');
+  return fs.existsSync(p) ? p : null;
+}
+
 function resolveSystemNodeExe() {
   if (process.env.XLETH_NODE_EXE) return process.env.XLETH_NODE_EXE;
+  const branded = brandedEngineHost();
+  if (branded) return branded;
   if (app.isPackaged) {
     return runtimeResource('node', process.platform === 'win32' ? 'node.exe' : 'node');
   }
@@ -70,7 +107,52 @@ function resolveSystemNodeExe() {
 }
 
 // High-frequency polling methods — suppress routine logs for these
-const SILENT_METHODS = new Set(['getFrameRGBA', 'getCurrentFrame', 'getFrameBuffer', 'getTransportState', 'audio_getAllPeaks', 'audio_getRealtimeDiagnostics', 'audio_getAudioPerformanceTelemetry', 'getAudioPerformanceTelemetry', 'audio_setTrackVolume', 'audio_setTrackPan', 'audio_setTrackSpread', 'audio_setMasterVolume', 'audio_getMasterLoudness', 'cache_getWorldActiveJobs']);
+// Timeline mutation/query methods fired at interactive/drag rates (clip
+// moves, resizes, note edits, viewport clip/track/pattern fetches). Logging
+// every one of these used to serialize the full result payload — multiple
+// megabytes for timeline_getClips on a large project — on every call.
+const SILENT_TIMELINE_METHODS = [
+  'timeline_getClips', 'timeline_getClipsOnTrack', 'timeline_getClipsInRange',
+  'timeline_getTracks', 'timeline_getTrackLayout', 'timeline_getPatternBlocks',
+  'timeline_addClipsBatch', 'timeline_moveClipsBatch', 'timeline_removeClipsBatch', 'timeline_pasteClipsBatch',
+  'timeline_moveClip', 'timeline_resizeClip', 'timeline_resizeClipLeft', 'timeline_stretchClip', 'timeline_stretchClipLeft',
+  'timeline_movePatternBlock', 'timeline_resizePatternBlock', 'timeline_resizePatternBlockLeft',
+  'timeline_beginClipControlEdit', 'timeline_previewClipControlEdit', 'timeline_commitClipControlEdit', 'timeline_cancelClipControlEdit',
+  'timeline_moveNote', 'timeline_resizeNote', 'timeline_moveNotesBatch', 'timeline_resizeNotesBatch', 'timeline_addNotesBatch', 'timeline_editPatternNotes', 'timeline_quantizeClipsBatch',
+  'timeline_previewNote', 'timeline_previewNoteOff', 'timeline_previewAllNotesOff', 'timeline_getPatternAuditionState',
+];
+const SILENT_METHODS = new Set([
+  'getFrameRGBA', 'getCurrentFrame', 'getFrameBuffer', 'getTransportState', 'audio_getAllPeaks', 'audio_getRealtimeDiagnostics', 'audio_getAudioPerformanceTelemetry', 'getAudioPerformanceTelemetry', 'audio_setTrackVolume', 'audio_setTrackPan', 'audio_setTrackSpread', 'audio_setMasterVolume', 'audio_getMasterLoudness', 'cache_getWorldActiveJobs',
+  ...SILENT_TIMELINE_METHODS,
+  // Polled every few seconds by the video panel's proxy-migration badge.
+  'proxy_getStatus',
+]);
+
+// Summarizes an IPC value for logging WITHOUT serializing a large payload —
+// JSON.stringify(result).slice(0, 80) used to walk a multi-MB clips array
+// just to throw 99.99% of it away. Size is checked (array length / key
+// count) BEFORE stringifying, so a small object still gets its familiar
+// truncated-JSON preview while a large one is reported as shape only.
+function summarizeResult(value, maxLen = 80) {
+  if (value === null || value === undefined) return String(value);
+  if (Array.isArray(value)) {
+    if (value.length > 8) return `array(${value.length})`;
+    try {
+      const s = JSON.stringify(value);
+      return s.length > maxLen ? s.slice(0, maxLen) + '…' : s;
+    } catch { return `array(${value.length})`; }
+  }
+  if (typeof value === 'object') {
+    const keys = Object.keys(value);
+    if (keys.length > 8) return `object(${keys.length} keys)`;
+    try {
+      const s = JSON.stringify(value);
+      return s.length > maxLen ? s.slice(0, maxLen) + '…' : s;
+    } catch { return `object(${keys.length} keys)`; }
+  }
+  const s = String(value);
+  return s.length > maxLen ? s.slice(0, maxLen) + '…' : s;
+}
 // Last known transport state — only log when it actually changes
 let lastTransportStateStr = null;
 
@@ -145,12 +227,34 @@ async function startWorker() {
       for (const line of lines) { if (line && !isNoisyEngineLine(line)) log(`[engine:err] ${line}`); }
     });
     let resolved = false;
+
+    // Belt-and-braces against a worker that starts but never reports in.
+    // startWorker() only settles on 'ready' / 'exit' / 'error'; a child whose
+    // module load dies without exiting (its uncaughtException handler swallows
+    // the error, and the open IPC channel keeps its event loop alive) produces
+    // none of the three, so this Promise would stay pending forever and the
+    // splash screen would hang with no error anywhere on screen. Bound the
+    // wait, and let the boot path's catch close the splash and report it.
+    const READY_TIMEOUT_MS =
+      Number(process.env.XLETH_WORKER_READY_TIMEOUT_MS) || 90_000;
+    const readyTimer = setTimeout(() => {
+      if (resolved) return;
+      resolved = true;
+      workerReady = false;
+      addonError =
+        `Engine worker did not signal ready within ${Math.round(READY_TIMEOUT_MS / 1000)}s ` +
+        `— see startup.log for the worker's own [engine:err] output.`;
+      log(`[Worker] ${addonError}`);
+      try { worker?.kill(); } catch { /* already gone */ }
+      reject(new Error(addonError));
+    }, READY_TIMEOUT_MS);
+
     worker.on('message', (msg) => {
       if (msg && msg.ready) {
         workerReady = true;
         addonError = null;
         log('[Worker] ready');
-        if (!resolved) { resolved = true; resolve(); }
+        if (!resolved) { resolved = true; clearTimeout(readyTimer); resolve(); }
         return;
       }
       if (msg && typeof msg.id === 'number') {
@@ -166,16 +270,31 @@ async function startWorker() {
     worker.on('exit', (code) => {
       log(`[Worker] exited code=${code}`);
       workerReady = false;
-      addonError = `worker exited (code ${code})`;
-      for (const p of pending.values()) p.reject(new Error(addonError));
+      const crumb = readPluginLoadInflight(worker?.pid);
+      if (crumb) {
+        lastExitPlugin = { plugin: crumb.name, vendor: crumb.vendor || '', phase: crumb.phase || '' };
+        const by = lastExitPlugin.vendor ? ` by ${lastExitPlugin.vendor}` : '';
+        addonError = `XLETH's engine stopped while loading ${crumb.name}${by} ` +
+          `(${lastExitPlugin.phase || 'load'}, exit code ${code})`;
+        log(`[PluginHost] ${addonError}`);
+      } else {
+        lastExitPlugin = null;
+        addonError = `worker exited (code ${code})`;
+      }
+      const makeExitError = () => {
+        const err = new Error(addonError);
+        if (lastExitPlugin) Object.assign(err, lastExitPlugin);
+        return err;
+      };
+      for (const p of pending.values()) p.reject(makeExitError());
       pending.clear();
-      if (!resolved) { resolved = true; reject(new Error(addonError)); }
+      if (!resolved) { resolved = true; clearTimeout(readyTimer); reject(makeExitError()); }
     });
     worker.on('error', (err) => {
       log(`[Worker] spawn error: ${err.message}`);
       workerReady = false;
       addonError = err.message;
-      if (!resolved) { resolved = true; reject(err); }
+      if (!resolved) { resolved = true; clearTimeout(readyTimer); reject(err); }
     });
   });
 }
@@ -186,7 +305,7 @@ function callWorker(method, args = []) {
     return Promise.reject(new Error('Engine not ready: ' + (addonError || 'starting')));
   }
   if (!SILENT_METHODS.has(method)) {
-    log(`[IPC] → ${method}(${args.map(a => typeof a === 'object' ? JSON.stringify(a).slice(0, 60) : a).join(', ')})`);
+    log(`[IPC] → ${method}(${args.map(a => typeof a === 'object' ? summarizeResult(a) : a).join(', ')})`);
   }
   const id = nextMsgId++;
   return new Promise((resolve, reject) => {
@@ -204,7 +323,7 @@ function callWorker(method, args = []) {
             lastTransportStateStr = str;
           }
         } else if (!SILENT_METHODS.has(method)) {
-          log(`[IPC] ← result: ${JSON.stringify(result).slice(0, 80)}`);
+          log(`[IPC] ← result (${method}): ${summarizeResult(result)}`);
         }
         resolve(result);
       },
@@ -226,6 +345,11 @@ function isWorkerReady() { return workerReady; }
 function getAddonError() { return addonError; }
 function setAddonError(msg) { addonError = msg; }
 function killWorker() { worker?.kill(); }
+// Engine calls sent and not yet answered. main.js reads this to tell when a
+// freshly mounted workspace has finished its start-up burst of queries.
+function getPendingCount() { return pending.size; }
+// { plugin, vendor, phase } when the last worker exit happened mid plugin load.
+function getLastExitPlugin() { return lastExitPlugin; }
 
 module.exports = {
   init,
@@ -235,4 +359,6 @@ module.exports = {
   getAddonError,
   setAddonError,
   killWorker,
+  getPendingCount,
+  getLastExitPlugin,
 };

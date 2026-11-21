@@ -2,7 +2,7 @@
 //
 // Single source of truth for the stock-effect categories and the scanned
 // VST/plugin ordering used when ADDING an effect. The Mixer Chain
-// (EffectChainPanel.jsx) and the FX Graph picker (FxGraphEffectPicker.tsx)
+// (EffectChainPanel.jsx) and the FX Graph's add menu (GraphAddMenu.tsx)
 // both consume this module so the two add flows expose the exact same
 // effects without a duplicate registry or a second plugin scanner.
 //
@@ -15,6 +15,10 @@ export const EFFECT_CATEGORIES = [
     label: 'Dynamics',
     submenu: [
       { label: 'Compressor', id: 'compressor' },
+      { label: 'Glue Comp', id: 'glue' },
+      { label: 'Opto Comp', id: 'opto' },
+      { label: 'FET Comp', id: 'fet' },
+      { label: 'Vari-Mu Comp', id: 'varimu' },
       { label: 'Limiter', id: 'limiter' },
       { label: 'APEX', id: 'apex' },
       { label: 'GLOSS', id: 'gloss' },
@@ -35,6 +39,7 @@ export const EFFECT_CATEGORIES = [
     submenu: [
       { label: 'Distortion', id: 'distortion' },
       { label: 'Waveshaper', id: 'waveshaper' },
+      { label: 'Amp Stack', id: 'amp' },
     ],
   },
   {
@@ -55,9 +60,17 @@ export const EFFECT_CATEGORIES = [
     ],
   },
   {
+    label: 'Pitch',
+    submenu: [
+      { label: 'Pitch Shifter', id: 'pitchshifter' },
+      { label: 'Szkrezh', id: 'szkrezh' },
+    ],
+  },
+  {
     label: 'Utility',
     submenu: [
       { label: 'Smart Balance', id: 'smartbalance' },
+      { label: 'Fedda', id: 'fedda' },
     ],
   },
 ]

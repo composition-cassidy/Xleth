@@ -1,27 +1,27 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
-import { Play, Square, ArrowLeftRight } from 'lucide-react'
-import { labelColor, buildAudioUrl, formatDuration, midiToNoteName } from '../constants/labels.js'
+import { useState, useEffect, useCallback, useSyncExternalStore } from 'react'
+import { labelColor, midiToNoteName } from '../constants/labels.js'
 import { tokenValue } from '../theming/tokenValue.ts'
+import { formatSampleDuration } from './browser/browserFormat.js'
+import {
+  getActivePreviewId,
+  getMediaPort,
+  subscribePreview,
+  togglePreview,
+} from './samplePreview.js'
+import styles from './browser/Browser.module.css'
+import { iconComponent } from '../ui-kit/icons'
+import { GradeIndicator } from './colorGrade/GradeStack.jsx'
 
-// ── Singleton audio element for preview (only one preview plays at a time) ───
-let previewAudio = null
-let previewStopTimer = null
-let activeRowId = null  // id of the row currently previewing
-
-function stopPreview() {
-  if (previewAudio) {
-    previewAudio.pause()
-    previewAudio.src = ''
-    previewAudio = null
-  }
-  if (previewStopTimer) {
-    clearTimeout(previewStopTimer)
-    previewStopTimer = null
-  }
-  activeRowId = null
-}
+const IcArrowsLeftRightFill = iconComponent('arrows-left-right', 'fill')
+const IcPlay = iconComponent('play')
+const IcStopFill = iconComponent('stop', 'fill')
 
 /**
+ * One sample in the Browser list: a 24px row, the label's identity colour as a
+ * 2px stripe on its edge, the name, then root note and duration in tabular
+ * numerals. Clicking selects (the parent decides whether that also previews);
+ * the play button previews on its own.
+ *
  * Props:
  *   region          – { id, sourceId, startTime, endTime, label, name }
  *   isActive        – boolean (selected for drawing)
@@ -50,91 +50,36 @@ export default function SampleRow({
   sourceFilePath,
   rootNote,
 }) {
-  const [isPlaying, setIsPlaying] = useState(false)
   const [mediaPort, setMediaPort] = useState(null)
-  const playingRef = useRef(false)
+  const isPlaying = useSyncExternalStore(subscribePreview, getActivePreviewId) === region.id
 
   const dur = Math.abs(region.endTime - region.startTime)
 
   useEffect(() => {
     let cancelled = false
-    window.xleth?.getMediaPort?.().then(port => {
-      if (!cancelled && port) setMediaPort(port)
-    }).catch(err => {
-      console.warn('[SampleSelector] Media server unavailable:', err?.message || err)
-    })
+    getMediaPort().then((port) => { if (!cancelled && port) setMediaPort(port) })
     return () => { cancelled = true }
   }, [])
 
   // ── Preview playback ───────────────────────────────────────────────────────
   const handleTogglePreview = useCallback((e) => {
     e.stopPropagation()  // don't trigger row select
-
-    // If this row is already playing, stop it
-    if (activeRowId === region.id) {
-      stopPreview()
-      setIsPlaying(false)
-      playingRef.current = false
-      console.log(`[SampleSelector] Preview stopped: "${region.name}"`)
-      return
-    }
-
-    // Stop any other preview
-    stopPreview()
-
-    if (!sourceFilePath) return
-
-    const audioUrl = mediaPort
-      ? `http://127.0.0.1:${mediaPort}/media?path=${encodeURIComponent(sourceFilePath)}`
-      : buildAudioUrl(sourceFilePath)
-    const audio = new Audio(audioUrl)
-    previewAudio = audio
-    activeRowId = region.id
-
-    const finishPreview = () => {
-      // A newer row may have replaced this audio element while it was loading.
-      if (previewAudio !== audio) return
-      stopPreview()
-      setIsPlaying(false)
-      playingRef.current = false
-    }
-
-    audio.addEventListener('loadedmetadata', () => {
-      if (previewAudio !== audio) return
-
-      try { audio.currentTime = region.startTime } catch (err) {
-        console.error('[SampleSelector] Preview seek error:', err)
-        finishPreview()
-        return
-      }
-
-      audio.play().then(() => {
-        if (previewAudio !== audio) return
-        // Start the cut timer only once media playback has genuinely begun.
-        const durationMs = Math.max(0, (region.endTime - region.startTime) * 1000)
-        previewStopTimer = setTimeout(finishPreview, durationMs)
-      }).catch(err => {
-        console.error('[SampleSelector] Preview error:', err?.name, err?.message || err)
-        finishPreview()
-      })
-    }, { once: true })
-
-    audio.addEventListener('ended', finishPreview, { once: true })
-
-    setIsPlaying(true)
-    playingRef.current = true
-    console.log(`[SampleSelector] Preview: "${region.name}" ${region.startTime.toFixed(2)}–${region.endTime.toFixed(2)}s`)
+    togglePreview({ region, sourceFilePath, mediaPort })
   }, [region, sourceFilePath, mediaPort])
 
   // ── Drag ───────────────────────────────────────────────────────────────────
   const handleDragStart = useCallback((e) => {
     const payload = {
-      regionId:  region.id,
-      sourceId:  region.sourceId,
-      label:     region.label,
-      name:      region.name,
-      startTime: region.startTime,
-      endTime:   region.endTime,
+      regionId:         region.id,
+      sourceId:         region.sourceId,
+      label:            region.label,
+      name:             region.name,
+      startTime:        region.startTime,
+      endTime:          region.endTime,
+      audioFilePath:    region.audioFilePath,
+      hasSwappedAudio:  region.hasSwappedAudio,
+      swappedAudioPath: region.swappedAudioPath,
+      swappedAudioDurationSec: region.swappedAudioDurationSec,
     }
     e.dataTransfer.setData('application/xleth-sample', JSON.stringify(payload))
     e.dataTransfer.effectAllowed = 'copy'
@@ -158,12 +103,10 @@ export default function SampleRow({
     // Clean up the temporary element after browser captures it
     setTimeout(() => document.body.removeChild(el), 0)
 
-    console.log(`[SampleSelector] Drag started: "${region.name}"`)
   }, [region])
 
   const handleDragEnd = useCallback(() => {
     window.__xlethDragSample = null
-    console.log(`[SampleSelector] Drag ended: "${region.name}"`)
   }, [region])
 
   // ── Rename key handling ────────────────────────────────────────────────────
@@ -173,64 +116,81 @@ export default function SampleRow({
     if (e.key === 'Escape') onRenameCancel()
   }, [onRenameCommit, onRenameCancel])
 
+  const handleRowKeyDown = useCallback((e) => {
+    if (isEditing || e.target !== e.currentTarget) return
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      onSelect(region.id)
+    }
+  }, [isEditing, onSelect, region.id])
+
+  const swapTitle = `Audio swapped: ${region.swappedAudioPath?.split(/[\\/]/).pop() ?? ''}. Preview plays the original; the swap is audible only on the timeline.`
+
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div
-      className={`sample-row ${isActive ? 'active' : ''}`}
+      className={`${styles.row} sample-row`}
+      data-browser-row=""
+      data-selected={isActive ? 'true' : 'false'}
+      role="option"
+      aria-selected={isActive}
+      tabIndex={0}
+      style={{ '--row-id': labelColor(region.label) }}
       onClick={() => onSelect(region.id)}
+      onKeyDown={handleRowKeyDown}
       onContextMenu={(e) => { e.preventDefault(); onContextMenu(e, region) }}
       draggable
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
+      data-hint={`${region.label}: ${region.name}. Click to select and preview; drag onto a pattern block.`}
+      data-hint-mods="Right-click: menu · Drag: add to timeline"
     >
       {/* Play/Stop button */}
       <button
-        className="sample-row-play"
+        type="button"
+        className={`${styles.rowButton} sample-row-play`}
         onClick={handleTogglePreview}
-        title="Preview"
+        aria-label={isPlaying ? `Stop preview of ${region.name}` : `Preview ${region.name}`}
+        aria-pressed={isPlaying}
+        data-hint={isPlaying ? 'Stop preview' : 'Preview this sample'}
       >
-        {isPlaying ? <Square size={10} /> : <Play size={10} />}
+        {isPlaying ? <IcStopFill size={14} aria-hidden="true" /> : <IcPlay size={14} aria-hidden="true" />}
       </button>
 
       {/* Name or rename input */}
       {isEditing ? (
         <input
-          className="sample-row-name-input"
+          className={styles.rename}
           value={editValue}
           onChange={e => onRenameChange(e.target.value)}
           onKeyDown={handleRenameKeyDown}
           onBlur={onRenameCommit}
+          aria-label={`Rename ${region.name}`}
           autoFocus
         />
       ) : (
-        <span className="sample-row-name" title={region.name}>{region.name}</span>
+        <span className={styles.name} title={`${region.name} (${sourceName || '?'})`}>{region.name}</span>
       )}
 
       {/* Swap indicator */}
       {region.hasSwappedAudio && !isEditing && (
-        <span
-          className="sample-row-swap-icon"
-          title={`Audio swapped: ${region.swappedAudioPath?.split(/[\\/]/).pop() ?? ''} — preview plays original, swap is audible only on timeline`}
-        >
-          <ArrowLeftRight size={10} />
+        <span className={styles.rowGlyph} title={swapTitle} aria-label={swapTitle} role="img">
+          <IcArrowsLeftRightFill size={14} aria-hidden="true" />
+        </span>
+      )}
+
+      {/* Color Grade indicator: this sample has its own grade */}
+      {!isEditing && <GradeIndicator target={{ level: 'region', id: region.id }} />}
+
+      {/* Root note for Pitch */}
+      {region.label === 'Pitch' && (
+        <span className={styles.note} title="Root note">
+          {rootNote != null && rootNote >= 0 ? midiToNoteName(rootNote) : '--'}
         </span>
       )}
 
       {/* Duration */}
-      <span className="sample-row-duration">{formatDuration(dur)}</span>
-
-      {/* Source name */}
-      <span className="sample-row-source" title={sourceName}>{sourceName || '?'}</span>
-
-      {/* Root note for Pitch / syllable placeholder for Quote */}
-      {region.label === 'Pitch' && (
-        <span className="sample-row-note">
-          {rootNote != null && rootNote >= 0 ? midiToNoteName(rootNote) : '--'}
-        </span>
-      )}
-      {region.label === 'Quote' && (
-        <span className="sample-row-note sample-row-note-quote">--</span>
-      )}
+      <span className={styles.duration}>{formatSampleDuration(dur)}</span>
     </div>
   )
 }

@@ -1,0 +1,19 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "fedda",
+  "name": "Pad Velvet Wide",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "width": 110,
+      "character": 2,
+      "size": 14,
+      "low_bypass": 180,
+      "low_slope": 0,
+      "hf_damp": 12000,
+      "guard": 0,
+      "loudness_match": 0
+    }
+  }
+}

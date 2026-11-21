@@ -8,8 +8,16 @@
 #include "model/Timeline.h"
 #include "SyncManager.h"
 #include "audio/ClipFade.h"
+#include "model/NoteFade.h"
+#include "model/SmartHold.h"
 
 #include <algorithm>
+// Force assert even in Release builds (NDEBUG is defined). build.bat only ever
+// configures --config Release, whose default CMAKE_CXX_FLAGS_RELEASE defines
+// NDEBUG — without this, every assert() below expands to ((void)0), the
+// condition is never evaluated, and the suite prints "ALL TESTS PASSED"
+// whether or not anything is correct. Same guard test_compositor.cpp uses.
+#undef NDEBUG
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -248,8 +256,12 @@ int main()
         FrameCollector startCollector;
         auto atStart = startCollector.collectRequests(0, timeline, 48000, fps, fadeEvents);
         const CellFrameRequest* startReq = findGridRequestForTrack(atStart, trackIds[1]);
-        requireFadeTest(startReq && std::abs(startReq->opacity) < 1.0e-6f,
-                        "fade-in starts transparent");
+        // Issue 8: a request resolving to (effectively) zero opacity is
+        // culled before it ever reaches `requests` — never decoded, never
+        // drawn — so "starts transparent" now means the request is ABSENT,
+        // not present with opacity ~0.
+        requireFadeTest(startReq == nullptr,
+                        "fade-in starts transparent (opacity-culled, Issue 8)");
 
         // Frame 15 = 0.5s = 1.1666 beats at 140 BPM. The 4-beat event's 50%
         // fade spans 2 beats, so linear fade gain is 1.1666 / 2.
@@ -339,6 +351,189 @@ int main()
 
         chorus->videoHoldLastFrame = false;
         std::fprintf(stderr, "[TEST:FrameCollector] Test 1g: PASSED\n");
+    }
+
+    // ── Test 1j: Pattern-track automatic note fade (TrackInfo::noteFade) ─────
+    // Every case below runs through collectRequests, the ONE path preview,
+    // offline export and the snapshot-transition renderer all share, so a green
+    // result here covers all three.
+    //
+    // trackIds[1] carries slot opacity 0.8 * event opacity 0.9 = 0.72 base, on a
+    // 4-beat event starting at beat 0. Project tempo is 140 BPM and the output
+    // is 30 fps, so output frame f sits at beat f/30 * 140/60.
+    {
+        std::fprintf(stderr, "\n[TEST:FrameCollector] --- Test 1j: note fade ---\n");
+
+        const AVRational fps = {30, 1};
+        const double bpm = 140.0;
+        const double noteBeats = 4.0;
+        const float  baseOpacity = 0.72f;
+        auto beatAtFrame = [&](int f) { return (f / 30.0) * (bpm / 60.0); };
+
+        TrackInfo* patTrack = timeline.getTrackMutable(trackIds[1]);
+        requireFadeTest(patTrack != nullptr, "note-fade track exists");
+        requireFadeTest(patTrack->type == TrackInfo::Type::Pattern,
+                        "note-fade track is a Pattern track");
+        requireFadeTest(!patTrack->noteFade.enabled,
+                        "note fade is off by default (old projects render unchanged)");
+
+        auto opacityAt = [&](int frame) -> float {
+            FrameCollector c;
+            auto reqs = c.collectRequests(frame, timeline, 48000, fps, events);
+            const CellFrameRequest* r = findGridRequestForTrack(reqs, trackIds[1]);
+            return r ? r->opacity : 0.0f;
+        };
+
+        // Disabled: bit-identical to no feature at all.
+        requireFadeTest(std::abs(opacityAt(15) - baseOpacity) < 1.0e-4f,
+                        "disabled note fade leaves opacity untouched");
+
+        // ── FollowNoteLength ─────────────────────────────────────────────────
+        // 50% of a 4-beat note = a 2-beat fade-in, the same envelope Test 1f
+        // drives through the clip-fade fields - proving the two produce the same
+        // curve from opposite ends of the pipeline.
+        patTrack->noteFade = NoteFadeSettings{};
+        patTrack->noteFade.enabled = true;
+        patTrack->noteFade.fadeIn.mode = NoteFadeSettings::LengthMode::FollowNoteLength;
+        patTrack->noteFade.fadeIn.percent = 50.0f;
+        patTrack->noteFade.fadeOut.percent = 0.0f;
+        {
+            const float expected = baseOpacity * static_cast<float>(beatAtFrame(15) / 2.0);
+            requireFadeTest(std::abs(opacityAt(15) - expected) < 1.0e-4f,
+                            "FollowNoteLength fade-in scales with the note's own length");
+            requireFadeTest(std::abs(opacityAt(30) - baseOpacity) < 1.0e-4f,
+                            "note fade-in completes at the configured fraction");
+        }
+
+        // ── Division ─────────────────────────────────────────────────────────
+        // D=4 is exactly one beat (4/D beats), the cap the feature offers. On a
+        // 4-beat note that is a quarter of the note.
+        patTrack->noteFade.fadeIn.mode = NoteFadeSettings::LengthMode::Division;
+        patTrack->noteFade.fadeIn.divisionDenominator = 4;
+        {
+            const double fadeBeats = 1.0;
+            const float expected = baseOpacity * static_cast<float>(beatAtFrame(9) / fadeBeats);
+            requireFadeTest(std::abs(opacityAt(9) - expected) < 1.0e-4f,
+                            "Division 1/4 fades over exactly one beat");
+        }
+        // D=16 is a sixteenth note, a quarter beat - a SHORTER fade, confirming
+        // the 4/D orientation (a bigger denominator must not mean a longer fade).
+        patTrack->noteFade.fadeIn.divisionDenominator = 16;
+        {
+            const double fadeBeats = 0.25;
+            requireFadeTest(beatAtFrame(9) > fadeBeats,
+                            "frame 9 is past a 1/16 fade");
+            requireFadeTest(std::abs(opacityAt(9) - baseOpacity) < 1.0e-4f,
+                            "Division 1/16 is shorter than 1/4, not longer");
+        }
+
+        // ── Milliseconds ─────────────────────────────────────────────────────
+        // Tempo-independent: 200 ms at 140 BPM is 0.4666... beats.
+        patTrack->noteFade.fadeIn.mode = NoteFadeSettings::LengthMode::Milliseconds;
+        patTrack->noteFade.fadeIn.ms = 200.0f;
+        {
+            const double fadeBeats = 0.2 * (bpm / 60.0);
+            const float expected = baseOpacity * static_cast<float>(beatAtFrame(3) / fadeBeats);
+            requireFadeTest(std::abs(opacityAt(3) - expected) < 1.0e-4f,
+                            "Milliseconds fade length is wall-clock, converted via BPM");
+        }
+
+        // ── Fade-out ─────────────────────────────────────────────────────────
+        // Frame 45 is beat 3.5, leaving 0.5 beat of a 1-beat (25%) fade-out.
+        patTrack->noteFade = NoteFadeSettings{};
+        patTrack->noteFade.enabled = true;
+        patTrack->noteFade.fadeIn.percent = 0.0f;
+        patTrack->noteFade.fadeOut.mode = NoteFadeSettings::LengthMode::FollowNoteLength;
+        patTrack->noteFade.fadeOut.percent = 25.0f;
+        requireFadeTest(std::abs(opacityAt(45) - baseOpacity * 0.5f) < 1.0e-4f,
+                        "fade-out follows the remaining note time");
+
+        // ── Curve ────────────────────────────────────────────────────────────
+        // A non-Linear curve must actually bend the ramp, and must agree with
+        // the shared ClipFade bezier evaluator rather than a second one.
+        patTrack->noteFade = NoteFadeSettings{};
+        patTrack->noteFade.enabled = true;
+        patTrack->noteFade.fadeIn.percent = 50.0f;
+        patTrack->noteFade.fadeIn.curve = NoteFadeSettings::Curve::Smooth;
+        patTrack->noteFade.fadeOut.percent = 0.0f;
+        {
+            const float linearProgress = static_cast<float>(beatAtFrame(15) / 2.0);
+            const auto  cp = xleth::notefade::curvePoints(NoteFadeSettings::Curve::Smooth);
+            const float expected = baseOpacity * evaluateClipFadeBezier(
+                linearProgress, cp.x1, cp.y1, cp.x2, cp.y2);
+            requireFadeTest(std::abs(opacityAt(15) - expected) < 1.0e-4f,
+                            "note fade curve runs through the shared bezier evaluator");
+            requireFadeTest(std::abs(expected - baseOpacity * linearProgress) > 1.0e-3f,
+                            "Smooth curve actually differs from Linear");
+        }
+
+        // ── Saturation ───────────────────────────────────────────────────────
+        // Two fixed-length fades that each outrun the note normalize to 50/50
+        // and meet at the note's midpoint, where neither is still applying.
+        patTrack->noteFade = NoteFadeSettings{};
+        patTrack->noteFade.enabled = true;
+        patTrack->noteFade.fadeIn.mode  = NoteFadeSettings::LengthMode::Milliseconds;
+        patTrack->noteFade.fadeIn.ms    = 100000.0f;
+        patTrack->noteFade.fadeOut.mode = NoteFadeSettings::LengthMode::Milliseconds;
+        patTrack->noteFade.fadeOut.ms   = 100000.0f;
+        {
+            // Frame 30 is beat 2.333...; the exact midpoint (beat 2.0) is frame
+            // 25.714..., so compare against the evaluator rather than a constant.
+            const float progress = static_cast<float>(beatAtFrame(30) / noteBeats);
+            const float expected = baseOpacity * evaluateClipFadeGain(
+                progress, 100.0f, 100.0f,
+                0.0f, 0.0f, 1.0f, 1.0f,
+                0.0f, 0.0f, 1.0f, 1.0f);
+            requireFadeTest(std::abs(opacityAt(30) - expected) < 1.0e-4f,
+                            "over-long fades saturate at the note length, never past it");
+        }
+
+        // ── Pattern-track exclusivity ────────────────────────────────────────
+        // The same config on a Clip track must render as if it were not there.
+        patTrack->noteFade = NoteFadeSettings{};
+        patTrack->noteFade.enabled = true;
+        patTrack->noteFade.fadeIn.percent = 50.0f;
+        patTrack->type = TrackInfo::Type::Clip;
+        requireFadeTest(std::abs(opacityAt(15) - baseOpacity) < 1.0e-4f,
+                        "note fade is ignored on a Clip track");
+        patTrack->type = TrackInfo::Type::Pattern;
+
+        // ── Fullscreen hold suppression ──────────────────────────────────────
+        // Same rule Test 1g proves for the clip fade: a backdrop that faded out
+        // must not snap back to full opacity via hold-last-frame.
+        {
+            TrackInfo* chorus = timeline.getTrackMutable(chorusTrackId);
+            requireFadeTest(chorus != nullptr, "note-fade hold track exists");
+            chorus->videoHoldLastFrame = true;
+            chorus->noteFade = NoteFadeSettings{};
+            chorus->noteFade.enabled = true;
+            chorus->noteFade.fadeIn.percent = 0.0f;
+            chorus->noteFade.fadeOut.percent = 50.0f;
+
+            std::vector<VideoEvent> backdropEvents{
+                makeEvent(chorusTrackId, srcAId, 0.0, 1.0, 2.0, 1.0f, 0)};
+
+            FrameCollector c;
+            auto beforeEnd = c.collectRequests(12, timeline, 48000, fps, backdropEvents);
+            bool sawActive = false;
+            for (const auto& r : beforeEnd)
+                if (r.trackId == chorusTrackId) sawActive = true;
+            requireFadeTest(sawActive, "note-faded backdrop is active before note end");
+
+            auto afterEnd = c.collectRequests(13, timeline, 48000, fps, backdropEvents);
+            for (const auto& r : afterEnd)
+                requireFadeTest(r.trackId != chorusTrackId,
+                                "note fade-out suppresses fullscreen hold after note end");
+
+            chorus->videoHoldLastFrame = false;
+            chorus->noteFade = NoteFadeSettings{};
+        }
+
+        // Leave the shared timeline exactly as the later tests expect it.
+        patTrack->noteFade = NoteFadeSettings{};
+        requireFadeTest(std::abs(opacityAt(15) - baseOpacity) < 1.0e-4f,
+                        "note fade reset restores the base opacity");
+        std::fprintf(stderr, "[TEST:FrameCollector] Test 1j: PASSED\n");
     }
 
     // ── Test 1h: per-track hold-last-frame THRESHOLD (beats) ──────────────────
@@ -438,6 +633,244 @@ int main()
         chorus->videoHoldLastFrameThresholdBeats =
             TrackInfo::kHoldLastFrameThresholdUnlimited;
         std::fprintf(stderr, "[TEST:FrameCollector] Test 1h: PASSED\n");
+    }
+
+    // ── Test 1m: Smart hold + Keep playing ────────────────────────────────────
+    // Smart hold holds the short rests inside a phrase and leaves the long rest
+    // between phrases (and the space after the last clip) blank. Keep playing
+    // fills a held gap with the source running on, not a frozen frame, and
+    // needs no primed state (a seek straight into the gap works).
+    {
+        std::fprintf(stderr, "\n[TEST:FrameCollector] --- Test 1m: smart hold / keep playing ---\n");
+        namespace sh = xleth::smarthold;
+
+        // Classifier.
+        requireFadeTest(std::isinf(sh::thresholdBeats({})), "no gaps -> hold all");
+        requireFadeTest(std::isinf(sh::thresholdBeats({0.25, 0.5, 0.25})),
+                        "all gaps under a beat -> hold all");
+        const double t1 = sh::thresholdBeats({0.5, 0.5, 6.5});
+        requireFadeTest(t1 > 0.5 && t1 < 6.5, "phrase rests vs phrase break split between them");
+        const double t2 = sh::thresholdBeats({0.125, 0.25, 0.75, 0.5, 5.0, 6.0, 0.25});
+        requireFadeTest(t2 > 0.75 && t2 < 5.0, "screenshot-like clusters split at the big jump");
+        requireFadeTest(sh::thresholdBeats({8.0, 8.0}) == sh::kFallbackThresholdBeats,
+                        "uniform long gaps fall back to one bar (blank)");
+        const auto g = sh::gapsBetween({{0, 1}, {0.5, 2}, {3, 4}, {4, 5}});
+        requireFadeTest(g.size() == 1 && std::abs(g[0] - 1.0) < 1e-12,
+                        "overlaps and butted clips merge; one 1-beat gap");
+
+        TrackInfo* chorus = timeline.getTrackMutable(chorusTrackId);
+        chorus->videoHoldLastFrame = true;
+        chorus->videoHoldLastFrameThresholdBeats = TrackInfo::kHoldLastFrameThresholdUnlimited;
+
+        // 140 bpm @ 30 fps: beat(frame) = frame * 7/90.
+        // Phrase 1: [0,.5) [1,1.5)   rest 6.5   Phrase 2: [8,8.5) [9,9.5)
+        std::vector<VideoEvent> ev{
+            makeEvent(chorusTrackId, srcAId, 0.0, 0.5, 2.0, 1.0f, 0),
+            makeEvent(chorusTrackId, srcAId, 1.0, 0.5, 2.0, 1.0f, 1),
+            makeEvent(chorusTrackId, srcAId, 8.0, 0.5, 2.0, 1.0f, 2),
+            makeEvent(chorusTrackId, srcAId, 9.0, 0.5, 2.0, 1.0f, 3)};
+        const AVRational fps = {30, 1};
+        auto served = [&](FrameCollector& c, int64_t frame) -> const CellFrameRequest* {
+            auto& reqs = c.collectRequests(frame, timeline, 48000, fps, ev);
+            for (const auto& r : reqs) if (r.trackId == chorusTrackId) return &r;
+            return nullptr;
+        };
+
+        // (a) Smart + freeze.
+        {
+            chorus->videoHoldSmart = true;
+            chorus->videoHoldKeepPlaying = false;
+            FrameCollector c;
+            requireFadeTest(served(c, 3)   != nullptr, "smart: clip active");
+            requireFadeTest(served(c, 10)  != nullptr, "smart: holds the 0.5-beat phrase rest");
+            requireFadeTest(served(c, 15)  != nullptr, "smart: next clip active");
+            requireFadeTest(served(c, 39)  == nullptr, "smart: phrase break is blank");
+            requireFadeTest(served(c, 105) != nullptr, "smart: phrase 2 active");
+            requireFadeTest(served(c, 113) != nullptr, "smart: holds phrase 2 rest");
+            requireFadeTest(served(c, 118) != nullptr, "smart: last clip active");
+            requireFadeTest(served(c, 155) == nullptr, "smart: blank after the last clip");
+        }
+        // (b) Keep playing (no smart): the source runs on through the gap.
+        {
+            chorus->videoHoldSmart = false;
+            chorus->videoHoldKeepPlaying = true;
+            FrameCollector c;
+            const CellFrameRequest* r = served(c, 10);   // seek straight into the gap
+            requireFadeTest(r != nullptr, "keep playing: fills a gap with no primed state");
+            const int64_t f10 = r->sourceFrameIndex;
+            // beat 0.7778 of an event starting at source 2.0 s: 2.333 s -> frame ~70
+            requireFadeTest(f10 >= 69 && f10 <= 71, "keep playing: source time continues from the clip");
+            r = served(c, 12);
+            requireFadeTest(r != nullptr && r->sourceFrameIndex > f10, "keep playing: advances frame to frame");
+            requireFadeTest(served(c, 39) != nullptr, "keep playing w/o smart: long rest still filled");
+
+            // Freeze for comparison: the same gap frame shows the clip's last frame.
+            chorus->videoHoldKeepPlaying = false;
+            FrameCollector cf;
+            requireFadeTest(served(cf, 10) == nullptr, "freeze: needs a primed hold (unchanged)");
+            const CellFrameRequest* live = served(cf, 6);
+            requireFadeTest(live != nullptr, "freeze: primed");
+            const int64_t lastLive = live->sourceFrameIndex;
+            r = served(cf, 10);
+            requireFadeTest(r != nullptr && r->sourceFrameIndex == lastLive, "freeze: frozen frame");
+            requireFadeTest(lastLive < f10, "keep playing is ahead of the frozen frame");
+        }
+        // (c) Smart + keep playing: blank break, playing rests.
+        {
+            chorus->videoHoldSmart = true;
+            chorus->videoHoldKeepPlaying = true;
+            FrameCollector c;
+            requireFadeTest(served(c, 10) != nullptr, "smart+play: rest filled");
+            requireFadeTest(served(c, 39) == nullptr, "smart+play: break blank");
+            requireFadeTest(served(c, 155) == nullptr, "smart+play: tail blank");
+        }
+
+        chorus->videoHoldSmart = false;
+        chorus->videoHoldKeepPlaying = false;
+        chorus->videoHoldLastFrame = false;
+        std::fprintf(stderr, "[TEST:FrameCollector] Test 1m: PASSED\n");
+    }
+
+    // ── Test 1i: opacity cull must not masquerade as a timeline gap (Issue 8) ──
+    // A BehindGrid layer whose event resolves to opacity ~0 while still ACTIVE
+    // (e.g. a slot muted to zero) must render nothing for that frame — not the
+    // OLD held frame from an earlier, opaque clip on the same track. Only a
+    // genuine absence of an active event may engage hold-through-gap; culling
+    // an invisible-but-active frame must not be conflated with a real gap.
+    {
+        std::fprintf(stderr, "\n[TEST:FrameCollector] --- Test 1i: opacity cull vs hold-through-gap ---\n");
+        TrackInfo* chorus = timeline.getTrackMutable(chorusTrackId);
+        requireFadeTest(chorus != nullptr, "opacity-cull test track exists");
+        chorus->videoHoldLastFrame = true;
+        chorus->videoHoldLastFrameThresholdBeats =
+            TrackInfo::kHoldLastFrameThresholdUnlimited;
+
+        // Clip A: fully opaque, beats [0, 1) — primes the hold state.
+        // Clip B: fully transparent (opacity 0), beats [1, 2) — immediately
+        // follows, so there is no timeline gap between them; only the
+        // resolved opacity differs.
+        std::vector<VideoEvent> ev{
+            makeEvent(chorusTrackId, srcAId, 0.0, 1.0, 2.0, 1.0f, 0),
+            makeEvent(chorusTrackId, srcAId, 1.0, 1.0, 2.0, 0.0f, 1)};
+        const AVRational fps = {30, 1};
+        FrameCollector c;
+
+        // Prime: mid clip A (beat ~0.544), opaque, must be present.
+        auto duringA = c.collectRequests(7, timeline, 48000, fps, ev);
+        bool sawA = false;
+        for (const auto& r : duringA) if (r.trackId == chorusTrackId) sawA = true;
+        requireFadeTest(sawA, "opaque clip A is active and present");
+
+        // Mid clip B (beat ~1.478): the event IS active, but opacity is 0 —
+        // must be culled, and must NOT fall back to clip A's held frame.
+        auto duringB = c.collectRequests(19, timeline, 48000, fps, ev);
+        for (const auto& r : duringB)
+            requireFadeTest(r.trackId != chorusTrackId,
+                            "zero-opacity active clip is culled, not gap-filled with the old held frame");
+
+        chorus->videoHoldLastFrame = false;
+        std::fprintf(stderr, "[TEST:FrameCollector] Test 1i: PASSED\n");
+    }
+
+    // ── Test 1k: Hold Last Frame on GRID CELLS ────────────────────────────────
+    // Hold Last Frame used to be honored only for fullscreen BehindGrid layers;
+    // a grid cell whose clip ended just went empty even with the toggle on.
+    // A grid cell must now behave exactly like a BehindGrid layer: same held
+    // frame, same threshold, same untouched path when the toggle is off — and
+    // a muted track must still blank its cell.
+    {
+        std::fprintf(stderr, "\n[TEST:FrameCollector] --- Test 1k: hold last frame on grid cells ---\n");
+        const int gridTrackId = trackIds[0];   // slot 0: (0,0), full cell, opacity 1.0
+        TrackInfo* gt = timeline.getTrackMutable(gridTrackId);
+        requireFadeTest(gt != nullptr, "grid hold track exists");
+        gt->videoHoldLastFrameThresholdBeats =
+            TrackInfo::kHoldLastFrameThresholdUnlimited;
+
+        // Clip spans beats [0, 1) — same frame->beat mapping as Test 1h
+        // (140bpm @ 30fps: frame 7 in clip, 13 = +0.011 beats, 26 = +1.022).
+        std::vector<VideoEvent> ev{
+            makeEvent(gridTrackId, srcAId, 0.0, 1.0, 2.0, 1.0f, 0)};
+        const AVRational fps = {30, 1};
+
+        auto gridReq = [&](FrameCollector& c, int64_t frame) -> const CellFrameRequest* {
+            auto& reqs = c.collectRequests(frame, timeline, 48000, fps, ev);
+            return findGridRequestForTrack(reqs, gridTrackId);
+        };
+
+        // (a) Hold ON: the cell keeps showing the LAST frame the clip served,
+        // in the same cell, through the gap.
+        {
+            gt->videoHoldLastFrame = true;
+            FrameCollector c;
+            const CellFrameRequest* live = gridReq(c, 7);
+            requireFadeTest(live != nullptr, "grid hold: clip active mid-clip");
+            const int64_t liveFrame = live->sourceFrameIndex;
+            const InternedPath livePath = live->sourcePath;
+
+            const CellFrameRequest* held = gridReq(c, 13);
+            requireFadeTest(held != nullptr, "grid hold: cell is held past clip end");
+            requireFadeTest(held->layerKind == CellLayerKind::Grid,
+                            "grid hold: held request stays a Grid layer");
+            requireFadeTest(held->sourceFrameIndex == liveFrame,
+                            "grid hold: held frame == last served frame");
+            requireFadeTest(held->sourcePath == livePath,
+                            "grid hold: held path == last served path");
+            requireFadeTest(held->cellCol == 0 && held->cellRow == 0
+                            && held->spanX == kGridSubUnitsPerColumn
+                            && held->spanY == kGridSubUnitsPerRow,
+                            "grid hold: held request keeps the cell's own geometry");
+            requireFadeTest(gridReq(c, 45) != nullptr,
+                            "grid hold: unlimited threshold holds at +2.5 beats");
+        }
+
+        // (b) Hold OFF: the gap is a real gap — the pre-fix behavior for every
+        // project that never enabled the toggle.
+        {
+            gt->videoHoldLastFrame = false;
+            FrameCollector c;
+            requireFadeTest(gridReq(c, 7) != nullptr,  "grid hold off: clip active");
+            requireFadeTest(gridReq(c, 13) == nullptr, "grid hold off: gap stays empty");
+        }
+
+        // (c) The beat threshold applies to grid cells like any other layer.
+        {
+            gt->videoHoldLastFrame = true;
+            gt->videoHoldLastFrameThresholdBeats = 1.0;
+            FrameCollector c;
+            requireFadeTest(gridReq(c, 7) != nullptr,  "grid threshold: clip active");
+            requireFadeTest(gridReq(c, 25) != nullptr, "grid threshold: holds at +0.944 beats");
+            requireFadeTest(gridReq(c, 26) == nullptr, "grid threshold: CUT at +1.022 beats");
+            gt->videoHoldLastFrameThresholdBeats =
+                TrackInfo::kHoldLastFrameThresholdUnlimited;
+        }
+
+        // (d) Muting the track must blank the cell, not freeze it: a muted
+        // track has no active event, which looks like a gap to the hold path.
+        {
+            gt->videoHoldLastFrame = true;
+            FrameCollector c;
+            requireFadeTest(gridReq(c, 7) != nullptr, "grid mute: clip active before mute");
+            gt->muted = true;
+            requireFadeTest(gridReq(c, 13) == nullptr,
+                            "grid mute: a muted track does not hold its last frame");
+            gt->muted = false;
+        }
+
+        // (e) Hold on a grid track must not leak into other cells.
+        {
+            gt->videoHoldLastFrame = true;
+            FrameCollector c;
+            requireFadeTest(gridReq(c, 7) != nullptr, "grid isolation: clip active");
+            auto& reqs = c.collectRequests(13, timeline, 48000, fps, ev);
+            for (const auto& r : reqs)
+                requireFadeTest(r.trackId == gridTrackId,
+                                "grid isolation: only the holding track fills its gap");
+        }
+
+        gt->videoHoldLastFrame = false;
+        gt->videoHoldLastFrameThresholdBeats =
+            TrackInfo::kHoldLastFrameThresholdUnlimited;
+        std::fprintf(stderr, "[TEST:FrameCollector] Test 1k: PASSED\n");
     }
 
     // ── Test 1z-i: unified zOrder — fullscreen layer interleaved between cells ──
@@ -1050,12 +1483,16 @@ int main()
         assert(req->companionFx.vibratoSwirlEnabled);
         assert(req->companionFx.scratchWaveEnabled);
 
-        // sourceFrameIndex reflects scratch over the stretched clip timeline:
-        //   scratchBase = integral of constant rate 2 over 1s = 2.0s
-        //   srcFrame    = 60
-        std::fprintf(stderr, "[TEST:FrameCollector] stretched active: srcFrame=%lld (expected ~60)\n",
+        // sourceFrameIndex follows the AUDIO readhead, which for a stretched
+        // clip moves inside the cache buffer (post-stretch):
+        //   cache position  = integral of constant rate 2 over 1s = 2.0s
+        //   source position = 2.0s / stretchRatio 1.5 = 1.333s
+        //   srcFrame        = 40
+        // (This used to expect 60: cache time was taken for source time, i.e.
+        // the picture ignored the stretch and ran 1.5x ahead of the sound.)
+        std::fprintf(stderr, "[TEST:FrameCollector] stretched active: srcFrame=%lld (expected ~40)\n",
                      (long long)req->sourceFrameIndex);
-        assert(req->sourceFrameIndex >= 59 && req->sourceFrameIndex <= 61);
+        assert(req->sourceFrameIndex >= 39 && req->sourceFrameIndex <= 41);
 
         ev.clipReversed = true;
         auto reversedRequests = collector.collectRequests(30, timeline, 48000, fps,
@@ -1070,7 +1507,15 @@ int main()
         assert(reversedReq != nullptr);
         assert(!reversedReq->companionFx.vibratoSwirlEnabled);
         assert(!reversedReq->companionFx.scratchWaveEnabled);
-        assert(reversedReq->sourceFrameIndex == 30);
+        // Reversed (modulation bypassed) and still stretched 1.5. The clip is
+        // 4 beats at 140 BPM = 1.7143s, so the audio reverses the source
+        // segment [0, 1.7143 / 1.5 = 1.1429s) and plays it back at 1/1.5 speed.
+        // One second in, 0.6667s of it is consumed, counted from the END:
+        //   1.1429 - 0.6667 = 0.4762s  ->  frame 14
+        // (This used to expect 30: forward, at 1x.)
+        std::fprintf(stderr, "[TEST:FrameCollector] reversed+stretched: srcFrame=%lld (expected 14)\n",
+                     (long long)reversedReq->sourceFrameIndex);
+        assert(reversedReq->sourceFrameIndex == 14);
 
         ev.clipReversed = false;
         ev.clipFormantPreserve = true;
@@ -1086,7 +1531,9 @@ int main()
         assert(formantReq != nullptr);
         assert(!formantReq->companionFx.vibratoSwirlEnabled);
         assert(!formantReq->companionFx.scratchWaveEnabled);
-        assert(formantReq->sourceFrameIndex == 30);
+        // Formant-preserve composes with modulation (F.1), so this is the same
+        // stretched, scratch-rate-2 readhead as the first case: frame ~40.
+        assert(formantReq->sourceFrameIndex >= 39 && formantReq->sourceFrameIndex <= 41);
 
         std::fprintf(stderr, "[TEST:FrameCollector] Test 4e: PASSED\n");
     }
@@ -1371,6 +1818,114 @@ int main()
             rNoProxy->sourcePath.c_str());
 
         std::fprintf(stderr, "[TEST:FrameCollector] Test 8: PASSED\n");
+    }
+
+    // ── Test 9: backdrop + grid — fullscreen picks the region proxy ──────────
+    // VIDEO_PREVIEW_AUDIT.txt Issue 6: the per-region all-intra proxy ladder
+    // step was gated on !isFullscreen, so a fullscreen/backdrop layer could
+    // only ever fall through to the (later-arriving) whole-source preview
+    // proxy — the single most expensive decode in the frame was the one
+    // denied the cheap substitution. Assert the fullscreen backdrop resolves
+    // straight to its ready region proxy, same as a grid cell would, while a
+    // sibling grid cell in the same arrangement is unaffected.
+    {
+        std::fprintf(stderr,
+            "\n[TEST:FrameCollector] --- Test 9: backdrop+grid region proxy ---\n");
+
+        Timeline tl(140.0, 48000.0);
+
+        SourceMedia src;
+        src.filePath          = "backdrop_original.mp4";
+        src.hasVideo          = true;
+        src.fps               = 30.0;
+        src.duration          = 10.0;
+        src.totalFrames       = 300;
+        src.width = 1920; src.height = 1080;
+        // No whole-source preview proxy yet — this is the "first play" window
+        // Issue 6 is about: the region proxy must not wait on it.
+        src.previewProxyReady = false;
+        const int srcId = tl.addSource(src);
+
+        SampleRegion backdrop;
+        backdrop.sourceId       = srcId;
+        backdrop.startTime      = 0.0;
+        backdrop.endTime        = 10.0;
+        backdrop.proxyReady     = true;
+        backdrop.proxyPath      = "proxies/backdrop.mxf";
+        backdrop.proxyStartTime = 0.0;
+        backdrop.proxyEndTime   = 10.0;
+        const int backdropRegionId = tl.addRegion(backdrop);
+
+        SampleRegion cell;
+        cell.sourceId       = srcId;
+        cell.startTime      = 0.0;
+        cell.endTime        = 10.0;
+        cell.proxyReady     = true;
+        cell.proxyPath      = "proxies/cell.mxf";
+        cell.proxyStartTime = 0.0;
+        cell.proxyEndTime   = 10.0;
+        const int cellRegionId = tl.addRegion(cell);
+
+        TrackInfo tBackdropInfo; tBackdropInfo.name = "Backdrop";
+        tBackdropInfo.type = TrackInfo::Type::Pattern;
+        const int backdropTrackId = tl.addTrack(tBackdropInfo);
+
+        TrackInfo tCellInfo; tCellInfo.name = "Cell";
+        tCellInfo.type = TrackInfo::Type::Pattern;
+        const int cellTrackId = tl.addTrack(tCellInfo);
+
+        GridLayout gl;
+        gl.columns = 2;
+        gl.rows    = 1;
+        gl.slots.push_back({cellTrackId, 0, 0,
+                            kGridSubUnitsPerColumn, kGridSubUnitsPerRow, 1.0f, 0});
+        gl.fullscreenLayers.push_back(
+            {backdropTrackId, FullscreenLayerPlacement::BehindGrid, 1.0f, -1});
+        tl.setGridLayout(gl);
+
+        std::vector<VideoEvent> evs;
+        VideoEvent evBackdrop = makeEvent(backdropTrackId, srcId, 0.0, 4.0, 1.0, 1.0f, 0);
+        evBackdrop.regionId      = backdropRegionId;
+        evBackdrop.sourceEndTime = 10.0;
+        evs.push_back(evBackdrop);
+
+        VideoEvent evCell = makeEvent(cellTrackId, srcId, 0.0, 4.0, 1.0, 1.0f, 0);
+        evCell.regionId      = cellRegionId;
+        evCell.sourceEndTime = 10.0;
+        evs.push_back(evCell);
+
+        FrameCollector collector;
+        AVRational fps = {30, 1};
+        auto requests = collector.collectRequests(
+            0, tl, 48000, fps, evs, /*allowProxy=*/true,
+            /*projectStartSample=*/0, /*posterMode=*/false,
+            /*renderProxyBySource=*/nullptr, /*layoutOverride=*/nullptr,
+            /*applyPreviewEffectMute=*/false);
+
+        const CellFrameRequest* rBackdrop = nullptr;
+        for (const auto& r : requests) {
+            if (r.trackId == backdropTrackId) { rBackdrop = &r; break; }
+        }
+        requireSwapTest(rBackdrop != nullptr,
+                        "backdrop produced no fullscreen request");
+        requireSwapTest(rBackdrop->sourcePath == backdrop.proxyPath,
+                        "fullscreen backdrop must pick its own region proxy, "
+                        "same as a grid cell");
+        std::fprintf(stderr,
+            "[TEST:FrameCollector] backdrop -> '%s': PASSED\n",
+            rBackdrop->sourcePath.c_str());
+
+        const CellFrameRequest* rCell =
+            findGridRequestForTrack(requests, cellTrackId);
+        requireSwapTest(rCell != nullptr, "grid cell produced no request");
+        requireSwapTest(rCell->sourcePath == cell.proxyPath,
+                        "sibling grid cell must still pick its own region "
+                        "proxy — unaffected by the backdrop fix");
+        std::fprintf(stderr,
+            "[TEST:FrameCollector] grid cell -> '%s': PASSED\n",
+            rCell->sourcePath.c_str());
+
+        std::fprintf(stderr, "[TEST:FrameCollector] Test 9: PASSED\n");
     }
 
     std::fprintf(stderr, "\n[TEST:FrameCollector] ALL TESTS PASSED\n");

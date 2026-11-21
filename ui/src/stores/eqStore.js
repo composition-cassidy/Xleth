@@ -1,12 +1,16 @@
 import { create } from 'zustand'
+import { RESPONSE_SIZE } from '../components/mixer/eqGeometry.js'
 
 export const BAND_TYPES = ['Bell', 'Low Shelf', 'High Shelf', 'Low Pass', 'High Pass', 'Notch', 'Tilt']
 export const BAND_MODES = ['Static', 'Dynamic', 'Spectral']
+// Low Pass / High Pass steepness (b{i}_slope, 0..8). Only those two band types
+// read it; 1 (12 dB/oct) is the filter every older state has.
+export { BAND_SLOPES, DEFAULT_SLOPE, isCutBandType } from '../components/mixer/eqSlope.js'
 
-// Per-band channel routing (UI-only for now — see setBandChannel below).
-// 'stereo' is the default: the band processes the full stereo signal exactly
-// as it always has. The other four modes are engine-agnostic stubs the UI
-// exposes so the DSP wiring can land in a follow-up without another UI pass.
+// Per-band channel routing. 'stereo' is the default: the band processes the
+// full stereo signal exactly as it always has. Array order IS the engine's
+// b{i}_channel value (0=Stereo, 1=Left, 2=Right, 3=Mid, 4=Side) — it must stay
+// in sync with XlethParametricEQ::ChannelMode.
 export const CHANNEL_MODES = ['stereo', 'left', 'right', 'mid', 'side']
 export const CHANNEL_META = {
   stereo: { label: 'Stereo', short: 'ST' },
@@ -16,6 +20,20 @@ export const CHANNEL_META = {
   side:   { label: 'Side',   short: 'S' },
 }
 
+// The engine's response-curve call returns one RESPONSE_SIZE-long dB trace per
+// routing group, back to back in CHANNEL_MODES order. Split them into
+// { stereo, left, right, mid, side }. A shorter buffer (an older engine build
+// that only sends the single Stereo trace) yields just the traces it has.
+export function splitResponseCurves(raw) {
+  if (!raw || raw.length < RESPONSE_SIZE) return null
+  const curves = {}
+  CHANNEL_MODES.forEach((ch, k) => {
+    const end = (k + 1) * RESPONSE_SIZE
+    if (end <= raw.length) curves[ch] = raw.slice(k * RESPONSE_SIZE, end)
+  })
+  return curves
+}
+
 export const BAND_COLORS = [
   'var(--theme-eq-band-1)',  'var(--theme-eq-band-2)',  'var(--theme-eq-band-3)',  'var(--theme-eq-band-4)',
   'var(--theme-eq-band-5)',  'var(--theme-eq-band-6)',  'var(--theme-eq-band-7)',  'var(--theme-eq-band-8)',
@@ -23,16 +41,24 @@ export const BAND_COLORS = [
   'var(--theme-eq-band-13)', 'var(--theme-eq-band-14)', 'var(--theme-eq-band-15)', 'var(--theme-eq-band-16)',
 ]
 
-const useEqStore = create((set, get) => ({
+// The store body is exported so a device can own a PRIVATE instance (the Devices
+// tab hosts several EQs at once; the default store below tracks only the one
+// open in a window). Same actions, same engine calls.
+export const eqStoreInitializer = (set, get) => ({
   // { trackId, nodeId, storeKey } or null
   target: null,
 
-  // [{ index, freq, gain, q, type, enabled, mode, dyn_thresh, dyn_ratio, dyn_attack, dyn_release, spec_sens, spec_depth, spec_sel }, ...]
+  // [{ index, freq, gain, q, type, enabled, mode, dyn_thresh, dyn_ratio, dyn_attack, dyn_release, dyn_range, spec_sens, spec_sel }, ...]
+  // Spectral bands have no spec_depth: `gain` is their signed depth.
   bands: [],
 
   // Global mode state
   linPhase: false,
   oversample: 0,      // 0=off, 1=2x, 2=4x
+  // Spectral bands' renderer: 0 = Legacy (default, every old state), 1 = Core.
+  // spectralQuality is the Core's analysis size (0 Fast, 1 Normal default, 2 High).
+  spectralEngine: 0,
+  spectralQuality: 1,
   preSpectrum: false,  // Pre-EQ spectrum display toggle
   dbZoom: 24,          // Response curve dB half-range: 6, 12, 24, or 48
   bandGR: null,        // Float32Array[16] polled at 30fps
@@ -44,7 +70,7 @@ const useEqStore = create((set, get) => ({
   themeFontScale: (() => { try { const s = localStorage.getItem('xleth.eq.theme'); return s ? (JSON.parse(s).fontScale ?? 1) : 1 } catch { return 1 } })(),
 
   // Polling data (mutated in-place by rAF, not reactive)
-  responseCurve: null,   // Float32Array(512)
+  responseCurve: null,   // { stereo, left, right, mid, side } of Float32Array(512)
   spectrumData: null,    // { post: Float32Array, pre: Float32Array | null }
 
   setDbZoom(value) {
@@ -53,14 +79,14 @@ const useEqStore = create((set, get) => ({
   },
 
   open(trackId, nodeId, storeKey) {
-    set({ target: { trackId, nodeId, storeKey }, bands: [], responseCurve: null, spectrumData: null, bandGR: null, linPhase: false, oversample: 0, preSpectrum: false, dbZoom: 24, sampleRate: 44100, selectedBandIndex: -1 })
+    set({ target: { trackId, nodeId, storeKey }, bands: [], responseCurve: null, spectrumData: null, bandGR: null, linPhase: false, oversample: 0, spectralEngine: 0, spectralQuality: 1, preSpectrum: false, dbZoom: 24, sampleRate: 44100, selectedBandIndex: -1 })
     get().fetchBands()
     get().fetchGlobalParams()
     get().fetchSampleRate()
   },
 
   close() {
-    set({ target: null, bands: [], responseCurve: null, spectrumData: null, bandGR: null, linPhase: false, oversample: 0, preSpectrum: false, dbZoom: 24, sampleRate: 44100, selectedBandIndex: -1 })
+    set({ target: null, bands: [], responseCurve: null, spectrumData: null, bandGR: null, linPhase: false, oversample: 0, spectralEngine: 0, spectralQuality: 1, preSpectrum: false, dbZoom: 24, sampleRate: 44100, selectedBandIndex: -1 })
   },
 
   async fetchBands() {
@@ -69,9 +95,12 @@ const useEqStore = create((set, get) => ({
     try {
       const raw = await window.xleth?.audio?.eqGetBands(t.trackId, t.nodeId)
       const parsed = typeof raw === 'string' ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])
-      // The engine has no notion of 'channel' yet — default any band it
-      // returns to 'stereo' rather than dropping the field on the floor.
-      const bands = parsed.map(b => ({ channel: 'stereo', ...b }))
+      // The engine reports channel as the numeric ChannelMode; map it back to
+      // the name the UI works in. Pre-routing saves omit it → 'stereo'.
+      const bands = parsed.map(b => ({
+        ...b,
+        channel: CHANNEL_MODES[b?.channel] ?? 'stereo',
+      }))
       set({ bands })
     } catch {}
   },
@@ -132,6 +161,21 @@ const useEqStore = create((set, get) => ({
     await window.xleth?.audio?.eqSetGlobalParam(t.trackId, t.nodeId, 'oversample', factor)
   },
 
+  // spectral_engine / spectral_quality: ordinary EQ globals (eqSetGlobalParam).
+  async setSpectralEngine(engine) {
+    const t = get().target
+    if (!t) return
+    set({ spectralEngine: engine })
+    await window.xleth?.audio?.eqSetGlobalParam(t.trackId, t.nodeId, 'spectral_engine', engine)
+  },
+
+  async setSpectralQuality(quality) {
+    const t = get().target
+    if (!t) return
+    set({ spectralQuality: quality })
+    await window.xleth?.audio?.eqSetGlobalParam(t.trackId, t.nodeId, 'spectral_quality', quality)
+  },
+
   async setPreSpectrum(enabled) {
     const t = get().target
     if (!t) return
@@ -145,7 +189,13 @@ const useEqStore = create((set, get) => ({
     try {
       const raw = await window.xleth?.audio?.eqGetGlobalParams(t.trackId, t.nodeId)
       const obj = typeof raw === 'string' ? JSON.parse(raw) : (raw || {})
-      set({ linPhase: !!obj.linphase, oversample: obj.oversample || 0 })
+      // An engine build without the [EQCore] keys reads as Legacy / Normal.
+      set({
+        linPhase: !!obj.linphase,
+        oversample: obj.oversample || 0,
+        spectralEngine: Number.isFinite(obj.spectral_engine) ? obj.spectral_engine : 0,
+        spectralQuality: Number.isFinite(obj.spectral_quality) ? obj.spectral_quality : 1,
+      })
     } catch {}
   },
 
@@ -158,11 +208,12 @@ const useEqStore = create((set, get) => ({
     } catch {}
   },
 
+  // Returns { stereo, left, right, mid, side } of dB traces, or null.
   async fetchResponseCurve() {
     const t = get().target
     if (!t) return null
     try {
-      return await window.xleth?.audio?.eqGetResponseCurve(t.trackId, t.nodeId)
+      return splitResponseCurves(await window.xleth?.audio?.eqGetResponseCurve(t.trackId, t.nodeId))
     } catch { return null }
   },
 
@@ -183,16 +234,20 @@ const useEqStore = create((set, get) => ({
     } catch { return null }
   },
 
-  // UI-only per-band channel routing — local state, no engine RPC. The
-  // engine doesn't know about 'channel' yet; wiring the actual L/R/M/S DSP
-  // routing is a follow-up, so this just records the user's choice.
-  setBandChannel(bandIndex, channel) {
-    if (!CHANNEL_MODES.includes(channel)) return
+  // Per-band channel routing. Kept as a name in the store, sent to the engine
+  // as the numeric ChannelMode (CHANNEL_MODES index).
+  async setBandChannel(bandIndex, channel) {
+    const t = get().target
+    if (!t) return
+    const value = CHANNEL_MODES.indexOf(channel)
+    if (value < 0) return
+    // Optimistic
     set(s => {
       const bands = [...s.bands]
       if (bands[bandIndex]) bands[bandIndex] = { ...bands[bandIndex], channel }
       return { bands }
     })
+    await window.xleth?.audio?.eqSetBandParam(t.trackId, t.nodeId, bandIndex, 'channel', value)
   },
 
   setSelectedBand(index) {
@@ -225,8 +280,9 @@ const useEqStore = create((set, get) => ({
     await get().addBandAt(band.freq, band.gain, band.type)
     const newIdx = get().bands.length - 1
     if (newIdx < 0) return
-    get().setBandChannel(newIdx, band.channel || 'stereo')
+    await get().setBandChannel(newIdx, band.channel || 'stereo')
     await get().setBandParam(newIdx, 'q', band.q)
+    if (band.slope != null && band.slope !== 1) await get().setBandParam(newIdx, 'slope', band.slope)
     await get().setBandParam(newIdx, 'mode', band.mode)
     await get().setBandParam(newIdx, 'enabled', band.enabled)
     if (band.mode === 1) {
@@ -235,11 +291,11 @@ const useEqStore = create((set, get) => ({
         ['dyn_ratio', band.dyn_ratio ?? 4],
         ['dyn_attack', band.dyn_attack ?? 10],
         ['dyn_release', band.dyn_release ?? 100],
+        ['dyn_range', band.dyn_range ?? 12],
       ]) await get().setBandParam(newIdx, p, v)
     } else if (band.mode === 2) {
       const specParams = [
         ['spec_sens', band.spec_sens ?? 0.5],
-        ['spec_depth', band.spec_depth ?? 0],
         ['spec_sel', band.spec_sel ?? 5],
       ]
       if (band.spec_attack != null) specParams.push(['spec_attack', band.spec_attack])
@@ -247,6 +303,8 @@ const useEqStore = create((set, get) => ({
       for (const [p, v] of specParams) await get().setBandParam(newIdx, p, v)
     }
   },
-}))
+})
+
+const useEqStore = create(eqStoreInitializer)
 
 export default useEqStore

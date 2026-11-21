@@ -16,11 +16,25 @@ export default function KnobNode({ node }) {
   const formatFn     = resolveFormat(props.format || meta.format)
   const inlineStyle  = styleToCSS(style)
 
+  // Optional mode-gated dimming: the schema has no visibility-expression
+  // support (checked before adding this), so a knob
+  // that only applies to some discrete-param values dims itself instead of
+  // disappearing. Plugins that don't set props.enabledWhen are unaffected.
+  const gate = props.enabledWhen
+  let gateActive = true
+  if (gate && Array.isArray(gate.in)) {
+    const gateMeta  = manifest?.params?.[gate.param]
+    const gateValue = params[gate.param] ?? gateMeta?.defaultValue ?? 0
+    gateActive = gate.in.includes(Math.round(gateValue))
+  }
+
   const handleLiveChange = useCallback(v => setParam(paramId, v), [paramId, setParam])
   const handleCommit     = useCallback(v => setParam(paramId, v), [paramId, setParam])
 
+  const cellClassName = `pluginui-knob-cell${gateActive ? '' : ' pluginui-knob-cell--dimmed'}`
+
   return (
-    <div className="pluginui-knob-cell" style={inlineStyle} data-pluginui-id={node.id}>
+    <div className={cellClassName} style={inlineStyle} data-pluginui-id={node.id} aria-disabled={gateActive ? undefined : 'true'}>
       <PluginUIKitKnob
         value={value}
         min={meta.min}

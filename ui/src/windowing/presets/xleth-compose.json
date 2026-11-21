@@ -1,0 +1,26 @@
+{
+  "focused": "timeline",
+  "dockRegionSizes": { "left": 304, "right": 280, "top": 340, "bottom": 304 },
+  "panels": {
+    "timeline": {
+      "hidden": false,
+      "mode": "docked",
+      "docked": { "region": "center", "orderInRegion": 0 }
+    },
+    "sampleSelector": {
+      "hidden": false,
+      "mode": "docked",
+      "docked": { "region": "left", "orderInRegion": 0, "sizeInRegion": 240 }
+    },
+    "preview": {
+      "hidden": false,
+      "mode": "docked",
+      "docked": { "region": "left", "orderInRegion": 1, "sizeInRegion": 199 }
+    },
+    "inspector": {
+      "hidden": true,
+      "mode": "docked",
+      "docked": { "region": "right", "orderInRegion": 0, "sizeInRegion": 360 }
+    }
+  }
+}

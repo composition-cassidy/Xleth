@@ -1,0 +1,127 @@
+/* The FX Graph node menu (ui/DESIGN.md section 21): Edit, Bypass or Enable, Remove, and for an
+ * effect the list of parameters it can expose as ports. A floating surface, so it carries the
+ * hard offset shadow; rows are 24px; sentence case. Items keep their menu roles. */
+
+@layer kit {
+  .menu {
+    position: fixed;
+    z-index: var(--xleth-z-popover, 10000);
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    width: 280px;
+    max-height: calc(100vh - var(--space-3));
+    overflow-y: auto;
+    padding: var(--space-1);
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-2);
+    background: var(--ui-g2);
+    box-shadow: var(--ui-shadow-float);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    pointer-events: auto;
+  }
+
+  .title {
+    padding: var(--space-1) var(--space-2);
+    overflow: hidden;
+    color: var(--ui-ink);
+    font-size: var(--type-12);
+    font-weight: var(--weight-semibold);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .item {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    width: 100%;
+    min-height: 24px;
+    padding: 0 var(--space-2);
+    border: 0;
+    border-radius: var(--ui-radius-1);
+    background: transparent;
+    color: var(--ui-ink);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .item:hover:not(:disabled),
+  .item:focus-visible { background: var(--ui-g3); }
+  .item:focus-visible { outline: 1px solid var(--ui-select); outline-offset: -1px; }
+  .item:disabled { opacity: var(--ui-mute-opacity); cursor: default; }
+
+  /* A parameter already exposed: the check, and the row itself in the select colour. */
+  .item[aria-checked="true"] { color: var(--ui-ink); }
+
+  .section {
+    display: grid;
+    gap: 2px;
+    margin-top: var(--space-1);
+    padding-top: var(--space-1);
+    border-top: 1px solid var(--ui-g4);
+  }
+
+  .sectionTitle {
+    padding: 0 var(--space-2);
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    line-height: 20px;
+  }
+
+  .empty {
+    padding: var(--space-1) var(--space-2);
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+  }
+
+  .search {
+    box-sizing: border-box;
+    width: 100%;
+    height: 24px;
+    margin-bottom: 2px;
+    padding: 0 var(--space-2);
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g0);
+    color: var(--ui-ink);
+    font: inherit;
+  }
+
+  .search:focus-visible { border-color: var(--ui-select); outline: none; }
+
+  .list {
+    display: grid;
+    gap: 0;
+    max-height: 260px;
+    overflow-y: auto;
+  }
+
+  .group + .group { margin-top: var(--space-1); }
+
+  .groupTitle {
+    padding: 0 var(--space-2);
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    line-height: 20px;
+  }
+
+  .check {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    color: var(--ui-ink);
+  }
+
+  .name { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .state { flex: none; color: var(--ui-ink-2); font-size: var(--type-11); }
+}

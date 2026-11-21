@@ -1,15 +1,12 @@
-// Tests for the Resonance Suppressor visualization, layout shell, and the
-// draggable focus-curve overlay:
+// Tests for the Resonance Suppressor visualization and the draggable
+// focus-curve overlay (now hosted by the device; the device's own tests cover
+// the focus-band section that replaced the overlay's docked editor strip):
 //   • Painters render without throwing for empty rings, populated rings, and
 //     rings carrying NaN/Inf bucket values.
-//   • The shipped layout validates against the manifest, has no sidechain
-//     references, and declares the editable resonanceCurve overlay on the
-//     visualizer node.
 //   • Coordinate mapping helpers round-trip and clamp at all boundary cases.
 //   • Pure drag-update helper writes only to the expected wc_* params and
 //     clamps to manifest ranges.
-//   • Overlay component renders all six handles into static HTML when the
-//     PluginUIContext provides hydrated params.
+//   • Overlay component renders its handles into static HTML from params.
 
 import { describe, expect, it, vi } from 'vitest'
 import React from 'react'
@@ -44,18 +41,13 @@ import {
   getActiveBandIndices,
 } from '../visualizers/resonanceCurveMapping.js'
 import ResonanceCurveOverlay, {
-  ResonanceBandEditorStrip,
   buildBandEditorModel,
   createAddBandAction,
   createRemoveBandAction,
   createBandTypeAction,
   createBandGainAction,
   isBandWidthEditable,
-} from '../components/ResonanceCurveOverlay.jsx'
-import { PluginUIContext } from '../PluginUIContext.js'
-import { RESONANCE_SUPPRESSOR_MANIFEST } from '../../manifests/resonancesuppressor.js'
-import resonanceLayout from '../../layouts/resonancesuppressor.json'
-import { validate } from '../../schema/validate.js'
+} from '../../../components/devices/ResonanceCurveOverlay.jsx'
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -181,146 +173,6 @@ describe('Resonance painters', () => {
 
   it('RESONANCE_VISUALIZER_PRESETS exposes resonance.combined as its primary source', () => {
     expect(RESONANCE_VISUALIZER_PRESETS.resonanceCombined.sources).toContain('resonance.combined')
-  })
-})
-
-// ── Layout shell ───────────────────────────────────────────────────────────
-
-describe('Resonance Suppressor shipped layout', () => {
-  it('validates against the manifest with no hard errors', () => {
-    const result = validate(resonanceLayout, RESONANCE_SUPPRESSOR_MANIFEST)
-    expect(result.ok).toBe(true)
-    const hardErrors = result.errors.filter(e =>
-      e.code !== 'UNKNOWN_STYLE_KEY'
-    )
-    expect(hardErrors).toEqual([])
-  })
-
-  it('contains the polished structural hooks the runtime expects', () => {
-    const json = JSON.stringify(resonanceLayout)
-    // Mode / processing-mode / quality / stereo are segmented choices.
-    expect(json).toContain('"mode-segmented"')
-    expect(json).toContain('"processing-mode-low"')
-    expect(json).toContain('"processing-mode-hq"')
-    expect(json).toContain('"quality-segmented"')
-    expect(json).toContain('"stereo-mode-segmented"')
-    // The compact layout (d450e16) ships a single Reduction graph with the
-    // editable overlay; the combined/spectrum/weighting tab strip is gone.
-    expect(json).toContain('"resonance.reduction"')
-    expect(json).not.toContain('"graph-view-tabs"')
-    expect(json).not.toContain('"resonance.combined"')
-    expect(json).not.toContain('"resonance.spectrum"')
-    expect(json).not.toContain('"resonance.weighting"')
-    // Macro detection controls are rotary knobs, matching the Compressor's
-    // knob-based presentation (polish pass replacing the earlier vertical
-    // faders).
-    for (const id of ['k-depth', 'k-sharpness', 'k-selectivity', 'k-attack', 'k-release']) {
-      expect(json).toContain(`"${id}"`)
-    }
-    expect(json).toContain('"knob"')
-    expect(json).toContain('"mixer-ring"')
-    // Output controls including the Δ Listen toggle (boolParam). MIX is a
-    // fader; TRIM is a horizontal slider in the compact layout.
-    expect(json).toContain('"s-mix"')
-    expect(json).toContain('"h-trim"')
-    expect(json).toContain('"delta-toggle"')
-    expect(json).toContain('"boolParam"')
-    // Focus curve: HP/LP boundaries and the 8 band slots all live inside the
-    // dynamic graph overlay now, so the legacy HP/LP knobs, the node-grid
-    // (k-b1-freq..k-b4-gain), and the temporary band-N grid are absent.
-    expect(json).not.toContain('"k-wc-hp"')
-    expect(json).not.toContain('"k-wc-lp"')
-    expect(json).not.toContain('Drag handles')
-    expect(json).not.toContain('+ Band')
-    // Meters stay out of the shipped layout (the engine still exposes the
-    // meter slots; they are simply not rendered).
-    expect(json).not.toContain('"PEAK_L"')
-    expect(json).not.toContain('"PEAK_R"')
-    expect(json).not.toContain('"GAIN_REDUCTION"')
-    // Stereo LINK knob was dropped; the Stereo/Mid/Side choice remains.
-    expect(json).not.toContain('"k-stereo-link"')
-  })
-
-  it('removes the temporary 8-band fallback grid and the legacy 4-band node-grid', () => {
-    const json = JSON.stringify(resonanceLayout)
-    // The temporary fallback (band-1..band-8 sub-controls) is gone.
-    for (let n = 1; n <= 8; n++) {
-      expect(json).not.toContain(`"band-${n}-active"`)
-      expect(json).not.toContain(`"band-${n}-focus"`)
-      expect(json).not.toContain(`"band-${n}-sens"`)
-      expect(json).not.toContain(`"band-${n}-width"`)
-      expect(json).not.toContain(`"band-${n}-shape-bell"`)
-    }
-    // The legacy 4-band freq/gain knob pairs are gone — the dynamic overlay
-    // owns those edits now.
-    for (const id of [
-      'k-b1-freq', 'k-b1-gain',
-      'k-b2-freq', 'k-b2-gain',
-      'k-b3-freq', 'k-b3-gain',
-      'k-b4-freq', 'k-b4-gain',
-    ]) {
-      expect(json).not.toContain(`"${id}"`)
-    }
-  })
-
-  it('uses a compact plugin-sized preferred panel without becoming oversized', () => {
-    // d450e16 compacted the shipped panel to 700x470.
-    expect(resonanceLayout.panel.preferredSize.width).toBe(700)
-    expect(resonanceLayout.panel.preferredSize.height).toBe(470)
-  })
-
-  it('manifest exposes 55 params with the Focus Curve v1.1 schema', () => {
-    // 14 top-level params (incl. processing_mode, added with the PDC work in
-    // 7072ad5, alongside the soft/hard mode param) + 8 bands x 5 wc_* params.
-    const ids = Object.keys(RESONANCE_SUPPRESSOR_MANIFEST.params)
-    expect(ids).toHaveLength(55)
-    expect(ids).toContain('processing_mode')
-    expect(ids).toContain('mode')
-    for (let n = 1; n <= 8; n++) {
-      for (const suffix of ['active', 'type', 'freq', 'gain', 'q']) {
-        expect(ids).toContain(`wc_b${n}_${suffix}`)
-      }
-      // Type enum range must match engine: 0=Bell..4=Tilt.
-      const typeMeta = RESONANCE_SUPPRESSOR_MANIFEST.params[`wc_b${n}_type`]
-      expect(typeMeta.kind).toBe('discrete')
-      expect(typeMeta.min).toBe(0)
-      expect(typeMeta.max).toBe(4)
-    }
-  })
-
-  it('does not reference any sidechain UI', () => {
-    const json = JSON.stringify(resonanceLayout).toLowerCase()
-    expect(json).not.toContain('sidechain')
-    expect(json).not.toContain('side_chain')
-    expect(json).not.toContain('"sc"')
-  })
-
-  it('does not add mockup-only fake controls', () => {
-    const json = JSON.stringify(resonanceLayout).toLowerCase()
-    for (const fake of ['band listen', 'offline', 'cpu', 'play', 'pause']) {
-      expect(json).not.toContain(fake)
-    }
-  })
-
-  it('declares the editable resonanceCurve overlay and defaults to the Reduction tab', () => {
-    function collectVizNodes(node, out = []) {
-      if (!node) return out
-      if (node.type === 'visualizer') out.push(node)
-      if (Array.isArray(node.children)) {
-        for (const c of node.children) collectVizNodes(c, out)
-      }
-      return out
-    }
-    const vizNodes = collectVizNodes(resonanceLayout.root)
-    // The compact layout ships exactly one graph: the Reduction view with
-    // the editable resonanceCurve overlay (drag handles control how much
-    // resonance is suppressed).
-    expect(vizNodes.length).toBe(1)
-    for (const viz of vizNodes) {
-      expect(viz.props.overlay).toBe('resonanceCurve')
-    }
-    expect(vizNodes[0].props.source).toBe('resonance.reduction')
-    expect(vizNodes[0].props.preset).toBe('resonanceReduction')
   })
 })
 
@@ -619,20 +471,7 @@ describe('computeDragParamUpdates', () => {
 // ── ResonanceCurveOverlay render ──────────────────────────────────────────
 
 function renderOverlay(params, setParam = vi.fn()) {
-  const ctxValue = {
-    target:    { trackId: -1, nodeId: 1 },
-    manifest:  RESONANCE_SUPPRESSOR_MANIFEST,
-    params,
-    setParam,
-    meterBus:  { register: () => {}, unregister: () => {} },
-    onClose:   () => {},
-    layoutErrors: [],
-  }
-  return renderToStaticMarkup(
-    <PluginUIContext.Provider value={ctxValue}>
-      <ResonanceCurveOverlay />
-    </PluginUIContext.Provider>,
-  )
+  return renderToStaticMarkup(<ResonanceCurveOverlay params={params} setParam={setParam} />)
 }
 
 describe('ResonanceCurveOverlay render', () => {
@@ -643,12 +482,9 @@ describe('ResonanceCurveOverlay render', () => {
 
   it('renders into static markup without throwing — empty params', () => {
     const html = renderOverlay({})
-    expect(html).toContain('pluginui-resonance-overlay')
-    expect(html).toContain('pluginui-resonance-band-editor')
-    expect(html).toContain('Select band')
-    expect(html).toContain('+ Band')
-    expect(html).not.toContain('pluginui-resonance-inspector')
-    expect(html).not.toContain('pluginui-resonance-toolbar')
+    expect(html).toContain('aria-label="Focus curve editor"')
+    expect(html).toContain('data-handle="hp"')
+    expect(html).not.toContain('pluginui-resonance')
   })
 
   it('renders into static markup without throwing — populated params', () => {
@@ -660,69 +496,15 @@ describe('ResonanceCurveOverlay render', () => {
       wc_b3_active: 0, wc_b3_type: BAND_TYPE.TILT,        wc_b3_freq: 2500, wc_b3_gain: 5,  wc_b3_q: 1,
     }
     const html = renderOverlay(params)
-    expect(html).toContain('pluginui-resonance-overlay')
     expect(html).toContain('data-handle="hp"')
     expect(html).toContain('data-handle="lp"')
     expect(html).toContain('data-handle="band-1"')
     expect(html).toContain('data-handle="band-2"')
     expect(html).not.toContain('data-handle="band-3"')
-    expect(html).toContain('is-neutral')
+    expect(html).toContain('data-neutral="true"')
   })
 
   it('exports the overlay component with expected static contract', () => {
     expect(typeof ResonanceCurveOverlay).toBe('function')
-  })
-
-  it('renders Add and Remove controls in the bottom band editor strip', () => {
-    const model = buildBandEditorModel({
-      wc_b1_active: 1,
-      wc_b1_type: BAND_TYPE.BELL,
-      wc_b1_freq: 1000,
-      wc_b1_gain: -3,
-      wc_b1_q: 1,
-      wc_b2_active: 0,
-    }, 1)
-    const html = renderToStaticMarkup(
-      <ResonanceBandEditorStrip
-        model={model}
-        onAddBand={() => {}}
-        onRemoveBand={() => {}}
-        onToggleActive={() => {}}
-        onSelectType={() => {}}
-        onChangeFreq={() => {}}
-        onChangeGain={() => {}}
-        onChangeQ={() => {}}
-      />,
-    )
-
-    expect(html).toContain('pluginui-resonance-band-editor')
-    expect(html).toContain('+ Band')
-    expect(html).toContain('- Band')
-    expect(html).toContain('Band 1')
-  })
-
-  it('hides Width in the bottom strip for Tilt bands', () => {
-    const model = buildBandEditorModel({
-      wc_b1_active: 1,
-      wc_b1_type: BAND_TYPE.TILT,
-      wc_b1_freq: 1000,
-      wc_b1_gain: 3,
-      wc_b1_q: 1,
-    }, 1)
-    const html = renderToStaticMarkup(
-      <ResonanceBandEditorStrip
-        model={model}
-        onAddBand={() => {}}
-        onRemoveBand={() => {}}
-        onToggleActive={() => {}}
-        onSelectType={() => {}}
-        onChangeFreq={() => {}}
-        onChangeGain={() => {}}
-        onChangeQ={() => {}}
-      />,
-    )
-
-    expect(html).toContain('Tilt')
-    expect(html).not.toContain('Width')
   })
 })

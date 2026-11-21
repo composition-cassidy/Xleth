@@ -1,0 +1,15 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "limiter",
+  "name": "Bass Peak Shave",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "gain": 2,
+      "ceiling": -1.5,
+      "release": 60,
+      "style": 1
+    }
+  }
+}

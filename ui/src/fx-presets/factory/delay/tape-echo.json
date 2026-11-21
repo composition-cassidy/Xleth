@@ -1,0 +1,25 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "delay",
+  "name": "Tape Echo",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "time_l": 500,
+      "time_r": 500,
+      "sync": 1,
+      "sync_div_l": 7,
+      "sync_div_r": 7,
+      "stereo_mode": 0,
+      "feedback": 50,
+      "filter_lo": 300,
+      "filter_hi": 3500,
+      "mod_rate": 0.4,
+      "mod_depth": 60,
+      "stereo_width": 0,
+      "duck_amount": 0,
+      "mix": 30
+    }
+  }
+}

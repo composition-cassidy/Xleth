@@ -1,0 +1,19 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "fedda",
+  "name": "Chorus Sample (careful)",
+  "author": "XLETH",
+  "created": "2026-11-11T00:00:00.000Z",
+  "state": {
+    "params": {
+      "width": 20,
+      "character": 1,
+      "size": 8,
+      "low_bypass": 300,
+      "low_slope": 0,
+      "hf_damp": 20000,
+      "guard": 40,
+      "loudness_match": 0
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "fet",
+  "name": "Dr Pepper Start",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "input": 0,
+      "output": 2,
+      "attack": 3,
+      "release": 5,
+      "ratio": 0
+    }
+  }
+}

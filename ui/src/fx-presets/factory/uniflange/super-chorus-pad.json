@@ -1,0 +1,19 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "uniflange",
+  "name": "Super Chorus Pad",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "order": 8,
+      "depth": 70,
+      "speed": 40,
+      "delay": 70,
+      "spread": 100,
+      "cross": 0,
+      "dry": 30,
+      "wet": 90
+    }
+  }
+}

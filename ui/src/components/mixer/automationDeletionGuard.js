@@ -120,8 +120,10 @@ export async function confirmEffectRemoval(trackId, nodeId) {
 /**
  * Gate a whole-track removal: cascades through the same confirmation when any
  * effect on the track's chain has bound clips. Returns true to proceed.
+ * `opts.subject` overrides how the dialog names what is deleted (a source track
+ * says its Clones go with it: `track "Lead" and its 2 clones`).
  */
-export async function confirmTrackRemoval(trackId, trackName) {
+export async function confirmTrackRemoval(trackId, trackName, opts = {}) {
   const chain = useEffectChainStore.getState().chains?.[chainKeyForTrack(trackId)]
   if (!Array.isArray(chain) || chain.length === 0) return true
 
@@ -134,7 +136,7 @@ export async function confirmTrackRemoval(trackId, trackName) {
 
   const ok = await showAutomationDeleteConfirm({
     title: 'Delete track with automation?',
-    subject: trackName ? `track "${trackName}"` : 'this track',
+    subject: opts?.subject || (trackName ? `track "${trackName}"` : 'this track'),
     clips: all,
   })
   if (!ok) {

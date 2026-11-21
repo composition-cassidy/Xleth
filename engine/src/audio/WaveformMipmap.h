@@ -78,7 +78,8 @@ public:
     bool     isReady()         const { return ready_.load(std::memory_order_acquire); }
     bool     hasFailed()      const { return generationFailed_.load(std::memory_order_acquire); }
 
-    void     setSourceBuffer(const juce::AudioBuffer<float>* buf) { sourceBuffer_ = buf; }
+    // Before the mipmap is published (ready): readers take no lock.
+    void     setSourceBuffer(std::shared_ptr<const juce::AudioBuffer<float>> buf) { sourceBuffer_ = std::move(buf); }
     void     setSourceHash(uint64_t hash) { sourceHash_ = hash; }
     uint64_t getSourceHash() const { return sourceHash_; }
 
@@ -95,9 +96,9 @@ private:
 
     LevelInfo levels_[kNumLevels];
 
-    // Mode 1: pointer to the source buffer for getRawSamples().
-    // SampleBank buffers are append-only and immutable — pointer is stable.
-    const juce::AudioBuffer<float>* sourceBuffer_ = nullptr;
+    // Mode 1: the source buffer for getRawSamples(). Shared: the SampleBank
+    // can unload the sample while this mipmap is still cached or generating.
+    std::shared_ptr<const juce::AudioBuffer<float>> sourceBuffer_;
 
     std::atomic<bool> ready_{ false };
     std::atomic<bool> generationFailed_{ false };
@@ -116,13 +117,25 @@ private:
 class WaveformMipmapCache
 {
 public:
-    // Returns the ready mipmap for key, or nullptr if not yet available.
-    WaveformMipmap* get(const std::string& key) const;
+    // Entries are shared, not owned solely by the map: a generation thread
+    // keeps its own strong reference for as long as it is writing, so
+    // remove()/clear()/insert() can never free a mipmap out from under it.
+    using Ptr = std::shared_ptr<WaveformMipmap>;
 
-    // Generate from an in-memory buffer on a background thread.
+    // Returns the ready mipmap for key, or nullptr if not yet available.
+    // The caller holds a strong reference for as long as it uses the result.
+    Ptr get(const std::string& key) const;
+
+    // Publishes an already-generated mipmap under key, replacing any entry.
+    // For callers that generate synchronously and still want later calls to
+    // hit the cache instead of decoding the same source again.
+    void insert(const std::string& key, Ptr mipmap);
+
+    // Generate from an in-memory buffer on a background thread, which shares
+    // ownership of `buffer` (so does the mipmap, for getRawSamples).
     // If saveXlpeak is true, also save/load a .xlpeak file alongside sourceFile.
     void generateFromBuffer(const std::string& key,
-                            const juce::AudioBuffer<float>* buffer,
+                            std::shared_ptr<const juce::AudioBuffer<float>> buffer,
                             int sampleRate,
                             const juce::File& sourceFile,
                             bool saveXlpeak);
@@ -133,7 +146,10 @@ public:
     void remove(const std::string& key);
     void clear();
 
+    // Entries held, ready or still generating. Diagnostics.
+    std::size_t size() const;
+
 private:
     mutable std::mutex mutex_;
-    std::unordered_map<std::string, std::unique_ptr<WaveformMipmap>> cache_;
+    std::unordered_map<std::string, Ptr> cache_;
 };

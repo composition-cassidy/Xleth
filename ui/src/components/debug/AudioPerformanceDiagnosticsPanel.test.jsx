@@ -16,7 +16,7 @@ describe('AudioPerformanceDiagnosticsPanel RS HQ risk', () => {
       />
     )
 
-    expect(html).toContain('RS HQ Realtime Risk')
+    expect(html).toContain('RS HQ realtime risk')
     expect(html).toContain('Active HQ')
     expect(html).toContain('2')
     expect(html).toContain('multipleInstances')
@@ -30,8 +30,8 @@ describe('AudioPerformanceDiagnosticsPanel capture control', () => {
     const html = renderToStaticMarkup(<AudioPerformanceDiagnosticsPanel />)
 
     expect(html).toContain('Performance report')
-    expect(html).toContain('Capture 10s Performance Report')
-    expect(html).toContain('xleth-select-trigger')
+    expect(html).toContain('Capture 10s performance report')
+    expect(html).toContain('Performance report capture duration')
     expect(html).toContain('Idle')
     expect(html).not.toContain('<select')
   })

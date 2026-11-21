@@ -1,0 +1,111 @@
+/* UI kit tokens (ui/DESIGN.md). The ONLY stylesheet allowed to define colours:
+ * `npm run lint:css` rejects hex / rgb() / hsl() / named colours everywhere else
+ * in ui-kit/** and *.module.css.
+ *
+ * Colour tokens are theme-driven. Each `--ui-*` alias reads its catalog token
+ * (`--theme-ui-*`, theming/tokens/catalog.ts, written to :root by
+ * ThemeProvider) and falls back to the Xleth Default value, so the kit also
+ * renders before a theme is applied (tests, the render harness). A unit test
+ * (ui-kit/__tests__/tokens.test.ts) keeps these fallbacks equal to the Default
+ * theme; change a colour in the catalog/derivation and here together.
+ *
+ * Non-colour tokens (type, spacing, sizes, radius, shadow) are fixed contract
+ * values and are not themeable.
+ */
+@layer tokens {
+  :root {
+    /* ── Neutral ramp (DESIGN.md 3.1): chrome carries no hue ─────────────── */
+    --ui-g0: var(--theme-ui-g0, #0F0F0F);             /* wells, ground */
+    --ui-g1: var(--theme-ui-g1, #1A1A1A);             /* panel */
+    --ui-g2: var(--theme-ui-g2, #262626);             /* header */
+    --ui-g3: var(--theme-ui-g3, #323232);             /* control */
+    --ui-g4: var(--theme-ui-g4, #444444);             /* divider, decorative only */
+    --ui-boundary: var(--theme-ui-boundary, #7C7C7C); /* control outlines, >= 3:1 on g0..g3 */
+    --ui-ink: var(--theme-ui-ink, #E6E6E6);           /* primary text */
+    --ui-ink-2: var(--theme-ui-ink-2, #B4B4B4);       /* secondary text */
+    --ui-ink-3: var(--theme-ui-ink-3, #9A9A9A);       /* dimmest text allowed anywhere */
+
+    /* ── Semantic colours (DESIGN.md 3.2) ────────────────────────────────── */
+    --ui-value: var(--theme-ui-value, var(--theme-accent, #33CED6));     /* value fills, active displays */
+    --ui-select: var(--theme-ui-select, var(--theme-accent, #33CED6));   /* 1px selection outline */
+    --ui-on: var(--theme-ui-on-bg, #E6E6E6);                             /* "on" toggle chip background (inverted ink) */
+    --ui-on-fg: var(--theme-ui-on-fg, #1A1A1A);                          /* text on the "on" chip */
+    --ui-rec: var(--theme-ui-rec, #E5484D);                              /* record/arm: FILLS AND GLYPHS ONLY (4.40:1 on g1) */
+    --ui-rec-text: var(--theme-ui-rec-text, #F67073);                    /* record/arm text */
+    --ui-solo: var(--theme-ui-solo, #E8B53A);
+    --ui-pearl: var(--theme-ui-pearl, #69BA7C);                          /* lit output pearl: the track is heard */
+    --ui-clip: var(--theme-ui-clip, var(--theme-danger, #FF4757));       /* clipping / error */
+    --ui-mute-opacity: 0.45;                                             /* muted content dims to this, plus a mute glyph */
+
+    /* ── Signal-type hues (DESIGN.md 3.3) ────────────────────────────────── */
+    --ui-signal-audio: var(--theme-ui-signal-audio, #6FA7EE);
+    --ui-signal-events: var(--theme-ui-signal-events, #69BA7C);
+    --ui-signal-parameter: var(--theme-ui-signal-parameter, #AA95E8);
+    --ui-signal-video: var(--theme-ui-signal-video, #CF88C8);
+
+    /* ── Multiband band palette, low to high (DESIGN.md 3.5) ─────────────── */
+    /* Every multiband device; a three-band device uses 1, 2 and 4. */
+    --ui-band-1: var(--theme-ui-band-1, #ED9659);   /* low */
+    --ui-band-2: var(--theme-ui-band-2, #B6C963);   /* low-mid (Mid on three bands) */
+    --ui-band-3: var(--theme-ui-band-3, #53B0DE);   /* high-mid */
+    --ui-band-4: var(--theme-ui-band-4, #C494E2);   /* high */
+
+    /* ── Typography (DESIGN.md 4) ────────────────────────────────────────── */
+    --ui-font: var(--xleth-global-font-family);
+    --ui-font-mono: "IBM Plex Mono", Consolas, "Courier New", monospace;     /* timecode, bars|beats */
+    --type-10: 10px;   /* meter ticks and units only */
+    --type-11: 11px;   /* label */
+    --type-12: 12px;   /* default control text */
+    --type-13: 13px;   /* section header */
+    --type-16: 16px;   /* panel and dialog title */
+    --weight-regular: 400;
+    --weight-medium: 500;
+    --weight-semibold: 600;
+
+    /* ── Spacing and size (DESIGN.md 5) ──────────────────────────────────── */
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 24px;
+    --ctl-h-sm: 24px;
+    --ctl-h-md: 28px;
+    --ctl-h-lg: 32px;
+    --panel-header-h: 28px;
+    --row-h: 24px;           /* interactive list rows */
+    --row-h-compact: 20px;   /* read-only or keyboard-primary lists only */
+    --hit-min: 24px;         /* every hit area is at least this wide and tall */
+    --icon-sm: 14px;         /* rows, menus, button/toggle glyph slots (the icon floor) */
+    --icon-md: 16px;         /* toolbars and icon buttons */
+
+    /* ── Shell chrome rows (DESIGN.md 8) ─────────────────────────────────── */
+    --shell-topbar-h: 36px;  /* menus, transport, panel toggles, window controls */
+    --shell-hintbar-h: 22px; /* hovered control + its modifiers */
+    /* The app grid (legacy .app) reads these two names; they are defined here
+     * and nowhere else. */
+    --xleth-top-chrome-height: var(--shell-topbar-h);
+    --xleth-bottom-chrome-height: var(--shell-hintbar-h);
+
+    /* ── Device system (DESIGN.md "Device system") ───────────────────────── */
+    --device-h: 256px;        /* EVERY device, docked or floating; only width varies */
+    --device-title-h: 24px;   /* the one title bar */
+    --device-fold-w: 28px;    /* a folded device is a vertical title strip this wide */
+    --device-well-pad: 4px;   /* inset of the recessed display well */
+
+    /* ── Radius and elevation ────────────────────────────────────────────── */
+    --ui-radius-0: 0;        /* chrome, panels */
+    --ui-radius-1: 2px;      /* controls */
+    --ui-radius-2: 4px;      /* chips, popovers */
+    --ui-shadow-float: 4px 5px 0 rgba(0, 0, 0, 0.5);   /* floating surfaces ONLY; never on docked panels */
+    --ui-scrim: rgba(0, 0, 0, 0.6);                    /* modal backdrop: flat dim, no blur */
+  }
+  /* UI scale (Phase 7): window zoom shrinks the CSS viewport, so 200 % on a 1366 px window is
+   * 683 CSS px. Below this width the top bar cannot hold menus, transport, panel toggles and
+   * window controls in one row, so it becomes two rows of --shell-topbar-h / 2 (the bar's own
+   * grid lays them out; see components/TitleBar.module.css). */
+  @media (max-width: 1100px) {
+    :root {
+      --shell-topbar-h: 72px;
+    }
+  }
+}

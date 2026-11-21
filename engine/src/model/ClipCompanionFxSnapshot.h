@@ -2,11 +2,12 @@
 
 // ClipCompanionFxSnapshot — plain per-frame clip-local visual modulation data.
 //
-// Compositor-agnostic POD: no D3D11, no OpenGL, no FrameCollector / VideoCompositor
-// coupling, no FFmpeg, no bridge dependencies. Lives in model/ so both the export
-// pipeline (FrameCollector → GridCompositor) and the realtime preview path
-// (SyncManager → VideoCompositor) can fill the same struct from the same builder
-// and stay in lockstep.
+// Compositor-agnostic POD: no D3D11, no FrameCollector coupling, no FFmpeg, no
+// bridge dependencies. Lives in model/ so it stays a pure data contract between
+// the builder and whatever consumes it. Preview and export both run through
+// FrameCollector → GridCompositor, so there is one filler and one kernel; the
+// second (OpenGL VideoCompositor) path was retired — see Issue 10 in
+// VIDEO_PREVIEW_AUDIT.txt.
 
 struct ClipCompanionFxSnapshot {
     bool vibratoSwirlEnabled = false;

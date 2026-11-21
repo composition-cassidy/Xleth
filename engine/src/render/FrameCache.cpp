@@ -1,7 +1,44 @@
 #include "FrameCache.h"
+#include "XlethDebug.h"
 
 #include <cassert>
 #include <cstdio>
+
+// ===========================================================================
+// PathInterner
+// ===========================================================================
+
+PathInterner::PathInterner()
+{
+    // id 0 is reserved for the default-constructed InternedPath, so the
+    // empty path must be the first (and therefore 0th) entry.
+    idByPath_[""] = 0;
+    pathById_.push_back("");
+}
+
+PathInterner& PathInterner::instance()
+{
+    static PathInterner interner;
+    return interner;
+}
+
+uint32_t PathInterner::intern(const std::string& path)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = idByPath_.find(path);
+    if (it != idByPath_.end()) return it->second;
+
+    const uint32_t id = static_cast<uint32_t>(pathById_.size());
+    pathById_.push_back(path);
+    idByPath_.emplace(path, id);
+    return id;
+}
+
+const std::string& PathInterner::path(uint32_t id) const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return pathById_[id];
+}
 
 // ===========================================================================
 // Construction / destruction
@@ -42,8 +79,8 @@ FrameCacheEntry* RenderFrameCache::get(const FrameCacheKey& key)
     if (it == map_.end()) {
         ++missCount_;
         ++accessCount_;
-        std::fprintf(stderr, "[RenderFrameCache] MISS: '%s' frame=%lld\n",
-                     key.sourcePath.c_str(), (long long)key.frameIndex);
+        XLETH_RENDER_LOG(std::fprintf(stderr, "[RenderFrameCache] MISS: '%s' frame=%lld\n",
+                     key.sourcePath.c_str(), (long long)key.frameIndex));
         logPeriodicStats();
         return nullptr;
     }
@@ -54,10 +91,11 @@ FrameCacheEntry* RenderFrameCache::get(const FrameCacheKey& key)
     ++hitCount_;
     ++accessCount_;
 
-    double usedMB = static_cast<double>(totalMemoryUsed_) / (1024.0 * 1024.0);
-    std::fprintf(stderr, "[RenderFrameCache] HIT: '%s' frame=%lld (%.1f MB used, %zu entries)\n",
+    // Per cell per frame on the preview thread — gated, see XlethDebug.h.
+    XLETH_RENDER_LOG(std::fprintf(stderr,
+                 "[RenderFrameCache] HIT: '%s' frame=%lld (%.1f MB used, %zu entries)\n",
                  key.sourcePath.c_str(), (long long)key.frameIndex,
-                 usedMB, map_.size());
+                 static_cast<double>(totalMemoryUsed_) / (1024.0 * 1024.0), map_.size()));
 
     logPeriodicStats();
     return &it->second.entry;
@@ -79,10 +117,11 @@ void RenderFrameCache::put(const FrameCacheKey& key, FrameCacheEntry entry)
         totalMemoryUsed_ += it->second.entry.memorySizeBytes;
         lruList_.splice(lruList_.begin(), lruList_, it->second.lruIt);
 
-        double usedMB = static_cast<double>(totalMemoryUsed_) / (1024.0 * 1024.0);
-        std::fprintf(stderr, "[RenderFrameCache] PUT: '%s' frame=%lld size=%zuB (%.1f MB used, %zu entries) [updated]\n",
+        XLETH_RENDER_LOG(std::fprintf(stderr,
+                     "[RenderFrameCache] PUT: '%s' frame=%lld size=%zuB (%.1f MB used, %zu entries) [updated]\n",
                      key.sourcePath.c_str(), (long long)key.frameIndex,
-                     it->second.entry.memorySizeBytes, usedMB, map_.size());
+                     it->second.entry.memorySizeBytes,
+                     static_cast<double>(totalMemoryUsed_) / (1024.0 * 1024.0), map_.size()));
         return;
     }
 
@@ -102,10 +141,10 @@ void RenderFrameCache::put(const FrameCacheKey& key, FrameCacheEntry entry)
     mapEntry.lruIt = lruIt;
     map_.emplace(key, std::move(mapEntry));
 
-    double usedMB = static_cast<double>(totalMemoryUsed_) / (1024.0 * 1024.0);
-    std::fprintf(stderr, "[RenderFrameCache] PUT: '%s' frame=%lld size=%zuB (%.1f MB used, %zu entries)\n",
+    XLETH_RENDER_LOG(std::fprintf(stderr,
+                 "[RenderFrameCache] PUT: '%s' frame=%lld size=%zuB (%.1f MB used, %zu entries)\n",
                  key.sourcePath.c_str(), (long long)key.frameIndex,
-                 newSize, usedMB, map_.size());
+                 newSize, static_cast<double>(totalMemoryUsed_) / (1024.0 * 1024.0), map_.size()));
 }
 
 // ===========================================================================
@@ -183,10 +222,10 @@ void RenderFrameCache::evictOne()
     totalMemoryUsed_ -= freedBytes;
     ++evictionCount_;
 
-    double usedMB = static_cast<double>(totalMemoryUsed_) / (1024.0 * 1024.0);
-    std::fprintf(stderr, "[RenderFrameCache] EVICT: '%s' frame=%lld (%.1f MB freed -> %.1f MB used)\n",
+    XLETH_RENDER_LOG(std::fprintf(stderr,
+                 "[RenderFrameCache] EVICT: '%s' frame=%lld (%.1f MB freed -> %.1f MB used)\n",
                  victimKey.sourcePath.c_str(), (long long)victimKey.frameIndex,
-                 freedMB, usedMB);
+                 freedMB, static_cast<double>(totalMemoryUsed_) / (1024.0 * 1024.0)));
 
     // Erase from map first (key reference is from lruList_ back, erasing list invalidates it)
     map_.erase(it);
@@ -207,9 +246,12 @@ void RenderFrameCache::evictUntilUnder(bool pendingInsert)
             evictOne();
             ++evicted;
         }
+        // Once the cache is full every put() evicts, so this fires per decoded
+        // frame for the rest of the session — gated like the per-entry lines.
         if (evicted > 0) {
-            std::fprintf(stderr, "[RenderFrameCache] CAPACITY: evicted %d entries to stay under %zu bytes\n",
-                         evicted, memoryLimitBytes_);
+            XLETH_RENDER_LOG(std::fprintf(stderr,
+                         "[RenderFrameCache] CAPACITY: evicted %d entries to stay under %zu bytes\n",
+                         evicted, memoryLimitBytes_));
         }
         break;
     }
@@ -224,8 +266,9 @@ void RenderFrameCache::evictUntilUnder(bool pendingInsert)
             ++evicted;
         }
         if (evicted > 0) {
-            std::fprintf(stderr, "[RenderFrameCache] CAPACITY: evicted %d entries to stay under %d frames\n",
-                         evicted, frameLimitCount_);
+            XLETH_RENDER_LOG(std::fprintf(stderr,
+                         "[RenderFrameCache] CAPACITY: evicted %d entries to stay under %d frames\n",
+                         evicted, frameLimitCount_));
         }
         break;
     }
@@ -238,6 +281,10 @@ void RenderFrameCache::evictUntilUnder(bool pendingInsert)
 
 void RenderFrameCache::logPeriodicStats()
 {
+    // Every 100th get(): with a full grid that is several times a second on
+    // the preview thread, so it follows the same switch as the per-get lines.
+    // The numbers stay available through getStats() regardless.
+    if (!xlethRenderLogEnabled()) return;
     if (accessCount_ % 100 != 0) return;
 
     uint64_t total = hitCount_ + missCount_;

@@ -115,7 +115,8 @@ static void configureSpectralBand(XlethParametricEQ& eq)
     CHECK(eq.setBandParam(0, "type", 0.0f), "spectral EQ type should be settable");
     CHECK(eq.setBandParam(0, "enabled", 1.0f), "spectral EQ band should be enabled");
     CHECK(eq.setBandParam(0, "mode", 2.0f), "spectral EQ mode should be Spectral");
-    CHECK(eq.setBandParam(0, "spec_depth", 0.0f), "spectral EQ depth should be settable");
+    // Spectral depth is the band's own gain knob (set above) — no spec_depth.
+    CHECK(eq.setBandParam(0, "spec_sens", 0.5f), "spectral EQ sensitivity should be settable");
 }
 
 static void processEqDiagnosticBlock(XlethParametricEQ& eq,
@@ -134,6 +135,11 @@ static void processEqDiagnosticBlock(XlethParametricEQ& eq,
     juce::MidiBuffer midi;
     eq.processBlock(buffer, midi);
 }
+
+// Linear-phase latency is the FIR group delay (firLength_/2), which is 2048
+// at <= 48 kHz. It is a different quantity from the spectral WOLA latency
+// and only ever coincided with the old 50%-overlap kSTFTHop value.
+static constexpr int kLinearPhaseLatency = 2048;
 
 static XlethParametricEQ* requireSpectralEq(XlethEffectBase* effect, const char* label)
 {
@@ -163,9 +169,9 @@ static void testXlethEqSpectralLatency()
     CHECK(eq.getNonRealtimeLatencyUpdateCount() == nonRealtimeUpdatesBefore + 1,
           "Spectral EQ should update reported latency once from the parameter path");
 
-    CHECK(eq.getLatencySamples() == XlethParametricEQ::kSTFTHop,
-          "Spectral EQ getLatencySamples should equal kSTFTHop");
-    CHECK(eq.getReportedProcessorLatencySamples() == XlethParametricEQ::kSTFTHop,
+    CHECK(eq.getLatencySamples() == XlethParametricEQ::kSTFTLatency,
+          "Spectral EQ getLatencySamples should equal kSTFTLatency");
+    CHECK(eq.getReportedProcessorLatencySamples() == XlethParametricEQ::kSTFTLatency,
           "Spectral EQ AudioProcessor latency should be updated before processBlock");
 
     processEqDiagnosticBlock(eq);
@@ -197,7 +203,7 @@ static void testXlethEqLatencyAffectingParameterPaths()
 
         CHECK(eq.setParameterValue("linphase", 1.0f),
               "linear-phase parameter should be settable");
-        CHECK(eq.getReportedProcessorLatencySamples() == XlethParametricEQ::kSTFTHop,
+        CHECK(eq.getReportedProcessorLatencySamples() == kLinearPhaseLatency,
               "linear-phase enable should report FIR latency before processBlock");
         CHECK(eq.getNonRealtimeLatencyUpdateCount() == nonRealtimeUpdatesBefore + 1,
               "linear-phase enable should update latency once from the parameter path");
@@ -257,7 +263,7 @@ static void testXlethEqStateRestoreLatencyBeforeProcessBlock()
     restored.prepareToPlay(48000.0, 512);
     restored.setStateInformation(spectralState.getData(),
                                  static_cast<int>(spectralState.getSize()));
-    CHECK(restored.getReportedProcessorLatencySamples() == XlethParametricEQ::kSTFTHop,
+    CHECK(restored.getReportedProcessorLatencySamples() == XlethParametricEQ::kSTFTLatency,
           "restored spectral EQ should report latency before first processBlock");
     CHECK(restored.getProcessBlockLatencyUpdateCount() == 0,
           "restored spectral EQ should not need processBlock latency updates");
@@ -795,7 +801,7 @@ static void testAudioGraphLatencyEpochAndTopology()
     const auto epochBefore = graph.getLatencyEpoch();
     graph.refreshLatencyDiagnostics();
 
-    CHECK(graph.getOutputLatencySamples() == XlethParametricEQ::kSTFTHop,
+    CHECK(graph.getOutputLatencySamples() == XlethParametricEQ::kSTFTLatency,
           "AudioGraph output latency should expose the Spectral EQ chain latency");
     CHECK(graph.getLatencyEpoch() == epochBefore + 1,
           "AudioGraph latency epoch should increment on explicit PDC recompute");
@@ -806,7 +812,7 @@ static void testAudioGraphLatencyEpochAndTopology()
     {
         if (node.value("pluginId", "") == "__output__")
             sawOutputLatency = (node.value("cumulativeLatency", -1)
-                                == XlethParametricEQ::kSTFTHop);
+                                == XlethParametricEQ::kSTFTLatency);
     }
     CHECK(sawOutputLatency,
           "AudioGraph topology output node should report cached output latency");
@@ -928,9 +934,9 @@ static void testAudioGraphLatencyChangePropagation()
 
     CHECK(graph.setEffectParameter(nodeId, "b0_mode", 2.0f),
           "AudioGraph should set Spectral mode through the owner path");
-    CHECK(eq->getReportedProcessorLatencySamples() == XlethParametricEQ::kSTFTHop,
+    CHECK(eq->getReportedProcessorLatencySamples() == XlethParametricEQ::kSTFTLatency,
           "AudioGraph owner path should update EQ reported latency on Spectral enable");
-    CHECK(graph.getOutputLatencySamples() == XlethParametricEQ::kSTFTHop,
+    CHECK(graph.getOutputLatencySamples() == XlethParametricEQ::kSTFTLatency,
           "AudioGraph output latency should update on Spectral enable");
     CHECK(graph.getLatencyEpoch() == epochBeforeSpectral + 1,
           "AudioGraph Spectral enable should trigger one PDC recompute");
@@ -950,7 +956,7 @@ static void testAudioGraphLatencyChangePropagation()
     const auto epochBeforeLinear = graph.getLatencyEpoch();
     CHECK(graph.setEffectParameter(nodeId, "linphase", 1.0f),
           "AudioGraph should set linear phase through the owner path");
-    CHECK(graph.getOutputLatencySamples() == XlethParametricEQ::kSTFTHop,
+    CHECK(graph.getOutputLatencySamples() == kLinearPhaseLatency,
           "AudioGraph output latency should update on linear-phase enable");
     CHECK(graph.getLatencyEpoch() == epochBeforeLinear + 1,
           "AudioGraph linear-phase enable should trigger one PDC recompute");
@@ -970,6 +976,380 @@ static void testAudioGraphLatencyChangePropagation()
           "AudioGraph output latency should update on oversampling enable");
     CHECK(graph.getLatencyEpoch() == epochBeforeOs + 1,
           "AudioGraph oversampling enable should trigger one PDC recompute");
+}
+
+// [PDCNotify] The dedicated EQ RPCs (Audio_EQ_SetBandParam -> setBandParam,
+// Audio_EQ_SetGlobalParam -> setParameterValue) mutate the effect DIRECTLY, not
+// through any AudioGraph owner path. Before the notification mechanism the
+// chain latency stayed stale (bridge/probe_eq_chain_pdc.js, VERDICT=CONFIRMED).
+// Now the effect raises the graph's signal and one service pass recomputes PDC.
+// Deterministic: a bare AudioGraph has no applier thread, so the test decides
+// exactly when the service runs.
+static void testAudioGraphDirectEffectLatencyChangeNotifies()
+{
+    std::cout << "[PDCNotify] Graph: direct EQ mutation raises a PDC recompute\n";
+
+    AudioGraph graph;
+    graph.init(48000.0, 512);
+
+    const int nodeId = graph.addEffect("xletheq", 0);
+    CHECK(nodeId >= 0, "[PDCNotify] graph should add XlethEQ");
+    auto* eq = dynamic_cast<XlethParametricEQ*>(graph.getEffect(nodeId));
+    CHECK(eq != nullptr, "[PDCNotify] graph effect should be XlethEQ");
+    if (eq == nullptr) return;
+
+    CHECK(eq->addBand() == 0, "[PDCNotify] EQ should add band 0");
+    graph.refreshLatencyDiagnostics();
+    CHECK(!graph.hasPendingLatencyChange(), "[PDCNotify] refresh should leave nothing pending");
+    CHECK(!graph.servicePendingLatencyChange(), "[PDCNotify] idle service should be a no-op");
+
+    auto epoch = graph.getLatencyEpoch();
+    CHECK(eq->setBandParam(0, "mode", 2.0f), "[PDCNotify] setBandParam mode=2 should succeed");
+    CHECK(eq->getReportedProcessorLatencySamples() == XlethParametricEQ::kSTFTLatency,
+          "[PDCNotify] EQ reported latency should be the STFT latency");
+    CHECK(graph.hasPendingLatencyChange(),
+          "[PDCNotify] a direct latency change must leave the graph pending");
+    CHECK(graph.getLatencyEpoch() == epoch,
+          "[PDCNotify] the notification itself must not recompute inline");
+    CHECK(graph.servicePendingLatencyChange(), "[PDCNotify] service should recompute");
+    CHECK(graph.getOutputLatencySamples() == XlethParametricEQ::kSTFTLatency,
+          "[PDCNotify] chain latency should follow Spectral ON (4096)");
+    CHECK(graph.getLatencyEpoch() == epoch + 1, "[PDCNotify] exactly one recompute for Spectral ON");
+    CHECK(!graph.servicePendingLatencyChange(), "[PDCNotify] second service must be a no-op");
+
+    epoch = graph.getLatencyEpoch();
+    CHECK(eq->setBandParam(0, "mode", 0.0f), "[PDCNotify] setBandParam mode=0 should succeed");
+    CHECK(graph.servicePendingLatencyChange(), "[PDCNotify] service should recompute Spectral OFF");
+    CHECK(graph.getOutputLatencySamples() == 0, "[PDCNotify] chain latency should drop back to 0");
+    CHECK(graph.getLatencyEpoch() == epoch + 1, "[PDCNotify] exactly one recompute for Spectral OFF");
+
+    epoch = graph.getLatencyEpoch();
+    const auto raisesBefore = graph.getLatencyChangeRaiseCount();
+    CHECK(eq->setBandParam(0, "mode", 2.0f), "[PDCNotify] burst step 1");
+    CHECK(eq->setBandParam(0, "mode", 0.0f), "[PDCNotify] burst step 2");
+    CHECK(eq->setBandParam(0, "mode", 2.0f), "[PDCNotify] burst step 3");
+    CHECK(graph.getLatencyChangeRaiseCount() == raisesBefore + 3,
+          "[PDCNotify] each actual change should raise once");
+    CHECK(graph.servicePendingLatencyChange(), "[PDCNotify] burst service should recompute");
+    CHECK(graph.getLatencyEpoch() == epoch + 1, "[PDCNotify] a burst should cost ONE recompute");
+    CHECK(graph.getOutputLatencySamples() == XlethParametricEQ::kSTFTLatency,
+          "[PDCNotify] burst should settle on the final value");
+    CHECK(eq->setBandParam(0, "mode", 0.0f), "[PDCNotify] burst reset");
+    CHECK(graph.servicePendingLatencyChange(), "[PDCNotify] burst reset recompute");
+
+    const auto raisesNeutral = graph.getLatencyChangeRaiseCount();
+    CHECK(eq->setBandParam(0, "gain", 3.0f), "[PDCNotify] neutral gain edit");
+    CHECK(eq->setBandParam(0, "mode", 0.0f), "[PDCNotify] same-value mode write");
+    CHECK(graph.getLatencyChangeRaiseCount() == raisesNeutral,
+          "[PDCNotify] latency-neutral edits must not raise");
+    CHECK(!graph.hasPendingLatencyChange(), "[PDCNotify] nothing pending after neutral edits");
+
+    epoch = graph.getLatencyEpoch();
+    CHECK(eq->setParameterValue("linphase", 1.0f), "[PDCNotify] linphase on");
+    CHECK(graph.servicePendingLatencyChange(), "[PDCNotify] linphase on should recompute");
+    CHECK(graph.getOutputLatencySamples() == kLinearPhaseLatency,
+          "[PDCNotify] chain latency should follow linear phase ON");
+    CHECK(graph.getLatencyEpoch() == epoch + 1, "[PDCNotify] one recompute for linphase ON");
+    CHECK(eq->setParameterValue("linphase", 0.0f), "[PDCNotify] linphase off");
+    CHECK(graph.servicePendingLatencyChange(), "[PDCNotify] linphase off should recompute");
+    CHECK(graph.getOutputLatencySamples() == 0, "[PDCNotify] chain latency back to 0 after linphase");
+
+    CHECK(eq->setParameterValue("oversample", 1.0f), "[PDCNotify] oversample on");
+    const int osLatency = eq->getReportedProcessorLatencySamples();
+    CHECK(osLatency > 0, "[PDCNotify] oversampling should report latency");
+    CHECK(graph.servicePendingLatencyChange(), "[PDCNotify] oversample on should recompute");
+    CHECK(graph.getOutputLatencySamples() == osLatency,
+          "[PDCNotify] chain latency should follow oversampling ON");
+    CHECK(eq->setParameterValue("oversample", 0.0f), "[PDCNotify] oversample off");
+    CHECK(graph.servicePendingLatencyChange(), "[PDCNotify] oversample off should recompute");
+    CHECK(graph.getOutputLatencySamples() == 0, "[PDCNotify] chain latency back to 0 after oversampling");
+
+    epoch = graph.getLatencyEpoch();
+    CHECK(graph.setEffectParameter(nodeId, "b0_mode", 2.0f), "[PDCNotify] generic path mode=2");
+    CHECK(graph.getOutputLatencySamples() == XlethParametricEQ::kSTFTLatency,
+          "[PDCNotify] generic path still recomputes inline");
+    CHECK(graph.getLatencyEpoch() == epoch + 1, "[PDCNotify] generic path: one recompute");
+    CHECK(!graph.hasPendingLatencyChange(),
+          "[PDCNotify] generic path must not leave a pending change behind");
+    CHECK(!graph.servicePendingLatencyChange(),
+          "[PDCNotify] generic path + service must not double-recompute");
+    CHECK(graph.getLatencyEpoch() == epoch + 1, "[PDCNotify] still exactly one recompute");
+    CHECK(graph.setEffectParameter(nodeId, "b0_mode", 0.0f), "[PDCNotify] generic path mode=0");
+
+    const int second = graph.addEffect("xletheq", 1);
+    CHECK(second >= 0, "[PDCNotify] graph should add a second EQ");
+    auto* eq2 = dynamic_cast<XlethParametricEQ*>(graph.getEffect(second));
+    CHECK(eq2 != nullptr && eq2->addBand() == 0, "[PDCNotify] second EQ band");
+    graph.refreshLatencyDiagnostics();
+    CHECK(graph.removeEffect(second), "[PDCNotify] remove second EQ");
+    // eq2 is gone with its node; the first EQ is still subscribed.
+    CHECK(eq->setBandParam(0, "mode", 2.0f), "[PDCNotify] first EQ still notifies");
+    CHECK(graph.hasPendingLatencyChange(), "[PDCNotify] surviving node still raises");
+    CHECK(graph.servicePendingLatencyChange(), "[PDCNotify] surviving node recompute");
+    CHECK(graph.getOutputLatencySamples() == XlethParametricEQ::kSTFTLatency,
+          "[PDCNotify] chain latency after removal + direct change");
+}
+
+// [RSCore] Resonance Suppressor hq_engine = New: chain PDC follows a quality
+// change and an engine change through the generic path (inline recompute) and
+// through a direct effect mutation (LatencyChangeSignal -> service), and stays
+// put across bypass / mix 0 (the New engine's latency is constant).
+static void testResonanceSuppressorNewEngineChainPdc()
+{
+    std::cout << "[RSCore] chain PDC follows RS quality / engine changes\n";
+    using Core = xleth::dsp::resonance::Core;
+
+    for (double sr : { 48000.0, 96000.0 })
+    {
+        AudioGraph graph;
+        graph.init(sr, 512);
+        const int nodeId = graph.addEffect("resonancesuppressor", 0);
+        CHECK(nodeId >= 0, "[RSCore] graph should add the Resonance Suppressor");
+        auto* rs = dynamic_cast<XlethResonanceSuppressorEffect*>(graph.getEffect(nodeId));
+        CHECK(rs != nullptr, "[RSCore] graph effect should be the Resonance Suppressor");
+        if (rs == nullptr) return;
+        auto lat = [&](int q) { return Core::latencyFor(sr, static_cast<Core::FrameTier>(q)); };
+        const int classicNormal = 1024;   // WolaProcessor: N at every rate
+
+        CHECK(graph.setEffectParameter(nodeId, "processing_mode", 1.0f), "[RSCore] generic path processing_mode HQ");
+        CHECK(graph.getOutputLatencySamples() == classicNormal, "[RSCore] Classic HQ Normal chain latency");
+
+        auto epoch = graph.getLatencyEpoch();
+        CHECK(graph.setEffectParameter(nodeId, "hq_engine", 1.0f), "[RSCore] generic path hq_engine New");
+        CHECK(graph.getOutputLatencySamples() == lat(1), "[RSCore] chain latency follows the engine change");
+        CHECK(graph.getLatencyEpoch() == epoch + (lat(1) != classicNormal ? 1u : 0u),
+              "[RSCore] an engine change recomputes PDC exactly when the latency changes");
+
+        for (int q : { 2, 0, 1 })
+        {
+            epoch = graph.getLatencyEpoch();
+            CHECK(graph.setEffectParameter(nodeId, "quality", static_cast<float>(q)), "[RSCore] generic path quality");
+            CHECK(graph.getOutputLatencySamples() == lat(q), "[RSCore] chain latency follows the New-engine quality change");
+            CHECK(graph.getLatencyEpoch() == epoch + 1, "[RSCore] one recompute per quality change");
+            CHECK(!graph.hasPendingLatencyChange(), "[RSCore] generic path leaves nothing pending");
+        }
+
+        epoch = graph.getLatencyEpoch();
+        CHECK(graph.setBypass(nodeId, true), "[RSCore] bypass on");
+        CHECK(graph.setEffectParameter(nodeId, "mix", 0.0f), "[RSCore] mix 0");
+        CHECK(graph.getOutputLatencySamples() == lat(1) && graph.getLatencyEpoch() == epoch,
+              "[RSCore] bypass and mix 0 do not retarget PDC on the New engine");
+        CHECK(graph.setEffectParameter(nodeId, "mix", 100.0f), "[RSCore] mix back");
+        CHECK(graph.setBypass(nodeId, false), "[RSCore] bypass off");
+        CHECK(graph.getLatencyEpoch() == epoch, "[RSCore] still no recompute after bypass / mix restored");
+
+        // Direct mutation (the RPC path that bypasses the graph): pending + service.
+        epoch = graph.getLatencyEpoch();
+        CHECK(rs->setParameterValue("quality", 2.0f), "[RSCore] direct quality change");
+        CHECK(graph.hasPendingLatencyChange(), "[RSCore] direct change leaves the graph pending");
+        CHECK(graph.servicePendingLatencyChange(), "[RSCore] service recomputes");
+        CHECK(graph.getOutputLatencySamples() == lat(2) && graph.getLatencyEpoch() == epoch + 1,
+              "[RSCore] chain latency follows a direct quality change");
+
+        epoch = graph.getLatencyEpoch();
+        CHECK(rs->setParameterValue("hq_engine", 0.0f), "[RSCore] direct engine change back to Classic");
+        if (lat(2) != 2048)
+        {
+            CHECK(graph.servicePendingLatencyChange(), "[RSCore] service recomputes the engine change");
+            CHECK(graph.getLatencyEpoch() == epoch + 1, "[RSCore] one recompute for the engine change");
+        }
+        CHECK(graph.getOutputLatencySamples() == 2048, "[RSCore] Classic High chain latency after the engine change");
+        std::cout << "[RSCore] sr " << sr << ": New Fast/Normal/High " << lat(0) << "/" << lat(1) << "/" << lat(2)
+                  << ", final chain latency " << graph.getOutputLatencySamples() << "\n";
+        graph.destroy();
+    }
+}
+
+// [EQCore] Chain PDC follows the EQ's Spectral engine, quality and band
+// on / off changes: through the generic owner path (setEffectParameter) and a
+// direct mutation (the RPC path: setBandParam / setParameterValue on the
+// effect) + the pending-latency service, at 48 and 96 kHz.
+static void testEqCoreChainPdc()
+{
+    std::cout << "[EQCore] chain PDC follows EQ engine / quality / band changes\n";
+    using Core = xleth::dsp::resonance::Core;
+
+    for (double sr : { 48000.0, 96000.0 })
+    {
+        AudioGraph graph;
+        graph.init(sr, 512);
+        const int nodeId = graph.addEffect("xletheq", 0);
+        CHECK(nodeId >= 0, "[EQCore] graph should add the EQ");
+        auto* eq = dynamic_cast<XlethParametricEQ*>(graph.getEffect(nodeId));
+        CHECK(eq != nullptr, "[EQCore] graph effect should be the EQ");
+        if (eq == nullptr) return;
+        auto lat = [&](int q) { return Core::latencyFor(sr, static_cast<Core::FrameTier>(q)); };
+
+        CHECK(eq->addBand() == 0, "[EQCore] band 0");
+        CHECK(eq->setBandParam(0, "mode", 2.0f), "[EQCore] band 0 Spectral (direct)");
+        CHECK(graph.servicePendingLatencyChange(), "[EQCore] service the Spectral-on change");
+        CHECK(graph.getOutputLatencySamples() == XlethParametricEQ::kSTFTLatency, "[EQCore] Legacy Spectral chain latency 4096");
+
+        auto epoch = graph.getLatencyEpoch();
+        CHECK(graph.setEffectParameter(nodeId, "spectral_engine", 1.0f), "[EQCore] generic path spectral_engine Core");
+        CHECK(graph.getOutputLatencySamples() == lat(1), "[EQCore] chain latency follows the engine change (Core Normal)");
+        CHECK(graph.getLatencyEpoch() == epoch + 1, "[EQCore] one recompute for the engine change");
+        CHECK(!graph.hasPendingLatencyChange(), "[EQCore] generic path leaves nothing pending");
+
+        for (int q : { 2, 0, 1 })
+        {
+            epoch = graph.getLatencyEpoch();
+            CHECK(graph.setEffectParameter(nodeId, "spectral_quality", static_cast<float>(q)), "[EQCore] generic path spectral_quality");
+            CHECK(graph.getOutputLatencySamples() == lat(q), "[EQCore] chain latency follows the quality change");
+            CHECK(graph.getLatencyEpoch() == epoch + 1, "[EQCore] one recompute per quality change");
+        }
+
+        // Bypass keeps the latency (Legacy and Core alike): no recompute.
+        epoch = graph.getLatencyEpoch();
+        CHECK(graph.setBypass(nodeId, true), "[EQCore] bypass on");
+        CHECK(graph.setBypass(nodeId, false), "[EQCore] bypass off");
+        CHECK(graph.getOutputLatencySamples() == lat(1) && graph.getLatencyEpoch() == epoch,
+              "[EQCore] bypass does not retarget PDC on the Core");
+
+        // Direct mutations (the eqSetBandParam / eqSetGlobalParam RPCs): pending + service.
+        epoch = graph.getLatencyEpoch();
+        CHECK(eq->setBandParam(0, "enabled", 0.0f), "[EQCore] direct: Spectral band off");
+        CHECK(graph.hasPendingLatencyChange() && graph.servicePendingLatencyChange(), "[EQCore] service the band-off change");
+        CHECK(graph.getOutputLatencySamples() == 0 && graph.getLatencyEpoch() == epoch + 1,
+              "[EQCore] chain latency drops to 0 with the Core's Spectral band off (as Legacy)");
+        epoch = graph.getLatencyEpoch();
+        CHECK(eq->setBandParam(0, "enabled", 1.0f), "[EQCore] direct: Spectral band on");
+        CHECK(graph.servicePendingLatencyChange(), "[EQCore] service the band-on change");
+        CHECK(graph.getOutputLatencySamples() == lat(1) && graph.getLatencyEpoch() == epoch + 1,
+              "[EQCore] chain latency follows the band back on (Core Normal)");
+        epoch = graph.getLatencyEpoch();
+        CHECK(eq->setParameterValue("spectral_quality", 2.0f), "[EQCore] direct quality change");
+        CHECK(graph.servicePendingLatencyChange(), "[EQCore] service the direct quality change");
+        CHECK(graph.getOutputLatencySamples() == lat(2) && graph.getLatencyEpoch() == epoch + 1,
+              "[EQCore] chain latency follows a direct quality change");
+        epoch = graph.getLatencyEpoch();
+        CHECK(eq->setParameterValue("spectral_engine", 0.0f), "[EQCore] direct engine change back to Legacy");
+        if (lat(2) != XlethParametricEQ::kSTFTLatency)
+        {
+            CHECK(graph.servicePendingLatencyChange(), "[EQCore] service the engine change");
+            CHECK(graph.getLatencyEpoch() == epoch + 1, "[EQCore] one recompute for the engine change");
+        }
+        CHECK(graph.getOutputLatencySamples() == XlethParametricEQ::kSTFTLatency, "[EQCore] Legacy again: 4096");
+        // The Core's quality does not move a Legacy EQ's latency.
+        epoch = graph.getLatencyEpoch();
+        CHECK(graph.setEffectParameter(nodeId, "spectral_quality", 0.0f), "[EQCore] quality on Legacy");
+        CHECK(graph.getOutputLatencySamples() == XlethParametricEQ::kSTFTLatency && graph.getLatencyEpoch() == epoch,
+              "[EQCore] spectral_quality does not change a Legacy EQ's latency (no recompute)");
+        std::cout << "[EQCore] sr " << sr << ": Core Fast/Normal/High " << lat(0) << "/" << lat(1) << "/" << lat(2)
+                  << ", Legacy " << XlethParametricEQ::kSTFTLatency << ", final chain latency " << graph.getOutputLatencySamples() << "\n";
+        graph.destroy();
+    }
+}
+
+// [PDCNotify] Same contract one level up, through MixEngine - the object the
+// bridge RPCs reach via getEffectPtr()/getMasterEffectPtr(). Not prepared, so no
+// applier thread: the test drives servicePendingLatencyChanges() itself.
+static void testMixEngineDirectEffectLatencyChangeService()
+{
+    std::cout << "[PDCNotify] MixEngine: service recomputes track + master chains\n";
+
+    // Heap, not stack: MixEngine is large enough to overflow the 1 MB main
+    // thread stack (the shared fixtures make_unique it for the same reason).
+    auto timeline = std::make_unique<Timeline>(120.0, 48000.0);
+    TrackInfo latent; latent.name = "Latent";
+    TrackInfo dry; dry.name = "Dry";
+    const int latentTrack = timeline->addTrack(latent);
+    const int dryTrack = timeline->addTrack(dry);
+
+    auto enginePtr = std::make_unique<MixEngine>();
+    MixEngine& engine = *enginePtr;
+    engine.setTimeline(timeline.get());
+    juce::ignoreUnused(dryTrack);
+
+    const int trackEq = engine.addEffect(latentTrack, "xletheq", 0);
+    const int masterEq = engine.addMasterEffect("xletheq", 0);
+    CHECK(trackEq >= 0 && masterEq >= 0, "[PDCNotify] MixEngine should accept track + master EQ");
+    auto* teq = dynamic_cast<XlethParametricEQ*>(engine.getEffectPtr(latentTrack, trackEq));
+    auto* meq = dynamic_cast<XlethParametricEQ*>(engine.getMasterEffectPtr(masterEq));
+    CHECK(teq != nullptr && meq != nullptr, "[PDCNotify] both inserts should be XlethEQ");
+    if (teq == nullptr || meq == nullptr) return;
+    CHECK(teq->addBand() == 0 && meq->addBand() == 0, "[PDCNotify] both EQs get band 0");
+    engine.refreshLatencyDiagnostics();
+    (void) engine.servicePendingLatencyChanges();   // drain setup-time generation bumps
+
+    CHECK(engine.getTrackInsertLatencySamples(latentTrack) == 0, "[PDCNotify] track starts at 0");
+    CHECK(engine.servicePendingLatencyChanges() == 0, "[PDCNotify] idle service recomputes nothing");
+
+    // Exactly the Audio_EQ_SetBandParam body: getEffectPtr -> setBandParam.
+    CHECK(teq->setBandParam(0, "mode", 2.0f), "[PDCNotify] track EQ Spectral on");
+    CHECK(engine.getTrackInsertLatencySamples(latentTrack) == 0,
+          "[PDCNotify] before the service the cached chain value is still the old one");
+    CHECK(engine.servicePendingLatencyChanges() == 1, "[PDCNotify] one chain recomputed");
+    CHECK(engine.getTrackInsertLatencySamples(latentTrack) == XlethParametricEQ::kSTFTLatency,
+          "[PDCNotify] track chain latency = 4096 after service");
+    CHECK(engine.getMaxAudibleTrackLatencySamples() == XlethParametricEQ::kSTFTLatency,
+          "[PDCNotify] mixer max audible track latency = 4096 after service");
+    CHECK(engine.servicePendingLatencyChanges() == 0, "[PDCNotify] no double recompute");
+
+    CHECK(teq->setBandParam(0, "mode", 0.0f), "[PDCNotify] track EQ Spectral off");
+    CHECK(engine.servicePendingLatencyChanges() == 1, "[PDCNotify] Spectral off recomputed");
+    CHECK(engine.getTrackInsertLatencySamples(latentTrack) == 0,
+          "[PDCNotify] track chain latency back to 0 after service");
+
+    // Master chain (trackId < 0 in the RPC) + global param path.
+    CHECK(meq->setParameterValue("linphase", 1.0f), "[PDCNotify] master EQ linphase on");
+    CHECK(engine.servicePendingLatencyChanges() == 1, "[PDCNotify] master chain recomputed");
+    CHECK(engine.getMasterInsertLatencySamples() == kLinearPhaseLatency,
+          "[PDCNotify] master insert latency follows linear phase");
+    CHECK(meq->setParameterValue("linphase", 0.0f), "[PDCNotify] master EQ linphase off");
+    CHECK(engine.servicePendingLatencyChanges() == 1, "[PDCNotify] master chain recomputed again");
+    CHECK(engine.getMasterInsertLatencySamples() == 0, "[PDCNotify] master insert back to 0");
+
+    // Both chains in one pass.
+    CHECK(teq->setBandParam(0, "mode", 2.0f) && meq->setBandParam(0, "mode", 2.0f),
+          "[PDCNotify] both EQs Spectral on");
+    CHECK(engine.servicePendingLatencyChanges() == 2, "[PDCNotify] both chains in one pass");
+    CHECK(engine.getTrackInsertLatencySamples(latentTrack) == XlethParametricEQ::kSTFTLatency
+              && engine.getMasterInsertLatencySamples() == XlethParametricEQ::kSTFTLatency,
+          "[PDCNotify] both chains report 4096");
+}
+
+// [PDCNotify] Wiring: with a prepared engine the envelope applier thread runs
+// the service by itself. No explicit call; poll the cached value.
+static void testMixEngineApplierServicesLatencyChange()
+{
+    std::cout << "[PDCNotify] MixEngine: applier thread heals a direct change unaided\n";
+
+    auto timeline = std::make_unique<Timeline>(120.0, 48000.0);   // heap: see above
+    TrackInfo latent; latent.name = "Latent";
+    const int latentTrack = timeline->addTrack(latent);
+
+    auto enginePtr = std::make_unique<MixEngine>();
+    MixEngine& engine = *enginePtr;
+    engine.setTimeline(timeline.get());
+    engine.prepare(48000.0, 512);   // starts the applier thread
+
+    const int eqNode = engine.addEffect(latentTrack, "xletheq", 0);
+    auto* eq = dynamic_cast<XlethParametricEQ*>(engine.getEffectPtr(latentTrack, eqNode));
+    CHECK(eq != nullptr, "[PDCNotify] applier test: XlethEQ insert");
+    if (eq == nullptr) return;
+    CHECK(eq->addBand() == 0, "[PDCNotify] applier test: band 0");
+    engine.refreshLatencyDiagnostics();
+
+    auto waitForLatency = [&](int expected) {
+        for (int i = 0; i < 200; ++i)   // up to ~2 s
+        {
+            if (engine.getTrackInsertLatencySamples(latentTrack) == expected)
+                return true;
+            juce::Thread::sleep(10);
+        }
+        return false;
+    };
+
+    const auto servicesBefore = engine.getLatencyChangeServiceCount();
+    CHECK(eq->setBandParam(0, "mode", 2.0f), "[PDCNotify] applier test: Spectral on");
+    CHECK(waitForLatency(XlethParametricEQ::kSTFTLatency),
+          "[PDCNotify] applier thread should bring the chain to 4096 without any refresh call");
+    CHECK(eq->setBandParam(0, "mode", 0.0f), "[PDCNotify] applier test: Spectral off");
+    CHECK(waitForLatency(0),
+          "[PDCNotify] applier thread should bring the chain back to 0 without any refresh call");
+    CHECK(engine.getLatencyChangeServiceCount() >= servicesBefore + 2,
+          "[PDCNotify] applier thread should have serviced both changes");
 }
 
 static void testAudioGraphThirdPartyLatencyRefreshPropagation()
@@ -1156,8 +1536,8 @@ static void testPdcRegressionAccounting()
 
         CHECK(
             fixture->engine.isInterTrackLatencyCompensationApplied()
-                && trackLat == XlethParametricEQ::kSTFTHop
-                && dryComp == XlethParametricEQ::kSTFTHop
+                && trackLat == XlethParametricEQ::kSTFTLatency
+                && dryComp == XlethParametricEQ::kSTFTLatency
                 && latentComp == 0,
             "track_to_track_impulse_alignment: dry track should be delayed by the latent track insert latency before summing");
     }
@@ -1168,7 +1548,7 @@ static void testPdcRegressionAccounting()
 
         CHECK(
             snapshot.maxAudibleTrackLatencySamples == 0
-                && snapshot.masterInsertLatencySamples == XlethParametricEQ::kSTFTHop
+                && snapshot.masterInsertLatencySamples == XlethParametricEQ::kSTFTLatency
                 && fixture->engine.getTrackCompensationDelaySamples(fixture->dryTrackId) == 0,
             "master_only_latency_accounting: master insert latency should be reported separately from per-track compensation");
     }
@@ -1181,9 +1561,9 @@ static void testPdcRegressionAccounting()
             fixture->engine.getTrackCompensationDelaySamples(fixture->latentTrackId);
 
         CHECK(
-            snapshot.maxAudibleTrackLatencySamples == XlethParametricEQ::kSTFTHop
-                && snapshot.masterInsertLatencySamples == XlethParametricEQ::kSTFTHop
-                && dryComp == XlethParametricEQ::kSTFTHop
+            snapshot.maxAudibleTrackLatencySamples == XlethParametricEQ::kSTFTLatency
+                && snapshot.masterInsertLatencySamples == XlethParametricEQ::kSTFTLatency
+                && dryComp == XlethParametricEQ::kSTFTLatency
                 && latentComp == 0,
             "track_plus_master_accounting: track PDC and master/common-path latency should remain separate");
 
@@ -1191,7 +1571,7 @@ static void testPdcRegressionAccounting()
             snapshot.maxAudibleTrackLatencySamples
             + snapshot.masterInsertLatencySamples;
         CHECK(
-            totalExportPreroll == 2 * XlethParametricEQ::kSTFTHop,
+            totalExportPreroll == 2 * XlethParametricEQ::kSTFTLatency,
             "export_preroll_discard_accounting: export preroll/discard should include maxTrackLatency + masterLatency");
     }
 }
@@ -1349,11 +1729,11 @@ static void testLivePresentationLatencyFormulaAndPositions()
 
     const auto diagnostics = engine.getLivePresentationLatencyDiagnostics();
     const int64_t expectedTotal =
-        static_cast<int64_t>(XlethParametricEQ::kSTFTHop) * 2 + kDeviceLatency;
+        static_cast<int64_t>(XlethParametricEQ::kSTFTLatency) * 2 + kDeviceLatency;
 
-    CHECK(diagnostics.maxTrackLatencySamples == XlethParametricEQ::kSTFTHop,
+    CHECK(diagnostics.maxTrackLatencySamples == XlethParametricEQ::kSTFTLatency,
           "presentation formula should include max audible track latency");
-    CHECK(diagnostics.masterLatencySamples == XlethParametricEQ::kSTFTHop,
+    CHECK(diagnostics.masterLatencySamples == XlethParametricEQ::kSTFTLatency,
           "presentation formula should include master insert latency");
     CHECK(diagnostics.deviceOutputLatencySamples == kDeviceLatency,
           "presentation formula should include cached device output latency");
@@ -1411,10 +1791,10 @@ static void testLivePresentationLatencyRefreshAfterEqChange()
           "presentation refresh should toggle Spectral through MixEngine");
     engine.refreshLivePresentationLatency();
     diagnostics = engine.getLivePresentationLatencyDiagnostics();
-    CHECK(diagnostics.maxTrackLatencySamples == XlethParametricEQ::kSTFTHop,
+    CHECK(diagnostics.maxTrackLatencySamples == XlethParametricEQ::kSTFTLatency,
           "presentation diagnostics should see Spectral track latency after parameter change");
     CHECK(diagnostics.totalPresentationLatencySamples
-              == XlethParametricEQ::kSTFTHop + kDeviceLatency,
+              == XlethParametricEQ::kSTFTLatency + kDeviceLatency,
           "presentation total should refresh from MixEngine latency diagnostics");
 
     CHECK(mixer.setEffectParameter(fixture->latentTrackId,
@@ -1442,12 +1822,12 @@ static void testLivePresentationLatencyMasterTrackAndZeroCases()
         const auto diagnostics = engine.getLivePresentationLatencyDiagnostics();
         CHECK(diagnostics.maxTrackLatencySamples == 0,
               "master-only presentation should have zero max track latency");
-        CHECK(diagnostics.masterLatencySamples == XlethParametricEQ::kSTFTHop,
+        CHECK(diagnostics.masterLatencySamples == XlethParametricEQ::kSTFTLatency,
               "master-only presentation should include master latency");
         CHECK(engine.getMixEngine().getTrackCompensationDelaySamples(fixture->dryTrackId) == 0,
               "master-only latency should not become per-track compensation");
         CHECK(diagnostics.totalPresentationLatencySamples
-                  == XlethParametricEQ::kSTFTHop + kDeviceLatency,
+                  == XlethParametricEQ::kSTFTLatency + kDeviceLatency,
               "master-only presentation should lag by master + device latency");
     }
 
@@ -1455,15 +1835,15 @@ static void testLivePresentationLatencyMasterTrackAndZeroCases()
         auto fixture = makePresentationLatencyEngine(true, false, kDeviceLatency);
         auto& engine = fixture->engine;
         const auto diagnostics = engine.getLivePresentationLatencyDiagnostics();
-        CHECK(diagnostics.maxTrackLatencySamples == XlethParametricEQ::kSTFTHop,
+        CHECK(diagnostics.maxTrackLatencySamples == XlethParametricEQ::kSTFTLatency,
               "track-only presentation should include max track latency");
         CHECK(diagnostics.masterLatencySamples == 0,
               "track-only presentation should have zero master latency");
         CHECK(engine.getMixEngine().getTrackCompensationDelaySamples(fixture->dryTrackId)
-                  == XlethParametricEQ::kSTFTHop,
+                  == XlethParametricEQ::kSTFTLatency,
               "track-only presentation should preserve differential track PDC");
         CHECK(diagnostics.totalPresentationLatencySamples
-                  == XlethParametricEQ::kSTFTHop + kDeviceLatency,
+                  == XlethParametricEQ::kSTFTLatency + kDeviceLatency,
               "track-only presentation should lag by max track + device latency");
     }
 
@@ -1495,7 +1875,7 @@ static void testLivePresentationLatencyAutoRefreshAfterMutation()
     std::cout << "[Presentation] Live latency auto-refreshes after mutation (Stage 7B)\n";
 
     constexpr int64_t kDeviceLatency = 384;
-    constexpr int64_t kHop = static_cast<int64_t>(XlethParametricEQ::kSTFTHop);
+    constexpr int64_t kEqLat = static_cast<int64_t>(XlethParametricEQ::kSTFTLatency);
 
     // Helper: add an XlethEQ insert with a single band and toggle Spectral mode
     // through MixEngine — exactly the path the bridge uses for built-in effect
@@ -1531,15 +1911,15 @@ static void testLivePresentationLatencyAutoRefreshAfterMutation()
 
         // No engine.refreshLivePresentationLatency() — that's the regression.
         const auto diag = engine.getLivePresentationLatencyDiagnostics();
-        CHECK(diag.maxTrackLatencySamples == kHop,
+        CHECK(diag.maxTrackLatencySamples == kEqLat,
               "Stage 7B: diagnostics maxTrack should reflect added insert without refresh");
-        CHECK(diag.totalPresentationLatencySamples == kHop + kDeviceLatency,
+        CHECK(diag.totalPresentationLatencySamples == kEqLat + kDeviceLatency,
               "Stage 7B: diagnostics total should reflect added insert without refresh");
-        CHECK(engine.getLivePresentationLatencySamples() == kHop + kDeviceLatency,
+        CHECK(engine.getLivePresentationLatencySamples() == kEqLat + kDeviceLatency,
               "Stage 7B: latency getter should reflect added insert without refresh");
 
         auto& transport = engine.getTransport();
-        transport.seekToSample(kHop + kDeviceLatency + 1024);
+        transport.seekToSample(kEqLat + kDeviceLatency + 1024);
         // Mutate again on the dry track — same MixEngine path — without any
         // further refresh. Both insertions should now contribute to the live
         // max-audible latency, and the position must subtract that updated
@@ -1575,9 +1955,9 @@ static void testLivePresentationLatencyAutoRefreshAfterMutation()
 
         // No refresh, no seek — just read.
         const auto diag = engine.getLivePresentationLatencyDiagnostics();
-        CHECK(diag.maxTrackLatencySamples == kHop,
+        CHECK(diag.maxTrackLatencySamples == kEqLat,
               "Stage 7B param: diagnostics should pick up post-parameter latency live");
-        CHECK(engine.getLivePresentationLatencySamples() == kHop + kDeviceLatency,
+        CHECK(engine.getLivePresentationLatencySamples() == kEqLat + kDeviceLatency,
               "Stage 7B param: latency getter should pick up post-parameter latency live");
     }
 
@@ -1592,7 +1972,7 @@ static void testLivePresentationLatencyAutoRefreshAfterMutation()
         auto& mixer = engine.getMixEngine();
 
         // Master XlethEQ already configured by fixture (masterSpectral=true).
-        CHECK(engine.getLivePresentationLatencyDiagnostics().masterLatencySamples == kHop,
+        CHECK(engine.getLivePresentationLatencyDiagnostics().masterLatencySamples == kEqLat,
               "Stage 7B master+track: master spectral latency should be reported");
         CHECK(engine.getLivePresentationLatencyDiagnostics().maxTrackLatencySamples == 0,
               "Stage 7B master+track: no track latency yet");
@@ -1602,11 +1982,11 @@ static void testLivePresentationLatencyAutoRefreshAfterMutation()
         addAndEnableSpectralViaMixer(mixer, fixture->latentTrackId);
 
         const auto diag = engine.getLivePresentationLatencyDiagnostics();
-        CHECK(diag.maxTrackLatencySamples == kHop,
+        CHECK(diag.maxTrackLatencySamples == kEqLat,
               "Stage 7B master+track: track latency should be visible live");
-        CHECK(diag.masterLatencySamples == kHop,
+        CHECK(diag.masterLatencySamples == kEqLat,
               "Stage 7B master+track: master latency should still be reported");
-        CHECK(diag.totalPresentationLatencySamples == kHop + kHop + kDeviceLatency,
+        CHECK(diag.totalPresentationLatencySamples == kEqLat + kEqLat + kDeviceLatency,
               "Stage 7B master+track: total = track + master + device, no double count");
     }
 
@@ -1616,7 +1996,7 @@ static void testLivePresentationLatencyAutoRefreshAfterMutation()
         auto& engine = fixture->engine;
         auto& mixer = engine.getMixEngine();
 
-        CHECK(engine.getLivePresentationLatencySamples() == kHop + kDeviceLatency,
+        CHECK(engine.getLivePresentationLatencySamples() == kEqLat + kDeviceLatency,
               "Stage 7B remove: spectral track should contribute latency live");
 
         CHECK(mixer.removeEffect(fixture->latentTrackId, fixture->trackEqNodeId),
@@ -1653,9 +2033,9 @@ static void testLivePresentationLatencyAutoRefreshAfterMutation()
         // event. The bridge has no audio_setMasterEffectParameter wrapper that
         // could refresh even if it wanted to.
         const auto diag = engine.getLivePresentationLatencyDiagnostics();
-        CHECK(diag.masterLatencySamples == kHop,
+        CHECK(diag.masterLatencySamples == kEqLat,
               "Stage 7B master-param: master latency should be visible after parameter change");
-        CHECK(engine.getLivePresentationLatencySamples() == kHop + kDeviceLatency,
+        CHECK(engine.getLivePresentationLatencySamples() == kEqLat + kDeviceLatency,
               "Stage 7B master-param: total latency should include new master latency");
     }
 
@@ -1672,9 +2052,9 @@ static void testLivePresentationLatencyAutoRefreshAfterMutation()
         auto& transport = engine.getTransport();
 
         // Simulate a "live" playhead well past device latency.
-        transport.seekToSample(kHop + kDeviceLatency + 4096);
+        transport.seekToSample(kEqLat + kDeviceLatency + 4096);
         const int64_t baselinePos = engine.getLivePresentationPositionSamples();
-        CHECK(baselinePos == kHop + 4096,
+        CHECK(baselinePos == kEqLat + 4096,
               "Stage 7B pos: baseline presentation position = raw - device");
 
         // Add the spectral insert via the MixEngine bridge route, no seek.
@@ -1683,7 +2063,7 @@ static void testLivePresentationLatencyAutoRefreshAfterMutation()
         const int64_t postMutPos = engine.getLivePresentationPositionSamples();
         CHECK(postMutPos == 4096,
               "Stage 7B pos: presentation position must subtract NEW latency live");
-        CHECK(baselinePos - postMutPos == kHop,
+        CHECK(baselinePos - postMutPos == kEqLat,
               "Stage 7B pos: position delta should equal added insert latency");
     }
 }
@@ -1698,17 +2078,21 @@ static void testSyncManagerUsesPresentationProvider()
     transport.seekToSample(48000);
     transport.play();
 
-    std::vector<VideoDecoder*> decoders;
-    FrameCache cache(1024);
-    SyncManager sync(transport, decoders, cache, nullptr, []() -> int64_t {
+    SyncManager sync(transport, []() -> int64_t {
         return 24000;
     });
 
-    const double returnedBeat = sync.videoTick();
+    const double returnedBeat = sync.currentBeatPosition();
     CHECK(std::abs(transport.getPositionBeats() - 1.0) < 1.0e-9,
           "raw transport beat should remain one beat");
     CHECK(std::abs(returnedBeat - 0.5) < 1.0e-9,
-          "SyncManager videoTick should return the presentation beat, not raw beat");
+          "currentBeatPosition should return the presentation beat, not raw beat");
+
+    // Stopped transport reports "no position" rather than beat 0 — the video
+    // thread distinguishes the two.
+    transport.pause();
+    CHECK(sync.currentBeatPosition() < 0.0,
+          "currentBeatPosition should return -1 while the transport is stopped");
 }
 
 static double sampleToBeats(std::int64_t sample, double sampleRate, double bpm)
@@ -2407,7 +2791,7 @@ static void testExportAccountingAfterXlethEqLatencyChange()
     mixer.refreshLatencyDiagnostics();
 
     const auto snapshot = mixer.getLatencyCompensationSnapshot();
-    CHECK(snapshot.maxAudibleTrackLatencySamples == XlethParametricEQ::kSTFTHop,
+    CHECK(snapshot.maxAudibleTrackLatencySamples == XlethParametricEQ::kSTFTLatency,
           "export accounting should see toggled Spectral track latency");
     CHECK(snapshot.masterInsertLatencySamples == 0,
           "export accounting should not invent master latency for track-only EQ");
@@ -2417,8 +2801,312 @@ static void testExportAccountingAfterXlethEqLatencyChange()
                      + snapshot.masterInsertLatencySamples);
     CHECK(plan.renderStartSample == 0,
           "export accounting should clamp project-start render start after EQ latency change");
-    CHECK(plan.samplesToDiscard == XlethParametricEQ::kSTFTHop,
+    CHECK(plan.samplesToDiscard == XlethParametricEQ::kSTFTLatency,
           "export accounting should discard plugin-latency lead-in after EQ latency change");
+}
+
+// ── EQ Spectral off->on splice ([EQSpliceFix]) ──────────────────────────────
+// docs/RESONANCE_SUPPRESSOR_AUDIT.md 3.3 #6. The STFT stream (input ring,
+// output ring, sample counters) used to be reset only by prepare/reset, so a
+// Spectral band that was disabled and re-enabled replayed the previous
+// spectral period's audio into the new one.
+//
+// Input is a continuous 1 kHz / 0.5 sine, 48 kHz, stereo, block 480. The sine
+// period is exactly 48 samples and 480 is a multiple of it, so with `skip` = 0
+// the stale ring audio happens to be phase-aligned with the live signal and
+// the splice is invisible. `skip` advances the sine's phase at the start of
+// phase B (spectral already off, so it is not part of the measured window) to
+// make the stale audio phase-DISPLACED, which is what real material does.
+namespace eqsplice
+{
+constexpr double kSr        = 48000.0;
+constexpr int    kBlock     = 480;
+constexpr int    kBlocksA   = 100;   // 1.0 s spectral active
+constexpr int    kBlocksB   = 50;    // 0.5 s spectral disabled
+constexpr int    kBlocksC   = 20;    // 9600 samples after re-enable
+constexpr int    kWindow    = 8192;  // measured window after re-enable
+constexpr float  kAmp       = 0.5f;
+constexpr float  kFreq      = 1000.0f;
+
+struct Result
+{
+    float maxStep      = 0.0f;   // max |x[n]-x[n-1]| inside the window
+    int   maxPos       = -1;     // window index n of that max
+    float maxStepHead  = 0.0f;   // ... restricted to [1, 4096)
+    int   maxPosHead   = -1;
+    float maxStepTail  = 0.0f;   // ... restricted to [4096, 8192)
+    int   maxPosTail   = -1;
+    float boundaryStep = 0.0f;   // |first C sample - last sample before re-enable|
+    float peakAbs      = 0.0f;
+};
+
+struct Gen
+{
+    long long n = 0;
+    long long skipAt = -1;
+    long long skip = 0;
+    float at(long long i) const
+    {
+        const long long k = i + ((skipAt >= 0 && i >= skipAt) ? skip : 0);
+        // 1 kHz @ 48 kHz is exactly 48 samples per cycle; k mod 48 avoids drift.
+        return kAmp * std::sin(2.0f * juce::MathConstants<float>::pi
+            * static_cast<float>(k % 48) / 48.0f);
+    }
+};
+
+static void runBlocks(XlethParametricEQ& eq, Gen& g, int blocks, std::vector<float>* out)
+{
+    juce::MidiBuffer midi;
+    for (int b = 0; b < blocks; ++b)
+    {
+        juce::AudioBuffer<float> buf(2, kBlock);
+        for (int s = 0; s < kBlock; ++s)
+        {
+            const float v = g.at(g.n++);
+            buf.setSample(0, s, v);
+            buf.setSample(1, s, v);
+        }
+        eq.processBlock(buf, midi);
+        if (out != nullptr)
+            for (int s = 0; s < kBlock; ++s)
+                out->push_back(buf.getSample(0, s));
+    }
+}
+
+static Result measure(const std::vector<float>& c, float lastBeforeC)
+{
+    Result r;
+    r.boundaryStep = std::abs(c[0] - lastBeforeC);
+    for (int n = 0; n < kWindow; ++n)
+        r.peakAbs = std::max(r.peakAbs, std::abs(c[static_cast<std::size_t>(n)]));
+    for (int n = 1; n < kWindow; ++n)
+    {
+        const float d = std::abs(c[static_cast<std::size_t>(n)] - c[static_cast<std::size_t>(n - 1)]);
+        if (d > r.maxStep) { r.maxStep = d; r.maxPos = n; }
+        if (n < 4096) { if (d > r.maxStepHead) { r.maxStepHead = d; r.maxPosHead = n; } }
+        else          { if (d > r.maxStepTail) { r.maxStepTail = d; r.maxPosTail = n; } }
+    }
+    return r;
+}
+
+// stalePrior = true: the effect carries a full spectral period (phase A) into
+// B. false: fresh effect that has only ever seen the non-spectral phase B.
+static Result run(bool stalePrior, long long skip, float* lastBeforeCOut = nullptr)
+{
+    XlethParametricEQ eq;
+    eq.prepareToPlay(kSr, kBlock);
+    configureSpectralBand(eq);             // band 0: Spectral, enabled, depth (gain) 0 dB
+
+    Gen g;
+    g.skipAt = static_cast<long long>(kBlocksA) * kBlock;
+    g.skip   = skip;
+
+    if (stalePrior)
+    {
+        runBlocks(eq, g, kBlocksA, nullptr);                       // phase A: spectral on
+    }
+    else
+    {
+        // fresh effect: take the same timeline position without ever running
+        // the spectral stream.
+        eq.setBandParam(0, "enabled", 0.0f);
+        runBlocks(eq, g, kBlocksA, nullptr);
+    }
+
+    eq.setBandParam(0, "enabled", 0.0f);                           // phase B: spectral off
+    std::vector<float> b;
+    runBlocks(eq, g, kBlocksB, &b);
+    const float lastB = b.back();
+
+    eq.setBandParam(0, "enabled", 1.0f);                           // phase C: re-enable
+    std::vector<float> c;
+    runBlocks(eq, g, kBlocksC, &c);
+
+    if (lastBeforeCOut != nullptr) *lastBeforeCOut = lastB;
+    return measure(c, lastB);
+}
+
+static void report(const char* label, const Result& r)
+{
+    std::cout << "[EQSpliceFix] " << label
+              << ": maxStep=" << r.maxStep << " @n=" << r.maxPos
+              << " | head[1,4096) max=" << r.maxStepHead << " @n=" << r.maxPosHead
+              << " | tail[4096,8192) max=" << r.maxStepTail << " @n=" << r.maxPosTail
+              << " | boundary(lastB->C0)=" << r.boundaryStep
+              << " | peak=" << r.peakAbs << "\n";
+}
+} // namespace eqsplice
+
+static void testXlethEqSpectralReenableSplice()
+{
+    std::cout << "[EQSpliceFix] EQ Spectral off->on splice (1 kHz, 0.5, 48k, block 480)\n";
+    std::cout << "[EQSpliceFix] clean 1 kHz @0.5 max step = "
+              << 2.0f * eqsplice::kAmp * std::sin(juce::MathConstants<float>::pi * 1000.0f / 48000.0f)
+              << "\n";
+
+    struct Case { const char* name; long long skip; };
+    const Case cases[] = {
+        { "phase-aligned gap (skip 0, literal spec)", 0 },
+        { "phase-displaced gap (skip 13 samples)",    13 },
+    };
+
+    for (const auto& cs : cases)
+    {
+        const auto control = eqsplice::run(false, cs.skip);
+        const auto stale   = eqsplice::run(true,  cs.skip);
+        std::cout << "[EQSpliceFix] --- " << cs.name << " ---\n";
+        eqsplice::report("control (fresh effect)   ", control);
+        eqsplice::report("under test (prior spectral)", stale);
+
+        CHECK(std::isfinite(stale.maxStep) && std::isfinite(control.maxStep),
+              std::string("[EQSpliceFix] finite output: ") + cs.name);
+        // The re-enabled stream must behave exactly like a freshly prepared one.
+        CHECK(stale.maxStep <= control.maxStep * 1.01f + 1.0e-5f,
+              std::string("[EQSpliceFix] re-enable max step must match the fresh-effect control: ")
+                  + cs.name + " (stale " + std::to_string(stale.maxStep) + " @n="
+                  + std::to_string(stale.maxPos) + " vs control "
+                  + std::to_string(control.maxStep) + ")");
+        // The seam against the last non-spectral sample must not be worse than
+        // a fresh stream's (stale ring audio used to add to it).
+        CHECK(stale.boundaryStep <= control.boundaryStep * 1.01f + 1.0e-5f,
+              std::string("[EQSpliceFix] boundary step vs fresh control: ") + cs.name
+                  + " (stale " + std::to_string(stale.boundaryStep)
+                  + " vs control " + std::to_string(control.boundaryStep) + ")");
+        // And the restarted stream's onset must be as smooth as the sine itself
+        // (a clean 1 kHz @0.5 steps by 0.0654), not a silence->signal step.
+        CHECK(stale.maxStep <= 0.0654031f * 1.05f,
+              std::string("[EQSpliceFix] re-enabled window must have no step above the clean-sine step: ")
+                  + cs.name + " (got " + std::to_string(stale.maxStep) + " @n="
+                  + std::to_string(stale.maxPos) + ")");
+    }
+}
+
+// ── EQ bypass -> un-bypass stale STFT state ([EQBypassFix]) ──────────────────
+// A fully bypassed XlethEffectBase never reaches processEffect (the base class
+// only advances smoothers), so the EQ's inactive->active edge detection from
+// eae4ab1 cannot see a bypass. Un-bypassing used to resume on the rings and
+// per-bin envelopes of the last spectral period.
+//
+// Phase A: 1 s of the 1 kHz sine, Spectral band at -12 dB active, so the per-bin
+// envelopes build up a non-trivial state. Phase B: bypass for 0.5 s on a
+// phase-displaced signal (skip 13 samples). Phase C: un-bypass.
+//
+// Control: a FRESH effect with the same settings, in the same bypassed steady
+// state (setBypassed(true) + reset() snaps the bypass crossfade to fully dry,
+// exactly where phase B leaves the tested effect) and with no STFT history,
+// fed the identical phase C input. The un-bypass crossfade is part of the
+// output on both sides, so a literally un-bypassed control would differ by it.
+namespace eqbypass
+{
+constexpr int kBlocksA = 100;
+constexpr int kBlocksB = 50;
+constexpr int kBlocksC = 35;       // 16800 samples >= kWindow
+constexpr int kWindow  = 16384;
+
+static void setup(XlethParametricEQ& eq)
+{
+    eq.prepareToPlay(eqsplice::kSr, eqsplice::kBlock);
+    configureSpectralBand(eq);
+    CHECK(eq.setBandParam(0, "gain", -12.0f), "[EQBypassFix] spectral depth -12 dB should be settable");
+    // prepareToPlay seeds the band smoothers from the parameter values, so
+    // prepare again now that the band is configured: no 20 ms gain ramp from
+    // the defaults leaks into the comparison.
+    eq.prepareToPlay(eqsplice::kSr, eqsplice::kBlock);
+}
+
+static eqsplice::Gen makeGen()
+{
+    eqsplice::Gen g;
+    g.skipAt = static_cast<long long>(kBlocksA) * eqsplice::kBlock;
+    g.skip   = 13;
+    return g;
+}
+
+struct Outcome
+{
+    std::vector<float> c;          // phase C output (channel 0)
+    float lastBlockAPeak = 0.0f;   // peak of the final phase A block
+};
+
+static Outcome runTested()
+{
+    XlethParametricEQ eq;
+    setup(eq);
+    auto g = makeGen();
+
+    Outcome o;
+    std::vector<float> a;
+    eqsplice::runBlocks(eq, g, kBlocksA, &a);                 // phase A: Spectral active
+    for (std::size_t i = a.size() - static_cast<std::size_t>(eqsplice::kBlock); i < a.size(); ++i)
+        o.lastBlockAPeak = std::max(o.lastBlockAPeak, std::abs(a[i]));
+
+    eq.setBypassed(true);                                      // what AudioGraph::setBypass calls
+    eqsplice::runBlocks(eq, g, kBlocksB, nullptr);             // phase B: bypassed, displaced signal
+    eq.setBypassed(false);                                     // phase C: un-bypass
+    eqsplice::runBlocks(eq, g, kBlocksC, &o.c);
+    return o;
+}
+
+static Outcome runFresh()
+{
+    XlethParametricEQ eq;
+    setup(eq);
+    auto g = makeGen();
+    g.n = static_cast<long long>(kBlocksA + kBlocksB) * eqsplice::kBlock;   // phase C input only
+
+    eq.setBypassed(true);
+    eq.reset();                  // bypass crossfade snapped fully dry, STFT stream pristine
+    eq.setBypassed(false);
+
+    Outcome o;
+    eqsplice::runBlocks(eq, g, kBlocksC, &o.c);
+    return o;
+}
+} // namespace eqbypass
+
+static void testXlethEqBypassUnbypassStaleStft()
+{
+    std::cout << "[EQBypassFix] EQ bypass->un-bypass (Spectral -12 dB, 1 kHz @0.5, 48k, block 480, skip 13)\n";
+
+    const auto tested = eqbypass::runTested();
+    const auto fresh  = eqbypass::runFresh();
+
+    CHECK(tested.c.size() >= static_cast<std::size_t>(eqbypass::kWindow)
+              && fresh.c.size() >= static_cast<std::size_t>(eqbypass::kWindow),
+          "[EQBypassFix] both runs must produce the comparison window");
+
+    float maxDiff = 0.0f;
+    int   maxPos  = -1;
+    float freshPeak = 0.0f;
+    float testedPeak = 0.0f;
+    for (int n = 0; n < eqbypass::kWindow; ++n)
+    {
+        const float t = tested.c[static_cast<std::size_t>(n)];
+        const float f = fresh.c[static_cast<std::size_t>(n)];
+        testedPeak = std::max(testedPeak, std::abs(t));
+        freshPeak  = std::max(freshPeak,  std::abs(f));
+        const float d = std::abs(t - f);
+        if (d > maxDiff) { maxDiff = d; maxPos = n; }
+    }
+
+    std::cout << "[EQBypassFix] last phase-A block peak = " << tested.lastBlockAPeak
+              << " (input amp " << eqsplice::kAmp << ")\n";
+    std::cout << "[EQBypassFix] first " << eqbypass::kWindow
+              << " samples after un-bypass: max |tested - fresh| = " << maxDiff
+              << " @n=" << maxPos
+              << " | tested peak=" << testedPeak << " fresh peak=" << freshPeak << "\n";
+
+    CHECK(std::isfinite(maxDiff), "[EQBypassFix] finite output");
+    CHECK(freshPeak > 0.01f,
+          "[EQBypassFix] the control must actually emit audio in the window (else the comparison is vacuous)");
+    // Phase A must have built a non-trivial state: the -12 dB Spectral cut has
+    // to be biting on the sine, otherwise a stale-envelope bug cannot show.
+    CHECK(tested.lastBlockAPeak < eqsplice::kAmp * 0.9f,
+          std::string("[EQBypassFix] phase A must leave non-trivial per-bin envelopes (last-block peak ")
+              + std::to_string(tested.lastBlockAPeak) + ")");
+    CHECK(maxDiff <= 1.0e-6f,
+          std::string("[EQBypassFix] un-bypass must match a fresh effect: max diff ")
+              + std::to_string(maxDiff) + " @n=" + std::to_string(maxPos));
 }
 
 int main()
@@ -2428,6 +3116,9 @@ int main()
     std::cerr.setf(std::ios::unitbuf);
 
     std::cout << "=== test_pdc_stage1 ===\n";
+
+    testXlethEqSpectralReenableSplice();
+    testXlethEqBypassUnbypassStaleStft();
 
     testXlethEqSpectralLatency();
     testXlethEqLatencyAffectingParameterPaths();
@@ -2440,6 +3131,11 @@ int main()
     testAudioGraphLatencyEpochAndTopology();
     testAudioGraphAddEffectConsumesPassthrough();
     testAudioGraphLatencyChangePropagation();
+    testAudioGraphDirectEffectLatencyChangeNotifies();
+    testResonanceSuppressorNewEngineChainPdc();
+    testEqCoreChainPdc();
+    testMixEngineDirectEffectLatencyChangeService();
+    testMixEngineApplierServicesLatencyChange();
     testAudioGraphThirdPartyLatencyRefreshPropagation();
     testAudioGraphThirdPartyProgramStateBypassAndEditorRoutes();
     testPdcRegressionAccounting();

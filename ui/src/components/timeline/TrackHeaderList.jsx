@@ -1,17 +1,44 @@
 import { useCallback, useMemo, useRef, useState, useEffect } from 'react'
-import { ChevronDown, ChevronRight, EyeOff, Folder, Plus, Sliders, Trash2, Activity } from 'lucide-react'
+import { IconButton, isHeard } from '../../ui-kit'
+import Disclosure from '../browser/Disclosure.jsx'
 import TrackHeader from './TrackHeader.jsx'
 import TrackColorPopover from './TrackColorPopover.jsx'
 import TrackContextMenu from './TrackContextMenu.jsx'
-import { RULER_HEIGHT, HEADER_WIDTH, ADD_TRACK_ROW_HEIGHT } from '../../constants/timeline.js'
+import { RULER_HEIGHT, HEADER_WIDTH, ADD_TRACK_ROW_HEIGHT, TIMELINE_HSCROLL_HEIGHT } from '../../constants/timeline.js'
 import { resolveAutoTrackColor, normalizeTrackPalette, TRACK_PALETTE_FALLBACK } from './trackColorResolver.js'
 import { folderMapForLayout } from './trackFolderLayout.js'
+import { FOLDER_ROW_HEIGHT } from './timelineRowLayout.js'
 import { tokenValue } from '../../theming/tokenValue.ts'
+import styles from './TrackHeaderList.module.css'
+import { iconComponent } from '../../ui-kit/icons'
+import { cloneKindOf, isClone, parseTint } from '../../clones/cloneModel.js'
+import { draggableTrackIds } from './cloneTimeline.js'
+
+const IcEyeSlash = iconComponent('eye-slash')
+const IcFolder = iconComponent('folder')
+const IcLock = iconComponent('lock-simple')
+const IcPlus = iconComponent('plus')
+const IcTrash = iconComponent('trash')
+const IcXAutomation = iconComponent('xleth-automation')
+
+const NO_MOTION = new Set()
+/**
+ * `motionTrackIds` (a Set, an array or null) as a Set of String(trackId), so a numeric
+ * id and its string form both match. Anything that is not a list means "no motion".
+ */
+function motionTrackIdSet(ids) {
+  if (ids == null || typeof ids[Symbol.iterator] !== 'function' || typeof ids === 'string') return NO_MOTION
+  const out = new Set()
+  for (const id of ids) {
+    if (id != null) out.add(String(id))
+  }
+  return out
+}
 
 export default function TrackHeaderList({
   tracks,
   focusedTrackId, onFocusTrack, onOpenInMixer,
-  onAddTrack, onMute, onSolo, onVisualOnly, onRename, onRemove, onRequestContextMenu,
+  onAddTrack, onMute, onSolo, onPearl, onVisualOnly, onRename, onRequestContextMenu,
   onSetTrackColor,
   folderLayout,
   selectedTrackIds = new Set(),
@@ -28,11 +55,33 @@ export default function TrackHeaderList({
   width = HEADER_WIDTH,
   trackHeight,
   macroRows = [],
+  // Reel lane (read-only video lane under a Pattern track with video): one row
+  // per such track, and the collapse toggle.
+  reelRows = [],
+  onToggleReelLane,
+  // Clone rows (timelineRowLayout laneKind 'clone'): a Clone's header takes its
+  // row's height, which follows its lane (and collapses with its source's Reel lane).
+  cloneRows = [],
+  // The Roam and Sweep key lanes are gone from the Edit view (docs/XLETH_MOTION_VIEW_DESIGN.md
+  // R17): motion is edited in Motion view. Old `roamRows` / `sweepRows` props are ignored.
+  // Tracks that have motion (R18: keys, a non-identity Roam base, Parent, Masks...): their
+  // header shows the motion marker. A Set or an array of track ids; null = none.
+  motionTrackIds = null,
   onHideMacroLane,
   automationGroupRows = [],
   automationLaneRows = [],
   onToggleAutomationGroup,
+  onDeleteAutomationLane,
+  // Fixed (non-scrolling) rows pinned under the ruler spacer, mirroring the
+  // canvas column's pinned lanes (the Snapshots cue lane).
+  pinnedHeader = null,
+  // Empty project: two ghost rows that add the first track of either kind.
+  onAddClipTrack,
+  onAddPatternTrack,
 }) {
+  // What is heard: Clones make no sound, so they never take part in the pearl rules.
+  const pearlItems = (tracks ?? []).filter((t) => !isClone(t))
+    .map((t) => ({ id: t.id, muted: !!t.muted, soloed: !!t.solo }))
   const dragRef = useRef(null)
   const trackById = useMemo(() => new Map(tracks.map(track => [track.id, track])), [tracks])
   const folderById = useMemo(() => folderMapForLayout(folderLayout), [folderLayout])
@@ -47,6 +96,35 @@ export default function TrackHeaderList({
     }
     return ids
   }, [folderLayout, folderById, tracks])
+
+  const reelByTrack = useMemo(() => {
+    const map = new Map()
+    for (const row of reelRows) map.set(row.parentTrackId, row)
+    return map
+  }, [reelRows])
+
+  const cloneRowByTrack = useMemo(() => {
+    const map = new Map()
+    for (const row of cloneRows) map.set(row.trackId, row)
+    return map
+  }, [cloneRows])
+
+  // sourceId -> { all, voice } Clone counts, for the source's Reel lane header.
+  const cloneCounts = useMemo(() => {
+    const map = new Map()
+    for (const t of tracks ?? []) {
+      if (!isClone(t)) continue
+      const c = map.get(t.cloneOf) ?? { all: 0, voice: 0 }
+      c.all++
+      if (cloneKindOf(t) === 'Voice') c.voice++
+      map.set(t.cloneOf, c)
+    }
+    return map
+  }, [tracks])
+  const cloneCountOf = (sourceId) => cloneCounts.get(sourceId)?.all ?? 0
+  const voiceCloneCountOf = (sourceId) => cloneCounts.get(sourceId)?.voice ?? 0
+
+  const motionIds = useMemo(() => motionTrackIdSet(motionTrackIds), [motionTrackIds])
 
   const lanesByTrack = useMemo(() => {
     const map = new Map()
@@ -75,6 +153,7 @@ export default function TrackHeaderList({
 
   const [openColorPickerId, setOpenColorPickerId] = useState(null)
   const [folderMenu, setFolderMenu] = useState(null)
+  const [laneMenu, setLaneMenu] = useState(null)
   const [colorPickerAnchorRect, setColorPickerAnchorRect] = useState(null)
   const [, setThemeRevision] = useState(0)
   useEffect(() => {
@@ -84,6 +163,8 @@ export default function TrackHeaderList({
   }, [])
 
   const rawPalette = Array.from({ length: 16 }, (_, i) => tokenValue(`--theme-track-palette-${i + 1}`))
+  // The two candidate label inks for text on an identity colour (DESIGN.md 3.4).
+  const labelInks = { light: tokenValue('--ui-ink') || '#E6E6E6', dark: tokenValue('--ui-g1') || '#1B1B1B' }
   const trackPalette = normalizeTrackPalette(rawPalette)
 
   const closeColorPicker = useCallback(() => {
@@ -96,13 +177,19 @@ export default function TrackHeaderList({
   }, [])
 
   const beginTrackDrag = useCallback((event, trackId) => {
-    const ids = selectedTrackIds.has(trackId)
+    // Clones follow their source (the engine keeps them under it), so a selected
+    // Clone never moves on its own.
+    const ids = draggableTrackIds(selectedTrackIds.has(trackId)
       ? flatVisibleIds.filter(id => selectedTrackIds.has(id))
-      : [trackId]
+      : [trackId], tracks)
+    if (ids.length === 0) {
+      event.preventDefault()
+      return
+    }
     dragRef.current = { kind: 'tracks', trackIds: ids }
     event.dataTransfer.effectAllowed = 'move'
     event.dataTransfer.setData('text/plain', `tracks:${ids.join(',')}`)
-  }, [flatVisibleIds, selectedTrackIds])
+  }, [flatVisibleIds, selectedTrackIds, tracks])
 
   const beginFolderDrag = useCallback((event, folderId) => {
     dragRef.current = { kind: 'folder', folderId }
@@ -137,76 +224,137 @@ export default function TrackHeaderList({
       <div key={`automation-group:${ownerTrackId}`} className="track-header-automation-group">
         <button
           type="button"
-          className="track-header-automation-group-header"
+          className={`track-header-automation-group-header ${styles.groupHeader}`}
           style={{ height: groupRow.height }}
           onClick={() => onToggleAutomationGroup?.(ownerTrackId, !groupRow.collapsed)}
-          title={groupRow.collapsed ? 'Expand automation lanes' : 'Collapse automation lanes'}
+          aria-expanded={!groupRow.collapsed}
+          data-hint={groupRow.collapsed ? 'Expand automation lanes' : 'Collapse automation lanes'}
         >
-          {groupRow.collapsed ? <ChevronRight size={11} /> : <ChevronDown size={11} />}
-          <Activity size={11} className="track-header-automation-group-icon" strokeWidth={2} />
-          <span className="track-header-automation-group-label">{groupRow.label || 'Automation'}</span>
-          <span className="track-header-automation-group-count">{groupRow.laneCount}</span>
+          <Disclosure open={!groupRow.collapsed} />
+          <IcXAutomation size={14} className={styles.groupIcon} aria-hidden="true" />
+          <span className={styles.groupLabel}>{groupRow.label || 'Automation'}</span>
+          <span className={styles.count} role="img" aria-label={`${groupRow.laneCount} lanes`}>{groupRow.laneCount}</span>
         </button>
         {!groupRow.collapsed && laneRows.map((lane) => (
           <div
             key={lane.id}
-            className="track-header-automation-lane"
+            className={`track-header-automation-lane ${styles.autoLane}`}
             style={{ height: lane.height }}
             title={lane.label || `Lane ${lane.index + 1}`}
+            onContextMenu={onDeleteAutomationLane ? (event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              setLaneMenu({ lane, x: event.clientX, y: event.clientY })
+            } : undefined}
           >
-            <span className="track-header-automation-lane-label">{lane.label || `Lane ${lane.index + 1}`}</span>
+            <span className={styles.laneLabel}>{lane.label || `Lane ${lane.index + 1}`}</span>
+            {onDeleteAutomationLane && (
+              <IconButton size="sm" label="Delete automation lane" className={styles.laneDelete}
+                hint="Delete automation lane" hintMods="Its clips go too. Ctrl+Z undoes it"
+                onClick={() => onDeleteAutomationLane(lane.laneId)}>
+                <IcTrash size={14} />
+              </IconButton>
+            )}
           </div>
         ))}
       </div>
     )
   }
 
+  const resolvedColorOf = (track) => {
+    const index = Math.max(0, tracks.findIndex(item => item.id === track.id))
+    return resolveAutoTrackColor(track, index, trackPalette, TRACK_PALETTE_FALLBACK[index % 16])
+  }
+
+  // A Clone's chip and stripe: its source's colour for a Voice clone (it is the
+  // same picture), its tint for a Trail clone (what its copy is tinted with).
+  const cloneColorOf = (clone) => {
+    if (cloneKindOf(clone) === 'Trail' && parseTint(clone.clone?.tint)) return clone.clone.tint.toUpperCase()
+    const source = trackById.get(clone.cloneOf)
+    return source ? resolvedColorOf(source) : resolvedColorOf(clone)
+  }
+
   const renderTrack = (trackId, target) => {
     const track = trackById.get(trackId)
     if (!track) return null
     const canonicalIndex = Math.max(0, tracks.findIndex(item => item.id === track.id))
-    const color = resolveAutoTrackColor(
-      track, canonicalIndex, trackPalette, TRACK_PALETTE_FALLBACK[canonicalIndex % 16])
+    const clone = isClone(track)
+    const color = clone ? cloneColorOf(track) : resolvedColorOf(track)
     const laneRows = lanesByTrack.get(track.id) ?? []
+    const reelRow = clone ? null : reelByTrack.get(track.id)
+    // A Clone's row is its lane: the header takes the row's height (the canvas
+    // row model's), so the two columns stay in lockstep.
+    const rowHeight = clone ? (cloneRowByTrack.get(track.id)?.height ?? trackHeight) : trackHeight
     return (
       <div key={track.id} className="track-header-group">
         <TrackHeader
           track={track}
           index={canonicalIndex}
-          trackHeight={trackHeight}
+          trackHeight={rowHeight}
           trackColor={color}
+          labelInks={labelInks}
           isFocused={focusedTrackId === track.id}
           isSelected={selectedTrackIds.has(track.id)}
+          hasMotion={motionIds.has(String(track.id))}
+          cloneKind={clone ? cloneKindOf(track) : null}
           onMute={onMute}
           onSolo={onSolo}
+          onPearl={onPearl}
+          lit={clone ? undefined : isHeard({ id: track.id, muted: !!track.muted, soloed: !!track.solo }, pearlItems)}
           onVisualOnly={onVisualOnly}
           onRename={onRename}
-          onRemove={onRemove}
           onRequestContextMenu={onRequestContextMenu}
           onFocus={onFocusTrack}
           onSelect={onSelectTrack}
           onOpenInMixer={onOpenInMixer}
-          onDragStart={(event) => beginTrackDrag(event, track.id)}
+          onDragStart={clone ? undefined : (event) => beginTrackDrag(event, track.id)}
           onDragOver={allowDrop}
           onDrop={(event) => dropAt(event, target)}
-          onOpenColorPicker={openColorPicker}
+          onOpenColorPicker={clone ? undefined : openColorPicker}
         />
+        {reelRow && (
+          <div
+            key={reelRow.id}
+            className={`track-header-reel-lane ${styles.reelLane}`}
+            style={{ height: reelRow.height, borderLeftColor: color }}
+            role="group"
+            aria-label="Reel lane, read only. Timing comes from notes"
+          >
+            <button
+              type="button"
+              className={styles.disclosureBtn}
+              onClick={() => onToggleReelLane?.(track.id)}
+              aria-expanded={!reelRow.collapsed}
+              aria-label={reelRow.collapsed ? 'Expand Reel lane' : 'Collapse Reel lane'}
+              data-hint={reelRow.collapsed ? 'Expand the Reel lane' : 'Collapse the Reel lane'}
+              data-hint-mods={cloneCountOf(track.id) > 0
+                ? `Its clones' lanes ${reelRow.collapsed ? 'expand' : 'collapse'} with it`
+                : undefined}
+            >
+              <Disclosure open={!reelRow.collapsed} />
+            </button>
+            <span className={styles.reelLabel}>Reel</span>
+            <IcLock size={12} className={styles.groupIcon} aria-hidden="true" />
+            <span className={styles.reelHint}>
+              {voiceCloneCountOf(track.id) > 0 ? 'Voice 0. Timing comes from notes' : 'Timing comes from notes'}
+            </span>
+          </div>
+        )}
         {renderAutomationGroup(track.id)}
         {laneRows.map(lane => (
           <div
             key={lane.id}
-            className={`track-header-macro-lane${lane.targetUnavailable ? ' track-header-macro-lane--orphan' : ''}`}
+            className={`track-header-macro-lane ${styles.macroLane}${lane.targetUnavailable ? ` track-header-macro-lane--orphan ${styles.orphan}` : ''}`}
             style={{ height: lane.height, borderLeftColor: color }}
             title={lane.label}
           >
-            <Sliders size={10} className="track-header-macro-lane-icon" strokeWidth={2} />
-            <span className="track-header-macro-lane-label">{lane.label}</span>
+            <IcXAutomation size={14} className={styles.groupIcon} aria-hidden="true" />
+            <span className={styles.laneLabel}>{lane.label}</span>
             {onHideMacroLane && (
-              <button className="track-header-macro-lane-hide" title="Hide automation lane"
-                aria-label="Hide automation lane"
+              <IconButton size="sm" label="Hide automation lane" hint="Hide this automation lane"
                 onClick={() => onHideMacroLane(lane.parentTrackId, lane.macroNodeId)}>
-                <EyeOff size={10} strokeWidth={2} />
-              </button>
+                <IcEyeSlash size={14} />
+              </IconButton>
             )}
           </div>
         ))}
@@ -216,9 +364,10 @@ export default function TrackHeaderList({
 
   const rootOrder = folderLayout?.rootOrder ?? tracks.map(track => ({ kind: 'track', id: track.id }))
   return (
-    <div className="timeline-header-column" style={{ width }}>
-      <div className="timeline-header-spacer" style={{ height: RULER_HEIGHT }} />
-      <div className="timeline-header-scroll" onScroll={handleScroll}
+    <div className={`timeline-header-column ${styles.column}`} style={{ width }}>
+      <div className={`timeline-header-spacer ${styles.spacer}`} style={{ height: RULER_HEIGHT }} />
+      {pinnedHeader}
+      <div className={`timeline-header-scroll ${styles.scroll}`} onScroll={handleScroll}
         onMouseDown={(event) => { if (event.target === event.currentTarget) onClearSelection?.() }}>
         {renderAutomationGroup(-1)}
         {rootOrder.map((item, rootIndex) => {
@@ -250,7 +399,7 @@ export default function TrackHeaderList({
                 }}
               />
               {!folder.collapsed && folder.trackIds.length > 0 && (
-                <div className="track-folder-members">
+                <div className={`track-folder-members ${styles.members}`}>
                   {folder.trackIds.map((trackId, memberIndex) =>
                     renderTrack(trackId, { kind: 'folder', folderId: folder.id, index: memberIndex }))}
                 </div>
@@ -258,12 +407,28 @@ export default function TrackHeaderList({
             </div>
           )
         })}
-        <div className="timeline-root-drop-zone" onMouseDown={() => onClearSelection?.()} onDragOver={allowDrop}
+        <div className={`timeline-root-drop-zone ${styles.dropZone}`} onMouseDown={() => onClearSelection?.()} onDragOver={allowDrop}
           onDrop={(event) => dropAt(event, { kind: 'root', index: rootOrder.length })} />
-        <button className="timeline-add-track" style={{ height: ADD_TRACK_ROW_HEIGHT }} onClick={onAddTrack} title="Add track">
-          <Plus size={14} /><span>Add Track</span>
-        </button>
+        {rootOrder.length === 0 ? (
+          <div className={styles.ghosts} role="group" aria-label="Add the first track">
+            <button type="button" className={styles.ghost} style={{ height: trackHeight }} onClick={onAddClipTrack}
+              data-hint="Add a clip track: audio and video clips">
+              <IcPlus size={14} aria-hidden="true" /><span>Clip track</span>
+            </button>
+            <button type="button" className={styles.ghost} style={{ height: trackHeight }} onClick={onAddPatternTrack}
+              data-hint="Add a pattern track: notes that trigger samples">
+              <IcPlus size={14} aria-hidden="true" /><span>Pattern track</span>
+            </button>
+          </div>
+        ) : (
+          <button type="button" className={`timeline-add-track ${styles.addTrack}`} style={{ height: ADD_TRACK_ROW_HEIGHT }} onClick={onAddTrack}
+            data-hint="Add a track" aria-label="Add track">
+            <IcPlus size={14} aria-hidden="true" /><span>Add track</span>
+          </button>
+        )}
       </div>
+      {/* Mirrors the canvas column's horizontal scrollbar so both scroll viewports are the same height. */}
+      <div className={styles.footer} style={{ height: TIMELINE_HSCROLL_HEIGHT }} aria-hidden="true" />
 
       {openColorPickerId !== null && colorPickerAnchorRect !== null && (() => {
         const openTrack = tracks.find(track => track.id === openColorPickerId)
@@ -284,6 +449,18 @@ export default function TrackHeaderList({
           />
         )
       })()}
+      {laneMenu && (
+        <TrackContextMenu
+          x={laneMenu.x}
+          y={laneMenu.y}
+          items={[{
+            label: 'Delete automation lane',
+            danger: true,
+            onClick: () => onDeleteAutomationLane?.(laneMenu.lane.laneId),
+          }]}
+          onClose={() => setLaneMenu(null)}
+        />
+      )}
       {folderMenu && (
         <TrackContextMenu
           x={folderMenu.x}
@@ -313,7 +490,7 @@ function FolderHeader({ folder, editing, onFinishEdit, onRename, onToggle, onRem
     onFinishEdit?.()
   }
   return (
-    <div className="track-folder-header" style={{ height: 32 }} draggable
+    <div className={`track-folder-header ${styles.folder}`} style={{ height: FOLDER_ROW_HEIGHT }} draggable
       onContextMenu={onContextMenu}
       onDragStart={(event) => {
         if (event.target.closest?.('button, input')) {
@@ -322,27 +499,33 @@ function FolderHeader({ folder, editing, onFinishEdit, onRename, onToggle, onRem
         }
         onDragStart(event, folder.id)
       }} onDragOver={onDragOver} onDrop={onDrop}>
-      <button className="track-folder-toggle" onClick={() => onToggle?.(folder.id, !folder.collapsed)}
-        title={folder.collapsed ? 'Expand folder' : 'Collapse folder'}>
-        {folder.collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+      <button type="button" className={`track-folder-toggle ${styles.disclosureBtn}`}
+        onClick={() => onToggle?.(folder.id, !folder.collapsed)}
+        aria-expanded={!folder.collapsed}
+        aria-label={folder.collapsed ? `Expand folder ${folder.name}` : `Collapse folder ${folder.name}`}
+        data-hint={folder.collapsed ? 'Expand folder' : 'Collapse folder'}>
+        <Disclosure open={!folder.collapsed} />
       </button>
-      <Folder size={14} className="track-folder-icon" />
+      <IcFolder size={14} className={styles.folderGlyph} aria-hidden="true" />
       {editing ? (
-        <input ref={inputRef} className="track-folder-name-input" value={name}
+        <input ref={inputRef} className={`track-folder-name-input ${styles.folderInput}`} value={name}
+          aria-label="Folder name"
           onChange={event => setName(event.target.value)} onBlur={commit}
           onKeyDown={event => {
             if (event.key === 'Enter') commit()
             if (event.key === 'Escape') { setName(folder.name); onFinishEdit?.() }
           }} />
       ) : (
-        <span className="track-folder-name" title={folder.name}
+        <span className={`track-folder-name ${styles.folderName}`} title={folder.name}
           onDoubleClick={() => onFinishEdit?.(folder.id)}>{folder.name}</span>
       )}
-      <span className="track-folder-count">{folder.trackIds.length}</span>
-      <button className="track-folder-delete" onClick={() => onRemove?.(folder.id)}
-        title="Delete Folder (Keep Tracks)" aria-label="Delete Folder (Keep Tracks)">
-        <Trash2 size={11} />
-      </button>
+      <span className={`track-folder-count ${styles.count}`} role="img"
+        aria-label={`${folder.trackIds.length} ${folder.trackIds.length === 1 ? 'track' : 'tracks'}`}>{folder.trackIds.length}</span>
+      <IconButton size="sm" label="Delete folder, keep tracks" className={styles.folderDelete}
+        hint="Delete folder" hintMods="Its tracks stay"
+        onClick={() => onRemove?.(folder.id)}>
+        <IcTrash size={14} />
+      </IconButton>
     </div>
   )
 }

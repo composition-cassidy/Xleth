@@ -1,0 +1,21 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "phaser",
+  "name": "Fast Vibe",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "rate": 4.5,
+      "depth": 60,
+      "stages": 2,
+      "feedback": 20,
+      "resonance": 1,
+      "width": 50,
+      "mix": 100,
+      "freq_low": 300,
+      "freq_high": 3000,
+      "spread": 40
+    }
+  }
+}

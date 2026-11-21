@@ -1,0 +1,93 @@
+/* Split Syllables (round 2, step 20): the marker canvas on top, a grid of syllable cards (number, play, text) and
+ * the Clear all / Save footer, on kit controls. The waveform and its markers stay canvas. Type: 12, 11. */
+@layer kit {
+  .root {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-3);
+    background: var(--ui-g1);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    overflow: hidden;
+    outline: none;
+  }
+
+  .root:focus-visible { outline: 1px solid var(--ui-select); outline-offset: -1px; }
+
+  .waveform {
+    flex: 0 0 auto;
+    position: relative;
+    background: var(--ui-g0);
+    border: 1px solid var(--ui-g4);
+  }
+
+  .canvas { display: block; width: 100%; }
+
+  .scrollbar {
+    position: relative;
+    height: 18px;
+    background: var(--ui-g0);
+    border-top: 1px solid var(--ui-g4);
+    cursor: pointer;
+  }
+
+  .thumb {
+    position: absolute;
+    top: 2px;
+    bottom: 2px;
+    border: 1px solid var(--ui-value);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g3);
+    cursor: grab;
+  }
+
+  .thumb:active { cursor: grabbing; }
+
+  .sections {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    align-content: start;
+    gap: var(--space-2);
+    min-height: 0;
+    overflow: auto;
+  }
+
+  .card {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: 40px;
+    padding: var(--space-1) var(--space-2);
+    background: var(--ui-g2);
+    border: 1px solid var(--ui-g4);
+    border-radius: var(--ui-radius-1);
+    cursor: default;
+  }
+
+  .card[data-selected] { border-color: var(--ui-select); outline: 1px solid var(--ui-select); outline-offset: -2px; }
+  .card[data-playing] { background: var(--ui-g3); border-color: var(--ui-ink); }
+
+  .num {
+    flex: 0 0 auto;
+    min-width: 20px;
+    font-size: var(--type-12);
+    font-weight: var(--weight-semibold);
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .num[data-leading] { color: var(--ui-ink-2); }
+
+  .text { flex: 1 1 auto; min-width: 0; }
+
+  .footer {
+    flex: 0 0 auto;
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-2);
+  }
+}

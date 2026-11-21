@@ -19,6 +19,7 @@
 // Pure CPU — no JUCE, no audio device, no GPU. Links XlethEngineModel only.
 
 #include "audio/AutomationPlan.h"
+#include "commands/AutomationBatchCommands.h"
 #include "commands/TimelineCommands.h"
 #include "commands/UndoManager.h"
 #include "model/AutomationEnvelope.h"
@@ -993,11 +994,103 @@ static void testPlacementCommands() {
 }
 
 // ---------------------------------------------------------------------------
-// 13. Plan capacity fail-closed
+// 13. Batched placement — engine-side free-slot resolution
+// ---------------------------------------------------------------------------
+//
+// Paste / Ctrl+D place a whole group at once. Same-lane overlap is REJECTED by
+// addAutomationClip, so each landing tick has to be pushed past whatever already
+// occupies the lane INCLUDING the placements earlier in the same group — which
+// is why the renderer could never Promise.all these and had to await one add per
+// clip with a running occupancy map. AddAutomationClipsBatchCommand owns that
+// dependency now; these are the properties the renderer used to guarantee.
+
+static void testBatchedPlacement() {
+    std::cout << "\n[13] batched placement\n";
+
+    // findFreePosition in isolation — the port of the client-side helper.
+    using Batch = AddAutomationClipsBatchCommand;
+    CHECK(Batch::findFreePosition({}, 960, 480) == 960,
+          "an empty lane leaves the desired tick alone");
+    CHECK(Batch::findFreePosition({{960, 480}}, 960, 480) == 1440,
+          "a head-on collision pushes right past the occupant");
+    CHECK(Batch::findFreePosition({{960, 480}}, 2880, 480) == 2880,
+          "a placement clear of everything is not moved");
+    // Chained: pushing past the first lands on the second, which must push again.
+    CHECK(Batch::findFreePosition({{960, 480}, {1440, 480}}, 960, 480) == 1920,
+          "the push repeats until a pass finds no collision");
+    // Order-independent: the same occupancy given back-to-front resolves the same.
+    CHECK(Batch::findFreePosition({{1440, 480}, {960, 480}}, 960, 480) == 1920,
+          "occupancy order does not change the result");
+
+    Timeline tl;
+    UndoManager undo;
+    const int trackId = addTestTrack(tl, "Lead");
+
+    auto laneCmd = std::make_unique<AddAutomationLaneCommand>(trackId, -1);
+    AddAutomationLaneCommand* laneRaw = laneCmd.get();
+    undo.execute(std::move(laneCmd), tl);
+    const int laneId = laneRaw->laneId();
+
+    auto envCmd = std::make_unique<AddAutomationEnvelopeCommand>(
+        makeBinding(trackId, "fx-1", "mix"), std::vector<AutomationPoint>{ pt(0, 0.5) });
+    AddAutomationEnvelopeCommand* envRaw = envCmd.get();
+    undo.execute(std::move(envCmd), tl);
+    const int envId = envRaw->envelopeId();
+
+    // Three copies all asking for tick 960 on one lane. Serially resolved they
+    // stack forward; resolved in parallel they would all collide and only the
+    // first would land.
+    std::vector<AddAutomationClipsBatchCommand::Placement> placements;
+    for (int i = 0; i < 3; ++i) {
+        AddAutomationClipsBatchCommand::Placement p;
+        p.laneId = laneId; p.envelopeId = envId;
+        p.position.ticks = 960; p.duration.ticks = 480;
+        placements.push_back(p);
+    }
+    auto batch = std::make_unique<AddAutomationClipsBatchCommand>(placements);
+    AddAutomationClipsBatchCommand* batchRaw = batch.get();
+    undo.execute(std::move(batch), tl);
+
+    const std::vector<int> ids = batchRaw->getAssignedIds();
+    CHECK(ids.size() == 3, "every placement in the group landed");
+    CHECK(tl.getAutomationClip(ids[0])->position.ticks == 960
+              && tl.getAutomationClip(ids[1])->position.ticks == 1440
+              && tl.getAutomationClip(ids[2])->position.ticks == 1920,
+          "each placement is slotted against the ones before it in the SAME batch");
+
+    // One undo entry for the whole group — the undo-integrity half of the fix.
+    CHECK(tl.getAutomationClipsOnLane(laneId).size() == 3, "three clips on the lane");
+    undo.undo(tl);
+    CHECK(tl.getAutomationClipsOnLane(laneId).empty(),
+          "ONE undo removes the whole batch, not one clip of three");
+
+    undo.redo(tl);
+    CHECK(tl.getAutomationClipsOnLane(laneId).size() == 3, "redo restores the group");
+    CHECK(tl.getAutomationClip(ids[0]) != nullptr && tl.getAutomationClip(ids[2]) != nullptr,
+          "redo restores the original clip ids");
+    CHECK(tl.getAutomationClip(ids[2])->position.ticks == 1920,
+          "redo replays the RESOLVED positions — the group cannot drift right "
+          "one slot per undo/redo cycle");
+
+    // A batch that lands nothing must not push an undo entry that undoes the
+    // previous edit instead.
+    std::vector<AddAutomationClipsBatchCommand::Placement> bogus;
+    AddAutomationClipsBatchCommand::Placement bad;
+    bad.laneId = 999999; bad.envelopeId = envId;
+    bad.position.ticks = 0; bad.duration.ticks = 480;
+    bogus.push_back(bad);
+    undo.execute(std::make_unique<AddAutomationClipsBatchCommand>(bogus), tl);
+    undo.undo(tl);
+    CHECK(tl.getAutomationClipsOnLane(laneId).empty(),
+          "an all-rejected batch is not recorded, so undo still pops the real edit");
+}
+
+// ---------------------------------------------------------------------------
+// 14. Plan capacity fail-closed
 // ---------------------------------------------------------------------------
 
 static void testPlanFailsClosed() {
-    std::cout << "\n[13] plan fail-closed\n";
+    std::cout << "\n[14] plan fail-closed\n";
 
     Timeline tl;
     const int trackId = addTestTrack(tl, "Lead");
@@ -1069,6 +1162,7 @@ int main() {
     testSerialization();
     testPointCommands();
     testPlacementCommands();
+    testBatchedPlacement();
     testPlanFailsClosed();
 
     std::cout << "\n";

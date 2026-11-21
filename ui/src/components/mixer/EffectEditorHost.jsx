@@ -44,6 +44,14 @@ import SmartBalancePanel from './SmartBalancePanel.jsx'
 import ResonanceSuppressorPanel from './ResonanceSuppressorPanel.jsx'
 import ApexPanel from './ApexPanel.jsx'
 import GlossPanel from './GlossPanel.jsx'
+import AmpPanel from './AmpPanel.jsx'
+import PitchShifterPanel from './PitchShifterPanel.jsx'
+import GlueCompPanel from './GlueCompPanel.jsx'
+import OptoCompPanel from './OptoCompPanel.jsx'
+import FetCompPanel from './FetCompPanel.jsx'
+import VariMuCompPanel from './VariMuCompPanel.jsx'
+import FeddaPanel from './FeddaPanel.jsx'
+import SzkrezhPanel from './SzkrezhPanel.jsx'
 
 export default function EffectEditorHost() {
   return (
@@ -67,6 +75,14 @@ export default function EffectEditorHost() {
       <ResonanceSuppressorPanel />
       <ApexPanel />
       <GlossPanel />
+      <AmpPanel />
+      <PitchShifterPanel />
+      <GlueCompPanel />
+      <OptoCompPanel />
+      <FetCompPanel />
+      <VariMuCompPanel />
+      <FeddaPanel />
+      <SzkrezhPanel />
     </div>
   )
 }

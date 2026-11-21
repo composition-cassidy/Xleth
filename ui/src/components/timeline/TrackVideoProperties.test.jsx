@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 //
-// Focused test for the Track Detail view's Behind/Front placement toggle
-// (added alongside the placement-menu rework). Only covers what's new here:
-// the toggle's visibility and that it edits ONLY `placement`, never zOrder.
-// Flip/Corner-Radius/Gap/Visual-FX/Slide-Note behavior is unchanged and out
-// of scope.
+// Focused test for the Track Detail view's fullscreen "Hold last frame
+// between notes" checkbox (formerly a Behind/Front placement toggle — see
+// VIDEO_PREVIEW_AUDIT.txt Issue 9: since the unified-zOrder work, placement
+// no longer controls draw order, only this hold-through-gap behaviour).
+// Only covers what's new here: the checkbox's visibility and that it edits
+// ONLY `placement`, never zOrder. Flip/Corner-Radius/Gap/Visual-FX/Slide-Note
+// behavior is unchanged and out of scope.
 import React, { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createRoot } from 'react-dom/client'
@@ -30,11 +32,16 @@ let container, root, timeline
 async function flush() { await act(async () => { await Promise.resolve(); await Promise.resolve() }) }
 
 async function render(trackId) {
-  await act(async () => { root.render(<TrackVideoProperties trackId={trackId} onBack={() => {}} />) })
+  await act(async () => { root.render(<TrackVideoProperties trackId={trackId} />) })
   await flush()
 }
 
-describe('TrackVideoProperties — Behind/Front placement toggle', () => {
+function findHoldGapCheckbox() {
+  // A label-free kit Toggle (button[aria-pressed]) named by its row since round 2 step 17.
+  return container.querySelector('button[aria-pressed][aria-label="Hold last frame between notes"]')
+}
+
+describe('TrackVideoProperties — fullscreen hold-last-frame-between-notes checkbox', () => {
   beforeEach(() => {
     container = document.createElement('div'); document.body.appendChild(container)
     root = createRoot(container)
@@ -49,22 +56,20 @@ describe('TrackVideoProperties — Behind/Front placement toggle', () => {
 
   it('is hidden for a grid-slotted track', async () => {
     await render(1)
-    expect(container.querySelector('.tvp-placement-toggle')).toBeNull()
+    expect(findHoldGapCheckbox()).toBeNull()
   })
 
-  it('is shown for a fullscreen track, with the current mode active', async () => {
+  it('is shown for a fullscreen track, checked when placement is behind', async () => {
     await render(3)
-    const toggle = container.querySelector('.tvp-placement-toggle')
-    expect(toggle).toBeTruthy()
-    const behindBtn = Array.from(toggle.querySelectorAll('button')).find(b => b.textContent === 'Behind')
-    expect(behindBtn.className).toContain('active')
+    const checkbox = findHoldGapCheckbox()
+    expect(checkbox).toBeTruthy()
+    expect(checkbox.getAttribute('aria-pressed')).toBe('true')
   })
 
-  it('clicking Front commits placement=front via setFullscreenLayers, zOrder untouched', async () => {
+  it('unchecking commits placement=front via setFullscreenLayers, zOrder untouched', async () => {
     await render(3)
-    const toggle = container.querySelector('.tvp-placement-toggle')
-    const frontBtn = Array.from(toggle.querySelectorAll('button')).find(b => b.textContent === 'Front')
-    await act(async () => { frontBtn.click() })
+    const checkbox = findHoldGapCheckbox()
+    await act(async () => { checkbox.click() })
     await flush()
     const layers = timeline.setFullscreenLayers.mock.calls.at(-1)[0]
     expect(layers.find(l => l.trackId === 3)).toMatchObject({ placement: 'front', zOrder: -1 })

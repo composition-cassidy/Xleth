@@ -149,7 +149,7 @@ function drawGrid(ctx, w, h, theme) {
   if (h >= 70 && w >= 240) {
     ctx.globalAlpha = 0.85
     ctx.fillStyle = theme?.textMuted || '#8a98a8'
-    ctx.font = uiCanvasFont('9px')
+    ctx.font = uiCanvasFont('10px')
     ctx.textAlign = 'center'
     ctx.textBaseline = 'bottom'
     for (const tick of FREQ_TICKS) {

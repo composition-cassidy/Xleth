@@ -3,10 +3,9 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { AppShell } from '../AppShell';
+import { AppShell, floatingPanelKey } from '../AppShell';
 import { PanelFrame, getPanelFrameRenderPath } from '../components/PanelFrame';
 import { Titlebar } from '../components/Titlebar';
-import { TopBarToggles } from '../components/TopBarToggles';
 import FxGraphPanel, {
   FxGraphPanelContent,
   activateFxGraphMode,
@@ -19,7 +18,15 @@ import {
   usePanelRegistry,
   type PanelState,
 } from '../registry/PanelRegistry';
-import { PANEL_CATALOG, PANEL_CATALOG_ORDER, PANEL_IDS, type PanelId } from '../registry/panelCatalog';
+import {
+  ACTIVE_PANEL_IDS,
+  PANEL_CATALOG,
+  PANEL_CATALOG_ORDER,
+  PANEL_IDS,
+  WINDOW_PANEL_IDS,
+  type PanelId,
+} from '../registry/panelCatalog';
+import { DockRegion } from '../components/DockRegion';
 
 function readUiSource(relativePath: string) {
   return readFileSync(path.resolve(process.cwd(), 'src', relativePath), 'utf8');
@@ -110,6 +117,7 @@ describe('PanelRegistry schema', () => {
       expect(Object.keys(panel)).toEqual([
         'id',
         'hidden',
+        'collapsed',
         'focused',
         'zIndex',
         'mode',
@@ -119,13 +127,38 @@ describe('PanelRegistry schema', () => {
       ]);
       expect(panel.id).toBe(id);
       expect(typeof panel.hidden).toBe('boolean');
+      expect(typeof panel.collapsed).toBe('boolean');
       expect(typeof panel.focused).toBe('boolean');
       expect(typeof panel.zIndex).toBe('number');
       expect(['floating', 'docked', 'maximized']).toContain(panel.mode);
       expect(Object.keys(panel.floating)).toEqual(['x', 'y', 'width', 'height']);
-      expect(Object.keys(panel.docked)).toEqual(['region', 'orderInRegion', 'sizeInRegion']);
+      expect(Object.keys(panel.docked)).toEqual([
+        'region',
+        'orderInRegion',
+        'sizeInRegion',
+        'tabGroupId',
+        'tabOrder',
+        'tabActive',
+      ]);
       expect(panel.preMaximizeState).toBeNull();
     }
+  });
+
+  // Maximized is never allowed to become a one-way door: whatever stripped the
+  // snapshot (an older persisted layout, a hand-edited one), the panel still
+  // has to come back to a window the user can move and dock.
+  it('restorePanel un-maximizes a panel that has lost its snapshot', () => {
+    usePanelRegistry.getState().openPanel('preview');
+    usePanelRegistry.getState().maximizePanel('preview');
+    usePanelRegistry.setState((state) => ({
+      panels: { ...state.panels, timeline: { ...state.panels.preview, preMaximizeState: null } },
+    }));
+
+    usePanelRegistry.getState().restorePanel('preview');
+
+    const preview = usePanelRegistry.getState().panels.preview;
+    expect(preview.mode).toBe('floating');
+    expect(preview.hidden).toBe(false);
   });
 
   it('exposes all phase 1 registry mutations', () => {
@@ -142,6 +175,14 @@ describe('PanelRegistry schema', () => {
       'maximizePanel',
       'restorePanel',
       'applyPreset',
+      'dockPanelAsTab',
+      'activateTab',
+      'collapsePanel',
+      'expandPanel',
+      'toggleCollapsePanel',
+      'reopenLastClosed',
+      'focusNextPanel',
+      'resetLayout',
     ] as const) {
       expect(typeof registry[method]).toBe('function');
     }
@@ -151,52 +192,46 @@ describe('PanelRegistry schema', () => {
 describe('PanelFrame render paths', () => {
   beforeEach(resetRegistry);
 
-  it('imports the parallel AppShell as an isolated test harness', () => {
+  it('renders the shell chrome without the top bar', () => {
+    // Panel bodies are lazy, so a static render shows the shell's own layers
+    // and nothing else. Panel markup is asserted through PanelFrame/DockRegion.
     const html = renderToStaticMarkup(<AppShell />);
     expect(html).toContain('data-testid="xleth-windowing-shell"');
-    expect(html).toContain('Timeline Test Panel');
+    expect(html).toContain('data-testid="xleth-app-workarea"');
+    expect(html).toContain('data-testid="xleth-floating-window-layer"');
     expect(html).not.toContain('xleth-top-bar-toggles');
   });
 
   it('renders floating panels with titlebar chrome', () => {
-    usePanelRegistry.getState().openPanel('timeline');
-    const html = renderPanel('timeline');
+    usePanelRegistry.getState().openPanel('preview');
+    const html = renderPanel('preview');
     expect(html).toContain('data-panel-mode="floating"');
     expect(html).toContain('xleth-windowing-titlebar');
-    expect(html).toContain('data-testid="xleth-windowing-underline-timeline"');
-  });
-
-  it('renders layout preset and dock controls in the top toolbar', () => {
-    usePanelRegistry.getState().openPanel('timeline');
-    usePanelRegistry.getState().focusPanel('timeline');
-
-    const html = renderToStaticMarkup(<TopBarToggles />);
-
-    expect(html).toContain('aria-label="Layout presets"');
-    expect(html).toContain('Reset to FL Compose layout');
-    expect(html).toContain('Switch to Vegas Arrange layout');
-    expect(html).toContain('aria-label="Dock focused panel"');
-    expect(html).toContain('Dock focused panel left: Timeline');
-    expect(html).toContain('Dock focused panel top: Timeline');
-    expect(html).toContain('Dock focused panel bottom: Timeline');
-    expect(html).toContain('Dock focused panel right: Timeline');
+    // The floating titlebar names its window.
+    expect(html).toContain('>Preview<');
   });
 
   it('keeps the quarantined nodeEditor out of production toolbar catalog order', () => {
     expect(PANEL_IDS).toContain('nodeEditor');
     expect(PANEL_CATALOG_ORDER.map((entry) => entry.id)).not.toContain('nodeEditor');
-
-    const html = renderToStaticMarkup(<TopBarToggles />);
-
-    expect(html).not.toContain('Toggle Node Editor');
-    expect(html).not.toContain('Node Editor (F11)');
   });
 
-  it('keeps active production window paths from mounting the quarantined nodeEditor panel', () => {
-    const appShellSource = readUiSource('windowing/AppShell.tsx');
-    expect(appShellSource).toContain("production: [");
-    expect(appShellSource).not.toMatch(/production:\s*\[[\s\S]*['"]nodeEditor['"]/);
+  it('keeps active window paths from mounting the quarantined nodeEditor panel', () => {
+    // There is no hand-maintained production list any more: the catalog's
+    // quarantined flag is the single gate, so open the panel and prove it
+    // still never reaches a render path.
+    expect(PANEL_CATALOG.nodeEditor.quarantined).toBe(true);
+    expect(ACTIVE_PANEL_IDS).not.toContain('nodeEditor');
+    expect(WINDOW_PANEL_IDS).not.toContain('nodeEditor');
     expect(PANEL_CATALOG_ORDER.map((entry) => entry.id)).not.toContain('nodeEditor');
+
+    usePanelRegistry.getState().openPanel('nodeEditor');
+    expect(floatingPanelKey(usePanelRegistry.getState().panels).split('|'))
+      .not.toContain('nodeEditor');
+
+    usePanelRegistry.getState().dockPanel('nodeEditor', 'bottom');
+    const html = renderToStaticMarkup(<DockRegion side="bottom" />);
+    expect(html).not.toContain('data-panel-id="nodeEditor"');
   });
 
   it('registers fxGraph as the safe active FX Graph workspace shell', () => {
@@ -205,12 +240,6 @@ describe('PanelFrame render paths', () => {
     expect(PANEL_CATALOG.fxGraph.typeColorToken).toBe('--theme-panel-node');
     expect(PANEL_CATALOG.fxGraph.fKey).toBe('F11');
     expect(PANEL_CATALOG_ORDER.map((entry) => entry.id)).toContain('fxGraph');
-
-    const html = renderToStaticMarkup(<TopBarToggles />);
-
-    expect(html).toContain('Toggle FX Graph');
-    expect(html).toContain('FX Graph (F11)');
-    expect(html).not.toContain('Toggle Node Editor');
   });
 
   it('renders the safe FX Graph shell without legacy editor affordances', () => {
@@ -220,7 +249,7 @@ describe('PanelFrame render paths', () => {
     expect(html).toContain('No track selected');
     expect(html).toContain('Select a mixer track to preview its chain');
     expect(html).toContain('Mixer Chain remains active');
-    expect(html).not.toContain('Track Input');
+    expect(html).not.toContain('Track input');
     expect(html).not.toContain('Use Graph Mode');
     expect(html).not.toContain('NodeEditor');
     expect(html).not.toContain('react-flow');
@@ -241,9 +270,10 @@ describe('PanelFrame render paths', () => {
 
     expect(html).toContain('Read-only Mixer Chain graph preview');
     expect(html).toContain('Preview only. Mixer Chain still owns routing.');
-    expect(html).toContain('Track Input');
-    expect(html).toContain('-&gt;');
-    expect(html).toContain('Track Output');
+    expect(html).toContain('Track input');
+    // The rail's connectors are drawn lines now, not a text arrow.
+    expect(html).toContain('xleth-chain-graph-preview__connector');
+    expect(html).toContain('Track output');
     expect(html).not.toContain('Read-only persisted FX graph preview');
     expect(html).not.toContain('FX Graph Mode Active');
   });
@@ -254,7 +284,7 @@ describe('PanelFrame render paths', () => {
     );
 
     expect(html).toContain('Lead Vox');
-    expect(html).toContain('Convert Chain to FX Graph');
+    expect(html).toContain('Convert chain to FX Graph');
     expect(html).toContain('This creates a read-only graphState snapshot from the current Mixer Chain.');
     expect(html).toContain('Preview only. Mixer Chain still owns routing.');
     expect(html).not.toContain('FX Graph Mode Active');
@@ -270,11 +300,11 @@ describe('PanelFrame render paths', () => {
       />,
     );
 
-    expect(html).toContain('Track Input');
+    expect(html).toContain('Track input');
     expect(html).toContain('Compressor');
-    expect(html).toContain('Track Output');
-    expect(html.indexOf('Track Input')).toBeLessThan(html.indexOf('Compressor'));
-    expect(html.indexOf('Compressor')).toBeLessThan(html.indexOf('Track Output'));
+    expect(html).toContain('Track output');
+    expect(html.indexOf('Track input')).toBeLessThan(html.indexOf('Compressor'));
+    expect(html.indexOf('Compressor')).toBeLessThan(html.indexOf('Track output'));
   });
 
   it('renders multiple chain effects in their Mixer Chain order', () => {
@@ -292,10 +322,10 @@ describe('PanelFrame render paths', () => {
       />,
     );
 
-    expect(html.indexOf('Track Input')).toBeLessThan(html.indexOf('Xleth EQ'));
-    expect(html.indexOf('Xleth EQ')).toBeLessThan(html.indexOf('Space Echo'));
+    expect(html.indexOf('Track input')).toBeLessThan(html.indexOf('Parametric EQ'));
+    expect(html.indexOf('Parametric EQ')).toBeLessThan(html.indexOf('Space Echo'));
     expect(html.indexOf('Space Echo')).toBeLessThan(html.indexOf('Reverb'));
-    expect(html.indexOf('Reverb')).toBeLessThan(html.indexOf('Track Output'));
+    expect(html.indexOf('Reverb')).toBeLessThan(html.indexOf('Track output'));
   });
 
   it('renders dormant persisted graphState in chain mode without switching ownership', () => {
@@ -354,12 +384,12 @@ describe('PanelFrame render paths', () => {
     expect(html).not.toContain('FX Graph Mode Active');
     expect(html).not.toContain('Graph routing is enabled for connected paths.');
     expect(html).toContain('Read-only persisted FX graph preview');
-    expect(html).toContain('Track Input');
+    expect(html).toContain('Track input');
     expect(html).toContain('Persisted EQ');
-    expect(html).toContain('Track Output');
+    expect(html).toContain('Track output');
     expect(html).not.toContain('Effect Parameters');
     expect(html).not.toContain('xleth-fx-graph-params');
-    expect(html).not.toContain('>Convert Chain to FX Graph<');
+    expect(html).not.toContain('>Convert chain to FX Graph<');
     expect(html).not.toContain('Compressor');
     expect(html).not.toContain('xleth-chain-graph-preview');
   });
@@ -387,10 +417,10 @@ describe('PanelFrame render paths', () => {
       />,
     );
 
-    expect(html).toContain('FX Graph Mode Active, but no graph data exists for this track.');
+    expect(html).toContain('FX Graph mode is active, but no graph data exists for this track.');
     expect(html).toContain('This can happen with legacy projects.');
-    expect(html).not.toContain('>Convert Chain to FX Graph<');
-    expect(html).not.toContain('Track Input');
+    expect(html).not.toContain('>Convert chain to FX Graph<');
+    expect(html).not.toContain('Track input');
     expect(html).not.toContain('Compressor');
     expect(html).not.toContain('xleth-chain-graph-preview');
   });
@@ -408,7 +438,7 @@ describe('PanelFrame render paths', () => {
 
     expect(html).toContain('Graph routing data is invalid and could not be loaded.');
     expect(html).toContain('Mixer Chain editing remains locked.');
-    expect(html).not.toContain('Track Input');
+    expect(html).not.toContain('Track input');
     expect(html).not.toContain('Compressor');
     expect(html).not.toContain('xleth-chain-graph-preview');
   });
@@ -426,7 +456,7 @@ describe('PanelFrame render paths', () => {
 
     expect(html).toContain('This graphState version is not supported by this build.');
     expect(html).toContain('The saved routing data is preserved but is not rendered as an active graph.');
-    expect(html).not.toContain('Track Input');
+    expect(html).not.toContain('Track input');
     expect(html).not.toContain('Compressor');
     expect(html).not.toContain('xleth-chain-graph-preview');
   });
@@ -444,8 +474,8 @@ describe('PanelFrame render paths', () => {
 
     expect(html).toContain('MASTER');
     expect(html).toContain('Master track FX stay in Mixer Chain mode in this phase.');
-    expect(html).not.toContain('Convert Chain to FX Graph');
-    expect(html).not.toContain('Track Input');
+    expect(html).not.toContain('Convert chain to FX Graph');
+    expect(html).not.toContain('Track input');
     expect(html).not.toContain('Read-only persisted FX graph preview');
   });
 
@@ -503,8 +533,8 @@ describe('PanelFrame render paths', () => {
     try {
       const html = renderToStaticMarkup(<FxGraphPanel />);
 
-      expect(html).toContain('Convert Chain to FX Graph');
-      expect(html).toContain('Track Input');
+      expect(html).toContain('Convert chain to FX Graph');
+      expect(html).toContain('Track input');
       expect(useEffectChainStore.getState().fxModes['7']).toBe('chain');
       expect(useEffectChainStore.getState().graphStates['7']).toBeUndefined();
       expectNoFxGraphSnapshotLoopErrors(errorSpy);
@@ -822,33 +852,37 @@ describe('describeGraphSidechainRouteStatus (FXG-SC.6D)', () => {
   });
 });
 
-describe('Titlebar focus underline flip', () => {
+describe('floating panel focus', () => {
   beforeEach(resetRegistry);
 
-  it('moves the focused underline between two floating test panels', () => {
-    usePanelRegistry.getState().openPanel('timeline');
-    usePanelRegistry.getState().openPanel('mixer');
+  // The accent bar and focus underline are gone: focus is a 1px selection
+  // outline on the frame, keyed off the frame's is-focused class.
+  it('moves the frame focus between two floating panels', () => {
+    usePanelRegistry.getState().openPanel('preview');
+    usePanelRegistry.getState().openPanel('inspector');
+    usePanelRegistry.getState().dockPanel('preview', 'top');
+    usePanelRegistry.getState().undockPanel('preview', 10, 10);
+    usePanelRegistry.getState().undockPanel('inspector', 40, 40);
 
-    usePanelRegistry.getState().focusPanel('timeline');
-    const firstState = usePanelRegistry.getState().panels;
-    const timelineFocused = renderToStaticMarkup(
-      <>
-        <Titlebar id="timeline" focused={firstState.timeline.focused} />
-        <Titlebar id="mixer" focused={firstState.mixer.focused} />
-      </>,
-    );
-    expect(timelineFocused).toContain('data-testid="xleth-windowing-underline-timeline" data-focused="true"');
-    expect(timelineFocused).toContain('data-testid="xleth-windowing-underline-mixer" data-focused="false"');
+    const frameClassFor = (id: 'preview' | 'inspector') => {
+      const html = renderToStaticMarkup(<PanelFrame id={id}><div /></PanelFrame>);
+      return html.match(/<section[^>]*class="([^"]*)"/)?.[1] ?? '';
+    };
 
-    usePanelRegistry.getState().focusPanel('mixer');
-    const secondState = usePanelRegistry.getState().panels;
-    const mixerFocused = renderToStaticMarkup(
-      <>
-        <Titlebar id="timeline" focused={secondState.timeline.focused} />
-        <Titlebar id="mixer" focused={secondState.mixer.focused} />
-      </>,
-    );
-    expect(mixerFocused).toContain('data-testid="xleth-windowing-underline-timeline" data-focused="false"');
-    expect(mixerFocused).toContain('data-testid="xleth-windowing-underline-mixer" data-focused="true"');
+    usePanelRegistry.getState().focusPanel('preview');
+    expect(frameClassFor('preview')).toContain('is-focused');
+    expect(frameClassFor('inspector')).not.toContain('is-focused');
+
+    usePanelRegistry.getState().focusPanel('inspector');
+    expect(frameClassFor('preview')).not.toContain('is-focused');
+    expect(frameClassFor('inspector')).toContain('is-focused');
+  });
+
+  it('draws no accent bar or focus underline in a titlebar', () => {
+    usePanelRegistry.getState().openPanel('inspector');
+    const html = renderToStaticMarkup(<Titlebar id="inspector" focused />);
+    expect(html).not.toContain('xleth-windowing-accent-bar');
+    expect(html).not.toContain('xleth-windowing-focus-underline');
+    expect(html).toContain('>Inspector<');
   });
 });

@@ -1,5 +1,7 @@
-import { TRACK_HEIGHT, PPQ, pixelToBeat, beatToPixel } from '../../../constants/timeline.js'
 import { drawDeleteSweep } from '../timelineDrawing.js'
+import {
+  blocksInPixelRect, buildTrackIdToIndex, hitTestBlockAt, trackIndexAtY,
+} from '../blockGeometry.js'
 
 /**
  * Delete tool — click to delete a single clip/block, drag to sweep-delete all touched items.
@@ -8,7 +10,8 @@ export function createDeleteTool(deps) {
   const {
     clipsRef, tracksRef,
     pixelsPerBeatRef, scrollOffsetRef,
-    onDeleteClip, setSelectedClipIds,
+    trackIdToIndexRef,
+    onDeleteClip, onDeleteSweep,
     redrawOverlay,
     // Pattern block deps
     patternBlocksRef, onDeletePatternBlock,
@@ -17,14 +20,20 @@ export function createDeleteTool(deps) {
   } = deps
 
   function idxAtY(y) {
-    const layout = trackLayoutRef?.current
-    if (layout && typeof layout.trackIndexAtY === 'function') return layout.trackIndexAtY(y)
-    return Math.floor(y / TRACK_HEIGHT)
+    return trackIndexAtY(y, trackLayoutRef?.current)
   }
-  function topOf(trackIndex) {
-    const layout = trackLayoutRef?.current
-    if (layout && typeof layout.trackTop === 'function') return layout.trackTop(trackIndex)
-    return trackIndex * TRACK_HEIGHT
+
+  // Pointer geometry for the current viewport (see blockGeometry.js). The
+  // track id -> index map is the canvas's own, rebuilt only when the track
+  // list changes; a sweep used to re-search the track array for every clip on
+  // every mouse move.
+  function currentView() {
+    return {
+      scrollOffset: scrollOffsetRef.current,
+      ppb: pixelsPerBeatRef.current,
+      trackIdToIndex: trackIdToIndexRef?.current ?? buildTrackIdToIndex(tracksRef.current),
+      trackLayout: trackLayoutRef?.current ?? null,
+    }
   }
 
   let isDragging = false
@@ -33,102 +42,47 @@ export function createDeleteTool(deps) {
   let touchedClipIds = new Set()
   let touchedBlockIds = new Set()
 
-  function hitTestClip(beat, trackIndex) {
-    const clips = clipsRef.current
-    const tracks = tracksRef.current
-    if (!clips || !tracks) return null
-    for (let i = 0; i < clips.length; i++) {
-      const clip = clips[i]
-      const clipBeat = clip.positionTicks / PPQ
-      const clipEnd = clipBeat + clip.durationTicks / PPQ
-      const clipTrackIdx = tracks.findIndex((t) => t.id === clip.trackId)
-      if (beat >= clipBeat && beat < clipEnd && trackIndex === clipTrackIdx) return clip
-    }
-    return null
+  function hitTestClip(localX, trackIndex) {
+    if (!tracksRef.current) return null
+    return hitTestBlockAt(clipsRef.current, localX, trackIndex, currentView())
   }
 
-  function hitTestPatternBlock(beat, trackIndex) {
-    const blocks = patternBlocksRef?.current
-    const tracks = tracksRef.current
-    if (!blocks || !tracks) return null
-    for (let i = 0; i < blocks.length; i++) {
-      const b = blocks[i]
-      const bBeat = b.positionTicks / PPQ
-      const bEnd = bBeat + b.durationTicks / PPQ
-      const bTrackIdx = tracks.findIndex((t) => t.id === b.trackId)
-      if (beat >= bBeat && beat < bEnd && trackIndex === bTrackIdx) return b
-    }
-    return null
+  function hitTestPatternBlock(localX, trackIndex) {
+    if (!tracksRef.current) return null
+    return hitTestBlockAt(patternBlocksRef?.current, localX, trackIndex, currentView())
   }
 
   function findClipsInRect(x1, y1, x2, y2) {
-    const ppb = pixelsPerBeatRef.current
-    const scrollOffset = scrollOffsetRef.current
-    const clips = clipsRef.current
-    const tracks = tracksRef.current
-    const rX1 = Math.min(x1, x2), rX2 = Math.max(x1, x2)
-    const rY1 = Math.min(y1, y2), rY2 = Math.max(y1, y2)
-    const ids = new Set()
-
-    for (const clip of clips) {
-      const clipBeat = clip.positionTicks / PPQ
-      const clipEnd = clipBeat + clip.durationTicks / PPQ
-      const cX1 = beatToPixel(clipBeat, scrollOffset, ppb)
-      const cX2 = beatToPixel(clipEnd, scrollOffset, ppb)
-      const trackIdx = tracks.findIndex((t) => t.id === clip.trackId)
-      const trackType = tracks[trackIdx]?.type
-      if (trackType === 'Pattern') continue // pattern tracks can't hold clips
-      const cY1 = topOf(trackIdx)
-      const cY2 = cY1 + TRACK_HEIGHT
-
-      if (cX2 >= rX1 && cX1 <= rX2 && cY2 >= rY1 && cY1 <= rY2) {
-        ids.add(clip.id)
-      }
-    }
-    return ids
+    const tracks = tracksRef.current || []
+    // Pattern tracks can't hold clips.
+    const onAudioTrack = (_clip, trackIndex) => tracks[trackIndex]?.type !== 'Pattern'
+    return new Set(
+      blocksInPixelRect(clipsRef.current, x1, y1, x2, y2, currentView(), onAudioTrack).map((c) => c.id),
+    )
   }
 
   function findBlocksInRect(x1, y1, x2, y2) {
-    const ppb = pixelsPerBeatRef.current
-    const scrollOffset = scrollOffsetRef.current
-    const blocks = patternBlocksRef?.current
-    const tracks = tracksRef.current
-    if (!blocks || !tracks) return new Set()
-    const rX1 = Math.min(x1, x2), rX2 = Math.max(x1, x2)
-    const rY1 = Math.min(y1, y2), rY2 = Math.max(y1, y2)
-    const ids = new Set()
-    for (const b of blocks) {
-      const bBeat = b.positionTicks / PPQ
-      const bEnd = bBeat + b.durationTicks / PPQ
-      const bX1 = beatToPixel(bBeat, scrollOffset, ppb)
-      const bX2 = beatToPixel(bEnd, scrollOffset, ppb)
-      const trackIdx = tracks.findIndex((t) => t.id === b.trackId)
-      const bY1 = topOf(trackIdx)
-      const bY2 = bY1 + TRACK_HEIGHT
-      if (bX2 >= rX1 && bX1 <= rX2 && bY2 >= rY1 && bY1 <= rY2) {
-        ids.add(b.id)
-      }
-    }
-    return ids
+    if (!tracksRef.current) return new Set()
+    return new Set(
+      blocksInPixelRect(patternBlocksRef?.current, x1, y1, x2, y2, currentView()).map((b) => b.id),
+    )
   }
 
   return {
     onMouseDown(localX, localY, e) {
       if (e.button !== 0) return
 
-      const beat = pixelToBeat(localX, scrollOffsetRef.current, pixelsPerBeatRef.current)
       const trackIndex = idxAtY(localY)
-      const tracks = tracksRef.current
-      const track = tracks?.[trackIndex]
+      const track = tracksRef.current?.[trackIndex]
 
       if (track?.type === 'Pattern') {
-        const hitBlock = hitTestPatternBlock(beat, trackIndex)
+        const hitBlock = hitTestPatternBlock(localX, trackIndex)
         if (hitBlock) {
           console.log(`[DeleteTool] Click-delete block ${hitBlock.id}`)
           onDeletePatternBlock?.(hitBlock.id)
         }
       } else {
-        const hitClip = hitTestClip(beat, trackIndex)
+        const hitClip = hitTestClip(localX, trackIndex)
         if (hitClip) {
           console.log(`[DeleteTool] Click-delete clip ${hitClip.id}`)
           onDeleteClip(hitClip.id)
@@ -145,7 +99,7 @@ export function createDeleteTool(deps) {
       touchedBlockIds = new Set()
     },
 
-    onMouseMove(localX, localY, e) {
+    onMouseMove(localX, localY) {
       if (!isDragging) return
 
       dragCurrentX = localX
@@ -155,49 +109,42 @@ export function createDeleteTool(deps) {
       redrawOverlay()
     },
 
-    async onMouseUp(localX, localY, e) {
+    async onMouseUp() {
       if (!isDragging) return
 
-      // Delete all swept clips + blocks in parallel
-      const tasks = []
-      if (touchedClipIds.size > 0) {
-        console.log(`[DeleteTool] Sweep-deleting ${touchedClipIds.size} clip(s)`)
-        for (const id of touchedClipIds) tasks.push(onDeleteClip(id))
-      }
-      if (touchedBlockIds.size > 0) {
-        console.log(`[DeleteTool] Sweep-deleting ${touchedBlockIds.size} block(s)`)
-        for (const id of touchedBlockIds) tasks.push(onDeletePatternBlock?.(id))
-      }
-      if (tasks.length > 0) await Promise.all(tasks)
-
+      // One commit for the whole sweep: one batch call, one undo step.
+      const clipIds = [...touchedClipIds]
+      const blockIds = [...touchedBlockIds]
       isDragging = false
       touchedClipIds = new Set()
       touchedBlockIds = new Set()
       redrawOverlay()
+      if (clipIds.length > 0 || blockIds.length > 0) {
+        console.log(`[DeleteTool] Sweep-deleting ${clipIds.length} clip(s), ${blockIds.length} block(s)`)
+        await onDeleteSweep(clipIds, blockIds)
+      }
     },
 
     onContextMenu(localX, localY, e) {
       e.preventDefault()
-      const beat = pixelToBeat(localX, scrollOffsetRef.current, pixelsPerBeatRef.current)
       const trackIndex = idxAtY(localY)
-      const tracks = tracksRef.current
-      const track = tracks?.[trackIndex]
+      const track = tracksRef.current?.[trackIndex]
       if (track?.type === 'Pattern') {
-        const hitBlock = hitTestPatternBlock(beat, trackIndex)
+        const hitBlock = hitTestPatternBlock(localX, trackIndex)
         if (hitBlock) {
           console.log(`[DeleteTool] Right-click delete block ${hitBlock.id}`)
           onDeletePatternBlock?.(hitBlock.id)
         }
         return
       }
-      const hitClip = hitTestClip(beat, trackIndex)
+      const hitClip = hitTestClip(localX, trackIndex)
       if (hitClip) {
         console.log(`[DeleteTool] Right-click delete clip ${hitClip.id}`)
         onDeleteClip(hitClip.id)
       }
     },
 
-    drawOverlay(ctx, w, h, viewState) {
+    drawOverlay(ctx) {
       if (isDragging) {
         drawDeleteSweep(ctx, dragOriginX, dragOriginY, dragCurrentX, dragCurrentY)
       }

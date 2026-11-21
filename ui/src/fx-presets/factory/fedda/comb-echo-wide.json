@@ -1,0 +1,19 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "fedda",
+  "name": "Comb Echo Wide",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "width": 110,
+      "character": 0,
+      "size": 20,
+      "low_bypass": 250,
+      "low_slope": 0,
+      "hf_damp": 20000,
+      "guard": 0,
+      "loudness_match": 0
+    }
+  }
+}

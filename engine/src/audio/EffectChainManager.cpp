@@ -865,6 +865,11 @@ juce::String EffectChainManager::getPluginFilePath(int nodeId) const
     return graph_->getPluginFilePath(nodeId);
 }
 
+bool EffectChainManager::getPluginDescription(int nodeId, juce::PluginDescription& out) const
+{
+    return graph_->getPluginDescription(nodeId, out);
+}
+
 // ─── Missing-plugin support ─────────────────────────────────────────────────
 
 bool EffectChainManager::isNodeMissing(int nodeId) const
@@ -978,9 +983,32 @@ void EffectChainManager::processBlock(juce::AudioBuffer<float>& buffer, int numS
     graph_->processBlock(buffer, numSamples, midi);
 }
 
+std::shared_ptr<const EffectChainManager::RealtimeView>
+EffectChainManager::realtimeView() const noexcept
+{
+    return graph_ ? graph_->realtimeView()
+                  : std::shared_ptr<const RealtimeView>{};
+}
+
+void EffectChainManager::refreshRealtimeView()
+{
+    if (graph_) graph_->publishRealtimeView();
+}
+
 bool EffectChainManager::hasSidechainCapableNode() const
 {
     return graph_ && graph_->hasSidechainCapableNode();
+}
+
+void EffectChainManager::visitEffectsInChainOrder(
+    void* context, void (*visit)(void* context, int nodeId, XlethEffectBase* effect)) const
+{
+    if (graph_) graph_->visitEffectsInChainOrder(context, visit);
+}
+
+std::uint64_t EffectChainManager::graphSerial() const noexcept
+{
+    return graph_ ? graph_->graphSerial() : 0;
 }
 
 void EffectChainManager::setSidechainKeyBuffer(const float* left, const float* right,
@@ -1021,6 +1049,96 @@ void EffectChainManager::resetProcessors()
         graph_->resetProcessors();
 }
 
+bool EffectChainManager::beginRealtimeUse() noexcept
+{
+    realtimeInUse_.store(true, std::memory_order_seq_cst);
+    if (resetInProgress_.load(std::memory_order_seq_cst))
+    {
+        realtimeInUse_.store(false, std::memory_order_release);
+        return false;
+    }
+    return true;
+}
+
+void EffectChainManager::endRealtimeUse() noexcept
+{
+    realtimeInUse_.store(false, std::memory_order_release);
+}
+
+bool EffectChainManager::tryResetProcessorsOffThread()
+{
+    resetInProgress_.store(true, std::memory_order_seq_cst);
+    if (realtimeInUse_.load(std::memory_order_seq_cst))
+    {
+        resetInProgress_.store(false, std::memory_order_release);
+        return false;
+    }
+
+    // The same processor set the audio thread used to reset in-block: the
+    // realtime view's effects plus its helper (wire gain / PDC delay) nodes.
+    // A full reset covers anything a jump reset left pending.
+    deferredResetPending_.store(false, std::memory_order_relaxed);
+    fullResetPending_.store(false, std::memory_order_relaxed);
+    if (const auto view = realtimeView())
+        AudioGraph::resetProcessors(*view);
+
+    resetInProgress_.store(false, std::memory_order_release);
+    return true;
+}
+
+bool EffectChainManager::resetOnAudioThread() noexcept
+{
+    if (! beginRealtimeUse())
+    {
+        // The worker is inside this chain. Too late to reset it in this block;
+        // have the worker reset all of it once it is done.
+        fullResetPending_.store(true, std::memory_order_release);
+        return false;
+    }
+
+    bool complete = true;
+    if (const auto view = realtimeView())
+        complete = AudioGraph::resetProcessorsOnAudioThread(*view);
+    if (! complete)
+        deferredResetPending_.store(true, std::memory_order_release);
+
+    endRealtimeUse();
+    return complete;
+}
+
+bool EffectChainManager::tryResetDeferredOffThread()
+{
+    if (! deferredResetPending_.load(std::memory_order_acquire)
+        && ! fullResetPending_.load(std::memory_order_acquire))
+        return true;
+
+    resetInProgress_.store(true, std::memory_order_seq_cst);
+    if (realtimeInUse_.load(std::memory_order_seq_cst))
+    {
+        resetInProgress_.store(false, std::memory_order_release);
+        return false;
+    }
+
+    // Cleared before resetting, under the claim: the audio thread can only set
+    // them again from a later jump, which then gets its own pass.
+    const bool full = fullResetPending_.exchange(false, std::memory_order_acq_rel);
+    deferredResetPending_.store(false, std::memory_order_relaxed);
+    if (const auto view = realtimeView())
+    {
+        if (full) AudioGraph::resetProcessors(*view);
+        else      AudioGraph::resetDeferredProcessors(*view);
+    }
+
+    resetInProgress_.store(false, std::memory_order_release);
+    return true;
+}
+
+void EffectChainManager::primeDeferredReset()
+{
+    if (const auto view = realtimeView())
+        AudioGraph::primeDeferredResets(*view);
+}
+
 double EffectChainManager::getMaxTailLengthSeconds() const
 {
     return graph_ ? graph_->getMaxTailLengthSeconds() : 0.0;
@@ -1040,6 +1158,16 @@ void EffectChainManager::refreshLatencyDiagnostics()
 {
     if (graph_)
         graph_->refreshLatencyDiagnostics();
+}
+
+bool EffectChainManager::hasPendingLatencyChange() const
+{
+    return graph_ != nullptr && graph_->hasPendingLatencyChange();
+}
+
+bool EffectChainManager::servicePendingLatencyChange()
+{
+    return graph_ != nullptr && graph_->servicePendingLatencyChange();
 }
 
 int EffectChainManager::addProcessorForTesting(const std::string& pluginId,

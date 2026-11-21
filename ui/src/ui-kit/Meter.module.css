@@ -1,0 +1,66 @@
+/* Meter: one canvas for bars, scale and peak hold; one DOM button for the
+ * latching clip indicator (outline = clear, filled = clipped, so it is never
+ * colour alone). */
+@layer kit {
+  .meter {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    align-self: stretch;
+    width: var(--meter-w);
+    min-height: 64px;
+  }
+
+  /* height: 0 with flex-grow: the canvas takes the space it is given and never asks for any.
+   * A canvas's natural height is its backing store (the height it was last painted at), so
+   * without this a meter that had once been tall could stop its container from shrinking. */
+  .canvas {
+    flex: 1 1 0;
+    display: block;
+    width: var(--meter-w);
+    height: 0;
+    min-height: 0;
+  }
+
+  .clip {
+    position: relative;
+    flex: none;
+    width: var(--bars-w);
+    height: 6px;
+    padding: 0;
+    border: 1px solid var(--ui-boundary);
+    border-radius: 0;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  /* The visual is 6px tall; the hit area is at least 24x24. */
+  .clip::before {
+    content: "";
+    position: absolute;
+    top: -9px;
+    bottom: -9px;
+    left: -9px;
+    right: -9px;
+  }
+
+  /* Where the latch would be while a `clipLatch="latched"` meter is not clipped, and on a
+   * MeterScale: same box, nothing drawn, so bars and numerals keep their y. */
+  .clipSpace {
+    display: block;
+    flex: none;
+    width: var(--bars-w);
+    height: 6px;
+  }
+
+  .clip[data-clipped="true"] {
+    border-color: var(--ui-clip);
+    background: var(--ui-clip);
+  }
+
+  .clip:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 1px;
+  }
+}

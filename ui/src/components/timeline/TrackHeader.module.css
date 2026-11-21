@@ -1,0 +1,276 @@
+/* Track header (DESIGN.md 22): a neutral g2 row. Identity is a 6px stripe down the
+ * left edge and a colour chip that carries the type glyph. The name is ink on g2
+ * in every state; only the stripe and chip dim when the track is muted. At the
+ * default 232px column the name has 124px: chip, name, M / S / V, with the track
+ * menu out of the resting row. */
+@layer kit {
+  .row {
+    position: relative;
+    box-sizing: border-box;
+    display: grid;
+    grid-template-columns: var(--hit-min) minmax(0, 1fr) auto;
+    grid-template-areas: "chip name state";
+    align-items: center;
+    column-gap: 2px;
+    padding: 0 2px 0 8px;
+    border-bottom: 1px solid var(--ui-g0);
+    background: var(--ui-g2);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    user-select: none;
+    cursor: default;
+  }
+
+  .row:hover,
+  .row[data-focused="true"] {
+    background: var(--ui-g3);
+  }
+
+  /* Selection is an outline, never fill alone. */
+  .row[data-selected="true"] {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  /* Tall lanes: the name row, then the M / S / V row under it. */
+  .row[data-stack="true"] {
+    grid-template-columns: var(--hit-min) minmax(0, 1fr);
+    grid-template-areas:
+      "chip name"
+      "state state";
+    align-content: center;
+    row-gap: var(--space-1);
+  }
+
+  /* A track with motion: the marker gets its own cell after the name, so the hover menu
+   * (over the end of the name cell) never covers it and the name ellipsizes first. */
+  .row[data-motion="true"] {
+    grid-template-columns: var(--hit-min) minmax(0, 1fr) auto auto;
+    grid-template-areas: "chip name motion state";
+  }
+
+  .row[data-stack="true"][data-motion="true"] {
+    grid-template-columns: var(--hit-min) minmax(0, 1fr) auto;
+    grid-template-areas:
+      "chip name motion"
+      "state state state";
+  }
+
+  .stripe {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 6px;
+    background: var(--track-header-fill);
+  }
+
+  /* A pattern track's stripe is dashed, so clip and pattern tracks differ by more than their glyph. */
+  .row[data-kind="pattern"] .stripe {
+    background: repeating-linear-gradient(
+      to bottom,
+      var(--track-header-fill) 0,
+      var(--track-header-fill) 5px,
+      color-mix(in srgb, var(--track-header-fill) 30%, var(--ui-g2)) 5px,
+      color-mix(in srgb, var(--track-header-fill) 30%, var(--ui-g2)) 8px
+    );
+  }
+
+  /* The chip's button is the 24x24 hit area; the face is the 18px swatch. */
+  .chip {
+    grid-area: chip;
+    box-sizing: border-box;
+    width: var(--hit-min);
+    height: var(--hit-min);
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+
+  .chip:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  .chipFace {
+    box-sizing: border-box;
+    width: 18px;
+    height: 18px;
+    border-radius: 2px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--track-header-fill);
+    color: var(--track-header-ink, var(--ui-g1));
+  }
+
+  .chip:hover .chipFace {
+    box-shadow: 0 0 0 1px var(--ui-ink);
+  }
+
+  .row[data-kind="pattern"] .chipFace {
+    outline: 1px dashed var(--ui-g2);
+    outline-offset: -3px;
+  }
+
+  .nameWrap {
+    grid-area: name;
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    min-width: 0;
+  }
+
+  .name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--type-12);
+    font-weight: 500;
+    line-height: 1.2;
+    color: var(--ui-ink);
+    cursor: text;
+  }
+
+  .nameInput {
+    flex: 1 1 auto;
+    min-width: 0;
+    box-sizing: border-box;
+    height: 22px;
+    padding: 0 var(--space-1);
+    border: 1px solid var(--ui-select);
+    border-radius: 2px;
+    background: var(--ui-g0);
+    color: var(--ui-ink);
+    font-family: inherit;
+    font-size: var(--type-12);
+    font-weight: 500;
+    outline: none;
+  }
+
+  .hold {
+    flex: none;
+    box-sizing: border-box;
+    min-width: 16px;
+    padding: 0 3px;
+    border: 1px solid var(--ui-boundary);
+    border-radius: 2px;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    line-height: 14px;
+    text-align: center;
+  }
+
+  /* Motion marker (docs/XLETH_MOTION_VIEW_DESIGN.md R18): a small outline diamond in the value
+   * accent in its own cell after the name and badges. The button is the 24x24 hit area; it
+   * opens the track in Motion view. Never dimmed with a muted track (only the stripe and chip are). */
+  .motion {
+    grid-area: motion;
+    flex: none;
+    box-sizing: border-box;
+    width: var(--hit-min);
+    height: var(--hit-min);
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 2px;
+    background: transparent;
+    color: var(--ui-value);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+
+  .motion:hover {
+    background: var(--ui-g2);
+  }
+
+  .motion:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  .motionGlyph {
+    width: var(--icon-md);
+    height: var(--icon-md);
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linejoin: miter;
+  }
+
+  /* The track menu shares the name's cell and sits over its end, drawn only while the row
+   * is hovered or holds focus: at rest the name has the whole cell. Right-click and the menu
+   * key open the same menu from anywhere on the row. */
+  .row > .menu {
+    grid-area: name;
+    justify-self: end;
+    z-index: 1;
+    background: var(--ui-g3);
+    border-color: var(--ui-boundary);
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .row:hover > .menu,
+  .row:focus-within > .menu {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* Three 24px cells that share their borders. */
+  .cluster {
+    grid-area: state;
+    display: flex;
+    align-items: center;
+  }
+
+  .cluster > .state + .state {
+    margin-left: -1px;
+  }
+
+  /* Square 24px chips: the hit-area floor, glyph-only. */
+  .state {
+    min-width: var(--ctl-h-sm);
+    padding: 0;
+    justify-content: center;
+    font-size: var(--type-11);
+  }
+
+  /* A Clone (docs/XLETH_CLONE_SPEC.md) sits one level under its source: indented 14px,
+   * so the source's stripe column stays clear and the group reads as one. Its chip is
+   * a colour sample, not a picker. */
+  .row[data-clone] {
+    margin-left: 14px;
+  }
+
+  .row[data-clone] .chip {
+    cursor: default;
+  }
+
+  .row[data-clone] .chip:hover .chipFace {
+    box-shadow: none;
+  }
+
+  /* The kind tag after the name: "Voice clone" / "Trail clone". Secondary ink, no fill. */
+  .cloneTag {
+    flex: none;
+    color: var(--ui-ink-3);
+    font-size: var(--type-11);
+    line-height: 1.2;
+    white-space: nowrap;
+  }
+
+  /* Muted: the identity dims to the mute opacity. The name, menu and toggles do not. */
+  .row[data-muted="true"] :is(.stripe, .chipFace) {
+    opacity: var(--ui-mute-opacity);
+  }
+}

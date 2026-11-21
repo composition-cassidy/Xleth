@@ -185,7 +185,7 @@ static void test_loadSanitization() {
     j["sidechainRoutes"] = nlohmann::json::array({
         { {"routeId", ""}, {"targetTrackId", 2}, {"targetEffectInstanceId", "e1"} },   // empty id → drop
         { {"routeId", "ok1"}, {"targetTrackId", -1}, {"targetEffectInstanceId", "e1"} },// master target → drop
-        { {"routeId", "ok2"}, {"targetTrackId", 2}, {"targetEffectInstanceId", ""} },   // empty effect → drop
+        { {"routeId", "trk"}, {"targetTrackId", 2}, {"targetEffectInstanceId", ""} },   // track-level → kept
         { {"routeId", "dup"}, {"targetTrackId", 2}, {"targetEffectInstanceId", "e1"} },
         { {"routeId", "dup"}, {"targetTrackId", 3}, {"targetEffectInstanceId", "e2"} }, // duplicate id → drop
         { {"routeId", "good"}, {"targetTrackId", 2}, {"targetEffectInstanceId", "e9"},
@@ -193,13 +193,14 @@ static void test_loadSanitization() {
     });
     TrackInfo t;
     from_json(j, t);
-    CHECK(t.sidechainRoutes.size() == 2, "only 2 structurally-valid kept");
-    bool sawDup = false, sawGood = false;
+    CHECK(t.sidechainRoutes.size() == 3, "3 structurally-valid kept (incl. track-level)");
+    bool sawDup = false, sawGood = false, sawTrack = false;
     for (const auto& sc : t.sidechainRoutes) {
         if (sc.routeId == "dup")  { sawDup = true;  CHECK(sc.targetTrackId == 2, "first dup wins"); }
         if (sc.routeId == "good") { sawGood = true; CHECK(sc.gain == 2.0f, "gain clamped to 2.0"); }
+        if (sc.routeId == "trk")  { sawTrack = true; CHECK(sc.targetEffectInstanceId.empty(), "track-level keeps empty id"); }
     }
-    CHECK(sawDup && sawGood, "expected surviving routes present");
+    CHECK(sawDup && sawGood && sawTrack, "expected surviving routes present");
 }
 
 // ─── T6: validation reason codes ─────────────────────────────────────────────
@@ -223,8 +224,10 @@ static void test_validationRejections() {
           == R::self_sidechain, "self sidechain");
     CHECK(xleth::validateSidechainRoute(tl, kick, makeRoute("a", 999, "e-comp"), resolver).reason
           == R::unknown_target_track, "unknown target");
-    CHECK(xleth::validateSidechainRoute(tl, kick, makeRoute("a", bass, ""), resolver).reason
-          == R::empty_effect_instance, "empty effect instance");
+    // An empty effect id is a TRACK-LEVEL route (FL "Sidechain to this track"):
+    // valid without resolving any effect instance.
+    CHECK(xleth::validateSidechainRoute(tl, kick, makeRoute("a", bass, ""), resolver).ok(),
+          "track-level route (empty effect id) accepted");
     CHECK(xleth::validateSidechainRoute(tl, kick, makeRoute("a", bass, "nope"), resolver).reason
           == R::unknown_effect_instance, "unknown effect instance");
     CHECK(xleth::validateSidechainRoute(tl, kick,
@@ -372,8 +375,8 @@ static void test_setParams() {
 // reported status without the N-API layer. Keep in sync with Timeline_GetRouting.
 static std::string statusFor(const Timeline& tl, const SidechainRoute& sc,
                              const xleth::SidechainEffectResolver& resolver) {
-    if (sc.targetEffectInstanceId.empty()) return "invalid";
     if (!tl.getTrack(sc.targetTrackId))    return "stale_target_track";
+    if (sc.targetEffectInstanceId.empty()) return "ok";   // track-level
     if (resolver && !resolver(sc.targetTrackId, sc.targetEffectInstanceId))
         return "stale_effect_instance";
     return "ok";
@@ -407,6 +410,35 @@ static void test_staleAfterLoad() {
     // Now a route whose whole target track vanished.
     SidechainRoute orphan = makeRoute("sc-orphan", 9999, "e1");
     CHECK(statusFor(tl, orphan, staleResolver) == "stale_target_track", "missing track stale");
+}
+
+// ─── T15: track-level routes (FL "Sidechain to this track") ──────────────────
+
+static void test_trackLevelRoutes() {
+    std::cout << "\n[T15] Track-level sidechain routes\n";
+    using R = xleth::RoutingValidationReason;
+    Timeline tl;
+    int kick = addTrack(tl, "Kick");
+    int bass = addTrack(tl, "Bass");
+    // Resolver/capability that reject everything: a track-level route must not
+    // consult them (no effect instance to resolve).
+    xleth::SidechainEffectResolver none = [](int, const std::string&) { return false; };
+    xleth::SidechainCapabilityResolver incapable = [](int, const std::string&) { return false; };
+
+    CHECK(tl.addSidechainRoute(kick, makeRoute("t1", bass, ""), none, incapable).ok(),
+          "track-level add skips resolver + capability");
+    CHECK(xleth::validateSidechainRoute(tl, kick, makeRoute("t2", bass, ""), none, incapable).reason
+          == R::duplicate_route, "second track-level route kick→bass is a duplicate");
+    CHECK(xleth::validateSidechainRoute(tl, bass, makeRoute("t3", kick, ""), none).reason
+          == R::cycle, "reverse track-level route closes a cycle");
+
+    // Round-trips through project JSON with the empty id intact.
+    nlohmann::json j;
+    to_json(j, *tl.getTrack(kick));
+    TrackInfo loaded;
+    from_json(j, loaded);
+    CHECK(loaded.sidechainRoutes.size() == 1 && loaded.sidechainRoutes[0].targetEffectInstanceId.empty(),
+          "track-level route persists");
 }
 
 // ─── T14: capability-aware validation (VST-SC.3) ─────────────────────────────
@@ -489,6 +521,7 @@ int main() {
     test_staleAfterLoad();
     test_capabilityValidation();
     test_noUndoOnInvalid();
+    test_trackLevelRoutes();
 
     std::cout << "\n────────────────────────────────────\n";
     std::cout << "Passed: " << g_passed << "  Failed: " << g_failed << "\n";

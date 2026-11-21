@@ -1,0 +1,411 @@
+/* Color Grade: the one panel shared by all four levels (Source, Clip, Layer,
+ * Master), the stack view, and the small indicator.
+ *
+ * The grade UI itself stays quiet: neutral chrome around the controls, so the
+ * picture is the only colourful thing on screen while it is being judged. Hue
+ * appears only where it carries meaning (a wheel's ring, a channel's curve),
+ * and those are painted on canvas, not here.
+ *
+ * No transitions: every control is in the edit loop (DESIGN.md motion gate). */
+@layer kit {
+  .root {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    height: 100%;
+    overflow-y: auto;
+    background: var(--ui-g1);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+  }
+
+  /* ── Identity: which level, whose grade, on or off ─────────────────────── */
+  .head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: 36px;
+    padding: var(--space-1) var(--space-2) var(--space-1) var(--space-3);
+    background: var(--ui-g2);
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .headText {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .title {
+    margin: 0;
+    overflow: hidden;
+    color: var(--ui-ink);
+    font-size: var(--type-13);
+    font-weight: var(--weight-semibold);
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .owner {
+    overflow: hidden;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .headActions {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .blurb {
+    margin: 0;
+    padding: var(--space-1) var(--space-3);
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    line-height: 1.35;
+  }
+
+  /* One quiet line of state: what Auto did, why a LUT is missing. */
+  .note {
+    margin: 0;
+    padding: 2px var(--space-3);
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    line-height: 1.35;
+  }
+
+  .note[data-tone='problem'] {
+    color: var(--ui-ink);
+  }
+
+  .tabs {
+    padding: var(--space-1) var(--space-2) 0;
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .body {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 2px;
+    min-height: 0;
+    padding: var(--space-2) 0;
+  }
+
+  /* A switched-off grade keeps its values on show, dimmed. */
+  .body[data-off='true'] {
+    opacity: var(--ui-mute-opacity);
+  }
+
+  /* ── Rows: label, control, the same grid as the Inspector ──────────────── */
+  .row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: var(--row-h, 28px);
+    padding: 0 var(--space-3);
+  }
+
+  .rowLabel {
+    flex: 0 0 11ch;
+    overflow: hidden;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .rowControl {
+    display: flex;
+    flex: 1 1 auto;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+  }
+
+  .rowEnds {
+    color: var(--ui-ink-3);
+    font-size: var(--type-10);
+    white-space: nowrap;
+  }
+
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1);
+    padding: var(--space-1) var(--space-3);
+  }
+
+  .divider {
+    height: 1px;
+    margin: var(--space-1) 0;
+    background: var(--ui-g4);
+  }
+
+  .subhead {
+    padding: var(--space-1) var(--space-3) 0;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    font-weight: var(--weight-semibold);
+  }
+
+  /* ── Tonal balance: three wheels side by side ──────────────────────────── */
+  .wheels {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--space-2);
+    padding: var(--space-1) var(--space-3);
+  }
+
+  .wheel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-1);
+    min-width: 0;
+  }
+
+  .wheelName {
+    color: var(--ui-ink);
+    font-size: var(--type-11);
+    font-weight: var(--weight-semibold);
+  }
+
+  .wheelPlain {
+    color: var(--ui-ink-3);
+    font-size: var(--type-10);
+  }
+
+  .wheelCanvas {
+    display: block;
+    width: 100%;
+    max-width: 132px;
+    aspect-ratio: 1;
+    border-radius: var(--ui-radius-0);
+    outline: none;
+    cursor: crosshair;
+    touch-action: none;
+  }
+
+  .wheelCanvas:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 1px;
+  }
+
+  .wheelReadout {
+    min-height: 1.3em;
+    color: var(--ui-ink-2);
+    font-size: var(--type-10);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  /* ── Displays: curves and scopes are recessed wells on the ground colour ── */
+  .well {
+    box-sizing: border-box;
+    margin: var(--space-1) var(--space-3);
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g0);
+  }
+
+  /* Sized so the plot, its point boxes and its reset all fit the window's
+   * default height without scrolling. */
+  .curveCanvas {
+    display: block;
+    width: 100%;
+    aspect-ratio: 1;
+    max-height: 272px;
+    outline: none;
+    cursor: crosshair;
+    touch-action: none;
+  }
+
+  .curveCanvas:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  .scopeCanvas {
+    display: block;
+    width: 100%;
+    height: 200px;
+  }
+
+  .scopeCanvas[data-shape='square'] {
+    height: auto;
+    aspect-ratio: 1;
+    max-height: 300px;
+  }
+
+  .caption {
+    padding: 0 var(--space-3);
+    color: var(--ui-ink-3);
+    font-size: var(--type-10);
+    line-height: 1.35;
+  }
+
+  .path {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--ui-ink);
+    font-size: var(--type-11);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    direction: rtl;
+    text-align: left;
+  }
+
+  /* ── Stack view: Source -> Clip -> Layer -> Master ─────────────────────── */
+  .stack {
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+    padding: var(--space-1) 0;
+    list-style: none;
+  }
+
+  .stackRow {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: 28px;
+    padding: 0 var(--space-2) 0 var(--space-3);
+  }
+
+  .stackRow[data-current='true'] {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+    background: var(--ui-g2);
+  }
+
+  .stackStep {
+    flex: 0 0 auto;
+    width: 1.2em;
+    color: var(--ui-ink-3);
+    font-size: var(--type-10);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+
+  .stackText {
+    display: flex;
+    flex: 1 1 auto;
+    align-items: baseline;
+    gap: var(--space-2);
+    min-width: 0;
+  }
+
+  .stackLevel {
+    flex: 0 0 auto;
+    color: var(--ui-ink);
+    font-size: var(--type-12);
+    font-weight: var(--weight-medium);
+  }
+
+  .stackOwner {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .stackState {
+    flex: 0 0 auto;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    white-space: nowrap;
+  }
+
+  .stackState[data-state='none'] {
+    color: var(--ui-ink-3);
+  }
+
+  .stackControls {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  /* ── Indicator: "this has a grade" ─────────────────────────────────────── */
+  .indicator {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    color: var(--ui-ink);
+  }
+
+  .indicator[data-state='off'] {
+    color: var(--ui-ink-3);
+  }
+
+  .indicator svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  /* ── Bulk apply ────────────────────────────────────────────────────────── */
+  .bulkList {
+    display: flex;
+    flex-direction: column;
+    max-height: 280px;
+    margin: 0;
+    padding: var(--space-1) 0;
+    overflow-y: auto;
+    border-top: 1px solid var(--ui-g4);
+    border-bottom: 1px solid var(--ui-g4);
+    list-style: none;
+  }
+
+  .bulkItem {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: 28px;
+    padding: 0 var(--space-3);
+  }
+
+  .bulkItem > :first-child {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .bulkHas {
+    flex: 0 0 auto;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    white-space: nowrap;
+  }
+
+  .bulkRow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+  }
+
+  .bulkText {
+    margin: 0;
+    padding: var(--space-2) var(--space-3);
+    color: var(--ui-ink-2);
+    font-size: var(--type-12);
+    line-height: 1.4;
+  }
+}

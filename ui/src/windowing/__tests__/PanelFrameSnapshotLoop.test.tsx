@@ -7,6 +7,15 @@ import TimelinePanel from '../panels/TimelinePanel';
 import XlethRootContext from '../contexts/XlethRootContext.jsx';
 import { createInitialPanelStates, usePanelRegistry } from '../registry/PanelRegistry';
 
+// TitleBar renders the toast status line, which requires a ToastProvider these
+// tests never mount. Stub the module rather than wrapping every render.
+vi.mock('../../components/Toast.jsx', () => ({
+  ToastProvider: ({ children }: { children: unknown }) => children,
+  ToastStatusText: () => null,
+  useToast: () => ({ dismiss: () => {}, showToast: () => undefined, toasts: [] }),
+}));
+
+
 vi.mock('../../components/TimelineView.jsx', async () => {
   const ReactModule = await import('react');
   return {

@@ -1,21 +1,39 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { Music, Search, Pencil, Type, Download, ArrowLeftRight, RotateCcw, Trash2, Scissors, Sliders, List, LayoutGrid } from 'lucide-react'
 import { timelineEvents } from '../timelineEvents.js'
 import { DEFAULT_LABELS, loadCustomLabels, labelColor } from '../constants/labels.js'
 import SampleGroup from './SampleGroup.jsx'
 import ContextMenu from './ContextMenu.jsx'
 import useSampleViewModeStore from '../stores/sampleViewModeStore.js'
-import useSplitSyllablesPanelStore from '../stores/splitSyllablesPanelStore.js'
+import useSandboxPanelStore from '../stores/sandboxPanelStore.js'
+import useBrowserStore from '../stores/browserStore.js'
 import { usePanelRegistry } from '../windowing/registry/PanelRegistry.ts'
 import { getPickerPath, openFilePicker } from './filePicker/filePickerService.js'
+import { DrawToolIcon, EmptyState, SamplerIcon, SandboxIcon, SegmentedControl, SplitSyllablesIcon, Toggle } from '../ui-kit'
+import { moveRowFocus } from './browser/browserFormat.js'
+import { getMediaPort, startPreview } from './samplePreview.js'
+import styles from './browser/Browser.module.css'
+import { iconComponent } from '../ui-kit/icons'
+import { openColorGrade } from '../colorGrade/gradeActions.js'
+
+const IcArrowCounterClockwise = iconComponent('arrow-counter-clockwise')
+const IcExport = iconComponent('export')
+const IcPalette = iconComponent('palette')
+const IcList = iconComponent('list')
+const IcPencilSimpleLine = iconComponent('pencil-simple-line')
+const IcSpeakerSimpleHigh = iconComponent('speaker-simple-high')
+const IcSquaresFour = iconComponent('squares-four')
+const IcSwap = iconComponent('swap')
+const IcTrash = iconComponent('trash')
+const IcX = iconComponent('x')
 
 /**
  * Sample Selector tab — organises all marked regions by label.
  *
  * Props:
  *   onOpenPicker – (source) => void  — opens SamplePicker in center area
+ *   query        – the Browser's search text for this tab
  */
-export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setActiveSampleId }) {
+export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setActiveSampleId, query = '' }) {
   // ── View mode (list | thumbnails) ─────────────────────────────────────────
   const viewMode    = useSampleViewModeStore(s => s.viewMode)
   const setViewMode = useSampleViewModeStore(s => s.setViewMode)
@@ -28,8 +46,11 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
   const [collapsedGroups,  setCollapsedGroups]  = useState(new Set())
   const [editingNameId,    setEditingNameId]    = useState(null)
   const [editingNameValue, setEditingNameValue] = useState('')
-  const [searchQuery,      setSearchQuery]      = useState('')
-  const [rootNotes,        setRootNotes]        = useState({})  // { [sourceId]: midiNote }
+  const searchQuery = query
+  const autoPreview    = useBrowserStore(s => s.autoPreview)
+  const setAutoPreview = useBrowserStore(s => s.setAutoPreview)
+  const setBrowserTab  = useBrowserStore(s => s.setTab)
+  const [rootNotes,       setRootNotes]        = useState({})  // { [sourceId]: midiNote }
   const [renameError,      setRenameError]      = useState(null)
 
   // Dedup pass runs once per mount even if regions-changed fires repeatedly.
@@ -41,7 +62,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
       const regs = await window.xleth?.timeline?.getRegions()
       if (Array.isArray(regs)) setRegions(regs)
     } catch (e) {
-      console.error('[SampleSelector] getRegions error:', e)
+      console.error('[Browser] getRegions error:', e)
     }
   }, [])
 
@@ -54,7 +75,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
         setSources(map)
       }
     } catch (e) {
-      console.error('[SampleSelector] getSources error:', e)
+      console.error('[Browser] getSources error:', e)
     }
   }, [])
 
@@ -91,12 +112,12 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
     for (const r of renames) {
       try {
         await window.xleth?.timeline?.modifyRegion(r.region.id, { ...r.region, name: r.newName })
-        console.warn(`[SampleDedup] Renamed "${r.oldName}" → "${r.newName}" (id=${r.region.id}, label=${r.region.label})`)
+        console.warn(`[Browser] Renamed "${r.oldName}" → "${r.newName}" (id=${r.region.id}, label=${r.region.label})`)
       } catch (e) {
-        console.error(`[SampleDedup] modifyRegion failed for id=${r.region.id}:`, e.message)
+        console.error(`[Browser] modifyRegion failed for id=${r.region.id}:`, e.message)
       }
     }
-    console.warn(`[SampleDedup] Renamed ${renames.length} duplicate sample name(s).`)
+    console.warn(`[Browser] Renamed ${renames.length} duplicate sample name(s).`)
     return renames.length
   }, [])
 
@@ -118,11 +139,10 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
         }
         setRegions(regs)
       } catch (e) {
-        console.error('[SampleSelector] Initial load error:', e)
+        console.error('[Browser] Initial load error:', e)
       }
     }
     init()
-    console.log('[SampleSelector] Loaded')
 
     const onRegionsChanged = () => fetchRegions()
     const onSourcesChanged = () => fetchSources()
@@ -183,7 +203,6 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
   const startRename = useCallback((region) => {
     setEditingNameId(region.id)
     setEditingNameValue(region.name || '')
-    console.log(`[SampleSelector] Rename started: "${region.name}"`)
   }, [])
 
   const commitRename = useCallback(async () => {
@@ -213,11 +232,10 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
       return  // keep edit mode open so the user can correct and retry
     }
 
-    console.log(`[SampleSelector] Renamed: "${region.name}" → "${newName}"`)
     try {
       await window.xleth?.timeline?.modifyRegion(editingNameId, { ...region, name: newName })
     } catch (e) {
-      console.warn('[SampleSelector] modifyRegion failed:', e.message)
+      console.warn('[Browser] modifyRegion failed:', e.message)
     }
     // Optimistic update
     setRegions(prev => prev.map(r => r.id === editingNameId ? { ...r, name: newName } : r))
@@ -233,22 +251,20 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
 
   // ── Change label ───────────────────────────────────────────────────────────
   const changeLabel = useCallback(async (region, newLabel) => {
-    console.log(`[SampleSelector] Label changed: "${region.name}" → ${newLabel}`)
     try {
       await window.xleth?.timeline?.modifyRegion(region.id, { ...region, label: newLabel })
     } catch (e) {
-      console.warn('[SampleSelector] modifyRegion failed:', e.message)
+      console.warn('[Browser] modifyRegion failed:', e.message)
     }
     setRegions(prev => prev.map(r => r.id === region.id ? { ...r, label: newLabel } : r))
   }, [])
 
   // ── Delete ─────────────────────────────────────────────────────────────────
   const handleDelete = useCallback(async (region) => {
-    console.log(`[SampleSelector] Deleted: "${region.name}" (id=${region.id})`)
     try {
       await window.xleth?.timeline?.removeRegion(region.id)
     } catch (e) {
-      console.warn('[SampleSelector] removeRegion failed:', e.message)
+      console.warn('[Browser] removeRegion failed:', e.message)
     }
     setRegions(prev => prev.filter(r => r.id !== region.id))
     if (activeSampleId === region.id) setActiveSampleId(null)
@@ -266,11 +282,10 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
         if (result) {
           setRootNotes(prev => ({ ...prev, [sid]: result.note }))
           if (result.note >= 0) {
-            console.log(`[SampleSelector] Root note detected: ${src.name} → MIDI ${result.note}`)
           }
         }
       } catch (e) {
-        console.warn('[SampleSelector] detectRootNote error:', e.message)
+        console.warn('[Browser] detectRootNote error:', e.message)
         setRootNotes(prev => ({ ...prev, [sid]: -1 }))
       }
     }
@@ -286,10 +301,9 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
       // Edit in Sample Picker
       {
         label: 'Edit in Sample Picker',
-        icon: Pencil,
+        icon: DrawToolIcon,
         onClick: () => {
           if (src && onOpenPicker) {
-            console.log(`[SampleSelector] Edit in Picker: "${region.name}"`)
             onOpenPicker(src)
           }
         },
@@ -297,13 +311,13 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
       // Rename
       {
         label: 'Rename',
-        icon: Type,
+        icon: IcPencilSimpleLine,
         onClick: () => startRename(region),
       },
       // Sampler Settings (Pitch regions only — they're the ones played via the sampler engine)
       ...(region.label === 'Pitch' ? [{
         label: 'Sampler Settings',
-        icon: Sliders,
+        icon: SamplerIcon,
         onClick: () => {
           timelineEvents.dispatchEvent(new CustomEvent('open-sampler-settings', {
             detail: { regionId: region.id }
@@ -316,35 +330,44 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
         .filter(l => l !== region.label)
         .map(l => ({
           label: `Move to ${l}`,
-          icon: <span className="tab-label-dot" style={{ background: labelColor(l) }} />,
+          icon: <span className={styles.swatch} style={{ background: labelColor(l) }} />,
           onClick: () => changeLabel(region, l),
         })),
       { type: 'separator' },
       // Split Syllables (only for Quote regions)
       ...(region.label === 'Quote' ? [{
         label: 'Split Syllables',
-        icon: Scissors,
+        icon: SplitSyllablesIcon,
         onClick: () => {
-          useSplitSyllablesPanelStore.getState().setSplitTarget({ region })
-          usePanelRegistry.getState().openPanel('splitSyllables')
+          usePanelRegistry.getState().openPanel('splitSyllables', { region })
         },
-      }, { type: 'separator' }] : []),
+      }] : []),
+      // Open in Sample Sandbox (any region — loads it as a fresh sandbox layer)
+      {
+        label: 'Open in Sample Sandbox',
+        icon: SandboxIcon,
+        onClick: () => {
+          useSandboxPanelStore.getState().setOpenTarget(region)
+          usePanelRegistry.getState().openPanel('sampleSandbox')
+        },
+      },
+      { type: 'separator' },
       // Export Audio
       {
         label: 'Export Audio',
-        icon: Download,
+        icon: IcExport,
         onClick: async () => {
           try {
             await window.xleth?.audio?.exportRegion(region.id)
           } catch (e) {
-            console.error('[SampleSelector] Export audio failed:', e)
+            console.error('[Browser] Export audio failed:', e)
           }
         },
       },
       // Swap Audio
       {
         label: 'Swap Audio',
-        icon: ArrowLeftRight,
+        icon: IcSwap,
         onClick: async () => {
           try {
             let exportsDir = ''
@@ -373,17 +396,17 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
               timelineEvents.dispatchEvent(new CustomEvent('timeline-waveform-invalidate',
                 { detail: { regionId: region.id } }))
             } else if (result?.error) {
-              console.error('[SampleSelector] Swap audio failed:', result.error)
+              console.error('[Browser] Swap audio failed:', result.error)
             }
           } catch (e) {
-            console.error('[SampleSelector] Swap audio error:', e)
+            console.error('[Browser] Swap audio error:', e)
           }
         },
       },
       // Revert Audio (only shown when region has swapped audio)
       ...(region.hasSwappedAudio ? [{
         label: 'Revert Audio',
-        icon: RotateCcw,
+        icon: IcArrowCounterClockwise,
         onClick: async () => {
           try {
             const result = await window.xleth?.audio?.revertRegionAudio(region.id)
@@ -394,33 +417,49 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
               timelineEvents.dispatchEvent(new CustomEvent('timeline-waveform-invalidate',
                 { detail: { regionId: region.id } }))
             } else if (result?.error) {
-              console.error('[SampleSelector] Revert audio failed:', result.error)
+              console.error('[Browser] Revert audio failed:', result.error)
             }
           } catch (e) {
-            console.error('[SampleSelector] Revert audio error:', e)
+            console.error('[Browser] Revert audio error:', e)
           }
         },
       }] : []),
       // ── Video (only for regions whose source actually has a video stream) ──
       ...(src?.hasVideo ? [
         { type: 'separator' },
+        // Color Grade: this sample's own grade (its source's grade is one
+        // click away in the window's stack view).
+        {
+          label: 'Color Grade…',
+          icon: IcPalette,
+          onClick: () => {
+            const sourceName = src.fileName ?? src.name ?? 'Source'
+            openColorGrade({ level: 'region', id: region.id }, {
+              name: region.name || 'Sample',
+              stack: {
+                source: { id: src.id, name: sourceName },
+                clip: { level: 'region', id: region.id, name: region.name || 'Sample' },
+              },
+            })
+          },
+        },
         // Export Video
         {
           label: 'Export Video',
-          icon: Download,
+          icon: IcExport,
           onClick: async () => {
             try {
               const result = await window.xleth?.video?.exportRegion(region.id)
-              if (result?.error) console.error('[SampleSelector] Export video failed:', result.error)
+              if (result?.error) console.error('[Browser] Export video failed:', result.error)
             } catch (e) {
-              console.error('[SampleSelector] Export video failed:', e)
+              console.error('[Browser] Export video failed:', e)
             }
           },
         },
         // Swap Video
         {
           label: 'Swap Video',
-          icon: ArrowLeftRight,
+          icon: IcSwap,
           onClick: async () => {
             try {
               const picked = await openFilePicker({
@@ -455,17 +494,17 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
                     + `Playback has been clamped to the original duration — the video is not stretched.`)
                 }
               } else if (result?.error) {
-                console.error('[SampleSelector] Swap video failed:', result.error)
+                console.error('[Browser] Swap video failed:', result.error)
               }
             } catch (e) {
-              console.error('[SampleSelector] Swap video error:', e)
+              console.error('[Browser] Swap video error:', e)
             }
           },
         },
         // Revert Video (only shown when region has swapped video)
         ...(region.hasSwappedVideo ? [{
           label: 'Revert Video',
-          icon: RotateCcw,
+          icon: IcArrowCounterClockwise,
           onClick: async () => {
             try {
               const result = await window.xleth?.video?.revertRegionVideo(region.id)
@@ -476,10 +515,10 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
                 timelineEvents.dispatchEvent(new CustomEvent('timeline-video-invalidate',
                   { detail: { regionId: region.id, sourceId: region.sourceId } }))
               } else if (result?.error) {
-                console.error('[SampleSelector] Revert video failed:', result.error)
+                console.error('[Browser] Revert video failed:', result.error)
               }
             } catch (e) {
-              console.error('[SampleSelector] Revert video error:', e)
+              console.error('[Browser] Revert video error:', e)
             }
           },
         }] : []),
@@ -488,138 +527,113 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
       // Delete
       {
         label: 'Delete',
-        icon: Trash2,
+        icon: IcTrash,
         danger: true,
         onClick: () => handleDelete(region),
       },
     ]
   }, [contextMenu, sources, allLabels, onOpenPicker, startRename, changeLabel, handleDelete])
 
-  // ── Render ─────────────────────────────────────────────────────────────────
-  return (
-    <div className="sample-selector-tab">
-      {/* ── Search bar ─────────────────────────────────────────────── */}
-      <div className="tab-search-bar tab-search-bar--with-actions">
-        <Search size={14} className="tab-search-icon" />
-        <input
-          type="text"
-          className="tab-search-input tab-search-input--with-actions"
-          placeholder="Search samples..."
-          value={searchQuery}
-          onChange={e => setSearchQuery(e.target.value)}
-          onKeyDown={e => e.stopPropagation()}
-        />
-        <div className="tab-search-bar-actions" role="group" aria-label="View mode">
-          <button
-            type="button"
-            className={`tab-view-toggle-btn ${viewMode === 'list' ? 'active' : ''}`}
-            onClick={() => setViewMode('list')}
-            title="List view"
-            aria-pressed={viewMode === 'list'}
-          >
-            <List size={13} />
-          </button>
-          <button
-            type="button"
-            className={`tab-view-toggle-btn ${viewMode === 'thumbnails' ? 'active' : ''}`}
-            onClick={() => setViewMode('thumbnails')}
-            title="Thumbnail view"
-            aria-pressed={viewMode === 'thumbnails'}
-          >
-            <LayoutGrid size={13} />
-          </button>
-        </div>
-      </div>
+  // ── Select (+ preview) ─────────────────────────────────────────────────────
+  // Selecting a sample makes it the active draw sample and, with Auto-preview on,
+  // plays it through the same preview path the row's play button uses.
+  const handleSelect = useCallback(async (id) => {
+    setActiveSampleId(id)
+    if (!autoPreview) return
+    const region = regions.find(r => r.id === id)
+    const src = region ? sources[region.sourceId] : null
+    if (!region || !src?.filePath) return
+    startPreview({ region, sourceFilePath: src.filePath, mediaPort: await getMediaPort() })
+  }, [autoPreview, regions, sources, setActiveSampleId])
 
-      {/* ── Header ─────────────────────────────────────────────────── */}
-      <div className="tab-placeholder-header">
-        <span className="tab-section-label">Samples</span>
-        <span className="tab-item-count">{regions.length}</span>
+  // ── Render ─────────────────────────────────────────────────────────────────
+  const noneMatch = !!searchQuery && [...grouped.values()].every(arr => arr.length === 0)
+  return (
+    <div className={styles.tab}>
+      {/* ── List header ────────────────────────────────────────────── */}
+      <div className={styles.listHeader}>
+        <span className={styles.listTitle}>Samples</span>
+        <span className={styles.count}>{regions.length}</span>
+        <span className={styles.spacer} />
+        <Toggle
+          size="sm"
+          on={autoPreview}
+          onChange={setAutoPreview}
+          glyph={<IcSpeakerSimpleHigh size={14} />}
+          hint="Auto-preview: selecting a sample plays it"
+        >
+          Auto-preview
+        </Toggle>
+        <SegmentedControl
+          label="View mode"
+          size="sm"
+          value={viewMode}
+          onChange={setViewMode}
+          options={[
+            { value: 'list', label: <IcList size={14} aria-hidden="true" />, ariaLabel: 'List view', hint: 'List view' },
+            { value: 'thumbnails', label: <IcSquaresFour size={14} aria-hidden="true" />, ariaLabel: 'Thumbnail view', hint: 'Thumbnail view' },
+          ]}
+        />
       </div>
 
       {/* ── Rename collision error banner ──────────────────────────── */}
       {renameError && (
-        <div
-          className="sample-selector-error-banner"
-          role="alert"
-          style={{
-            background: 'var(--theme-semantic-danger-bg-subtle)',
-            color: 'var(--theme-semantic-danger-text)',
-            padding: '6px 10px',
-            fontSize: '12px',
-            margin: '4px 8px',
-            borderRadius: '4px',
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            gap: '8px',
-          }}
-        >
+        <div className={styles.error} role="alert">
           <span>{renameError}</span>
           <button
+            type="button"
+            className={styles.errorDismiss}
             onClick={() => setRenameError(null)}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              color: 'var(--theme-semantic-danger-text)',
-              cursor: 'pointer',
-              fontSize: '14px',
-              padding: '0 4px',
-              lineHeight: 1,
-            }}
-            title="Dismiss"
+            aria-label="Dismiss"
           >
-            ×
+            <IcX size={14} aria-hidden="true" />
           </button>
         </div>
       )}
 
       {/* ── Groups or empty state ──────────────────────────────────── */}
-      {regions.length === 0 && !searchQuery ? (
-        <div className="tab-placeholder-empty">
-          <Music size={28} strokeWidth={1} className="tab-placeholder-icon" />
-          <p>No samples marked yet</p>
-          <p className="tab-placeholder-hint">
-            Double-click a source in Project Media to open the Sample Picker
-          </p>
-        </div>
-      ) : (
-        <div className="sample-groups">
-          {[...grouped.entries()]
-            .filter(([, items]) => items.length > 0)
-            .map(([label, items]) => (
-              <SampleGroup
-                key={label}
-                label={label}
-                samples={items}
-                collapsed={collapsedGroups.has(label)}
-                onToggle={() => toggleCollapse(label)}
-                activeSampleId={activeSampleId}
-                onSelect={(id) => {
-                  setActiveSampleId(id)
-                  console.log(`[SampleSelector] Selected: id=${id}`)
-                }}
-                onContextMenu={handleContextMenu}
-                editingNameId={editingNameId}
-                editingNameValue={editingNameValue}
-                onRenameChange={setEditingNameValue}
-                onRenameCommit={commitRename}
-                onRenameCancel={cancelRename}
-                sources={sources}
-                rootNotes={rootNotes}
-                onFetchRootNotes={fetchRootNotesForGroup}
-                viewMode={viewMode}
-                onOpenPicker={onOpenPicker}
-              />
-            ))}
-          {/* Show message when search yields nothing */}
-          {searchQuery && [...grouped.values()].every(arr => arr.length === 0) && (
-            <div className="tab-placeholder-empty" style={{ paddingTop: 12 }}>
-              <p className="tab-placeholder-hint">No samples match "{searchQuery}"</p>
-            </div>
-          )}
-        </div>
-      )}
+      <div
+        className={styles.list}
+        role="listbox"
+        aria-label="Samples"
+        onKeyDown={moveRowFocus}
+      >
+        {regions.length === 0 && !searchQuery ? (
+          <EmptyState
+            message="No samples marked. Double-click a source in Media to open the picker."
+            actionLabel="Open Media"
+            onAction={() => setBrowserTab('media')}
+          />
+        ) : (
+          <>
+            {[...grouped.entries()]
+              .filter(([, items]) => items.length > 0)
+              .map(([label, items]) => (
+                <SampleGroup
+                  key={label}
+                  label={label}
+                  samples={items}
+                  collapsed={collapsedGroups.has(label)}
+                  onToggle={() => toggleCollapse(label)}
+                  activeSampleId={activeSampleId}
+                  onSelect={handleSelect}
+                  onContextMenu={handleContextMenu}
+                  editingNameId={editingNameId}
+                  editingNameValue={editingNameValue}
+                  onRenameChange={setEditingNameValue}
+                  onRenameCommit={commitRename}
+                  onRenameCancel={cancelRename}
+                  sources={sources}
+                  rootNotes={rootNotes}
+                  onFetchRootNotes={fetchRootNotesForGroup}
+                  viewMode={viewMode}
+                  onOpenPicker={onOpenPicker}
+                />
+              ))}
+            {noneMatch && <EmptyState message={`No samples match "${searchQuery.trim()}".`} />}
+          </>
+        )}
+      </div>
 
       {/* ── Context menu ───────────────────────────────────────────── */}
       {contextMenu && (

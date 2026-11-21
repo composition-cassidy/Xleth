@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { getPickerPath, openFilePicker } from './filePicker/filePickerService.js'
 import { AUDIO_EXTENSIONS, dirname, VIDEO_EXTENSIONS } from './filePicker/filePickerHelpers.js'
+import { Button, Dialog, DialogList, DialogListItem, DialogText } from '../ui-kit'
 
 const MEDIA_FILTERS = [
   { name: 'Media Files', extensions: [...VIDEO_EXTENSIONS, ...AUDIO_EXTENSIONS] },
@@ -78,44 +79,29 @@ export default function MissingMediaDialog({ media, onClose }) {
   }
 
   return (
-    <div className="missing-media-dialog-backdrop" onMouseDown={(event) => {
-      if (event.target === event.currentTarget) onClose?.()
-    }}>
-      <div className="missing-media-dialog" role="dialog" aria-modal="true" aria-label="Missing media">
-        <div className="missing-media-dialog__header">
-          <div>
-            <h3>Missing Media ({items.length})</h3>
-            <p>Relink each file or ignore the list for now.</p>
-          </div>
-          <button type="button" onClick={onClose} aria-label="Close">×</button>
-        </div>
+    <Dialog
+      title={`Missing media (${items.length})`}
+      width="lg"
+      onClose={onClose}
+      actions={<Button size="lg" onClick={onClose}>Ignore all</Button>}
+    >
+      <DialogText>Relink each file or ignore the list for now.</DialogText>
 
-        <div className="missing-media-dialog__list">
-          {items.map((item) => (
-            <div key={item.__key} className="missing-media-dialog__row">
-              <div className="missing-media-dialog__text">
-                <strong>{item.displayName || displayPath(item) || 'Missing media'}</strong>
-                <span>{displayPath(item)}</span>
-                {item.error ? <em>{item.error}</em> : null}
-              </div>
-              <button
-                type="button"
-                className="missing-media-dialog__relink"
-                onClick={() => relink(item)}
-                disabled={busyKey === item.__key}
-              >
-                {busyKey === item.__key ? 'Relinking...' : 'Relink'}
-              </button>
-            </div>
-          ))}
-        </div>
+      <DialogList label="Missing media files">
+        {items.map((item) => (
+          <DialogListItem
+            key={item.__key}
+            label={item.displayName || displayPath(item) || 'Missing media'}
+            detail={item.error ? `${displayPath(item)} — ${item.error}` : displayPath(item)}
+          >
+            <Button size="sm" onClick={() => relink(item)} disabled={busyKey === item.__key}>
+              {busyKey === item.__key ? 'Relinking…' : 'Relink'}
+            </Button>
+          </DialogListItem>
+        ))}
+      </DialogList>
 
-        {message && <div className="missing-media-dialog__message">{message}</div>}
-
-        <div className="missing-media-dialog__footer">
-          <button type="button" onClick={onClose}>Ignore All</button>
-        </div>
-      </div>
-    </div>
+      {message && <div role="status"><DialogText tone="secondary">{message}</DialogText></div>}
+    </Dialog>
   )
 }

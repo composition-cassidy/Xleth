@@ -18,6 +18,9 @@
 //       measurable periodic sweep bounded by base..base+depth
 //   (f) fastest ballistics into a Q = 20 SVF stays finite and bounded
 //   (g) negative depth ducks — loud input CLOSES the filter
+//   (m) getLiveState — the editor's animation payload: per-slot effective knob
+//       positions, per-lane source values and a response curve drawn from those
+//       same values, with a cold slot falling back to the parked curve
 //
 // Nothing here reaches into engine internals: the follower is observed through
 // the public dynamics telemetry (getSlotEffectiveCutoff / getSlotEffectiveQ /
@@ -1219,6 +1222,145 @@ static void testLegacyStateMigration()
           "reloading the migrated project is stable — three lanes, no duplicates");
 }
 
+// ─── (m) The panel's animation payload ───────────────────────────────────────
+//
+// getLiveState is the single door the editor polls at frame rate to ANIMATE
+// itself.  The contract it has to keep:
+//   - before any audio has been processed it reports the slot as not-valid and
+//     its curve is the PARKED one, so a panel opened on a stopped transport
+//     draws exactly what it drew before this existed
+//   - once the LFO is running, the slot reads valid, its effective cutoff moves,
+//     the lane's source value swings BOTH ways (an LFO is bipolar), and the live
+//     curve differs from the parked curve — which is the whole point
+//   - an Envelope lane's source value never goes negative
+static void testLiveStateAnimationPayload()
+{
+    std::cout << "  [m: getLiveState carries a moving curve + per-lane source]\n";
+
+    XlethFilterEffect fx;
+    fx.prepareToPlay(kSR, 256);
+
+    SlotSetup s;
+    s.cutoff = 1000.0f; s.q = 0.7071f; s.depth = 0.0f;   // follower present, inert
+    const int slot = makeSlot(fx, s);
+
+    constexpr int kN = XlethFilterEffect::kLiveStateFloats;
+    std::vector<float> live(kN, -1.0f);
+    std::vector<float> parked(XlethFilterEffect::kResponseSize, 0.0f);
+
+    // (1) Nothing has been processed yet.
+    fx.getLiveState(live.data(), kN);
+    fx.getResponseCurve(parked.data(), XlethFilterEffect::kResponseSize);
+
+    const int base0 = XlethFilterEffect::kLiveHeaderFloats;
+    CHECK(live[0] == 1.0f, "the payload stamps format 1, got " << live[0]);
+    CHECK(static_cast<int>(live[1]) == 1, "the payload reports one live slot, got " << live[1]);
+    CHECK(std::abs(live[2] - static_cast<float>(kSR)) < 1.0f,
+          "the payload reports the sample rate, got " << live[2]);
+    CHECK(live[base0 + 6] == 0.0f,
+          "a slot that has never been processed reports its telemetry INVALID");
+
+    double coldDiff = 0.0;
+    for (int i = 0; i < XlethFilterEffect::kResponseSize; ++i)
+        coldDiff = std::max(coldDiff,
+                            std::abs(static_cast<double>(
+                                live[XlethFilterEffect::kLiveCurveOffset + i] - parked[i])));
+    CHECK(coldDiff < 1e-4,
+          "with no telemetry the live curve IS the parked curve, max delta "
+              << coldDiff << " dB");
+
+    // (2) Run the LFO hard on cutoff and watch the payload move.
+    fx.setSlotParam(slot, "m1_kind",      static_cast<float>(xleth_filter::ModKind::Lfo));
+    fx.setSlotParam(slot, "m1_dest",      0.0f);     // Cutoff
+    fx.setSlotParam(slot, "m1_depth",     1.0f);
+    fx.setSlotParam(slot, "m1_shape",     0.0f);     // Sine
+    fx.setSlotParam(slot, "m1_rate_mode", 0.0f);     // Free
+    fx.setSlotParam(slot, "m1_rate_ms",   500.0f);   // 2 Hz
+    XlethEffectBase::setGlobalBPM(120.0);
+
+    juce::AudioBuffer<float> buf(2, 256);
+    juce::MidiBuffer midi;
+    int64_t pos = 0;
+
+    float srcLo = 1.0e9f, srcHi = -1.0e9f;
+    float cutLo = 1.0e9f, cutHi = 0.0f;
+    double maxCurveDelta = 0.0;
+    bool everValid = false;
+
+    const int blocks = static_cast<int>(2.0 * kSR / 256);   // 2 s = 4 LFO cycles
+    for (int b = 0; b < blocks; ++b)
+    {
+        XlethEffectBase::setGlobalTransportPositionSamples(pos);
+        for (int i = 0; i < 256; ++i) { buf.setSample(0, i, 0.1f); buf.setSample(1, i, 0.1f); }
+        fx.processBlock(buf, midi);
+        pos += 256;
+
+        fx.getLiveState(live.data(), kN);
+        // The activation ramp takes a few blocks; only judge the swing once the
+        // lane is actually running, exactly as the panel does.
+        if (live[base0 + 6] < 0.5f) continue;
+        everValid = true;
+
+        const float src = live[base0 + XlethFilterEffect::kLiveLaneOffset + 1 * 2];
+        srcLo = std::min(srcLo, src);
+        srcHi = std::max(srcHi, src);
+        cutLo = std::min(cutLo, live[base0 + 0]);
+        cutHi = std::max(cutHi, live[base0 + 0]);
+
+        for (int i = 0; i < XlethFilterEffect::kResponseSize; ++i)
+            maxCurveDelta = std::max(maxCurveDelta,
+                                     std::abs(static_cast<double>(
+                                         live[XlethFilterEffect::kLiveCurveOffset + i] - parked[i])));
+    }
+
+    std::cout << "      lane src " << srcLo << " .. " << srcHi
+              << ";  live cutoff " << cutLo << " .. " << cutHi
+              << " Hz;  curve moved " << maxCurveDelta << " dB\n";
+
+    CHECK(everValid, "processing audio marks the slot's telemetry valid");
+    CHECK(srcLo < -0.8f && srcHi > 0.8f,
+          "an LFO lane reports a BIPOLAR source value, got " << srcLo << " .. " << srcHi);
+    CHECK(cutHi > cutLo * 4.0f,
+          "the payload's effective cutoff sweeps (" << cutLo << " .. " << cutHi << " Hz)");
+    CHECK(maxCurveDelta > 6.0,
+          "the live curve leaves the parked curve while the LFO runs, max delta "
+              << maxCurveDelta << " dB");
+
+    // (3) An envelope's source is unipolar — it must never report negative.
+    XlethFilterEffect env;
+    env.prepareToPlay(kSR, 256);
+    SlotSetup es;
+    es.cutoff = 800.0f; es.depth = 0.0f;
+    const int eslot = makeSlot(env, es);
+    env.setSlotParam(eslot, "m1_kind",    static_cast<float>(xleth_filter::ModKind::Env));
+    env.setSlotParam(eslot, "m1_dest",    0.0f);
+    env.setSlotParam(eslot, "m1_depth",   1.0f);
+    env.setSlotParam(eslot, "m1_attack",  20.0f);
+    env.setSlotParam(eslot, "m1_decay",   200.0f);
+    env.setSlotParam(eslot, "m1_sustain", 0.6f);
+    env.setSlotParam(eslot, "m1_release", 200.0f);
+
+    float envLo = 1.0e9f, envHi = -1.0e9f;
+    pos = 0;
+    for (int b = 0; b < static_cast<int>(1.0 * kSR / 256); ++b)
+    {
+        XlethEffectBase::setGlobalTransportPositionSamples(pos);
+        // MixEngine pushes the gate once per block, so the test does too.
+        env.applyModulationGate(true, 0, static_cast<int64_t>(0.5 * kSR));
+        for (int i = 0; i < 256; ++i) { buf.setSample(0, i, 0.1f); buf.setSample(1, i, 0.1f); }
+        env.processBlock(buf, midi);
+        pos += 256;
+        env.getLiveState(live.data(), kN);
+        const float src = live[base0 + XlethFilterEffect::kLiveLaneOffset + 1 * 2];
+        envLo = std::min(envLo, src);
+        envHi = std::max(envHi, src);
+    }
+
+    std::cout << "      envelope lane src " << envLo << " .. " << envHi << "\n";
+    CHECK(envLo >= 0.0f, "an Envelope lane's source never goes negative, got " << envLo);
+    CHECK(envHi > 0.5f, "the Envelope lane's source actually rises, peaked at " << envHi);
+}
+
 // ─── main ────────────────────────────────────────────────────────────────────
 
 int main()
@@ -1256,6 +1398,9 @@ int main()
 
     std::cout << "\n=== test_xlethfilter_migration ===\n";
     testLegacyStateMigration();
+
+    std::cout << "\n=== test_xlethfilter_livestate (panel animation payload) ===\n";
+    testLiveStateAnimationPayload();
 
     std::cout << "\nResults: " << g_passed << " passed, " << g_failed << " failed\n";
     if (g_failed > 0)

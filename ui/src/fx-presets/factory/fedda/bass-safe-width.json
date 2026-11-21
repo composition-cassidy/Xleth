@@ -1,0 +1,19 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "fedda",
+  "name": "Bass Safe Width",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "width": 40,
+      "character": 1,
+      "size": 6,
+      "low_bypass": 250,
+      "low_slope": 1,
+      "hf_damp": 20000,
+      "guard": 20,
+      "loudness_match": 0
+    }
+  }
+}

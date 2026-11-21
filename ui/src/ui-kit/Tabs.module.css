@@ -1,0 +1,90 @@
+@layer kit {
+  .list {
+    box-sizing: border-box;
+    display: flex;
+    align-items: stretch;
+    height: var(--panel-header-h);
+    background: var(--ui-g2);
+    border-bottom: 1px solid var(--ui-g4);
+    -webkit-app-region: no-drag;
+    font-family: var(--ui-font);
+  }
+
+  .tab {
+    position: relative;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    min-width: var(--hit-min);
+    padding: 0 var(--space-3);
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--ui-ink-2);
+    font: inherit;
+    font-size: var(--type-12);
+    font-weight: var(--weight-medium);
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  /* Reserve the semibold width so selecting a tab never shifts its neighbours. */
+  .text {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .text::after {
+    content: attr(data-text);
+    height: 0;
+    overflow: hidden;
+    visibility: hidden;
+    font-weight: var(--weight-semibold);
+  }
+
+  .glyph {
+    display: inline-flex;
+  }
+
+  .tab:is(:hover, [data-state="hover"]):not(:disabled) {
+    background: var(--ui-g3);
+    color: var(--ui-ink);
+  }
+
+  .tab[data-selected="true"] {
+    color: var(--ui-ink);
+    font-weight: var(--weight-semibold);
+    background: var(--ui-g1);
+  }
+
+  /* The underline is the shape cue: 2px ink rule on the selected tab. Every tab carries the
+   * rule at zero width so selecting one can draw it out from the centre (--mo-state: instant
+   * until the lively tier). */
+  .tab::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -1px;
+    height: 2px;
+    background: var(--ui-ink);
+    transform: scaleX(0);
+    transition: transform var(--mo-state) var(--mo-ease-out);
+  }
+
+  .tab[data-selected="true"]::after {
+    transform: scaleX(1);
+  }
+
+  .tab:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -2px;
+  }
+
+  .tab:disabled {
+    opacity: var(--ui-mute-opacity);
+    cursor: default;
+  }
+}

@@ -7,6 +7,7 @@ import AccentPreview from './previewSurfaces/AccentPreview'
 import DangerPreview from './previewSurfaces/DangerPreview'
 import MixerPreview from './previewSurfaces/MixerPreview'
 import TimelinePreview from './previewSurfaces/TimelinePreview'
+import styles from './previewSurfaces/Preview.module.css'
 
 interface Props {
   workingTheme: ThemeFile
@@ -24,8 +25,8 @@ export default function PreviewPane({ workingTheme }: Props) {
   }, [workingTheme])
 
   return (
-    <div className="preview-pane" ref={rootRef}>
-      <div className="preview-pane-label">Live Preview</div>
+    <div className={styles.pane} ref={rootRef}>
+      <div className={styles.paneLabel}>Live preview</div>
       <SurfacePreview />
       <TypographyPreview />
       <AccentPreview />

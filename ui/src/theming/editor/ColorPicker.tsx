@@ -1,6 +1,10 @@
+import styles from './ThemeEditor.module.css'
+
 interface Props {
   value: string   // 6-digit hex
   onChange: (hex: string) => void
+  /** Accessible name, e.g. the token being edited. */
+  label?: string
 }
 
 function toInputHex(v: string): string {
@@ -13,18 +17,18 @@ function toInputHex(v: string): string {
   return '#888888'
 }
 
-export default function ColorPicker({ value, onChange }: Props) {
+export default function ColorPicker({ value, onChange, label = 'Colour' }: Props) {
   const hex = toInputHex(value)
   return (
-    <div className="color-picker">
-      {/* Phase 4: gradient picker replaces this input */}
+    <div className={styles.picker}>
       <input
         type="color"
-        className="color-picker-input"
+        className={styles.pickerInput}
         value={hex}
+        aria-label={label}
         onChange={e => onChange(e.target.value)}
       />
-      <span className="color-picker-hex">{hex.toUpperCase()}</span>
+      <span className={styles.pickerHex}>{hex.toUpperCase()}</span>
     </div>
   )
 }

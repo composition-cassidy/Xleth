@@ -11,6 +11,13 @@ void to_json(nlohmann::json& j, const PatternNote& n) {
         {"slideCurveCx",  n.slideCurveCx},
         {"slideCurveCy",  n.slideCurveCy}
     };
+    // Written only when present: a note without one (Follow) saves exactly as
+    // before, so projects that never used overrides are unchanged on disk.
+    if (n.lensOverride)
+        j["lensOverride"] = lensroam::lensNoteOverrideToJson(*n.lensOverride);
+    // Clones (schema v10): written only when pinned; absent = Auto.
+    if (n.voicePin >= 0)
+        j["voicePin"] = n.voicePin;
 }
 
 void from_json(const nlohmann::json& j, PatternNote& n) {
@@ -22,6 +29,16 @@ void from_json(const nlohmann::json& j, PatternNote& n) {
     n.isSlide      = j.value("isSlide", false);
     n.slideCurveCx = j.value("slideCurveCx", 0.5f);
     n.slideCurveCy = j.value("slideCurveCy", 0.5f);
+    // Absent (every older project) = Follow.
+    n.lensOverride = j.contains("lensOverride")
+        ? lensroam::lensNoteOverrideFromJson(j.at("lensOverride"))
+        : nullptr;
+    // Absent / malformed / out of range = Auto.
+    n.voicePin = kVoicePinAuto;
+    if (j.contains("voicePin") && j.at("voicePin").is_number_integer()) {
+        const int p = j.at("voicePin").get<int>();
+        if (p >= 0 && p <= kMaxVoicePin) n.voicePin = p;
+    }
 }
 
 void to_json(nlohmann::json& j, const Pattern& p) {

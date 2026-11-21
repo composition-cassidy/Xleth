@@ -1,5 +1,8 @@
-import { TRACK_HEIGHT, PPQ, pixelToBeat, snapBeatToGrid, beatsToTicks } from '../../../constants/timeline.js'
+import { pixelToBeat, snapBeatToGrid, beatsToTicks } from '../../../constants/timeline.js'
 import { drawSplitLine } from '../timelineDrawing.js'
+import {
+  buildTrackIdToIndex, findBlockAtTick, hitTestBlockAt, trackIndexAtY,
+} from '../blockGeometry.js'
 
 const MIN_DURATION_TICKS = 120  // 1/32 note
 
@@ -11,6 +14,7 @@ export function createSplitTool(deps) {
   const {
     clipsRef, tracksRef,
     pixelsPerBeatRef, scrollOffsetRef,
+    trackIdToIndexRef,
     snapGranularityRef,
     onSplitClip,
     redrawOverlay,
@@ -21,39 +25,24 @@ export function createSplitTool(deps) {
   } = deps
 
   function idxAtY(y) {
-    const layout = trackLayoutRef?.current
-    if (layout && typeof layout.trackIndexAtY === 'function') return layout.trackIndexAtY(y)
-    return Math.floor(y / TRACK_HEIGHT)
+    return trackIndexAtY(y, trackLayoutRef?.current)
   }
 
   let splitBeat = null
 
-  function hitTestClip(beat, trackIndex) {
-    const clips = clipsRef.current
-    const tracks = tracksRef.current
-    if (!clips || !tracks) return null
-    for (let i = 0; i < clips.length; i++) {
-      const clip = clips[i]
-      const clipBeat = clip.positionTicks / PPQ
-      const clipEnd = clipBeat + clip.durationTicks / PPQ
-      const clipTrackIdx = tracks.findIndex((t) => t.id === clip.trackId)
-      if (beat >= clipBeat && beat < clipEnd && trackIndex === clipTrackIdx) return clip
-    }
-    return null
-  }
-
-  function hitTestPatternBlock(beat, trackIndex) {
-    const blocks = patternBlocksRef?.current
-    const tracks = tracksRef.current
-    if (!blocks || !tracks) return null
-    for (let i = 0; i < blocks.length; i++) {
-      const b = blocks[i]
-      const bBeat = b.positionTicks / PPQ
-      const bEnd = bBeat + b.durationTicks / PPQ
-      const bTrackIdx = tracks.findIndex((t) => t.id === b.trackId)
-      if (beat >= bBeat && beat < bEnd && trackIndex === bTrackIdx) return b
-    }
-    return null
+  // The block to cut: the one under the pointer. The cut itself lands on the
+  // snapped grid position, which near a block's edge can fall just outside the
+  // block that was clicked; testing only the snapped position (as this used
+  // to) then picked the NEIGHBOUR and cut that instead. Only when the pointer
+  // is over empty lane does the snapped position choose the block.
+  function blockToSplit(items, localX, splitTicks, trackIndex) {
+    if (!tracksRef.current) return null
+    const trackIdToIndex = trackIdToIndexRef?.current ?? buildTrackIdToIndex(tracksRef.current)
+    return hitTestBlockAt(items, localX, trackIndex, {
+      scrollOffset: scrollOffsetRef.current,
+      ppb: pixelsPerBeatRef.current,
+      trackIdToIndex,
+    }) ?? findBlockAtTick(items, splitTicks, trackIndex, trackIdToIndex)
   }
 
   return {
@@ -66,12 +55,12 @@ export function createSplitTool(deps) {
       const track = tracks?.[trackIndex]
       const modifiers = { alt: e.altKey, shift: e.shiftKey, ctrl: e.ctrlKey }
       const snappedBeat = snapBeatToGrid(Math.max(0, beat), modifiers, snapGranularityRef?.current)
+      const splitTicks = beatsToTicks(snappedBeat)
 
       // Pattern-track branch: split pattern block
       if (track?.type === 'Pattern') {
-        const hitBlock = hitTestPatternBlock(snappedBeat, trackIndex)
+        const hitBlock = blockToSplit(patternBlocksRef?.current, localX, splitTicks, trackIndex)
         if (!hitBlock) return
-        const splitTicks = beatsToTicks(snappedBeat)
         const leftDuration = splitTicks - hitBlock.positionTicks
         const rightDuration = hitBlock.durationTicks - leftDuration
         if (leftDuration < MIN_DURATION_TICKS || rightDuration < MIN_DURATION_TICKS) {
@@ -83,10 +72,9 @@ export function createSplitTool(deps) {
         return
       }
 
-      const hitClip = hitTestClip(snappedBeat, trackIndex)
+      const hitClip = blockToSplit(clipsRef.current, localX, splitTicks, trackIndex)
       if (!hitClip) return
 
-      const splitTicks = beatsToTicks(snappedBeat)
       const leftDuration = splitTicks - hitClip.positionTicks
       const rightDuration = hitClip.durationTicks - leftDuration
 

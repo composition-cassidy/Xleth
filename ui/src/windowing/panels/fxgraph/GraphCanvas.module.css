@@ -1,0 +1,286 @@
+/* The FX Graph canvas: the neutral grid, the cables and their buttons, the view controls and
+ * the minimap. Cables wear the signal-type hues (ui/DESIGN.md 3.3): audio solid, parameter
+ * dashed, sidechain key dotted and quieter, so a cable is never told apart by colour alone.
+ * No glow, no gradients. Class names beginning xleth-graph-state-preview__ stay on the
+ * elements as structural hooks only; they carry no styling any more. */
+
+@layer kit {
+  /* ── Viewport and grid ─────────────────────────────────────────────────── */
+
+  .viewport {
+    position: relative;
+    /* Explicit placement: the notice/empty header above is conditional, and an auto-flow
+     * item would land in the `auto` row and collapse. Row 2 is the fill row. */
+    grid-row: 2;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    touch-action: none;
+    background-color: var(--ui-g0);
+    /* The grid lives in graph space and follows pan and zoom through three custom
+     * properties set on this element: --grid-x/--grid-y (the canvas origin) and --grid-step
+     * (one minor cell). A major line every five cells; the minor lines drop out when they
+     * would sit closer than 8px. */
+    background-image:
+      linear-gradient(to right, var(--ui-g3) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--ui-g3) 1px, transparent 1px),
+      linear-gradient(to right, var(--ui-g2) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--ui-g2) 1px, transparent 1px);
+    background-size:
+      calc(var(--grid-step) * 5) calc(var(--grid-step) * 5),
+      calc(var(--grid-step) * 5) calc(var(--grid-step) * 5),
+      var(--grid-step) var(--grid-step),
+      var(--grid-step) var(--grid-step);
+    background-position: var(--grid-x) var(--grid-y);
+  }
+
+  .viewport[data-grid-minor="false"] {
+    background-image:
+      linear-gradient(to right, var(--ui-g3) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--ui-g3) 1px, transparent 1px);
+    background-size: calc(var(--grid-step) * 5) calc(var(--grid-step) * 5);
+  }
+
+  .viewport[data-pannable="true"] { cursor: grab; }
+  .viewport[data-panning="true"] { cursor: grabbing; user-select: none; }
+
+  /* ── Cables ────────────────────────────────────────────────────────────── */
+
+  .cable {
+    fill: none;
+    stroke-linecap: round;
+    stroke-width: 2;
+    vector-effect: non-scaling-stroke;
+  }
+
+  .cable[data-edge-type="audio"] { stroke: var(--ui-signal-audio); }
+
+  .cable[data-edge-type="parameter"] {
+    stroke: var(--ui-signal-parameter);
+    stroke-dasharray: 5 4;
+    stroke-width: 1.5;
+  }
+
+  /* The key link: the audio hue, dotted and quieter (still above 3:1 on the grid). */
+  .cable[data-edge-type="sidechain"] {
+    stroke: var(--ui-signal-audio);
+    stroke-dasharray: 1 5;
+    stroke-width: 2.5;
+    opacity: 0.6;
+  }
+
+  .cable[data-edge-type="unknown"] {
+    stroke: var(--ui-ink-3);
+    stroke-dasharray: 7 6;
+  }
+
+  .cable[data-hovered="true"] { stroke-width: 3; opacity: 1; }
+  .cable[data-edge-type="parameter"][data-hovered="true"] { stroke-width: 2.5; }
+
+  /* A cable under a dragged node, about to be spliced. */
+  .cable[data-splice-target="true"] {
+    stroke: var(--ui-select);
+    stroke-dasharray: none;
+    stroke-width: 4;
+    opacity: 1;
+  }
+
+  /* Selection is an outline, never a fill: a 6px --ui-select stroke under the 2px cable
+   * leaves 2px of it showing each side. */
+  .halo {
+    fill: none;
+    stroke: var(--ui-select);
+    stroke-width: 6;
+    stroke-linecap: round;
+    vector-effect: non-scaling-stroke;
+    pointer-events: none;
+  }
+
+  /* A wide, invisible stroke for hovering and picking a cable. Under the nodes. */
+  .hit {
+    fill: none;
+    stroke: transparent;
+    stroke-width: 14;
+    vector-effect: non-scaling-stroke;
+    pointer-events: stroke;
+    cursor: pointer;
+  }
+
+  /* The cable being dragged out. Its hue follows what it carries. */
+  .connecting {
+    fill: none;
+    stroke: var(--ui-signal-audio);
+    stroke-dasharray: 5 5;
+    stroke-width: 2;
+    stroke-linecap: round;
+    vector-effect: non-scaling-stroke;
+    opacity: 0.9;
+  }
+
+  [data-connecting-kind="macro"] .connecting,
+  [data-connecting-kind="envelope"] .connecting,
+  [data-connecting-kind="lfo"] .connecting { stroke: var(--ui-signal-parameter); }
+
+  /* ── Cable buttons (disconnect, edit mapping) ──────────────────────────── */
+
+  /* Shown for the cable under the pointer or the selected one, and for whichever button
+   * has keyboard focus. Hidden ones stay in the tab order, so focus reveals them. */
+  .cableButton {
+    position: absolute;
+    display: grid;
+    place-items: center;
+    box-sizing: border-box;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-2);
+    background: var(--ui-g3);
+    color: var(--ui-ink);
+    transform: translate(-50%, -50%);
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  /* A 24px hit area around the 20px visual (DAW Floor). */
+  .cableButton::after {
+    content: "";
+    position: absolute;
+    inset: -2px;
+  }
+
+  .cableButton[data-active="true"],
+  .cableButton:focus-visible {
+    opacity: 1;
+    pointer-events: auto;
+    cursor: pointer;
+  }
+
+  .cableButton:hover { border-color: var(--ui-value); }
+
+  .cableButton[data-open="true"] {
+    background: var(--ui-on);
+    border-color: var(--ui-on);
+    color: var(--ui-on-fg);
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .cableButton:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 1px;
+  }
+
+  /* ── View controls and minimap ─────────────────────────────────────────── */
+
+  .controls {
+    position: absolute;
+    left: var(--space-2);
+    bottom: var(--space-2);
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding: 2px var(--space-1) 2px 2px;
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g1);
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+  }
+
+  .zoomReadout {
+    min-width: 3.5ch;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .minimap {
+    position: absolute;
+    right: var(--space-2);
+    bottom: var(--space-2);
+    display: block;
+    box-sizing: border-box;
+    width: 176px;
+    height: 112px;
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g1);
+    cursor: pointer;
+    touch-action: none;
+  }
+
+  /* The empty state is a structural note in the corner of the well, not a poster. */
+  .emptyState {
+    position: absolute;
+    top: var(--space-3);
+    left: var(--space-3);
+    max-width: calc(100% - var(--space-5));
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g1);
+  }
+
+  /* ── The preview's own layout ─────────────────────────────────────── */
+
+  .preview {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 0;
+    width: 100%;
+    height: 100%;
+    min-height: 260px;
+    min-width: 0;
+    align-self: stretch;
+    text-align: left;
+  }
+
+  .chrome {
+    display: grid;
+    min-width: 0;
+    margin-bottom: var(--space-1);
+  }
+
+  .notice {
+    margin: 0;
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    line-height: 1.35;
+  }
+
+  .stage {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 100%;
+  }
+
+  /* The canvas layer is an unbounded transform anchor with no size of its own; the layers
+   * inside it anchor to its (0, 0) origin, where node and cable coordinates are drawn. */
+  .canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    transform-origin: 0 0;
+    will-change: transform;
+  }
+
+  .canvas[data-node-dragging="true"] { user-select: none; }
+
+  .edges,
+  .nodes,
+  .overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+  }
+
+  .edges { overflow: visible; }
+}

@@ -1,0 +1,117 @@
+/* Slider: a thin groove and a flat bracket cap, the Fader on its side. No shadow (it is a docked
+ * control). The whole cell is the hit area; the cap sits at --norm of the travel. */
+@layer kit {
+  .slider {
+    position: relative;
+    box-sizing: border-box;
+    display: flex;
+    align-items: stretch;
+    width: var(--slider-w, 100%);
+    min-width: var(--hit-min);
+    min-height: var(--hit-min);
+    border-radius: var(--ui-radius-1);
+    cursor: ew-resize;
+    -webkit-app-region: no-drag;
+    touch-action: none;
+    user-select: none;
+    outline: none;
+  }
+
+  .rail {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    margin: 0 3px;
+  }
+
+  .groove {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 2px;
+    margin-top: -1px;
+    background: var(--ui-boundary);
+  }
+
+  /* Bipolar: a tick at the middle of the rail (the cap's travel is the rail minus its own width). */
+  .notch {
+    position: absolute;
+    left: calc(var(--centre, 0.5) * (100% - 6px) + 2px);
+    top: 50%;
+    width: 2px;
+    height: 8px;
+    margin-top: -4px;
+    background: var(--ui-ink-3);
+  }
+
+  /* The cap sits at --norm of the travel (rail width minus cap width). */
+  .cap {
+    position: absolute;
+    top: 50%;
+    width: 6px;
+    height: 12px;
+    margin-top: -6px;
+    left: calc(var(--norm, 0) * (100% - 6px));
+    box-sizing: border-box;
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g3);
+  }
+
+  /* The centre line is the reading edge, so the cap's position is exact. */
+  .cap::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    bottom: 2px;
+    left: 50%;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--ui-ink);
+  }
+
+  .slider:is(:hover, [data-state="hover"]) .cap {
+    background: var(--ui-g4);
+  }
+
+  .slider:is(:focus-visible, [data-state="focus"]) {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 0;
+  }
+
+  .slider:is([data-dragging="true"], [data-state="active"]) .cap {
+    border-color: var(--ui-value);
+  }
+
+  /* The typing field (double-click) is drawn over the rail rather than growing the cell. */
+  .input {
+    position: absolute;
+    top: 50%;
+    right: 1px;
+    left: 1px;
+    box-sizing: border-box;
+    height: 18px;
+    padding: 0 2px;
+    transform: translateY(-50%);
+    border: 1px solid var(--ui-select);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g0);
+    color: var(--ui-ink);
+    font: inherit;
+    font-size: var(--type-12);
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    outline: none;
+  }
+
+  .input[aria-invalid="true"] {
+    border-color: var(--ui-rec);
+  }
+
+  .slider[data-disabled] {
+    opacity: var(--ui-mute-opacity);
+    cursor: default;
+    pointer-events: none;
+  }
+}

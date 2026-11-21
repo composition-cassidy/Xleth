@@ -1,0 +1,23 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "amp",
+  "name": "Lo-Fi Small Speaker",
+  "author": "XLETH",
+  "created": "2026-11-16T00:00:00.000Z",
+  "state": {
+    "params": {
+      "model": 0,
+      "drive": 2,
+      "bass": 2,
+      "mid": 8,
+      "treble": 3,
+      "sag": 5,
+      "tighten": 5,
+      "gate": 0,
+      "cab": 1,
+      "presence": 2,
+      "mix": 100,
+      "output": 9
+    }
+  }
+}

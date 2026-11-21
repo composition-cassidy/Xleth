@@ -1,12 +1,14 @@
+import styles from './Preview.module.css'
+
 export default function TypographyPreview() {
   return (
-    <div className="ps-card">
-      <div className="ps-label">Typography</div>
-      <div className="ps-type-stack">
-        <span style={{ color: 'var(--theme-text-primary)', fontSize: 13, fontWeight: 600 }}>Primary text</span>
-        <span style={{ color: 'var(--theme-text-secondary)', fontSize: 12 }}>Secondary text</span>
-        <span style={{ color: 'var(--theme-text-muted)', fontSize: 11 }}>Muted / labels</span>
-        <span style={{ color: 'var(--theme-accent)', fontSize: 12 }}>Accent link</span>
+    <div className={styles.card}>
+      <div className={styles.cardLabel}>Typography</div>
+      <div className={styles.typeStack}>
+        <span className={styles.textPrimary}>Primary text</span>
+        <span className={styles.textSecondary}>Secondary text</span>
+        <span className={styles.textMuted}>Muted text and labels</span>
+        <span className={styles.textAccent}>Accent link</span>
       </div>
     </div>
   )

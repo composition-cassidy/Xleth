@@ -9,6 +9,8 @@
 #include "commands/UndoManager.h"
 #include "commands/TimelineCommands.h"
 #include "commands/AddNotesBatchCommand.h"
+#include "commands/ClipBatchCommands.h"
+#include "model/ClipSplit.h"
 #include <iostream>
 #include <string>
 #include <cmath>
@@ -590,6 +592,282 @@ static void test13_reorderVisualEffectUndoRedoExact() {
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
+// ─── Groups, refused edits, split ─────────────────────────────────────────────
+// Each of these builds its own timeline: the sections above share one, and
+// their counts depend on the order they run in.
+
+struct Fixture {
+    Timeline    tl;
+    UndoManager um;
+    int track = -1;
+    int region = -1;
+
+    explicit Fixture(int maxHistory = 100) : um(maxHistory) {
+        TrackInfo t;
+        t.name = "T";
+        track = tl.addTrack(t);
+        SampleRegion r;
+        r.name = "R";
+        region = tl.addRegion(r);
+    }
+
+    int addClip(double beat, double beats = 1.0) {
+        Clip c = makeClip(track, region, beat);
+        c.duration = TickTime::fromBeats(beats);
+        um.execute(std::make_unique<AddClipCommand>(c), tl);
+        return tl.getAllClips().back()->id;
+    }
+};
+
+static void test14_groupIsOneEntry() {
+    std::cout << "\n[14] a group of commands is one undo entry\n";
+    Fixture f;
+    std::vector<int> ids;
+    for (int i = 0; i < 5; ++i) ids.push_back(f.addClip(i * 2.0));
+    const int before = f.um.getUndoCount();
+
+    const int token = f.um.beginGroup("Pitch shift");
+    CHECK(token > 0,             "beginGroup hands back a token");
+    CHECK(f.um.isGroupOpen(),    "the group is open");
+    for (int id : ids)
+        f.um.execute(std::make_unique<PitchShiftClipCommand>(id, 3, 0, f.tl), f.tl);
+    CHECK(f.um.getUndoCount() == before, "nothing reaches the stack while the group is open");
+    CHECK(f.um.isDirty(),                "but the project already counts as changed");
+    CHECK(f.um.endGroup(token),          "endGroup closes it");
+    CHECK(!f.um.isGroupOpen(),           "the group is closed");
+    CHECK(f.um.getUndoCount() == before + 1, "five commands became ONE entry");
+    CHECK(f.um.getUndoDescription() == "Pitch shift (5 edits)", "the entry is labelled with the gesture");
+
+    CHECK(f.um.undo(f.tl), "one undo");
+    bool allBack = true;
+    for (int id : ids) if (f.tl.getClip(id)->pitchOffset != 0) allBack = false;
+    CHECK(allBack, "reverses every command in the group");
+
+    CHECK(f.um.redo(f.tl), "one redo");
+    bool allAgain = true;
+    for (int id : ids) if (f.tl.getClip(id)->pitchOffset != 3) allAgain = false;
+    CHECK(allAgain, "replays every command in the group");
+    CHECK(f.um.getUndoCount() == before + 1, "and it is still one entry");
+}
+
+static void test15_groupSurvivesTheHistoryCap() {
+    std::cout << "\n[15] a gesture larger than the history cap can be undone in full\n";
+    Fixture f(/*maxHistory=*/10);
+    std::vector<int> ids;
+    {
+        const int token = f.um.beginGroup("Add");
+        for (int i = 0; i < 40; ++i) ids.push_back(f.addClip(i * 2.0));
+        f.um.endGroup(token);
+    }
+    const int token = f.um.beginGroup("Pitch shift");
+    for (int id : ids)
+        f.um.execute(std::make_unique<PitchShiftClipCommand>(id, 1, 0, f.tl), f.tl);
+    f.um.endGroup(token);
+    CHECK(f.um.getUndoCount() == 2, "two gestures, two entries, well inside a cap of 10");
+
+    f.um.undo(f.tl);
+    int stillShifted = 0;
+    for (int id : ids) if (f.tl.getClip(id)->pitchOffset != 0) ++stillShifted;
+    CHECK(stillShifted == 0, "all 40 pitch shifts came back off (ungrouped, 30 would be stranded)");
+}
+
+static void test16_groupsCannotBeLeftOpen() {
+    std::cout << "\n[16] an abandoned group cannot swallow later edits forever\n";
+    Fixture f;
+    const int a = f.addClip(0.0);
+    const int b = f.addClip(4.0);
+    const int base = f.um.getUndoCount();
+
+    // beginGroup without endGroup, then an undo: the open group is committed first.
+    const int stale = f.um.beginGroup("Abandoned");
+    f.um.execute(std::make_unique<PitchShiftClipCommand>(a, 2, 0, f.tl), f.tl);
+    f.um.execute(std::make_unique<PitchShiftClipCommand>(b, 2, 0, f.tl), f.tl);
+    CHECK(f.um.undo(f.tl), "undo with a group still open");
+    CHECK(f.tl.getClip(a)->pitchOffset == 0 && f.tl.getClip(b)->pitchOffset == 0,
+          "undid the open group's commands together");
+    CHECK(!f.um.isGroupOpen(), "and closed it");
+    CHECK(!f.um.endGroup(stale), "the late endGroup for it is refused");
+    f.um.redo(f.tl);
+
+    // A second beginGroup commits the first: groups do not nest.
+    const int first = f.um.beginGroup("First");
+    f.um.execute(std::make_unique<PitchShiftClipCommand>(a, 5, 0, f.tl), f.tl);
+    const int second = f.um.beginGroup("Second");
+    f.um.execute(std::make_unique<PitchShiftClipCommand>(b, 5, 0, f.tl), f.tl);
+    CHECK(!f.um.endGroup(first),  "the first group's token no longer closes anything");
+    CHECK(f.um.endGroup(second),  "the second group closes normally");
+    CHECK(f.um.getUndoCount() == base + 3, "three entries: the redone group and the two single commands");
+    f.um.undo(f.tl);
+    CHECK(f.tl.getClip(b)->pitchOffset == 2 && f.tl.getClip(a)->pitchOffset == 5,
+          "each was its own entry");
+
+    // An empty group leaves nothing behind; a one-command group is that command.
+    const int empty = f.um.beginGroup("Empty");
+    const int depth = f.um.getUndoCount();
+    f.um.endGroup(empty);
+    CHECK(f.um.getUndoCount() == depth, "an empty group leaves no entry");
+    const int single = f.um.beginGroup("Single");
+    f.um.execute(std::make_unique<PitchShiftClipCommand>(a, 7, 0, f.tl), f.tl);
+    f.um.endGroup(single);
+    CHECK(f.um.getUndoDescription().rfind("Pitch Shift Clip", 0) == 0,
+          "a one-command group is recorded as the command itself");
+}
+
+static void test17_refusedAndEmptyEditsAreNotRecorded() {
+    std::cout << "\n[17] refused and no-op edits leave no undo entry and keep the redo history\n";
+    Fixture f;
+    const int clip = f.addClip(0.0);
+    f.um.execute(std::make_unique<MoveClipCommand>(clip, f.track, TickTime::fromBeats(8), f.tl), f.tl);
+    f.um.undo(f.tl);                                  // one entry waiting on the redo stack
+    const int depth = f.um.getUndoCount();
+    CHECK(f.um.canRedo(), "precondition: something to redo");
+
+    auto unchanged = [&](const char* what) {
+        CHECK(f.um.getUndoCount() == depth, std::string(what) + ": no undo entry");
+        CHECK(f.um.canRedo(),               std::string(what) + ": redo history kept");
+    };
+
+    const TickTime pos = f.tl.getClip(clip)->position;
+    const TickTime dur = f.tl.getClip(clip)->duration;
+
+    f.um.execute(std::make_unique<MoveClipCommand>(clip, f.track, pos, f.tl), f.tl);
+    unchanged("move to the same place");
+    f.um.execute(std::make_unique<MoveClipCommand>(999999, f.track, pos, f.tl), f.tl);
+    unchanged("move of an unknown clip");
+    f.um.execute(std::make_unique<MoveClipCommand>(clip, f.track, TickTime{-960}, f.tl), f.tl);
+    unchanged("move to a negative position");
+    CHECK(f.tl.getClip(clip)->position.ticks == pos.ticks, "and the clip did not move");
+
+    f.um.execute(std::make_unique<ResizeClipCommand>(clip, dur, f.tl), f.tl);
+    unchanged("resize to the same length");
+    f.um.execute(std::make_unique<ResizeClipCommand>(clip, TickTime{0}, f.tl), f.tl);
+    unchanged("resize to zero");
+    f.um.execute(std::make_unique<ResizeClipCommand>(clip, TickTime{-480}, f.tl), f.tl);
+    unchanged("resize to a negative length");
+    CHECK(f.tl.getClip(clip)->duration.ticks == dur.ticks, "and the clip kept its length");
+
+    f.um.execute(std::make_unique<ResizeClipLeftCommand>(clip, pos, dur, TickTime{-240}, f.tl), f.tl);
+    unchanged("left-resize to a negative region offset");
+    CHECK(f.tl.getClip(clip)->regionOffset.ticks == 0, "and the offset stayed at 0");
+
+    f.um.execute(std::make_unique<StretchClipCommand>(clip, TickTime{0}, f.tl), f.tl);
+    unchanged("stretch to zero");
+    CHECK(f.tl.getClip(clip)->stretchRatio == 1.0, "and the stretch ratio was not touched");
+
+    f.um.execute(std::make_unique<PitchShiftClipCommand>(clip, 0, 0, f.tl), f.tl);
+    unchanged("pitch shift by nothing");
+    f.um.execute(std::make_unique<RemoveClipCommand>(999999, f.tl), f.tl);
+    unchanged("remove of an unknown clip");
+    f.um.execute(std::make_unique<SetTrackNameCommand>(f.track, "T", f.tl), f.tl);
+    unchanged("rename to the same name");
+    f.um.execute(std::make_unique<SetBPMCommand>(f.tl.getBPM(), f.tl), f.tl);
+    unchanged("tempo set to the current tempo");
+    f.um.execute(std::make_unique<MoveClipsBatchCommand>(
+        std::vector<MoveClipsBatchCommand::Move>{}, f.tl), f.tl);
+    unchanged("an empty batch move");
+
+    Clip bad = makeClip(f.track, f.region, 2.0);
+    bad.duration = TickTime{0};
+    f.um.execute(std::make_unique<AddClipCommand>(bad), f.tl);
+    unchanged("add of a zero-length clip");
+    CHECK(f.tl.getAllClips().size() == 1, "and no clip was created");
+
+    // The command object must outlive execute() even when it is not recorded:
+    // callers read results off it straight afterwards.
+    auto cmd = std::make_unique<RemoveClipsBatchCommand>(std::vector<int>{999999}, f.tl);
+    RemoveClipsBatchCommand* raw = cmd.get();
+    f.um.execute(std::move(cmd), f.tl);
+    CHECK(raw->getRemovedIds().empty(), "an unrecorded command is still readable after execute()");
+    unchanged("a batch remove that matched nothing");
+
+    // A real edit is still recorded, and still clears the redo history.
+    f.um.execute(std::make_unique<PitchShiftClipCommand>(clip, 1, 0, f.tl), f.tl);
+    CHECK(f.um.getUndoCount() == depth + 1 && !f.um.canRedo(), "a real edit is recorded as before");
+}
+
+static void test18_splitKeepsWhatWasPlaying() {
+    std::cout << "\n[18] splitting a clip changes nothing you can hear\n";
+    using xleth::clipedit::splitClipAt;
+    using xleth::clipedit::canSplitClipAt;
+
+    Clip c;
+    c.id = 7; c.trackId = 1; c.regionId = 2;
+    c.position = TickTime{1920}; c.duration = TickTime{3840}; c.regionOffset = TickTime{100};
+    c.stretchRatio = 1.5; c.pitchOffset = 4; c.velocity = 0.6f;
+    c.fadeInPercent = 10.0f; c.fadeOutPercent = 20.0f;
+
+    CHECK(!canSplitClipAt(c, 1920) && !canSplitClipAt(c, 1920 + 3840), "a cut on an edge is refused");
+    CHECK(canSplitClipAt(c, 1921) && canSplitClipAt(c, 1920 + 3839),   "a cut strictly inside is allowed");
+
+    const auto fwd = splitClipAt(c, 1920 + 960);
+    CHECK(fwd.left.id == 0 && fwd.right.id == 0, "the pieces take new ids");
+    CHECK(fwd.left.position.ticks == 1920 && fwd.left.duration.ticks == 960, "left piece spans [start, cut)");
+    CHECK(fwd.right.position.ticks == 2880 && fwd.right.duration.ticks == 2880, "right piece spans [cut, end)");
+    CHECK(fwd.left.regionOffset.ticks == 100, "forward: left reads from the original offset");
+    CHECK(fwd.right.regionOffset.ticks == 100 + 640, "forward: right starts 960 / 1.5 source ticks later");
+    CHECK(fwd.left.pitchOffset == 4 && fwd.right.pitchOffset == 4 && fwd.right.stretchRatio == 1.5,
+          "everything else is carried to both pieces");
+
+    // Fades keep their LENGTH and stay at the end they belong to.
+    const double inTicks  = 0.10 * 3840, outTicks = 0.20 * 3840;
+    CHECK(std::abs(fwd.left.fadeInPercent / 100.0 * 960 - inTicks) < 0.01, "the fade-in is as long as it was");
+    CHECK(fwd.left.fadeOutPercent == 0.0f,  "the left piece does not fade out at the cut");
+    CHECK(fwd.right.fadeInPercent == 0.0f,  "the right piece does not fade in at the cut");
+    CHECK(std::abs(fwd.right.fadeOutPercent / 100.0 * 2880 - outTicks) < 0.01, "the fade-out is as long as it was");
+
+    // A cut inside the fade-in: the left piece is all fade, nothing spills over.
+    const auto early = splitClipAt(c, 1920 + 120);
+    CHECK(early.left.fadeInPercent == 100.0f && early.right.fadeInPercent == 0.0f,
+          "a fade longer than its piece is clamped to the piece");
+
+    // Reversed: the window plays backwards, so the FIRST piece owns its END.
+    Clip r = c;
+    r.reversed = true;
+    const auto rev = splitClipAt(r, 1920 + 960);
+    CHECK(rev.right.regionOffset.ticks == 100, "reversed: the later piece reads the START of the window");
+    CHECK(rev.left.regionOffset.ticks == 100 + 1920, "reversed: the earlier piece reads the END (2880 / 1.5 source ticks in)");
+    // Together the two windows still tile the original one exactly.
+    const int64_t window = 2560;   // 3840 / 1.5
+    CHECK(rev.right.regionOffset.ticks + 1920 == rev.left.regionOffset.ticks
+          && rev.left.regionOffset.ticks + 640 == 100 + window,
+          "the two pieces tile the original source window");
+}
+
+static void test19_tempoChangeKeepsTrimsOnTheSource() {
+    std::cout << "\n[19] a tempo change does not move where a trimmed clip starts in its source\n";
+    Fixture f;
+    f.tl.setBPM(140.0);
+    const int trimmed = f.addClip(0.0, 2.0);
+    const int plain   = f.addClip(4.0, 2.0);
+    f.tl.getClipMutable(trimmed)->regionOffset = TickTime{480};
+    const int depth = f.um.getUndoCount();
+
+    auto startSeconds = [&](int id) {
+        return f.tl.getClip(id)->regionOffset.toSeconds(f.tl.getBPM());
+    };
+    const double before = startSeconds(trimmed);
+
+    f.um.execute(std::make_unique<SetBPMCommand>(70.0, f.tl), f.tl);
+    CHECK(f.tl.getBPM() == 70.0, "tempo halved");
+    CHECK(f.tl.getClip(trimmed)->regionOffset.ticks == 240, "the trim is 240 ticks at the new tempo (was 480)");
+    CHECK(std::abs(startSeconds(trimmed) - before) < 1e-9, "which is the same instant of the source");
+    CHECK(f.tl.getClip(plain)->regionOffset.ticks == 0, "an untrimmed clip is untouched");
+    CHECK(f.tl.getClip(trimmed)->position.ticks == 0 && f.tl.getClip(trimmed)->duration.ticks == 1920,
+          "position and length stay musical");
+
+    f.um.execute(std::make_unique<SetBPMCommand>(97.3, f.tl), f.tl);
+    CHECK(std::abs(startSeconds(trimmed) - before) < 0.5 * (60.0 / 97.3) / 960.0 + 1e-12,
+          "an odd tempo lands within half a tick of the same instant");
+
+    f.um.undo(f.tl);
+    f.um.undo(f.tl);
+    CHECK(f.tl.getBPM() == 140.0 && f.tl.getClip(trimmed)->regionOffset.ticks == 480,
+          "undo restores the exact original ticks");
+    CHECK(f.um.getUndoCount() == depth, "and the history is back where it was");
+    f.um.redo(f.tl);
+    CHECK(f.tl.getClip(trimmed)->regionOffset.ticks == 240, "redo lands on the same number again");
+}
+
 int main() {
     test1_addTrackAndClips();
     test2_undoRedoClearRedo();
@@ -604,6 +882,12 @@ int main() {
     test11_visualEffectParamFailureDoesNotRecordHistory();
     test12_trackFolderUndoRedo();
     test13_reorderVisualEffectUndoRedoExact();
+    test14_groupIsOneEntry();
+    test15_groupSurvivesTheHistoryCap();
+    test16_groupsCannotBeLeftOpen();
+    test17_refusedAndEmptyEditsAreNotRecorded();
+    test18_splitKeepsWhatWasPlaying();
+    test19_tempoChangeKeepsTrimsOnTheSource();
 
     std::cout << "\n";
     if (g_failed == 0) {

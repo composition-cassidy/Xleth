@@ -734,11 +734,7 @@ buildEnvelopeModulationSnapshot(const Timeline& timeline)
     int slotCount = 0;
     for (const auto* t : allTracks) {
         if (t == nullptr || slotCount >= xleth::RoutePlan::kMaxSlots) continue;
-        routeInputs[slotCount].trackId             = t->id;
-        routeInputs[slotCount].outputTargetTrackId = t->outputRoute.targetTrackId;
-        routeInputs[slotCount].muted               = t->muted;
-        routeInputs[slotCount].solo                = t->solo;
-        routeInputs[slotCount].visualOnly          = t->visualOnly;
+        xleth::fillRoutePlanSlotInput(routeInputs[slotCount], *t);
         ++slotCount;
     }
     xleth::RoutePlan routePlan;

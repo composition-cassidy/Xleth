@@ -21,6 +21,7 @@
 #endif
 
 #include <algorithm>
+#include <cstdlib>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -71,10 +72,20 @@ const std::vector<std::string> kRequestedTrackNames = {
 
 const std::set<std::string> kDrumReferenceNames = {"KICK", "SNARE", "CH", "OH"};
 
+// The developer's own copy of the NO MAIL project (~/Desktop/SR/NO MAIL); pass
+// --original-project to point elsewhere. Forward slashes, as reports print it.
+std::string defaultOriginalProjectDir()
+{
+    const char* home = std::getenv("USERPROFILE");
+    std::string dir = home ? home : "";
+    std::replace(dir.begin(), dir.end(), '\\', '/');
+    return dir + "/Desktop/SR/NO MAIL";
+}
+
 struct Options {
     fs::path repoRoot = fs::current_path();
     fs::path projectDir;
-    fs::path originalProjectDir = "C:/Users/Krasen/Desktop/SR/NO MAIL";
+    fs::path originalProjectDir = defaultOriginalProjectDir();
     fs::path jsonPath;
     fs::path markdownPath;
     std::string scratchSource;

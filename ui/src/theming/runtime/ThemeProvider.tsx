@@ -15,6 +15,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { ReactNode } from 'react';
 
 import { resolveTheme, writeThemeToRoot, type ResolvedTheme } from './applyTheme';
+import { findTintedInk, findTintedSurfaces } from './chromeTint';
 import { DEFAULT_THEME_NAME, loadActiveTheme, type LoadResult } from './ThemeLoader';
 import { createThemeWriter, type ThemeWriter } from './ThemeWriter';
 import type { ThemeFile, TokenValue } from '../schema/types';
@@ -83,8 +84,20 @@ export function ThemeProvider({ children, writer, onLoaded }: ThemeProviderProps
     if (!resolved) return;
     writeThemeToRoot(resolved.values, appliedRef.current ?? undefined);
     appliedRef.current = resolved.values;
+    // Native controls (scrollbars, inputs, the caret) follow the ramp's polarity.
+    document.documentElement.style.colorScheme = resolved.ramp === 'light' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-xleth-ramp', resolved.ramp);
+    console.debug(`[Theme] applied slug=${slug} ramp=${resolved.ramp}`);
+    const tinted = findTintedSurfaces(resolved.values);
+    if (tinted.length > 0) {
+      console.warn(`[Theme] ${slug} has tinted chrome: ${tinted.map(t => `${t.token}=${t.hex}`).join(', ')} (it still loads; the theme editor offers Neutralize)`);
+    }
+    const tintedInk = findTintedInk(resolved.values);
+    if (tintedInk.length > 0) {
+      console.warn(`[Theme] ${slug} has coloured labels/outlines: ${tintedInk.map(t => `${t.token}=${t.hex}`).join(', ')} (only the accent may carry colour)`);
+    }
     window.dispatchEvent(new CustomEvent('xleth-theme-changed'));
-  }, [resolved]);
+  }, [resolved, slug]);
 
   const setTheme = useCallback(async (nextSlug: string, next: ThemeFile) => {
     setSlug(nextSlug);

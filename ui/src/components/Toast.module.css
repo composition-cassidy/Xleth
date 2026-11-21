@@ -1,0 +1,44 @@
+/* Status toast in the top bar: one line of text, a level glyph, click to dismiss. Colour is
+ * never the only signal (the glyph differs per level) and there is no glow. */
+@layer kit {
+  .toast {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    min-height: var(--hit-min);
+    max-width: 320px;
+    margin-left: var(--space-3);
+    padding: 0 var(--space-2);
+    border: 0;
+    border-radius: var(--ui-radius-1);
+    background: transparent;
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    font-weight: var(--weight-medium);
+    line-height: 1.2;
+    white-space: nowrap;
+    cursor: pointer;
+    -webkit-app-region: no-drag;
+  }
+
+  .toast:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 1px;
+  }
+
+  .toast[data-level="info"] { color: var(--ui-value); }
+  .toast[data-level="success"] { color: var(--ui-signal-events); }
+  .toast[data-level="error"] { color: var(--theme-semantic-danger-text, var(--ui-rec-text)); }
+
+  .glyph {
+    flex: none;
+    display: inline-flex;
+  }
+
+  .message {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
