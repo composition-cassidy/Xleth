@@ -151,6 +151,7 @@ describe('XlethRoot New Project reset', () => {
         openProjectDialog: vi.fn().mockResolvedValue(null),
         openImportDialog: vi.fn().mockResolvedValue(null),
         importSource: vi.fn().mockResolvedValue(true),
+        prepareImport: vi.fn(async (p) => p),
         getInfo: vi.fn().mockResolvedValue(null),
         load: vi.fn().mockResolvedValue(true),
         isDirty: vi.fn().mockResolvedValue(false),

@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react'
 import { getPickerPath, openFilePicker } from './filePicker/filePickerService.js'
-import { AUDIO_EXTENSIONS, dirname, VIDEO_EXTENSIONS } from './filePicker/filePickerHelpers.js'
+import { AUDIO_EXTENSIONS, dirname, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS } from './filePicker/filePickerHelpers.js'
 import { Button, Dialog, DialogList, DialogListItem, DialogText } from '../ui-kit'
 
 const MEDIA_FILTERS = [
-  { name: 'Media Files', extensions: [...VIDEO_EXTENSIONS, ...AUDIO_EXTENSIONS] },
+  { name: 'Media Files', extensions: [...VIDEO_EXTENSIONS, ...AUDIO_EXTENSIONS, ...IMAGE_EXTENSIONS] },
   { name: 'Video Files', extensions: VIDEO_EXTENSIONS },
   { name: 'Audio Files', extensions: AUDIO_EXTENSIONS },
   { name: 'All Files', extensions: ['*'] },
@@ -27,7 +27,7 @@ async function relinkMissingItem(item, filePath) {
   }
   if (item.sourceId != null) {
     if (typeof project.relinkSource !== 'function') throw new Error('Source relink API unavailable.')
-    return project.relinkSource(item.sourceId, filePath)
+    return project.relinkSource(item.sourceId, await project.prepareImport(filePath))
   }
   if (item.regionId != null) {
     if (typeof project.relinkRegionAudio !== 'function') throw new Error('Region relink API unavailable.')

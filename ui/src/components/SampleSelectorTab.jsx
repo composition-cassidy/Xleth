@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { isStillSource } from './stillSource.js'
 import { timelineEvents } from '../timelineEvents.js'
 import { DEFAULT_LABELS, loadCustomLabels, labelColor } from '../constants/labels.js'
 import SampleGroup from './SampleGroup.jsx'
@@ -159,14 +160,21 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
   const customLabels = useMemo(() => loadCustomLabels(), [regions]) // re-check when regions change
   const allLabels = useMemo(() => [...DEFAULT_LABELS, ...customLabels], [customLabels])
 
+  // Stills (images, colours) are placed by dragging the source; their one
+  // region is plumbing, not a sample.
+  const sampleRegions = useMemo(
+    () => regions.filter(r => !isStillSource(sources[r.sourceId])),
+    [regions, sources],
+  )
+
   const grouped = useMemo(() => {
     // Filter by search
     const filtered = searchQuery
-      ? regions.filter(r => {
+      ? sampleRegions.filter(r => {
           const q = searchQuery.toLowerCase()
           return r.name?.toLowerCase().includes(q) || r.label?.toLowerCase().includes(q)
         })
-      : regions
+      : sampleRegions
 
     const map = new Map()
     // Always show default labels; custom labels only if they have samples
@@ -177,7 +185,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
       map.get(key).push(r)
     })
     return map
-  }, [regions, searchQuery])
+  }, [sampleRegions, searchQuery])
 
   // ── Collapse toggle ────────────────────────────────────────────────────────
   const toggleCollapse = useCallback((label) => {
@@ -553,7 +561,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
       {/* ── List header ────────────────────────────────────────────── */}
       <div className={styles.listHeader}>
         <span className={styles.listTitle}>Samples</span>
-        <span className={styles.count}>{regions.length}</span>
+        <span className={styles.count}>{sampleRegions.length}</span>
         <span className={styles.spacer} />
         <Toggle
           size="sm"
@@ -598,7 +606,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
         aria-label="Samples"
         onKeyDown={moveRowFocus}
       >
-        {regions.length === 0 && !searchQuery ? (
+        {sampleRegions.length === 0 && !searchQuery ? (
           <EmptyState
             message="No samples marked. Double-click a source in Media to open the picker."
             actionLabel="Open Media"

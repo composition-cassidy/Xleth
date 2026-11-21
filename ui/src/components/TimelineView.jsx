@@ -36,6 +36,7 @@ import useTimelineZoom from '../hooks/useTimelineZoom.js'
 import useTimelineScroll from '../hooks/useTimelineScroll.js'
 import useViewAnimator from '../hooks/useViewAnimator.js'
 import { labelHexColor } from '../constants/labels.js'
+import { STILL_CLIP_BEATS } from './stillSource.js'
 import { normalizeTrackCustomColor, resolveAutoTrackColor, TRACK_PALETTE_FALLBACK } from './timeline/trackColorResolver.js'
 import { subscribe } from '../transportStore.js'
 import { startMacroAutomationPlayback } from '../fxgraph/macroAutomationPlayback.js'
@@ -3721,7 +3722,7 @@ export default function TimelineView({
       color = region ? labelHexColor(region.label || 'Custom') : tokenValue('--theme-drag-preview-default')
       name  = dragData.name
     } else if (isSource) {
-      durationBeats = (dragData.duration || 0) * (bpmRef.current / 60)
+      durationBeats = dragData.still ? STILL_CLIP_BEATS : (dragData.duration || 0) * (bpmRef.current / 60)
       color = labelHexColor('Custom')
       name  = dragData.fileName
     } else {
@@ -3802,15 +3803,21 @@ export default function TimelineView({
     }
 
     // ── Source drop: create region + clip spanning the full source ──────────
+    // A still reuses the one region it already has: its clips are not samples.
     if (sourceRaw) {
       let src
       try { src = JSON.parse(sourceRaw) } catch { return }
-      const durationTicks = regionDurationToTicks(0, src.duration || 0, bpmRef.current)
+      const durationTicks = src.still
+        ? Math.round(STILL_CLIP_BEATS * PPQ)
+        : regionDurationToTicks(0, src.duration || 0, bpmRef.current)
       console.log(`[TimelineClips] Source drop: "${src.fileName}" on track "${track.name}" at beat ${snappedBeat.toFixed(2)} (pos=${positionTicks}t, dur=${durationTicks}t)`)
       try {
         // The region and its clip are one drop, so they are one undo entry.
         const created = await withUndoGroup('Add source clip', async () => {
-          const regionId = await window.xleth?.timeline?.addRegion({
+          const existing = src.still
+            ? (await window.xleth?.timeline?.getRegions() ?? []).find(r => r.sourceId === src.sourceId)
+            : null
+          const regionId = existing ? existing.id : await window.xleth?.timeline?.addRegion({
             sourceId:  src.sourceId,
             startTime: 0,
             endTime:   src.duration || 0,

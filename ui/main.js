@@ -152,6 +152,7 @@ projectHandlers.init({
   onLoadStart: (event) => onIpcProjectLoadStart(event),
   onLoadEnd: (event, _dir, ok) => onIpcProjectLoadEnd(event, ok),
 });
+require('./electron-main/still-media').init({ safeHandler });
 timelineHandlers.init({ safeHandler });
 clipProcessingDefaults.init({ safeHandler });
 undoRedoHandlers.init({ safeHandler });
@@ -1092,6 +1093,7 @@ const FILE_PICKER_FAVORITES_KEY = 'filePickerFavorites'
 const FILE_PICKER_MEDIA_EXTENSIONS = new Set([
   '.wav', '.mp3', '.flac', '.ogg', '.aac', '.m4a',
   '.mp4', '.avi', '.mov', '.mkv', '.webm', '.wmv',
+  '.png', '.jpg', '.jpeg', '.bmp', '.webp', '.gif',
 ])
 
 function safeAppPath(name) {
@@ -1891,7 +1893,7 @@ ipcMain.handle('xleth:dialog:importSources', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog(win, {
     title: 'Import Sources',
     filters: [
-      { name: 'All Supported', extensions: ['mp4', 'avi', 'mov', 'mkv', 'wav', 'mp3', 'flac', 'ogg', 'aac', 'm4a'] },
+      { name: 'All Supported', extensions: ['mp4', 'avi', 'mov', 'mkv', 'wav', 'mp3', 'flac', 'ogg', 'aac', 'm4a', 'png', 'jpg', 'jpeg', 'bmp', 'webp', 'gif'] },
       { name: 'Video Files', extensions: ['mp4', 'avi', 'mov', 'mkv'] },
       { name: 'Audio Files', extensions: ['wav', 'mp3', 'flac', 'ogg', 'aac', 'm4a'] },
       { name: 'All Files', extensions: ['*'] },
@@ -1908,7 +1910,7 @@ ipcMain.handle('xleth:dialog:locateMedia', async (_, displayName) => {
   const { canceled, filePaths } = await dialog.showOpenDialog(win, {
     title: displayName ? `Locate "${displayName}"` : 'Locate Media File',
     filters: [
-      { name: 'All Supported', extensions: ['mp4', 'avi', 'mov', 'mkv', 'wav', 'mp3', 'flac', 'ogg', 'aac', 'm4a'] },
+      { name: 'All Supported', extensions: ['mp4', 'avi', 'mov', 'mkv', 'wav', 'mp3', 'flac', 'ogg', 'aac', 'm4a', 'png', 'jpg', 'jpeg', 'bmp', 'webp', 'gif'] },
       { name: 'Video Files', extensions: ['mp4', 'avi', 'mov', 'mkv'] },
       { name: 'Audio Files', extensions: ['wav', 'mp3', 'flac', 'ogg', 'aac', 'm4a'] },
       { name: 'All Files', extensions: ['*'] },
@@ -2322,14 +2324,14 @@ ipcMain.handle('xleth:project:getSourceThumbnail', async (_, filePath, duration)
   const name = path.basename(filePath);
 
   // Run ffmpeg with given args, return Buffer if output > 1KB, else null
-  function tryFfmpeg(args, outFile) {
+  function tryFfmpeg(args, outFile, minBytes = 1024) {
     return new Promise(resolve => {
       execFile(ffmpegExecutable(), args, { timeout: 20000 }, err => {
         if (err) return resolve(null);
         try {
           const data = fs.readFileSync(outFile);
           try { fs.unlinkSync(outFile); } catch {}
-          resolve(data.length > 1024 ? data : null);
+          resolve(data.length > minBytes ? data : null);
         } catch { resolve(null); }
       });
     });
@@ -2354,6 +2356,14 @@ ipcMain.handle('xleth:project:getSourceThumbnail', async (_, filePath, duration)
         }
       );
     });
+  }
+
+  // Still images (incl. generated solids/gradients) are one frame, shorter than
+  // the seek below, and a flat colour encodes under the 1 KB bar: take frame 0.
+  if (/\.(jpe?g|bmp|webp)$/i.test(filePath)) {
+    const stillOut = base + '_still.jpg';
+    const stillData = await tryFfmpeg(['-y', '-i', filePath, '-vframes', '1', '-vf', 'scale=320:-2', '-q:v', '4', stillOut], stillOut, 0);
+    if (stillData) return 'data:image/jpeg;base64,' + stillData.toString('base64');
   }
 
   // ── Strategy 1: Embedded cover art (MP4 attached_pic / tagged thumbnail) ──

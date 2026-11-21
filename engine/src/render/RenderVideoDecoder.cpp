@@ -1,6 +1,7 @@
 #include "RenderVideoDecoder.h"
 
 #include "FrameRateMath.h"
+#include "PixelAlpha.h"
 #include "XlethDebug.h"
 #include "../video/SwsDestBuffer.h"
 
@@ -510,7 +511,10 @@ bool RenderVideoDecoder::openSource(DecoderContext& ctx, const std::string& sour
     // 5. Try D3D11VA hardware acceleration
     //    DNxHR is intra-frame — hw decode gives minimal benefit and many drivers
     //    don't support it.  Skip hw accel for intra-only codecs.
-    if (hwDeviceCtx_ && !ctx.isIntraOnly) {
+    // Alpha sources stay on SW: the D3D11VA path converts through NV12.
+    const bool hasAlpha = pixFmtMayHaveAlpha(
+        ctx.formatCtx->streams[ctx.videoStreamIdx]->codecpar->format);
+    if (hwDeviceCtx_ && !ctx.isIntraOnly && !hasAlpha) {
         ctx.codecCtx->hw_device_ctx = av_buffer_ref(hwDeviceCtx_);
         ctx.codecCtx->get_format    = getHwFormat;
         ctx.isHwAccel = true;

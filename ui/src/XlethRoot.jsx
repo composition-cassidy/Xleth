@@ -42,8 +42,9 @@ const ZOOM_OUT_LABEL = 'Zoom Out'
 const RESET_ZOOM_LABEL = 'Reset Zoom'
 
 const MEDIA_IMPORT_FILTERS = [
-  { name: 'All Supported', extensions: ['mp4', 'avi', 'mov', 'mkv', 'wav', 'mp3', 'flac', 'ogg', 'aac', 'm4a'] },
+  { name: 'All Supported', extensions: ['mp4', 'avi', 'mov', 'mkv', 'wav', 'mp3', 'flac', 'ogg', 'aac', 'm4a', 'png', 'jpg', 'jpeg', 'bmp', 'webp', 'gif'] },
   { name: 'Video Files', extensions: ['mp4', 'avi', 'mov', 'mkv'] },
+  { name: 'Images and GIFs', extensions: ['png', 'jpg', 'jpeg', 'bmp', 'webp', 'gif'] },
   { name: 'Audio Files', extensions: ['wav', 'mp3', 'flac', 'ogg', 'aac', 'm4a'] },
   { name: 'All Files', extensions: ['*'] },
 ]
@@ -331,7 +332,7 @@ export async function handleXlethRootMenuAction(label, {
       const picked = await openFilePicker({
         mode: 'openFiles',
         title: 'Import Sources',
-        subtitle: 'Choose audio or video sources to add to the current project.',
+        subtitle: 'Choose audio, video or image sources to add to the current project.',
         actionLabel: 'Import',
         filters: MEDIA_IMPORT_FILTERS,
         legacyPicker: () => xl.project.openImportDialog(),
@@ -341,7 +342,7 @@ export async function handleXlethRootMenuAction(label, {
       let importedCount = 0
       for (const filePath of files) {
         try {
-          assertImportedSourceId(await xl.project.importSource(filePath))
+          assertImportedSourceId(await xl.project.importSource(await xl.project.prepareImport(filePath)))
           importedCount += 1
         } catch (e) {
           const name = sourceNameFromPath(filePath)

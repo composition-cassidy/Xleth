@@ -42,6 +42,7 @@ extern "C" {
 #include <map>
 
 #include "HardwareTier.h"
+#include "render/PixelAlpha.h"
 #include "render/GpuDeviceManager.h"
 
 namespace fs = std::filesystem;
@@ -669,6 +670,12 @@ bool ProxyTranscoder::extractPoster(const std::string& inputPath,
                      "(see above) — preview falls back to live decode.\n";
         return false;
     }
+    // A JPEG poster would turn transparent pixels black.
+    if (pixFmtMayHaveAlpha(s.fmt->streams[s.streamIdx]->codecpar->format)) {
+        std::cout << "[ProxyTranscoder] Poster skipped: source has alpha, preview uses live frames.\n";
+        s.close();
+        return false;
+    }
 
     // Atomic write: build the JPEG in a temp file and only swap it onto the real
     // poster path on success, so a failed regen never destroys a valid poster.
@@ -1139,6 +1146,19 @@ static bool transcodeImplBody(const std::string& inputPath,
         std::cerr << "[ProxyTranscoder] Proxy FAILED: could not open source for decode "
                      "(see above) — preview falls back to live decode.\n";
         return false;
+    }
+
+    // A still image (image2 / *_pipe demuxer) is one frame: nothing to proxy,
+    // and a one-frame H.264 encode comes out empty. Live decode of it is cheap.
+    // A source with alpha would lose it in any proxy codec (see PixelAlpha.h).
+    {
+        const std::string demux = s.fmt->iformat ? s.fmt->iformat->name : "";
+        if (demux == "image2" || demux.find("_pipe") != std::string::npos
+            || pixFmtMayHaveAlpha(s.fmt->streams[s.streamIdx]->codecpar->format)) {
+            std::cout << "[ProxyTranscoder] Proxy skipped: still image or alpha source — preview uses the original.\n";
+            s.close();
+            return false;
+        }
     }
 
     // ── target size: caller hint (or source), even ───────────────────────────

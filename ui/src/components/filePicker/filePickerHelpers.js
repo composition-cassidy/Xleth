@@ -1,6 +1,6 @@
 export const AUDIO_EXTENSIONS = ['wav', 'mp3', 'flac', 'ogg', 'aac', 'm4a']
 export const VIDEO_EXTENSIONS = ['mp4', 'avi', 'mov', 'mkv', 'webm', 'wmv']
-export const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp']
+export const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'bmp', 'webp', 'gif']
 
 export function normalizeSlashes(value) {
   return String(value || '').replace(/\//g, '\\')

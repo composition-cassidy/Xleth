@@ -22,10 +22,13 @@ import { iconComponent } from '../ui-kit/icons'
 import { openColorGrade } from '../colorGrade/gradeActions.js'
 import { getGrade } from '../colorGrade/gradeApi.js'
 import BulkApplyDialog from './colorGrade/BulkApplyDialog.jsx'
+import GeneratedMediaDialog from './GeneratedMediaDialog.jsx'
+import { isStillSource } from './stillSource.js'
 
 const IcArrowsClockwise = iconComponent('arrows-clockwise')
 const IcFolderOpen = iconComponent('folder-open')
 const IcPalette = iconComponent('palette')
+const IcPaintBrush = iconComponent('paint-brush')
 const IcWand = iconComponent('magic-wand')
 const IcPlay = iconComponent('play')
 const IcPlus = iconComponent('plus')
@@ -33,8 +36,9 @@ const IcStopFill = iconComponent('stop', 'fill')
 const IcTrash = iconComponent('trash')
 
 const SOURCE_IMPORT_FILTERS = [
-  { name: 'All Supported', extensions: ['mp4', 'avi', 'mov', 'mkv', 'wav', 'mp3', 'flac', 'ogg', 'aac', 'm4a'] },
+  { name: 'All Supported', extensions: ['mp4', 'avi', 'mov', 'mkv', 'wav', 'mp3', 'flac', 'ogg', 'aac', 'm4a', 'png', 'jpg', 'jpeg', 'bmp', 'webp', 'gif'] },
   { name: 'Video Files', extensions: ['mp4', 'avi', 'mov', 'mkv'] },
+  { name: 'Images and GIFs', extensions: ['png', 'jpg', 'jpeg', 'bmp', 'webp', 'gif'] },
   { name: 'Audio Files', extensions: ['wav', 'mp3', 'flac', 'ogg', 'aac', 'm4a'] },
   { name: 'All Files', extensions: ['*'] },
 ]
@@ -58,6 +62,7 @@ export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
   const [labelPickerMenu, setLabelPickerMenu] = useState(null) // { x, y, source }
   // Color Grade bulk apply: { fromSourceId, fromName, grade, preselected? } while its dialog is open.
   const [bulkApply, setBulkApply] = useState(null)
+  const [generateOpen, setGenerateOpen] = useState(false)
   const [selectedId, setSelectedId] = useState(null)
   const autoPreview = useBrowserStore((s) => s.autoPreview)
   const prevSourceIds = useRef(new Set())
@@ -143,7 +148,7 @@ export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
       const picked = await openFilePicker({
         mode: 'openFiles',
         title: 'Import Sources',
-        subtitle: 'Choose audio or video files to add to the current project.',
+        subtitle: 'Choose audio, video or image files to add to the current project.',
         actionLabel: 'Import',
         filters: SOURCE_IMPORT_FILTERS,
         legacyPicker: () => window.xleth?.project?.openImportDialog(),
@@ -181,7 +186,8 @@ export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
       const name = fp.replace(/^.*[\\/]/, '')
 
       try {
-        const sourceId = await window.xleth?.project?.importSource(fp)
+        const project = window.xleth?.project
+        const sourceId = await project?.importSource(await project.prepareImport(fp))
         if (!Number.isFinite(sourceId) || sourceId < 0) {
           throw new Error('Engine rejected the media file.')
         }
@@ -200,6 +206,21 @@ export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
       timelineEvents.dispatchEvent(new Event('timeline-sources-changed'))
     }
   }
+
+  // ── New solid colour / gradient source ──────────────────────────────────
+  const handleCreateGenerated = useCallback(async (spec) => {
+    setImporting(true)
+    try {
+      const filePath = await window.xleth?.project?.createGeneratedMedia(spec)
+      await importFiles([filePath])
+      setGenerateOpen(false)
+    } catch (e) {
+      console.error('[Browser] Colour source error:', e)
+      showToast(`Could not make the colour source (${e?.message || 'unknown error'})`, 'error')
+    } finally {
+      setImporting(false)
+    }
+  }, [showToast])
 
   // ── Poll while any source is still transcoding ─────────────────────────────
   useEffect(() => {
@@ -240,21 +261,24 @@ export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
         window.xleth?.shell?.showItemInFolder(contextMenu.source.filePath)
       },
     },
-    {
-      label: 'Import as Sample',
-      icon: SamplerIcon,
-      onClick: () => {
-        // Open label picker as a second context menu at the same position
-        setLabelPickerMenu({ x: contextMenu.x, y: contextMenu.y, source: contextMenu.source })
+    // A still is dragged onto a track as it is: no samples, no proxy.
+    ...(isStillSource(contextMenu.source) ? [] : [
+      {
+        label: 'Import as Sample',
+        icon: SamplerIcon,
+        onClick: () => {
+          // Open label picker as a second context menu at the same position
+          setLabelPickerMenu({ x: contextMenu.x, y: contextMenu.y, source: contextMenu.source })
+        },
       },
-    },
-    {
-      label: 'Re-transcode Proxy',
-      icon: IcArrowsClockwise,
-      onClick: () => {
-        // Future: dedicated re-transcode endpoint
+      {
+        label: 'Re-transcode Proxy',
+        icon: IcArrowsClockwise,
+        onClick: () => {
+          // Future: dedicated re-transcode endpoint
+        },
       },
-    },
+    ]),
     // ── Color Grade (only for sources with a picture) ─────────────────────
     ...(contextMenu.source.hasVideo !== false ? [
       { type: 'separator' },
@@ -381,12 +405,21 @@ export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
           <IconButton
             size="sm"
             label="Import media"
-            hint="Import audio or video files into this project"
+            hint="Import audio, video, image or GIF files into this project"
             hintMods="Ctrl+I · or drop files on the list"
             onClick={handleImportDialog}
             disabled={importing}
           >
             <IcPlus size={14} aria-hidden="true" />
+          </IconButton>
+          <IconButton
+            size="sm"
+            label="New colour source"
+            hint="Add a solid colour or gradient you can place like any video"
+            onClick={() => setGenerateOpen(true)}
+            disabled={importing}
+          >
+            <IcPaintBrush size={14} aria-hidden="true" />
           </IconButton>
         </div>
 
@@ -399,7 +432,7 @@ export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
         >
           {sources.length === 0 ? (
             <EmptyState
-              message="No media. Import audio or video, or drop files on this list."
+              message="No media. Import audio, video or images, or drop files on this list."
               actionLabel="Import media"
               onAction={handleImportDialog}
             />
@@ -435,6 +468,14 @@ export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
           />
         )}
 
+        {generateOpen && (
+          <GeneratedMediaDialog
+            busy={importing}
+            onCreate={handleCreateGenerated}
+            onClose={() => setGenerateOpen(false)}
+          />
+        )}
+
         {/* ── Context menu ────────────────────────────────────────────── */}
         {contextMenu && (
           <ContextMenu
@@ -466,11 +507,12 @@ export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
  */
 function SelectionStrip({ source, thumbnail }) {
   const isVideo = source.hasVideo !== false
+  const still = isStillSource(source)
   const playing = useSyncExternalStore(subscribePreview, getActivePreviewId) === `source-${source.id}`
   const facts = [
     isVideo && source.width ? `${source.width}×${source.height}` : null,
-    isVideo && source.fps ? `${Math.round(source.fps)} fps` : null,
-    formatClock(source.duration || 0),
+    still ? 'Still image' : isVideo && source.fps ? `${Math.round(source.fps)} fps` : null,
+    still ? null : formatClock(source.duration || 0),
   ].filter(Boolean).join(' · ')
 
   const toggle = async () => {
@@ -493,9 +535,13 @@ function SelectionStrip({ source, thumbnail }) {
       <div className={styles.stripInfo}>
         <span className={styles.stripName} title={source.filePath}>{source.name}</span>
         <span className={styles.stripFacts}>{facts}</span>
-        <span className={styles.stripFacts} data-state={source.proxyReady ? 'ready' : 'pending'}>
-          {source.proxyReady ? 'Proxy ready' : 'Transcoding proxy…'}
-        </span>
+        {still ? (
+          <span className={styles.stripFacts}>Drag onto a track to place it</span>
+        ) : (
+          <span className={styles.stripFacts} data-state={source.proxyReady ? 'ready' : 'pending'}>
+            {source.proxyReady ? 'Proxy ready' : 'Transcoding proxy…'}
+          </span>
+        )}
       </div>
       {isVideo && (
         <IconButton
@@ -509,7 +555,7 @@ function SelectionStrip({ source, thumbnail }) {
           <IcPalette size={14} aria-hidden="true" />
         </IconButton>
       )}
-      <IconButton
+      {!still && <IconButton
         size="sm"
         label={playing ? 'Stop preview' : 'Preview sound'}
         pressed={playing}
@@ -517,7 +563,7 @@ function SelectionStrip({ source, thumbnail }) {
         onClick={toggle}
       >
         {playing ? <IcStopFill size={14} aria-hidden="true" /> : <IcPlay size={14} aria-hidden="true" />}
-      </IconButton>
+      </IconButton>}
     </div>
   )
 }

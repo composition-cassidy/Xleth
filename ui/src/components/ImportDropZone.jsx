@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef } from 'react'
 import styles from './browser/Browser.module.css'
 
-const ALLOWED_EXT = /\.(mp4|avi|mov|mkv|wav|mp3|flac|mid|midi|flp)$/i
+const ALLOWED_EXT = /\.(mp4|avi|mov|mkv|wav|mp3|flac|png|jpe?g|bmp|webp|gif|mid|midi|flp)$/i
 // MIDI files and FL Studio projects both open the MIDI import dialog.
 const MIDI_EXT = /\.(mid|midi|flp)$/i
 

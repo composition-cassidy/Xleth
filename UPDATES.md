@@ -26,6 +26,13 @@ Since the 1.3.0-beta build (last commit in it: `752aa00`, 2026-11-11). 34 commit
 
 ### Added
 
+- **Images, GIFs and colour sources.** Import PNG, JPG, BMP, WebP and GIF files,
+  or make a solid colour or gradient (with per-colour opacity) from the brush button
+  in Media. Transparent pixels show the layers behind them in preview and export.
+  Images and colours are stills: drag one onto a clip track for a 1-bar clip that
+  holds its frame however long you stretch it; they never become samples. GIFs play
+  as video.
+
 - **Faster device reordering.** The Audio Devices chain has a strip of numbered chips
   beside the Audio tab: drag a chip to reorder (bypassed devices are struck through),
   click one to scroll to its device. The device menu gains Move to start / Move to end,

@@ -137,6 +137,8 @@ window.xleth = ({
       return () => ipcRenderer.removeListener('zip-export:progress', h);
     },
     getSourceThumbnail: (filePath, duration) => invoke('xleth:project:getSourceThumbnail', filePath, duration),
+    prepareImport:      (filePath)  => invoke('xleth:project:prepareImport', filePath),
+    createGeneratedMedia: (spec)    => invoke('xleth:project:createGeneratedMedia', spec),
     newBlank:           ()          => invoke('xleth:project:newBlank'),
     // Same engine calls as load/newBlank above, but wrapped in main.js with a
     // splash/loading window around the workspace-window hide+show — used when

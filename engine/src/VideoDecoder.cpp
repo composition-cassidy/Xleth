@@ -87,6 +87,9 @@ bool VideoDecoder::open(const std::string& filePath)
     duration_ = (formatCtx_->duration != AV_NOPTS_VALUE)
                     ? static_cast<double>(formatCtx_->duration) / AV_TIME_BASE
                     : 0.0;
+    // A still image (JPEG/BMP/WebP) reports no duration; call it one frame so
+    // proxies get a frame to encode and clips hold it like any last frame.
+    if (duration_ <= 0.0 && fps_ > 0.0) duration_ = 1.0 / fps_;
 
     // 6. SwsContext for pixel-format conversion (if source isn't YUV420P)
     if (codecCtx_->pix_fmt != AV_PIX_FMT_YUV420P)

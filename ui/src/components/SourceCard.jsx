@@ -3,8 +3,10 @@ import { formatClock } from './browser/browserFormat.js'
 import styles from './browser/Browser.module.css'
 import { iconComponent } from '../ui-kit/icons'
 import { GradeIndicator } from './colorGrade/GradeStack.jsx'
+import { isStillSource } from './stillSource.js'
 
 const IcSpinnerGap = iconComponent('spinner-gap')
+const IcImage = iconComponent('images-square')
 
 /**
  * One imported source in the Media list: a 24px row with its type glyph, name,
@@ -26,17 +28,20 @@ export default function SourceCard({
   onDoubleClick,
 }) {
   const isVideo = source.hasVideo !== false
-  const Glyph = isVideo ? SourceVideoIcon : SourceAudioIcon
+  const still = isStillSource(source)
+  const Glyph = still ? IcImage : isVideo ? SourceVideoIcon : SourceAudioIcon
 
   // Audio-only sources are draggable onto the timeline — a drop creates both
   // a full-span region and a clip referencing it, so it plays like any sample.
-  const draggable = !isVideo
+  // Stills (images, solid colours, gradients) are drag-only: no samples to cut.
+  const draggable = !isVideo || still
   const handleDragStart = draggable ? (e) => {
     const payload = {
       sourceId: source.id,
       filePath: source.filePath,
       fileName: source.name,
       duration: source.duration || 0,
+      still,
     }
     e.dataTransfer.setData('application/xleth-source', JSON.stringify(payload))
     e.dataTransfer.effectAllowed = 'copy'
@@ -46,7 +51,8 @@ export default function SourceCard({
     window.__xlethDragSource = null
   } : undefined
 
-  const kind = isVideo ? 'Video' : 'Audio'
+  const kind = still ? 'Image' : isVideo ? 'Video' : 'Audio'
+  const openPicker = still ? null : onDoubleClick
   const proxyPending = !source.proxyReady
 
   return (
@@ -54,23 +60,25 @@ export default function SourceCard({
       className={styles.row}
       data-browser-row=""
       data-selected={selected ? 'true' : 'false'}
-      data-kind={isVideo ? 'video' : 'audio'}
+      data-kind={still ? 'image' : isVideo ? 'video' : 'audio'}
       role="option"
       aria-selected={selected}
       tabIndex={0}
       onClick={() => onSelect?.(source)}
       onContextMenu={onContextMenu}
-      onDoubleClick={onDoubleClick ? () => onDoubleClick(source) : undefined}
+      onDoubleClick={openPicker ? () => openPicker(source) : undefined}
       onKeyDown={(e) => {
         if (e.target !== e.currentTarget) return
-        if (e.key === 'Enter') { e.preventDefault(); onDoubleClick ? onDoubleClick(source) : onSelect?.(source) }
+        if (e.key === 'Enter') { e.preventDefault(); openPicker ? openPicker(source) : onSelect?.(source) }
         if (e.key === ' ') { e.preventDefault(); onSelect?.(source) }
       }}
       draggable={draggable}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
-      data-hint={`${kind} source: ${source.name}. Double-click to mark samples.${draggable ? ' Drag onto a timeline track to add it as a clip.' : ''}`}
-      data-hint-mods={draggable ? 'Enter: open picker · Right-click: menu · Drag: add clip' : 'Enter: open picker · Right-click: menu'}
+      data-hint={still
+        ? `Image source: ${source.name}. Drag onto a timeline track to add it as a clip.`
+        : `${kind} source: ${source.name}. Double-click to mark samples.${draggable ? ' Drag onto a timeline track to add it as a clip.' : ''}`}
+      data-hint-mods={still ? 'Right-click: menu · Drag: add clip' : draggable ? 'Enter: open picker · Right-click: menu · Drag: add clip' : 'Enter: open picker · Right-click: menu'}
     >
       <span className={styles.typeGlyph} title={kind}>
         <Glyph size={14} aria-label={`${kind} source`} />
@@ -82,7 +90,7 @@ export default function SourceCard({
         </span>
       )}
       {isVideo && <GradeIndicator target={{ level: 'source', id: source.id }} />}
-      <span className={styles.duration}>{formatClock(source.duration || 0)}</span>
+      <span className={styles.duration}>{still ? 'Still' : formatClock(source.duration || 0)}</span>
     </div>
   )
 }
