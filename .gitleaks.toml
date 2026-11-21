@@ -1,0 +1,6 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "ONNX graph metadata: tensor names and hashes, not credentials"
+paths = ['''tools/separation_sidecar/xleth_separation/graphs/''']
