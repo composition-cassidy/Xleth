@@ -148,4 +148,13 @@ accepts the notice shown in the app. Each one remains under its own license.
 ## 7. Not included
 
 - The ASIO SDK is not part of the build (`XLETH_ASIO` is off by default).
-- No VST2 headers are included; plugin hosting in this release covers VST3 only.
+- Plugin hosting in this release covers VST3 only. The repository carries FST's VST2 headers (section 8), but no build file or source file includes them, so no VST2 code is compiled into any XLETH binary.
+
+## 8. Vendored in the repository, not currently built
+
+| Component | Location | License | Notes |
+|---|---|---|---|
+| FST (Free Studio Technology), v0.115.0, reverse-engineered VST2 headers | `third_party/fst/` (`fst/aeffect.h`, `fst/aeffectx.h`, `fst/fst.h`; `LICENSE`, `README.md`, `VERSION`, `PATCHES.md`) | **GPL-3.0-or-later** (file headers: "version 3 of the License, or (at your option) any later version"; `LICENSE` is the GPLv3 text). Copyright (C) 2019 IOhannes m zmölnig, IEM. Upstream: https://git.iem.at/zmoelnig/FST | Prepared for VST2 plugin hosting. At this commit nothing in the build or source includes it. One local change, recorded in `third_party/fst/PATCHES.md`: the four `#warning` directives in `fst.h` are wrapped in `#if !defined(_MSC_VER)` because MSVC rejects them. If compiled in, it is combined into an AGPL-3.0-or-later work under section 13 of the GPLv3 and section 13 of the AGPLv3. |
+| FST compatibility shim | `third_party/fst-compat/pluginterfaces/vst2.x/aeffect.h`, `aeffectx.h` | Part of XLETH (AGPL-3.0-or-later); contains no VST2 definitions | Forwards JUCE's `<pluginterfaces/vst2.x/aeffect.h>` include to FST and defines `FST_DONT_DEPRECATE_UNKNOWN` for MSVC. Not included by any build file at this commit. |
+
+`vendor/ffmpeg/` (docs, presets, `LICENSE`, `README.txt`) and `vendor/node/node.exe` are the shipped tools already listed in section 2.
