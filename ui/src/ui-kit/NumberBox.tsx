@@ -5,7 +5,7 @@ import { MOD_HINT_MODS, modAttrs, modRangeNorm, useModRing, type ControlMod } fr
 import styles from './NumberBox.module.css';
 import { useValueDrag } from './useValueDrag';
 import { DEFAULT_NUMBERBOX_PX } from './valueDragCore';
-import { ariaNumbers, centreNormOf, resolveValue, type DataAttrs, type ValueControlProps } from './valueProps';
+import { ariaNumbers, centreNormOf, isAtDefault, resolveValue, type DataAttrs, type ValueControlProps } from './valueProps';
 
 export interface NumberBoxProps extends ValueControlProps, DataAttrs {
   bipolar?: boolean;
@@ -111,6 +111,7 @@ export default function NumberBox(props: NumberBoxProps) {
       data-no-label={hideLabel || undefined}
       aria-description={routed ? mod?.tooltip : undefined}
       data-dragging={drag.dragging || ring.dragging}
+      data-at-default={(!drag.dragging && !drag.editing && isAtDefault(resolved.format, value, defaultValue)) || undefined}
       data-bipolar={bipolar || undefined}
       data-disabled={disabled || undefined}
       {...modAttrs(mod)}

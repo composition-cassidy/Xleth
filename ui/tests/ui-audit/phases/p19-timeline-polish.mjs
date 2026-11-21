@@ -40,6 +40,13 @@ export default async ({ page, sleep }) => {
 
   // 160/161: the cue editor (add a cue at the playhead, open it, switch it on)
   await step('cue', async () => {
+    // The Snapshots header only exists once the project has a second snapshot: make one from Edit grid if needed.
+    if (!(await page.locator('[data-testid="snapshot-cue-lane-header"]').isVisible().catch(() => false))) {
+      const editGrid = page.getByRole('button', { name: 'Edit grid', exact: true }).first();
+      await editGrid.click(); await sleep(900);
+      await page.getByRole('button', { name: 'New snapshot', exact: true }).first().click(); await sleep(900);
+      await editGrid.click(); await sleep(600);
+    }
     await page.locator('[data-testid="snapshot-cue-lane-header"] button').click(); await sleep(900);
     await audit('cue lane at rest', '[data-testid="snapshot-cue-lane"]');
     await page.locator('.vmt-cue-marker').first().click(); await sleep(600);

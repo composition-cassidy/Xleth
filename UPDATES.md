@@ -83,6 +83,14 @@ Since the 1.3.0-beta build (last commit in it: `752aa00`, 2026-11-11). 34 commit
 
 ### Changed
 
+- **Snapshots lane only when it is used.** The Snapshots header and the cue lane above
+  the tracks now appear once a project has a second snapshot or any cue, instead of
+  always. New snapshot in the Preview's Edit grid brings them back; until then the
+  24px goes to the tracks.
+- **Changed values stand out.** Knobs and number fields whose value is still at its
+  default draw that value in a quieter grey; a value you changed draws in full white.
+  This covers device knobs, the Sampler's top row and the mixer's dB readout, so a
+  touched fader or knob is easy to spot.
 - **Preview notes start at the next audio block.** Piano-roll and keyboard audition
   notes, and the all-notes-off sent on Stop and Pause, are now queued to the audio
   thread instead of changing a sampler's voices from the UI thread in the middle

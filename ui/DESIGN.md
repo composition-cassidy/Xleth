@@ -429,6 +429,12 @@ The **whole cell, including its label, is draggable.** Controls expose `role="sl
 knob without a readout. A persistent **hint bar** names the hovered control and its modifiers;
 tooltips are not documentation.
 
+**Untouched values sit back.** A Knob or NumberBox whose readout prints the same text as its
+`defaultValue` carries `data-at-default` and draws the value in **ink-2**; a changed value draws in
+**ink**. Hover and drag return it to the control's normal colours. A control given no `defaultValue`
+is never marked (its reset falls back to the minimum, which is not a default). The mixer's dB
+readout is ink by default for this reason and lets the kit dim it.
+
 ## 8. Layout contract
 
 **Compose** is the default since round 3 (`windowing/presets/xleth-compose.json`): the arrangement owns the centre column.
@@ -1467,6 +1473,9 @@ macro lanes' DOM geometry, the curve canvases).
   (`window.__XLETH_TIMELINE_GRID_PERF = true` logs each repaint with a `[Timeline]` prefix).
 - **Ruler** (round 3). **Every fourth bar number is the landmark: 12px in ink**; the others are 10px in ink-3 and are
   dropped wherever they would touch a neighbour (`rulerBarLabels`, `keepRulerLabels`). They were all 9px, under the Floor.
+- **The Snapshots header and cue lane appear only when they have something to show**: more than one snapshot (the
+  engine always keeps Base) or any cue (`hasCueLaneContent`). Until then their 24px goes to the tracks; New snapshot in
+  the Preview's grid editor brings both back.
 - **Snapshot cue lane, loop bar, macro lanes.** The cue editor is a floating surface of kit controls: Selects, a Toggle
   for Transition, the 14 per-type parameters as NumberBoxes (same range and step, previewing locally and writing
   **one** `setCueTransition` on release; the old slider wrote per pointer step), IconButtons, the direction compass

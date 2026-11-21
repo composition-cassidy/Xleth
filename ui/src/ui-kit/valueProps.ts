@@ -76,6 +76,16 @@ export function ariaNumbers(scale: Scale, value: number): { min: number; max: nu
   return { min, max, now };
 }
 
+/**
+ * Whether a control reads as untouched: it was given a default and shows the same
+ * text as that default. Text, not number, so float noise that prints the same
+ * counts as default. No default given means never: the reset fallback (the
+ * minimum) is not a real default, and greying every minimum would mislead.
+ */
+export function isAtDefault(format: (v: number) => string, value: number, defaultValue: number | undefined): boolean {
+  return defaultValue !== undefined && format(value) === format(defaultValue);
+}
+
 /** Bipolar controls fill from their centre: 0 when it is in range, else the middle. */
 export function centreNormOf(scale: Scale, centre: number | undefined): number {
   const { lo, hi } = scaleBounds(scale);

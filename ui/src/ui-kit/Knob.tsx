@@ -6,7 +6,7 @@ import styles from './Knob.module.css';
 import { MOD_HINT_MODS, modAttrs, modRangeNorm, useModRing, type ControlMod } from './modRing';
 import { useValueDrag } from './useValueDrag';
 import { DEFAULT_KNOB_PX } from './valueDragCore';
-import { ariaNumbers, centreNormOf, resolveValue, type DataAttrs, type ValueControlProps } from './valueProps';
+import { ariaNumbers, centreNormOf, isAtDefault, resolveValue, type DataAttrs, type ValueControlProps } from './valueProps';
 
 export interface KnobProps extends ValueControlProps, DataAttrs {
   /** Fills from the centre (pan, gain trim, detune) instead of from the minimum. */
@@ -141,6 +141,7 @@ export default function Knob(props: KnobProps) {
       aria-disabled={disabled || undefined}
       aria-description={routed ? mod?.tooltip : undefined}
       data-dragging={drag.dragging || ring.dragging}
+      data-at-default={(!drag.dragging && !drag.editing && isAtDefault(resolved.format, value, defaultValue)) || undefined}
       data-bipolar={bipolar || undefined}
       data-disabled={disabled || undefined}
       data-no-label={hideLabel || undefined}

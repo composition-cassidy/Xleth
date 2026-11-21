@@ -19,7 +19,7 @@ import { drawLengthForSnap, adoptDrawLength, resetDrawLength } from './timeline/
 import { tokenValue } from '../theming/tokenValue.ts'
 import TimelineRuler from './timeline/TimelineRuler.jsx'
 import LoopRegionBar, { loopRegionOverlayClassName } from './timeline/LoopRegionBar.jsx'
-import SnapshotCueLane, { SnapshotCueLaneHeader, useSnapshotCues } from './timeline/SnapshotCueLane.jsx'
+import SnapshotCueLane, { SnapshotCueLaneHeader, hasCueLaneContent, useSnapshotCues } from './timeline/SnapshotCueLane.jsx'
 import TimelineScrollbar from './timeline/TimelineScrollbar.jsx'
 import TimelineToolbar from './timeline/TimelineToolbar.jsx'
 import Fader from './controls/Fader.jsx'
@@ -613,6 +613,7 @@ export default function TimelineView({
   // Snapshots cue lane, pinned under the ruler on the arrangement's own scale.
   const cueLaneRef = useRef(null)
   const snapshotCues = useSnapshotCues(playheadBeatRef)
+  const showCueLane = hasCueLaneContent(snapshotCues)
   const bpmRef = useRef(140)
   const stoppedPreviewSeekSchedulerRef = useRef(null)
 
@@ -4832,12 +4833,12 @@ export default function TimelineView({
                 onViewportWheel={handleWheel}
                 onSeekTick={(tick) => handleSeek(ticksToBeats(tick))}
                 reveal={motionReveal}
-                pinnedHeader={(
+                pinnedHeader={showCueLane ? (
                   <SnapshotCueLaneHeader
                     onAddCue={snapshotCues.addCueAtPlayhead}
                     disabled={!snapshotCues.activeSnapshotId}
                   />
-                )}
+                ) : null}
               />
             ) : (
             <TrackHeaderList
@@ -4881,12 +4882,12 @@ export default function TimelineView({
               onDeleteAutomationLane={handleDeleteAutomationLane}
               onAddClipTrack={() => handleAddTrack('Clip')}
               onAddPatternTrack={() => handleAddTrack('Pattern')}
-              pinnedHeader={(
+              pinnedHeader={showCueLane ? (
                 <SnapshotCueLaneHeader
                   onAddCue={snapshotCues.addCueAtPlayhead}
                   disabled={!snapshotCues.activeSnapshotId}
                 />
-              )}
+              ) : null}
             />
             )}
 
@@ -4919,7 +4920,7 @@ export default function TimelineView({
                   rulerHeight={RULER_HEIGHT}
                 />
               </div>
-              <SnapshotCueLane
+              {showCueLane ? <SnapshotCueLane
                 ref={cueLaneRef}
                 pixelsPerBeatRef={pixelsPerBeatRef}
                 scrollOffsetRef={scrollOffsetRef}
@@ -4935,7 +4936,7 @@ export default function TimelineView({
                 tracks={tracks}
                 onSetCueLandings={snapshotCues.setCueLandings}
                 onReflowCueLandings={snapshotCues.reflowCueLandings}
-              />
+              /> : null}
               {isMotionView ? (
                 <div className={motionKeyHostClassName} ref={setMotionKeyHost} data-testid="motion-key-host" />
               ) : (

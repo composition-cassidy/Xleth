@@ -131,6 +131,11 @@
     outline-offset: 0;
   }
 
+  /* Untouched: a value still at its default sits back with its label; a changed one reads at full ink. */
+  .cell[data-at-default] .value {
+    color: var(--ui-ink-2);
+  }
+
   /* Active = being dragged: the readout takes the value colour, nothing moves. */
   .cell:is([data-dragging="true"], [data-state="active"]) .value {
     color: var(--ui-value);

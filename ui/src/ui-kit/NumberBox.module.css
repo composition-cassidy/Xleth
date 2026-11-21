@@ -55,6 +55,16 @@
     font-weight: var(--weight-medium);
   }
 
+  /* Untouched: a value still at its default sits back; a changed one reads at full ink.
+   * Hover hands the colour back to the field so the control still answers the pointer. */
+  .box[data-at-default] .value {
+    color: var(--ui-ink-2);
+  }
+
+  .box[data-at-default]:is(:hover, [data-state="hover"]) .value {
+    color: inherit;
+  }
+
   .fill {
     position: absolute;
     left: calc(var(--fill-a, 0) * 100%);

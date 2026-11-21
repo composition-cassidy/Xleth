@@ -363,3 +363,40 @@ describe('FaderMeter', () => {
     expect(onCommit).toHaveBeenCalledWith(-Infinity);
   });
 });
+
+describe('at-default dimming (Knob and NumberBox)', () => {
+  const controls = [
+    ['Knob', Knob],
+    ['NumberBox', NumberBox],
+  ] as const;
+  const atDefault = (name: string) => slider(name).hasAttribute('data-at-default');
+
+  for (const [kind, Control] of controls) {
+    it(`${kind}: marks a value that still shows its default`, () => {
+      render(<Control label="Gain" value={0} defaultValue={0} min={-24} max={24} unit="dB" />);
+      expect(atDefault('Gain')).toBe(true);
+    });
+
+    it(`${kind}: drops the mark once the value changes`, () => {
+      render(<Control label="Gain" value={-3.1} defaultValue={0} min={-24} max={24} unit="dB" />);
+      expect(atDefault('Gain')).toBe(false);
+    });
+
+    it(`${kind}: compares the printed text, so float noise still counts as default`, () => {
+      render(<Control label="Gain" value={-0.000001} defaultValue={0} min={-24} max={24} unit="dB" />);
+      expect(atDefault('Gain')).toBe(true);
+    });
+
+    it(`${kind}: never marks a control that was given no default, even at its minimum`, () => {
+      render(<Control label="Gain" value={-24} min={-24} max={24} unit="dB" />);
+      expect(atDefault('Gain')).toBe(false);
+    });
+
+    it(`${kind}: drops the mark while the value is being typed`, () => {
+      render(<Control label="Gain" value={0} defaultValue={0} min={-24} max={24} unit="dB" />);
+      dblclick(slider('Gain'));
+      expect(container.querySelector('input')).not.toBeNull();
+      expect(atDefault('Gain')).toBe(false);
+    });
+  }
+});

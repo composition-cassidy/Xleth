@@ -28,6 +28,7 @@ import SnapshotCueLane, {
   DEFAULT_TRANSITION_DISPLACEMENT_SCALE,
   DEFAULT_TRANSITION_EFFECT_SEED,
   TRANSITION_TYPE_OPTIONS,
+  hasCueLaneContent,
   normalizeTransitionEdgeSoftness,
   normalizeTransitionZoomAmount,
   normalizeTransitionDissolveGrain,
@@ -760,5 +761,19 @@ describe('snapshot transition easing normalization', () => {
       startToPin: { ...LINEAR_TRANSITION_CURVE },
       pinToEnd: { x1: 0, y1: 1, x2: 0.25, y2: 0.75 },
     })
+  })
+})
+
+describe('hasCueLaneContent', () => {
+  const base = { id: 'base' }
+  it('hides the lane while the project has only Base and no cues', () => {
+    expect(hasCueLaneContent({ snapshots: [], cues: [] })).toBe(false)
+    expect(hasCueLaneContent({ snapshots: [base], cues: [] })).toBe(false)
+  })
+  it('shows it once a second snapshot exists', () => {
+    expect(hasCueLaneContent({ snapshots: [base, { id: 'verse' }], cues: [] })).toBe(true)
+  })
+  it('keeps it while any cue exists, so the cue stays editable', () => {
+    expect(hasCueLaneContent({ snapshots: [base], cues: [{ tick: 0 }] })).toBe(true)
   })
 })

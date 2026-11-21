@@ -323,7 +323,8 @@
     border: 0;
     border-radius: 0;
     background: transparent;
-    color: var(--ui-ink-2);
+    /* Full ink here; the kit dims it while the gain is still at its 0 dB default. */
+    color: var(--ui-ink);
     font-size: var(--type-10);
     line-height: var(--mx-field-h);
     cursor: default;

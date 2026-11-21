@@ -875,6 +875,15 @@ export function CueLane({
   )
 }
 
+/**
+ * Whether the arrangement shows the Snapshots header and lane. The engine always
+ * keeps a Base snapshot, so a lane with only Base and no cues has nothing to say;
+ * any cue keeps it so an existing cue can always be edited.
+ */
+export function hasCueLaneContent({ snapshots, cues }) {
+  return snapshots.length > 1 || cues.length > 0
+}
+
 // ── Cue data + mutations (moved from VideoMirrorTimeline) ───────────────────
 // Safety audit: cue writes are serialized, and every attempt finishes by
 // re-reading listCues. React state is therefore only a view of IPC truth,
