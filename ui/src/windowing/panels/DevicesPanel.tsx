@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { PanelFrame } from '../components/PanelFrame';
 import DeviceChain from '../../components/devices/DeviceChain.jsx';
 import VideoDeviceChain from '../../components/devices/video/VideoDeviceChain.jsx';
@@ -17,6 +17,7 @@ export function DevicesLanes() {
   const focusNonce = useVideoDeviceStore((s) => s.viewNonce);
   const videoLane = useRef<HTMLElement | null>(null);
   const scroller = useRef<HTMLDivElement | null>(null);
+  const [audioOrderSlot, setAudioOrderSlot] = useState<HTMLElement | null>(null);
 
   // "Video effects" (Inspector) asks for the Video lane: scroll it into view. Audio is the top.
   useEffect(() => {
@@ -36,8 +37,9 @@ export function DevicesLanes() {
         <section className={styles.lane} data-lane="audio" aria-label="Audio effects">
           <div className={styles.tabRail}>
             <span className={styles.tab} data-testid="xleth-lane-tab-audio">Audio</span>
+            <div className={styles.orderSlot} ref={setAudioOrderSlot} />
           </div>
-          <div className={styles.laneBody}><DeviceChain /></div>
+          <div className={styles.laneBody}><DeviceChain orderSlot={audioOrderSlot} /></div>
         </section>
         <section className={styles.lane} data-lane="video" aria-label="Video effects" ref={videoLane}>
           <div className={styles.tabRail}>

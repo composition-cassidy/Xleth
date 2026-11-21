@@ -1,0 +1,64 @@
+@layer kit {
+  /* Pinned to the left of the Devices scroller so it stays on screen while the chain scrolls. */
+  .strip {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    box-sizing: border-box;
+    display: flex;
+    align-self: flex-start;
+    align-items: center;
+    gap: var(--space-1);
+    width: max-content;
+    max-width: 70vw;
+    height: var(--space-5);
+    padding: 0 var(--space-1);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .chip {
+    box-sizing: border-box;
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: var(--space-1);
+    max-width: 140px;
+    height: 20px;
+    padding: 0 var(--space-2);
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g2);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    line-height: 1;
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+  }
+
+  .chip:hover {
+    border-color: var(--ui-boundary);
+  }
+
+  .chip:focus-visible {
+    outline: 1px solid var(--ui-select);
+  }
+
+  .chip[data-bypassed="true"] {
+    color: var(--ui-ink-2);
+    text-decoration: line-through;
+  }
+
+  .pos {
+    color: var(--ui-ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .name {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+}

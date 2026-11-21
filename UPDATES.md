@@ -26,6 +26,11 @@ Since the 1.3.0-beta build (last commit in it: `752aa00`, 2026-11-11). 34 commit
 
 ### Added
 
+- **Faster device reordering.** The Audio Devices chain has a strip of numbered chips
+  beside the Audio tab: drag a chip to reorder (bypassed devices are struck through),
+  click one to scroll to its device. The device menu gains Move to start / Move to end,
+  and Alt+Left / Alt+Right moves the focused device one place.
+
 - **Filter slopes on the stock EQ.** Low Pass and High Pass bands get a Slope
   selector: 6, 12 (the default, exactly the old filter), 18, 24, 36, 48, 72 and 96
   dB/oct, and a Brickwall (Chebyshev II, ~-94 dB by 1.3x the corner). Every slope

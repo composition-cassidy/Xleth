@@ -70,6 +70,14 @@
     margin-top: var(--space-1);
   }
 
+  /* Where the Audio chain draws its device-order strip: the free space beside the folder tab. */
+  .orderSlot {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    margin-left: var(--space-2);
+  }
+
   .tab {
     box-sizing: border-box;
     display: flex;

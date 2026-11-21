@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { EmptyState, MotionDiv } from '../../ui-kit'
 import useEffectChainStore, { resolveFxMode } from '../../stores/effectChainStore.js'
 import useMixerStore from '../../stores/mixerStore.js'
@@ -9,6 +10,7 @@ import TrackContextMenu from '../timeline/TrackContextMenu.jsx'
 import useTrackIdentityColors from '../inspector/useTrackIdentityColors.js'
 import EffectDevice from './EffectDevice.jsx'
 import ChainHead from './ChainHead.jsx'
+import DeviceOrderStrip from './DeviceOrderStrip.jsx'
 import useDeviceRevealStore from './deviceRevealStore.js'
 import styles from './DeviceChain.module.css'
 
@@ -37,7 +39,9 @@ export function moveInOrder(order, nodeId, toIndex) {
 
 // The selected mixer track's insert chain as devices, left to right in signal
 // order (Devices tab). No track selected = the master chain.
-export default function DeviceChain() {
+// orderSlot: an element to draw the order strip into (the Devices panel's lane rail, so the strip
+// costs no height); undefined = draw it inline above the chain; null = the slot is not mounted yet.
+export default function DeviceChain({ orderSlot }) {
   const selectedChainKey = useMixerStore((s) => s.selectedChainKey)
   const mixerTracks = useMixerStore((s) => s.tracks)
   const key = selectedChainKey ?? 'master'
@@ -55,6 +59,8 @@ export default function DeviceChain() {
   const [menuPos, setMenuPos] = useState(null)
   const dragRef = useRef(null)
   const rowRef = useRef(null)
+  const stripRef = useRef(null)
+  const suppressClickRef = useRef(false)
 
   useEffect(() => {
     fetchChain(key)
@@ -111,7 +117,7 @@ export default function DeviceChain() {
       d.active = true
       document.body.style.cursor = 'grabbing'
     }
-    const els = Array.from(rowRef.current?.querySelectorAll('[data-device-index]') ?? [])
+    const els = Array.from(d.scope.current?.querySelectorAll('[data-device-index]') ?? [])
     const rects = els.map((el) => el.getBoundingClientRect())
     const draggedIndex = els.findIndex((el) => el.getAttribute('data-device-node') === String(d.nodeId))
     const to = reorderIndexForPointer(e.clientX, rects, draggedIndex)
@@ -128,6 +134,11 @@ export default function DeviceChain() {
     document.removeEventListener('pointercancel', endDrag)
     document.body.style.cursor = ''
     setDragOrder(null)
+    if (d?.active) {
+      // The click that follows a chip drag must not also scroll to the device.
+      suppressClickRef.current = true
+      setTimeout(() => { suppressClickRef.current = false }, 0)
+    }
     if (d?.active && d.currentIndex !== d.fromIndex) {
       moveEffect(key, d.nodeId, d.currentIndex)
     }
@@ -139,14 +150,41 @@ export default function DeviceChain() {
     document.removeEventListener('pointercancel', endDrag)
   }, [onPointerMove, endDrag])
 
-  const startDrag = (effect, index) => (e) => {
+  // scope = the container whose [data-device-index] children are measured: the device row or the strip.
+  const startDrag = (effect, index, scope = rowRef) => (e) => {
     if (e.button !== 0 || !Number.isInteger(effect.nodeId) || effect.nodeId < 0) return
-    dragRef.current = { nodeId: effect.nodeId, fromIndex: index, currentIndex: index, startX: e.clientX, active: false, base: chain }
+    dragRef.current = { nodeId: effect.nodeId, fromIndex: index, currentIndex: index, startX: e.clientX, active: false, base: chain, scope }
     setDragOrder(null)
     document.addEventListener('pointermove', onPointerMove)
     document.addEventListener('pointerup', endDrag)
     document.addEventListener('pointercancel', endDrag)
   }
+
+  // Alt+Left/Right moves the focused device (or chip) one place. Text fields keep their own Alt keys.
+  const moveByKey = (effect, index) => (e) => {
+    if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.defaultPrevented) return
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+    if (e.target.closest?.('input, textarea, select, [contenteditable="true"]')) return
+    e.preventDefault()
+    const to = index + (e.key === 'ArrowLeft' ? -1 : 1)
+    if (to < 0 || to >= chain.length) return
+    moveEffect(key, effect.nodeId, to)
+  }
+
+  const scrollToDevice = (effect) => {
+    rowRef.current?.querySelector(`[data-device-node="${effect.nodeId}"]`)?.scrollIntoView?.({ inline: 'nearest', block: 'nearest' })
+  }
+
+  const strip = chain.length > 1 ? (
+    <DeviceOrderStrip
+      chain={displayChain}
+      vstPlugins={vstPlugins}
+      stripRef={stripRef}
+      onChipPointerDown={(effect, index) => startDrag(effect, index, stripRef)}
+      onChipKeyDown={moveByKey}
+      onChipClick={(effect) => { if (!suppressClickRef.current) scrollToDevice(effect) }}
+    />
+  ) : null
 
   const menuItems = useMemo(
     () => buildEffectChainMenuItems({ addEffect, storeKey: key, vstPlugins }),
@@ -171,14 +209,18 @@ export default function DeviceChain() {
   }
 
   return (
-    <div className={styles.scroller} data-testid="xleth-device-chain" aria-label={`${chainName} devices`} role="list">
-      <div className={styles.row} ref={rowRef} onPointerDownCapture={revealedIndex >= 0 ? clearReveal : undefined}>
+    <div className={styles.scroller} data-testid="xleth-device-chain">
+      {strip && orderSlot === undefined ? strip : null}
+      {strip && orderSlot ? createPortal(strip, orderSlot) : null}
+      <div className={styles.row} ref={rowRef} aria-label={`${chainName} devices`} role="list" onPointerDownCapture={revealedIndex >= 0 ? clearReveal : undefined}>
         <ChainHead name={chainName} identityColor={identityColor} />
         {displayChain.map((effect, index) => {
           const live = Number.isInteger(effect.nodeId) && effect.nodeId >= 0
           const moveItems = live ? [
             { label: 'Move left', disabled: index === 0, onSelect: () => moveEffect(key, effect.nodeId, index - 1) },
             { label: 'Move right', disabled: index === displayChain.length - 1, onSelect: () => moveEffect(key, effect.nodeId, index + 1) },
+            { label: 'Move to start', disabled: index === 0, onSelect: () => moveEffect(key, effect.nodeId, 0) },
+            { label: 'Move to end', disabled: index === displayChain.length - 1, onSelect: () => moveEffect(key, effect.nodeId, displayChain.length - 1) },
           ] : []
           return (
             <MotionDiv
@@ -191,6 +233,7 @@ export default function DeviceChain() {
               data-device-node={effect.nodeId}
               data-dragging={dragRef.current?.active && dragRef.current.nodeId === effect.nodeId ? true : undefined}
               data-revealed={index === revealedIndex ? true : undefined}
+              onKeyDown={live ? moveByKey(effect, index) : undefined}
             >
               <EffectDevice
                 effect={effect}

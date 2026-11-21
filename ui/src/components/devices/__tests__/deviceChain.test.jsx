@@ -88,7 +88,7 @@ describe('DeviceChain', () => {
   it('dragging a device by its name previews locally and commits ONE moveEffect on drop', async () => {
     act(() => root.render(<DeviceChain />))
     await flush()
-    const slots = container.querySelectorAll('[data-device-index]')
+    const slots = container.querySelectorAll('[role="listitem"][data-device-index]')
     slots.forEach((el, i) => {
       el.getBoundingClientRect = () => ({ left: i * 200, width: 180, top: 0, height: 256, right: i * 200 + 180, bottom: 256 })
     })
@@ -104,6 +104,46 @@ describe('DeviceChain', () => {
     await flush()
     expect(audio.moveEffect).toHaveBeenCalledTimes(1)
     expect(audio.moveEffect).toHaveBeenCalledWith(3, 11, 1)
+  })
+
+  it('the order strip lists the chain, and dragging a chip commits ONE moveEffect', async () => {
+    act(() => root.render(<DeviceChain />))
+    await flush()
+    const strip = container.querySelector('[role="toolbar"]')
+    const chips = strip.querySelectorAll('[data-device-index]')
+    expect(Array.from(chips).map((c) => c.textContent)).toEqual(['1Delay', '2Reverb'])
+    chips.forEach((el, i) => {
+      el.getBoundingClientRect = () => ({ left: i * 100, width: 80, top: 0, height: 22, right: i * 100 + 80, bottom: 22 })
+    })
+    const pe = (type, x) => new MouseEvent(type, { bubbles: true, clientX: x, button: 0 })
+    act(() => { chips[0].dispatchEvent(pe('pointerdown', 40)) })
+    act(() => { document.dispatchEvent(pe('pointermove', 60)) })
+    act(() => { document.dispatchEvent(pe('pointermove', 180)) })
+    act(() => { document.dispatchEvent(pe('pointerup', 180)) })
+    await flush()
+    expect(audio.moveEffect).toHaveBeenCalledTimes(1)
+    expect(audio.moveEffect).toHaveBeenCalledWith(3, 11, 1)
+  })
+
+  it('Alt+ArrowRight moves the focused device one place; Alt+ArrowLeft at the start does nothing', async () => {
+    act(() => root.render(<DeviceChain />))
+    await flush()
+    const chip = container.querySelector('[role="toolbar"] [data-device-index="0"]')
+    const key = (k, init = {}) => new KeyboardEvent('keydown', { key: k, altKey: true, bubbles: true, cancelable: true, ...init })
+    act(() => { chip.dispatchEvent(key('ArrowLeft')) })
+    act(() => { chip.dispatchEvent(key('ArrowRight', { shiftKey: true })) })
+    await flush()
+    expect(audio.moveEffect).not.toHaveBeenCalled()
+    act(() => { chip.dispatchEvent(key('ArrowRight')) })
+    await flush()
+    expect(audio.moveEffect).toHaveBeenCalledWith(3, 11, 1)
+  })
+
+  it('a single device shows no order strip', async () => {
+    useMixerStore.setState({ selectedChainKey: null })
+    act(() => root.render(<DeviceChain />))
+    await flush()
+    expect(container.querySelector('[role="toolbar"]')).toBeNull()
   })
 
   it('a track owned by the FX Graph says so instead of drawing a chain', async () => {
