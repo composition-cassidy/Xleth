@@ -48,6 +48,22 @@ to 2026-11-22.
   and easing (Land / Glide / Linear, or a curve). It is drawn on top, carried over
   the transition, in preview and export. The cue inspector has a Landings section
   with Add landing and Reflow. Projects without landings write no new keys.
+- **Szkrezh.** New stock effect (`szkrezh`): a transport-locked granular reverse
+  pitch echo on `SzkrezhCore`, 31 parameters. Splices are a pure function of the
+  transport position, so bounces and exports match playback. Pitch Source is Knob,
+  Harmony (in-key intervals over the host track's notes) or Keys (notes played on
+  another track). Freeze, Dual / Ping-pong / Mixed feedback, low and high cut in
+  the loop, a gate or duck on the output, Vintage or Clean interpolation, seven
+  factory presets, and a device with a staircase display.
+- **Smart Balance v2.** Rewritten as a gentle four-band leveller (LR4 split at
+  150 Hz / 800 Hz / 4 kHz) with a tonal and a dynamic stage per band, Preserve,
+  a Warmth stage (tilt and saturation on Sub and Low-mid), and a loudness match
+  (predicted plus measured BS.1770). v1 boosted every band to the full-band level
+  (Air up 4 to 6 dB, about 3 LU louder, noise floor up about 3 dB); v2 does not.
+- **Metronome.** A transport-bar button clicks on every beat, the first beat of
+  each bar pitched up 3 semitones. It renders after the mix, so it never reaches
+  export or the loudness meter. Engine-side it has three clicks (Bump, Hat, Rim)
+  and a volume.
 - **Plugin loading screen.** Inserting a third-party plugin now shows a modal
   with the plugin's name, a step list and elapsed time, while the plugin loads
   and its editor window opens. Cancel (or Escape) while loading; Retry or Close if
