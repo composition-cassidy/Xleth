@@ -21,10 +21,51 @@ Baseline: the 1.2.3-beta build (commit `e68d738`, 2026-09-20). There is no
 
 ## Unreleased
 
-Since the 1.3.0-beta build (last commit in it: `752aa00`, 2026-11-11). 34 commits,
-2026-11-11 to 2026-11-14, on `feature/lens-roam`.
+Nothing yet.
+
+---
+
+## 1.3.0-beta
+
+Released 2026-11-22. This section is the work after the 2026-11-11 build (last
+commit in it: `752aa00`); the first half of the release is the next section,
+"Earlier in 1.3.0-beta". 106 commits plus the last uncommitted batch, 2026-11-11
+to 2026-11-22.
 
 ### Added
+
+- **Clones (Voice and Trail).** A Pattern Track can have clone tracks (spec
+  `docs/XLETH_CLONE_SPEC.md`, schema v10). A Voice clone takes overlapping notes
+  that would otherwise fight for one cell: voice *k* of the pattern routes to
+  clone *k*, and a note can be pinned to a voice. A Trail clone follows its source
+  at a delay, with its own opacity, an added Roam offset and a Tint. Clones show
+  as lanes in the Edit view and the Reel, in the Motion view ("follows <source>"),
+  in the piano roll (Voice select) and in the Inspector. Deleting a source removes
+  its clones and rewrites the pins in the same undo step.
+- **Landing.** A track can move into its slot in a cue's incoming snapshot and
+  end on the cue pin (spec `docs/XLETH_LANDING_SPEC.md`). Per landing: lead-in
+  in beats, From (where it starts), edge angle, a custom rectangle, From opacity
+  and easing (Land / Glide / Linear, or a curve). It is drawn on top, carried over
+  the transition, in preview and export. The cue inspector has a Landings section
+  with Add landing and Reflow. Projects without landings write no new keys.
+- **Plugin loading screen.** Inserting a third-party plugin now shows a modal
+  with the plugin's name, a step list and elapsed time, while the plugin loads
+  and its editor window opens. Cancel (or Escape) while loading; Retry or Close if
+  it fails. A second click while one plugin is loading is ignored. New RPC
+  `audio_getPluginEditorStatus` (`opening`, `open`, `failed`, `closed`).
+- **Piano Roll toolbar rebuilt.** One 32px row in four groups: a menu (Edit,
+  Select, Space, View, Quick notation, MIDI import, each row printing its shortcut),
+  the title selects, one tool rail in FL's order (Pencil, Paint, Delete, Slice,
+  Select), and grid and playback settings. Only the active tool is a bright chip.
+  Scale is a toggle with a caret menu (Snap to scale, Root, Mode). The note-length
+  control is gone: a new note is 1/16 until a touched or resized note sets the length.
+  Tool buttons show their shortcut letter on hover or focus.
+- **Collapsible velocity lane.** The Velocity header in the piano roll collapses
+  the lane to one row and opens it again; the state is remembered.
+- **Sample Selector follows the piano roll.** Hovering (or arrowing to) a sample
+  in the piano roll's sample list scrolls the Sample Selector to that row and marks
+  it, when the Selector is open.
+- **Menu items can print a shortcut** (`shortcut` on the kit's `MenuItem`).
 
 - **Images, GIFs and colour sources.** Import PNG, JPG, BMP, WebP and GIF files,
   or make a solid colour or gradient (with per-colour opacity) from the brush button
@@ -90,6 +131,10 @@ Since the 1.3.0-beta build (last commit in it: `752aa00`, 2026-11-11). 34 commit
 
 ### Changed
 
+- **Packaged builds ship the FFmpeg runtime DLLs next to the engine addon.**
+  `electron-builder.json` copies `avcodec`, `avformat`, `avutil`, `swresample` and
+  `swscale` from the vcpkg tree into `resources/bridge`, so the packaged worker can
+  load `xleth_native.node` without a hand copy.
 - **Snapshots lane only when it is used.** The Snapshots header and the cue lane above
   the tracks now appear once a project has a second snapshot or any cue, instead of
   always. New snapshot in the Preview's Edit grid brings them back; until then the
@@ -127,6 +172,15 @@ Since the 1.3.0-beta build (last commit in it: `752aa00`, 2026-11-11). 34 commit
 
 ### Fixed
 
+- **A slow plugin editor no longer freezes the engine.** Opening a third-party
+  plugin's editor waited up to 5 s for the editor host on the worker's only RPC
+  thread, so every other engine call stalled and heavy plugins timed out. The
+  open is now non-blocking and the UI follows `audio_getPluginEditorStatus`. The
+  host's "ready" message used to be queued to a message loop the worker never
+  runs; it is now handled directly, and a repeat click no longer starts a second
+  editor host.
+- **Autosave says when it did not save.** `project_save` returning false is now
+  logged as skipped or failed and retried, instead of being logged as saved.
 - **A seek or Stop during playback is no longer lost.** If it landed while the
   audio thread was moving the playhead on by one block, that write put the old
   position back: the playhead carried on from where it was, or Stop left it
@@ -224,7 +278,7 @@ Since the 1.3.0-beta build (last commit in it: `752aa00`, 2026-11-11). 34 commit
   were gitignored although `CONTRIBUTING.md` and CI pointed at them. They are
   tracked now and pinned to CRLF so `cmd.exe` parses them.
 
-### Not yet committed
+### Motion view and Roam
 
 - **Motion view.** A second view of the timeline for keyframing, switched with `` ` `` or Edit | Motion in the toolbar (spec `docs/XLETH_MOTION_VIEW_SPEC.md`, rulings in `docs/XLETH_MOTION_VIEW_DESIGN.md`).
   - Property tree per track (Lens, Roam, Masks, Sweep) with key toggles, the live value at the playhead (drag or type to edit), and previous / add / next key buttons. Collapsed rows summarise their keys; dimmed clips or notes show behind the rows for timing.
@@ -238,13 +292,7 @@ Since the 1.3.0-beta build (last commit in it: `752aa00`, 2026-11-11). 34 commit
 - **Border crop (Roam).** Crop left / right / top / bottom trim the cell's edges without scaling the picture, so a video changes shape without squishing. Animatable, shown as Motion rows and in the Roam inspector, and drawn by the mask pass (an Intersect rectangle appended after the cell's own masks, so a track with all eight masks can still crop; the mask shader now has nine slots).
 - **Video effect parameters animate in the Motion view.** Under each track, a "Video effects" group lists every chain effect with a stopwatch, keys and value cell per continuous parameter (Chroma key tolerance, Outline thickness, TV simulator, Drop shadow, Desaturation and so on; colours, choices and the Echo tap count stay static). Effects now carry a stable id that survives reorder, remove and undo; keys save with the track and old projects are untouched.
 
-The working tree has about 185 modified files on top of this (Lens + Roam
-follow-ups, mixer, sidechain and routing, export normalization, ResonanceCore,
-render clock, Settings and others). They are not listed above; they go in
-`Unreleased` when committed.
-
-Also uncommitted, a timeline responsiveness pass (2026-11-15). When committed it
-becomes these bullets:
+### Timeline responsiveness (2026-11-15)
 
 - **Changed: drawing a clip no longer refetches the project.** Pencil clicks and
   sample / source drops add through `pasteClipsBatch` and splice in the clips
@@ -259,8 +307,9 @@ becomes these bullets:
   unused piece of state), and unused handlers, imports and two retired canvas
   playhead painters are gone.
 
-And an editing correctness pass (same day), found by driving the real engine
-with test projects:
+### Editing correctness (2026-11-15)
+
+Found by driving the real engine with test projects.
 
 - **Fixed: a bulk edit larger than the undo history could not be undone.**
   Pitch-shifting 150 clips, or deleting more than 100 pattern blocks, pushed one
@@ -298,7 +347,7 @@ with test projects:
   the engine (`model/ClipSplit.h`); split and Auto-Trim no longer refetch every
   clip.
 
-And a built-in preset set for the stock effects (2026-11-16):
+### Factory presets (2026-11-16)
 
 - **Added: factory presets for every stock effect.** 235 new presets across all
   27 effects (GLOSS lists the APEX set), named by what they are for: pitch
@@ -328,7 +377,9 @@ And a built-in preset set for the stock effects (2026-11-16):
   into the real engine and checks it reads back as written; `--levels` also
   renders each one and prints its level change.
 
-And Color Grade (2026-11-16), built against `xleth-color-grade-spec.md`:
+### Color Grade (2026-11-16)
+
+Built against `xleth-color-grade-spec.md`.
 
 - **Added: Color Grade at four levels.** Source, Clip (a clip, or a sample on a
   Pattern Track), Layer (a track's cell) and Master (the finished frame), always
@@ -356,9 +407,10 @@ And Color Grade (2026-11-16), built against `xleth-color-grade-spec.md`:
 
 ---
 
-## 1.3.0-beta
+## Earlier in 1.3.0-beta
 
-Built 2026-11-11. 202 commits since 1.2.3-beta, 2026-09-22 to 2026-11-11.
+Built 2026-11-11 and not released separately; it ships as the first half of
+1.3.0-beta. 202 commits since 1.2.3-beta, 2026-09-22 to 2026-11-11.
 
 ### Added
 

@@ -209,6 +209,9 @@ diagnosticsHandlers.init({ safeHandler, getWin: () => win, log });
 // gating it on engine readiness would strand the Sandbox's separation strip
 // whenever the panel is opened during startup. See separation.js's `handler`.
 separationHandlers.init({ getWin: () => win, log });
+// Machine-local add-ons in ui/local/ (git-excluded, not packaged); absent in other checkouts and builds.
+const localAddons = path.join(__dirname, 'local', 'index.js');
+if (fs.existsSync(localAddons)) require(localAddons).init({ getWin: () => win, log, ffmpegPath: ffmpegExecutable });
 
 // ── Manifest-driven RPC handlers (AUDIT.md S1) ─────────────────────────────────
 // Pure pass-through channels declared once in ui/rpc-manifest.js; hand-written

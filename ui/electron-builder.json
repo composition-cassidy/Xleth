@@ -20,6 +20,11 @@
       ]
     },
     {
+      "from": "../build/vcpkg_installed/x64-windows/bin",
+      "to": "bridge",
+      "filter": ["avcodec-*.dll", "avformat-*.dll", "avutil-*.dll", "swresample-*.dll", "swscale-*.dll"]
+    },
+    {
       "from": "../shm_helper/build/Release",
       "to": "shm_helper",
       "filter": ["shm_helper.node"]

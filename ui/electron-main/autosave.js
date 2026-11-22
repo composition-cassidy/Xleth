@@ -41,10 +41,11 @@ function startAutosaveTimer(intervalMs) {
       if (!dirty) return
       const ts = await callWorker('getTransportState')
       if (ts && ts.isPlaying) return
-      await callWorker('project_save')
-      log('[autosave] Project saved automatically')
+      const saved = await callWorker('project_save')
+      log(saved ? '[autosave] Project saved automatically'
+                : '[autosave] Save skipped or failed (project_save returned false); will retry')
     } catch (err) {
-      log('[autosave] Save failed:', err && err.message)
+      log(`[autosave] Save failed: ${err && err.message}`)
     }
   }, intervalMs)
 }
