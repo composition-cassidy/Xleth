@@ -64,6 +64,57 @@ to 2026-11-22.
   each bar pitched up 3 semitones. It renders after the mix, so it never reaches
   export or the loudness meter. Engine-side it has three clicks (Bump, Hat, Rim)
   and a volume.
+- **FL Studio project import (.flp).** Import or drop a `.flp` like a `.mid`.
+  Notes are read from the playlist (one MIDI track per channel, muted clips and
+  disabled playlist tracks skipped) and go through the usual MIDI import dialog,
+  including sample auto-match and re-import. No MIDI export from FL needed.
+- **Mixer routing, sends and track sidechain.** Every track routes to Master by
+  default. Click a route arrow to add a send with its own level (up to 8),
+  Ctrl+click to route to that track only, right-click to sidechain the selected
+  track to it. Delay compensation is per route. New RPCs `timeline_setTrackRoutes`
+  and `timeline_setTrackSendGain`.
+- **Rebindable keyboard shortcuts.** Settings > Application > Shortcuts is a
+  searchable table: click a row, press the new key, Reset per row or Reset all.
+- **Session logs.** Settings > Application > Logs exports the session log as
+  `.txt` or `.md`, can write a log file when XLETH closes (always after a crash)
+  and opens the log folder.
+- **Proxy codec.** Settings > Graphics > Proxy codec chooses H.264 (default) or
+  All-intra for preview proxies. Older proxies are migrated when a project opens,
+  with a "Rebuilding previews" badge in the Preview.
+- **Regenerable-file cleanup.** A setting to delete regenerable files (proxies,
+  posters, temp files) when a project closes, and File > Clean up project with a
+  dry-run dialog. Proxies of offline sources are never deleted.
+- **Interface motion.** Settings > Appearance: Flat, Smooth or Lively, plus
+  "Follow the system setting" so Windows' reduced animation forces Flat.
+- **Motion blur.** Settings > Project: a Lens and Roam motion blur toggle (off
+  by default) and a shutter angle (180 by default, 1 to 360), used in preview and
+  export.
+- **Smart Hold for video gaps.** The track inspector's Hold gaps is Smart, All
+  or Timed, with Fill set to Freeze or Keep playing. Smart holds short rests
+  inside a phrase and leaves the long rests between phrases blank.
+- **Play pattern in the piano roll.** Plays only the pattern through the pattern
+  track's effect chain, with a Loop toggle (on by default), while the transport
+  is stopped.
+- **Piano roll keyboard.** Paint tool (B); Ctrl+B duplicate, Ctrl+X cut, Ctrl+D
+  deselect; Shift+I invert, Shift+R random, Shift+O off-grid selection;
+  Ctrl+Left/Right time selection; Ctrl+Insert/Delete insert or delete space;
+  Shift+Left/Right move, Ctrl+Shift+Left/Right rotate, Alt+Left/Right nudge,
+  Ctrl+Up/Down octave; Shift+D discard lengths; Ctrl+M import MIDI.
+- **Sampler panel rework.** A slot tab strip with rename, named Patches (save
+  and load whole sampler setups, one undo), copy and paste of slot settings, an
+  audition bar that shows the computer-keyboard piano map, zero-crossing snap for
+  trim and loop points, and Main, Playback and Modulation views.
+- **Sample Sandbox rework.** Waveform zoom and pan (Ctrl+wheel, Shift+wheel), a
+  seconds ruler, selections play bounded, layers audition without a composite
+  render, a layer rail replaces the cards, and the Envelope tool can move and
+  delete points as well as add them.
+- **Sample Editor rebuild.** The Sample Picker sheet zooms to 20 ms, has an
+  overview strip and a ruler, L loops the audition, and Shift+left-drag sweeps.
+- **Loop to Edit Cursor.** Automation clip context menu: repeats the selected
+  automation clips out to the edit cursor.
+- **Plugin quarantine notice and Retry.** After a plugin crashes on load, one
+  notice appears on the next start. The plugin stays in the project as a
+  placeholder, and Retry in the Missing plugins dialog clears the quarantine.
 - **Plugin loading screen.** Inserting a third-party plugin now shows a modal
   with the plugin's name, a step list and elapsed time, while the plugin loads
   and its editor window opens. Cancel (or Escape) while loading; Retry or Close if
@@ -71,8 +122,8 @@ to 2026-11-22.
   `audio_getPluginEditorStatus` (`opening`, `open`, `failed`, `closed`).
 - **Piano Roll toolbar rebuilt.** One 32px row in four groups: a menu (Edit,
   Select, Space, View, Quick notation, MIDI import, each row printing its shortcut),
-  the title selects, one tool rail in FL's order (Pencil, Paint, Delete, Slice,
-  Select), and grid and playback settings. Only the active tool is a bright chip.
+  the title selects, one tool rail (Pencil, Paint, Delete, Slice, Select), and
+  grid and playback settings. Only the active tool is a bright chip.
   Scale is a toggle with a caret menu (Snap to scale, Root, Mode). The note-length
   control is gone: a new note is 1/16 until a touched or resized note sets the length.
   Tool buttons show their shortcut letter on hover or focus.
@@ -195,6 +246,34 @@ to 2026-11-22.
   host's "ready" message used to be queued to a message loop the worker never
   runs; it is now handled directly, and a repeat click no longer starts a second
   editor host.
+- **Export fixes.** 60 fps video exports could drop frames (`frameBoundsForBuffer`
+  now tiles the frame sequence exactly). AAC audio started late against the
+  picture (the MP4 muxer now uses `delay_moov`). HD exports are converted and
+  tagged BT.709 from 720p up instead of BT.601. The audio stream ends where the
+  audio ends. The Discord preset uses AAC audio.
+- **TV Simulator redrawn.** Intensity 0 is an exact pass-through, the scanlines
+  are measured in output lines (a small grid cell no longer collapses to a flat
+  dim or moire), the picture no longer drifts upward over time, and the noise is
+  the same in preview and export. Vibrato swirl is circular on wide cells.
+- **Preview freezes and pacing.** The preview could freeze on a stale frame
+  after a resolution-scale change; the shared-memory section is now sized once at
+  100% capacity. Frame pacing follows a smoothed audio clock.
+- **Faster project open.** Region audio is no longer decoded twice, and the
+  workspace window opens hidden while the project loads.
+- **Caches scale with the machine.** Pools and caches size themselves from RAM,
+  cores and VRAM, proxy generation runs frames in parallel, and `.xlpeak` peak
+  files are half the size (older ones are rewritten on load).
+- **No false audio-device reopen at launch.** A slow laptop's launch-time
+  starvation no longer triggers a device reopen (about a 4 s freeze), and the
+  deadlines after a reopen come from a fresh clock so the reopen cannot repeat
+  itself.
+- **Timeline viewport and keys.** Zooming all the way out fits the whole song
+  instead of stopping at about 22 bars; the zoom-out stammer is fixed; shortcuts
+  work with Caps Lock and non-Latin keyboard layouts; Ctrl+Shift+Z redoes; undo
+  and redo are project-wide.
+- **Stem separation runs in packaged builds.** All three tiers run on ONNX
+  Runtime with a bundled Python runtime; before, a packaged build reported
+  missing Python packages. The model weights are still downloaded by the user.
 - **Autosave says when it did not save.** `project_save` returning false is now
   logged as skipped or failed and retried, instead of being logged as saved.
 - **A seek or Stop during playback is no longer lost.** If it landed while the
