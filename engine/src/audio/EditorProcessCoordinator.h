@@ -16,7 +16,8 @@
 // Threading model:
 //   handleMessageFromWorker / handleConnectionLost: ChildProcess poll thread
 //   PARM / STAT applies: direct on poll thread (no callAsync — see .cpp for rationale)
-//   REDY / CLSD / ERR_ callbacks: dispatched to message thread via callAsync
+//   REDY / CLSD / ERR_ callbacks (onReady_ / onClosed_): run directly on the poll
+//     thread — the worker process never pumps the JUCE message queue
 //   ParamSyncListener::audioProcessorParameterChanged: may fire from any thread;
 //     dispatches IPC sends via callAsync (RT-safe) — separate from inbound apply path
 

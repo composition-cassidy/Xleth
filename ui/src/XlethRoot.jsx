@@ -6,6 +6,7 @@ import ExportZipDialog from './components/ExportZipDialog.jsx'
 import MidiImportDialog from './components/MidiImport/MidiImportDialog.jsx'
 import SettingsPanel from './components/SettingsPanel.jsx'
 import MissingPluginsDialog from './components/MissingPluginsDialog.jsx'
+import PluginLoadingDialog from './components/PluginLoadingDialog.jsx'
 import MissingMediaDialog from './components/MissingMediaDialog.jsx'
 import DevThemeSwitcher from './components/debug/DevThemeSwitcher.jsx'
 import { ToastProvider, useToast } from './components/Toast.jsx'
@@ -721,6 +722,7 @@ function XlethRootInner() {
           onClose={() => setMissingPlugins(null)}
         />
       )}
+      <PluginLoadingDialog />
       {missingMedia && missingMedia.length > 0 && (
         <MissingMediaDialog
           media={missingMedia}

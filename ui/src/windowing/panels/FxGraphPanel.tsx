@@ -5,6 +5,12 @@ import useTimelineFocusStore from '../../stores/timelineFocusStore.js';
 import useVstStore from '../../stores/vstStore.js';
 import ConfirmConvertDialog from '../../components/timeline/ConfirmConvertDialog.jsx';
 import { openEffectEditorByEngineNode } from '../../components/mixer/effectEditorOpeners.js';
+import {
+  beginPluginLoad,
+  failPluginLoad,
+  isThirdPartyPluginId,
+  openEditorForLoad,
+} from '../../components/mixer/pluginEditorLoader.js';
 import { Button } from '../../ui-kit';
 import useTrackIdentityColor from './fxgraph/useTrackIdentityColor.js';
 import styles from './fxgraph/FxGraphPanel.module.css';
@@ -651,6 +657,13 @@ export default function FxGraphPanel() {
     position?: { x: number; y: number },
   ) => {
     if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    // A scanned plugin loads behind the loading screen and opens its editor;
+    // while another one is still loading this is a repeat click.
+    let loadId: number | null = null;
+    if (isThirdPartyPluginId(selection.pluginId)) {
+      loadId = beginPluginLoad({ pluginId: selection.pluginId, trackId: Number(selectedTrack.id) });
+      if (loadId == null) return;
+    }
     setGraphActionNotice(null);
     const result = await addGraphEffectNodeForTrack(selectedTrack.id, {
       pluginId: selection.pluginId,
@@ -658,6 +671,10 @@ export default function FxGraphPanel() {
       ...(position ? { position } : {}),
     });
     setGraphActionNotice(describeGraphMutationResult(result));
+    if (loadId != null) {
+      if (result?.ok && Number.isInteger(result.engineNodeId)) void openEditorForLoad(loadId, result.engineNodeId);
+      else failPluginLoad(loadId, 'add-failed');
+    }
   }, [addGraphEffectNodeForTrack, fxMode, selectedTrack?.id]);
 
   const handleAddGraphMacroNode = useCallback(async (position?: { x: number; y: number }) => {

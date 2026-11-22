@@ -548,9 +548,14 @@ MixEngine::~MixEngine()
     // Close all out-of-process VST editors. Any coordinators still in the map
     // (editors open at shutdown) are destroyed here from the destructor thread —
     // safe because no poll thread will self-join (they're joining the reaper, now gone).
+    // Destroyed OUTSIDE the mutex: a dtor's disconnect fires onClosed_ on this
+    // thread, which takes the same (non-recursive) mutex.
     {
-        std::lock_guard<std::mutex> lk(vstEditorCoordinatorsMutex_);
-        vstEditorCoordinators_.clear();
+        decltype(vstEditorCoordinators_) remaining;
+        {
+            std::lock_guard<std::mutex> lk(vstEditorCoordinatorsMutex_);
+            remaining.swap(vstEditorCoordinators_);
+        }
     }
 
     // Close all in-process editor windows (stock effects).
@@ -1637,24 +1642,37 @@ bool MixEngine::openPluginEditor(int trackId, int nodeId)
     if (!proc) return false;
 
     // ── Route: VST node → out-of-process editor ──────────────────────────────
+    // Non-blocking. The editor host loads the plugin cold, which takes seconds
+    // for big plugins, and this runs on the worker's only RPC thread: waiting
+    // here for REDY froze every other engine call and timed heavy plugins out.
+    // The UI follows getPluginEditorStatus(): opening → open | failed.
     auto* wrapper = dynamic_cast<GuardedPluginWrapper*>(proc);
     if (wrapper && pluginFilePath.isNotEmpty())
     {
         const auto key = std::make_pair(trackId, nodeId);
 
-        // Already open and alive — nothing to do.
+        // Already opening or open: a repeat click must not start a second host.
+        std::unique_ptr<EditorProcessCoordinator> stale;
         {
             std::lock_guard<std::mutex> lk(vstEditorCoordinatorsMutex_);
+            editorOpenFailures_.erase(key);
             auto it = vstEditorCoordinators_.find(key);
-            if (it != vstEditorCoordinators_.end() && !it->second->isEditorClosed())
+            if (it != vstEditorCoordinators_.end())
             {
-                std::fprintf(stderr,
-                    "[EditorFlow] VST editor already open: track=%d node=%d\n",
-                    trackId, nodeId);
-                return true;
+                if (!it->second->isEditorClosed())
+                {
+                    std::fprintf(stderr,
+                        "[EditorFlow] VST editor already %s: track=%d node=%d\n",
+                        it->second->isEditorReady() ? "open" : "opening", trackId, nodeId);
+                    return true;
+                }
+                // Closed, teardown still pending. Destroy outside the lock: the
+                // dtor joins the poll thread, which may be waiting on this mutex.
+                stale = std::move(it->second);
+                vstEditorCoordinators_.erase(it);
             }
-            vstEditorCoordinators_.erase(key);  // remove stale closed entry if any
         }
+        reapCoordinator(std::move(stale));
 
         // Validate editor-host exe.
         const juce::File editorHostExe{juce::String(editorHostExePath_)};
@@ -1691,54 +1709,65 @@ bool MixEngine::openPluginEditor(int trackId, int nodeId)
         auto* pluginInstance =
             dynamic_cast<juce::AudioPluginInstance*>(wrapper->getInner());
 
-        // Create coordinator and wire close callback.
         auto coord = std::make_unique<EditorProcessCoordinator>(pluginInstance, wrapper);
+        EditorProcessCoordinator* const self = coord.get();
 
         coord->onWorkerPluginMutated_ = [this, key](std::uint64_t latencyPublishCountBefore)
         {
             refreshGuardedPluginLatency(key.first, key.second, latencyPublishCountBefore);
         };
 
-        coord->onClosed_ = [this, key, wrapper]()
+        // Audio stream to the editor host: "Xleth_AudioStream_T{trackId}_N{nodeId}".
+        char shmBuf[96];
+        std::snprintf(shmBuf, sizeof(shmBuf),
+                      "Xleth_AudioStream_T%d_N%d", trackId, nodeId);
+        const std::string shmName = shmBuf;
+        const int streamSr = (int)(preparedSampleRate_ > 0 ? preparedSampleRate_ : 44100);
+        const int streamBs =  preparedBlockSize_ > 0 ? preparedBlockSize_ : 512;
+
+        // Both callbacks run on the coordinator's IPC poll thread and act only
+        // while this coordinator still owns the slot: once closePluginEditor or
+        // shutdown has taken it out, the wrapper may already be gone. Holding
+        // the map mutex also serialises enable/disableAudioStream.
+        coord->onReady_ = [this, key, self, wrapper, shmName, streamSr, streamBs](int w, int h)
         {
-            // This lambda was dispatched via callAsync. The elapsed shown here
-            // vs. before_onClosed_callback_invoked reveals Win32 message-queue
-            // latency in the addon-worker process (prime suspect for 6 s gap).
-            CPLOG("on_closed_callback_start");
+            std::lock_guard<std::mutex> lk(vstEditorCoordinatorsMutex_);
+            auto it = vstEditorCoordinators_.find(key);
+            if (it == vstEditorCoordinators_.end() || it->second.get() != self)
+                return;
             std::fprintf(stderr,
-                "[EditorFlow] VST editor closed (CLSD/ERR_): track=%d node=%d\n",
-                key.first, key.second);
+                "[EditorFlow] VST editor ready: track=%d node=%d WxH=%dx%d\n",
+                key.first, key.second, w, h);
+            // Ring before STRM: the editor host opens it on receipt.
+            wrapper->enableAudioStream(shmName, streamSr, streamBs);
+            self->sendStreamStart(shmName, streamSr, streamBs);
+        };
 
-            // Tear down the worker-side audio ring first (editor-host is gone).
-            CPLOG("before_disable_ring");
-            if (wrapper) wrapper->disableAudioStream();
-            CPLOG("after_disable_ring");
-
-            // Extract the coordinator from the map without destroying it yet,
-            // so the destructor (which may block in stopThread) runs OUTSIDE
-            // the mutex and can be timed independently.
+        coord->onClosed_ = [this, key, self, wrapper]()
+        {
+            CPLOG("on_closed_callback_start");
             std::unique_ptr<EditorProcessCoordinator> dying;
-            CPLOG("before_erase_from_coordinator_map");
             {
                 std::lock_guard<std::mutex> lk(vstEditorCoordinatorsMutex_);
                 auto it = vstEditorCoordinators_.find(key);
-                if (it != vstEditorCoordinators_.end())
+                if (it == vstEditorCoordinators_.end() || it->second.get() != self)
+                    return;
+                std::fprintf(stderr,
+                    "[EditorFlow] VST editor closed (CLSD/ERR_): track=%d node=%d\n",
+                    key.first, key.second);
+                wrapper->disableAudioStream();   // editor host is gone
+                if (!self->isEditorReady())
                 {
-                    dying = std::move(it->second);   // take ownership; map entry now null
-                    vstEditorCoordinators_.erase(it); // remove the (now-empty) entry
-                    std::fprintf(stderr,
-                        "[CloseProfile] map_erased trackId=%d nodeId=%d\n",
-                        key.first, key.second);
-                    std::fflush(stderr);
+                    // Died before its window came up: tell the UI why.
+                    const std::string err = self->getErrorMessage();
+                    editorOpenFailures_[key] = self->isProtocolMismatch() ? std::string("protocol-mismatch")
+                                             : err.empty() ? std::string("editor-host-error") : err;
                 }
-            } // vstEditorCoordinatorsMutex_ released here
-            CPLOG("after_erase_from_coordinator_map");
-
-            // Hand destruction to the reaper thread. We are currently executing on
-            // the coordinator's own IPC poll thread — destroying the coordinator
-            // here would self-join (killWorkerProcess → stopThread → join self → deadlock).
-            // The reaper is a distinct long-lived thread guaranteed never to be any
-            // coordinator's poll thread.
+                dying = std::move(it->second);
+                vstEditorCoordinators_.erase(it);
+            }
+            // We are on this coordinator's own poll thread: destroying it here
+            // would self-join. The reaper thread does it.
             reapCoordinator(std::move(dying));
         };
 
@@ -1757,83 +1786,44 @@ bool MixEngine::openPluginEditor(int trackId, int nodeId)
                 "[EditorFlow] Warning: main window HWND not set — editor will be unparented\n");
         }
 
-        // Launch editor-host process.
         std::fprintf(stderr,
             "[EditorFlow] Opening VST editor: track=%d node=%d plugin=%s parent=0x%s\n",
             trackId, nodeId, pluginFilePath.toRawUTF8(),
             parentHwndHex.isEmpty() ? "0" : parentHwndHex.toRawUTF8());
 
+        // Register BEFORE start(): REDY can arrive before start() returns, and
+        // onReady_ only acts on a registered coordinator. Only this thread
+        // inserts, and the slot was empty above.
+        {
+            std::lock_guard<std::mutex> lk(vstEditorCoordinatorsMutex_);
+            vstEditorCoordinators_.try_emplace(key, std::move(coord));
+        }
+
         // INIT v2 carries the engine's current rate/block so the editor-side
         // instance is created exactly like the worker's (no fixed 48000/480).
         const double initSr = preparedSampleRate_ > 0 ? (double)preparedSampleRate_ : 44100.0;
         const int    initBs = preparedBlockSize_ > 0 ? (int)preparedBlockSize_ : 512;
-        if (!coord->start(editorHostExe, pluginDesc, initSr, initBs, stateBase64, parentHwndHex))
+        if (!self->start(editorHostExe, pluginDesc, initSr, initBs, stateBase64, parentHwndHex))
         {
             std::fprintf(stderr,
                 "[EditorFlow] Failed to start editor process: track=%d node=%d\n",
                 trackId, nodeId);
+            std::unique_ptr<EditorProcessCoordinator> failed;
+            {
+                std::lock_guard<std::mutex> lk(vstEditorCoordinatorsMutex_);
+                auto it = vstEditorCoordinators_.find(key);
+                if (it != vstEditorCoordinators_.end() && it->second.get() == self)
+                {
+                    failed = std::move(it->second);
+                    vstEditorCoordinators_.erase(it);
+                }
+            }
+            // Detach from the plugin here, on the message thread; the reaper
+            // pays for JUCE's IPC teardown (8 s measured, P2 smoke 5).
+            if (failed) failed->setWorkerPlugin(nullptr);
+            reapCoordinator(std::move(failed));
             lastEditorOpenError_ = "editor-host-error";
             return false;
-        }
-
-        // Poll for REDY (up to 5 s). The IPC poll thread sets editorReady_
-        // directly (not via callAsync), so we can read it here safely.
-        constexpr int kMaxWaitMs = 5000;
-        constexpr int kPollMs    = 50;
-        int waited = 0;
-        while (!coord->isEditorReady() && !coord->isEditorClosed() && waited < kMaxWaitMs)
-        {
-            juce::Thread::sleep(kPollMs);
-            waited += kPollMs;
-        }
-
-        if (!coord->isEditorReady())
-        {
-            std::fprintf(stderr,
-                "[EditorFlow] Timed out waiting for editor ready: track=%d node=%d"
-                " error='%s'\n",
-                trackId, nodeId, coord->getErrorMessage().c_str());
-            if (coord->isProtocolMismatch())
-            {
-                std::fprintf(stderr,
-                    "[EditorHost] stale editor-host exe — rebuild (bridge-clean): %s\n",
-                    editorHostExe.getFullPathName().toRawUTF8());
-                lastEditorOpenError_ = "protocol-mismatch";
-            }
-            else
-            {
-                lastEditorOpenError_ = coord->isEditorClosed() ? "editor-host-error" : "timeout";
-            }
-            // Destroying a coordinator blocks for JUCE's IPC teardown (8 s
-            // measured, P2 smoke 5). Detach it from the plugin here, on the
-            // message thread, and let the reaper thread pay for the teardown
-            // so a failed open returns at once.
-            coord->setWorkerPlugin(nullptr);
-            reapCoordinator(std::move(coord));
-            return false;
-        }
-
-        std::fprintf(stderr,
-            "[EditorFlow] VST editor ready: track=%d node=%d WxH=%dx%d\n",
-            trackId, nodeId,
-            coord->getEditorWidth(), coord->getEditorHeight());
-
-        // ── Audio streaming: enable worker-side ring, then tell editor-host ──
-        // Ordering: ring must exist before the editor-host tries to open it.
-        // Construct name: "Xleth_AudioStream_T{trackId}_N{nodeId}".
-        char shmBuf[96];
-        std::snprintf(shmBuf, sizeof(shmBuf),
-                      "Xleth_AudioStream_T%d_N%d", trackId, nodeId);
-        const std::string shmName = shmBuf;
-        const int streamSr = (int)(preparedSampleRate_ > 0 ? preparedSampleRate_ : 44100);
-        const int streamBs =  preparedBlockSize_ > 0 ? preparedBlockSize_ : 512;
-
-        wrapper->enableAudioStream(shmName, streamSr, streamBs);
-        coord->sendStreamStart(shmName, streamSr, streamBs);
-
-        {
-            std::lock_guard<std::mutex> lk(vstEditorCoordinatorsMutex_);
-            vstEditorCoordinators_[key] = std::move(coord);
         }
         return true;
     }
@@ -1846,20 +1836,26 @@ void MixEngine::closePluginEditor(int trackId, int nodeId)
 {
     const auto key = std::make_pair(trackId, nodeId);
 
-    // Step 1: ask the editor-host to stop its pump + releaseResources, BEFORE
-    // destroying the worker-side ring (the editor-host is still reading it).
-    // We hold a raw observer of the coordinator only under the map mutex; the
-    // STOP send itself is OK from any thread (IPC pipe is thread-safe).
-    EditorProcessCoordinator* observedCoord = nullptr;
+    // Step 1: take the coordinator out of the map. From here its poll-thread
+    // callbacks (onReady_ / onClosed_) no longer touch the wrapper, and an
+    // editor that is still opening is cancelled.
+    std::unique_ptr<EditorProcessCoordinator> dyingExplicit;
     {
         std::lock_guard<std::mutex> lk(vstEditorCoordinatorsMutex_);
+        editorOpenFailures_.erase(key);
         auto it = vstEditorCoordinators_.find(key);
         if (it != vstEditorCoordinators_.end())
-            observedCoord = it->second.get();
+        {
+            dyingExplicit = std::move(it->second);
+            vstEditorCoordinators_.erase(it);
+        }
     }
-    if (observedCoord) observedCoord->sendStreamStop();
 
-    // Step 2: find the VST wrapper so we can tear down the worker-side ring.
+    // Step 2: ask the editor-host to stop its pump + releaseResources, BEFORE
+    // destroying the worker-side ring (the editor-host is still reading it).
+    if (dyingExplicit) dyingExplicit->sendStreamStop();
+
+    // Step 3: find the VST wrapper so we can tear down the worker-side ring.
     GuardedPluginWrapper* wrapper = nullptr;
     {
         std::lock_guard<std::mutex> lock(chainsMutex_);
@@ -1879,19 +1875,8 @@ void MixEngine::closePluginEditor(int trackId, int nodeId)
     }
     if (wrapper) wrapper->disableAudioStream();
 
-    // Step 3: destroy the coordinator (closes IPC → editor-host quits).
-    // Move out under the mutex, then destruct on a background thread to avoid
-    // blocking the message thread if killWorkerProcess() stalls on a dead pipe.
-    std::unique_ptr<EditorProcessCoordinator> dyingExplicit;
-    {
-        std::lock_guard<std::mutex> lk(vstEditorCoordinatorsMutex_);
-        auto it = vstEditorCoordinators_.find(key);
-        if (it != vstEditorCoordinators_.end())
-        {
-            dyingExplicit = std::move(it->second);
-            vstEditorCoordinators_.erase(it);
-        }
-    }
+    // Step 4: destroy the coordinator (closes IPC → editor-host quits) on the
+    // reaper thread, so a stalled killWorkerProcess() never blocks this one.
     reapCoordinator(std::move(dyingExplicit));
 
     // Also close any in-process editor (stock effects).
@@ -1939,6 +1924,30 @@ bool MixEngine::isPluginEditorOpen(int trackId, int nodeId) const
             return true;
     }
     return editorHost_->isEditorOpen(trackId, nodeId);
+}
+
+std::string MixEngine::getPluginEditorStatus(int trackId, int nodeId, std::string& error) const
+{
+    const auto key = std::make_pair(trackId, nodeId);
+    {
+        std::lock_guard<std::mutex> lk(vstEditorCoordinatorsMutex_);
+        auto it = vstEditorCoordinators_.find(key);
+        if (it != vstEditorCoordinators_.end())
+        {
+            const bool ready = it->second->isEditorReady();
+            if (!it->second->isEditorClosed()) return ready ? "open" : "opening";
+            // Closed before ready: onClosed_ is about to record why. Keep the
+            // caller waiting one more poll rather than reporting a bare "closed".
+            if (!ready) return "opening";
+        }
+        auto f = editorOpenFailures_.find(key);
+        if (f != editorOpenFailures_.end())
+        {
+            error = f->second;
+            return "failed";
+        }
+    }
+    return editorHost_->isEditorOpen(trackId, nodeId) ? "open" : "closed";
 }
 
 // ── Configuration ────────────────────────────────────────────────────────────

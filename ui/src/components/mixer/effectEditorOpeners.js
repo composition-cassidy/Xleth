@@ -36,6 +36,7 @@ import useFetCompStore from '../../stores/fetCompStore.js'
 import useVariMuCompStore from '../../stores/variMuCompStore.js'
 import useFeddaStore from '../../stores/feddaStore.js'
 import useSzkrezhStore from '../../stores/szkrezhStore.js'
+import { openPluginEditorWithLoading } from './pluginEditorLoader.js'
 
 // Registry: pluginId -> opener(trackId, nodeId, storeKey)
 // Add one entry per effect that has a dedicated editor panel.
@@ -257,7 +258,7 @@ export function openEffectEditorByEngineNode({
   }
 
   if (typeof audio?.openPluginEditor === 'function') {
-    audio.openPluginEditor(trackId, engineNodeId)
+    openPluginEditorWithLoading({ trackId, nodeId: engineNodeId, pluginId, audio })
     return { ok: true, kind: 'plugin' }
   }
 

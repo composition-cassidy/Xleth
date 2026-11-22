@@ -1,0 +1,21 @@
+/* Plugin loading screen body. The status block takes focus on open (instead of
+ * the Cancel button) so a key pressed mid spam-click cannot cancel the load. */
+@layer kit {
+  .status {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    outline: none;
+  }
+
+  /* The gap spaces the blocks; drop the kit's trailing list/paragraph margins.
+   * Doubled class: same layer as Dialog.module.css, so it must out-specify .text/.list. */
+  .status.status > * {
+    margin: 0;
+  }
+
+  .vendor {
+    color: var(--ui-ink-2);
+    font-size: var(--type-12);
+  }
+}

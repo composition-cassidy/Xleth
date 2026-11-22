@@ -3,6 +3,12 @@ import {
   closeEffectEditorForNode,
   closeAllEffectEditors,
 } from '../components/mixer/effectEditorOpeners.js'
+import {
+  beginPluginLoad,
+  failPluginLoad,
+  isThirdPartyPluginId,
+  openEditorForLoad,
+} from '../components/mixer/pluginEditorLoader.js'
 // FXG-SC.6C — reuse the proven mixer-chain sidechain transport helpers so graph
 // route reconciliation drives the SAME native SidechainRoute system, never a second
 // engine. normalizeSidechainRoutesFromRoutingSnapshot parses timeline.getRouting();
@@ -3344,6 +3350,15 @@ const useEffectChainStore = create((set, get) => ({
 
     const chain = state.chains[key] ?? []
     if (chain.length >= 100) return false
+    const trackId = key === 'master' ? -1 : Number(key)
+
+    // A scanned plugin loads behind the loading screen and opens its editor when
+    // inserted. While another plugin is still loading this is a repeat click.
+    let loadId = null
+    if (isThirdPartyPluginId(pluginId)) {
+      loadId = beginPluginLoad({ pluginId, trackId })
+      if (loadId == null) return false
+    }
     markChainMutationStarted(key)
 
     // Optimistic: append placeholder so UI responds immediately
@@ -3352,24 +3367,27 @@ const useEffectChainStore = create((set, get) => ({
       chains: { ...currentState.chains, [key]: [...(currentState.chains[key] ?? []), placeholder] },
     }))
 
+    let nodeId = null
     try {
       const raw = await ipc(key, 'addEffect', 'addMasterEffect', pluginId, chain.length)
+      let id = raw
+      if (typeof raw === 'string') { try { id = JSON.parse(raw)?.nodeId } catch { id = -1 } }
+      else if (raw && typeof raw === 'object') id = raw.nodeId
+      if (Number.isInteger(id) && id >= 0) nodeId = id
       // GLOSS is a dry-by-default skin over APEX: its AMOUNT (the engine BAND MIX
       // parameter) opens at 0 %, not APEX's 100 %. Set it on the just-created node
       // before the chain refresh so the panel shows 0 % from the first open.
-      if (pluginId === 'gloss') {
-        let nodeId = raw
-        if (typeof raw === 'string') { try { nodeId = JSON.parse(raw)?.nodeId } catch { nodeId = -1 } }
-        else if (raw && typeof raw === 'object') nodeId = raw.nodeId
-        if (Number.isInteger(nodeId) && nodeId >= 0) {
-          const trackId = key === 'master' ? -1 : Number(key)
-          globalThis.window?.xleth?.audio?.setEffectParameter?.(trackId, nodeId, 'bandmix', 0)
-        }
+      if (pluginId === 'gloss' && nodeId != null) {
+        globalThis.window?.xleth?.audio?.setEffectParameter?.(trackId, nodeId, 'bandmix', 0)
       }
     } catch (e) {
       console.warn('[effectChainStore] addEffect failed:', e?.message)
     }
     await get().fetchChain(key)
+    if (loadId != null) {
+      if (nodeId != null) void openEditorForLoad(loadId, nodeId)
+      else failPluginLoad(loadId, 'add-failed')
+    }
     return true
   },
 

@@ -5,6 +5,7 @@ import useVstStore from '../../stores/vstStore.js'
 import useEffectPresets from '../../fx-presets/useEffectPresets.js'
 import { EFFECT_EDITORS, resolveTrackId } from '../mixer/effectEditorOpeners.js'
 import { runEffectModuleInlineAction } from '../mixer/EffectModule.jsx'
+import { openPluginEditorWithLoading } from '../mixer/pluginEditorLoader.js'
 import { deviceName } from './deviceNames.js'
 import { deviceBodyFor } from './deviceRegistry.js'
 import useDeviceUiStore, { deviceKey } from './deviceUiStore.js'
@@ -147,7 +148,7 @@ function ExternalPluginDevice({
 
   const open = () => {
     if (!common.live) return
-    window.xleth?.audio?.openPluginEditor?.(trackId, effect.nodeId)
+    openPluginEditorWithLoading({ trackId, nodeId: effect.nodeId, pluginId: effect.pluginId })
   }
 
   let status

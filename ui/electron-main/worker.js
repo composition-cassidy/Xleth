@@ -126,6 +126,8 @@ const SILENT_METHODS = new Set([
   ...SILENT_TIMELINE_METHODS,
   // Polled every few seconds by the video panel's proxy-migration badge.
   'proxy_getStatus',
+  // Polled while the plugin loading screen waits for an editor window.
+  'audio_getPluginEditorStatus',
 ]);
 
 // Summarizes an IPC value for logging WITHOUT serializing a large payload —

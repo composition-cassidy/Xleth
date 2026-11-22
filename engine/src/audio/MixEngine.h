@@ -892,16 +892,23 @@ public:
     // Close every open editor window (project load / app quit).
     void closeAllPluginEditors();
 
-    // Returns true if an editor is currently open for {trackId, nodeId}.
+    // Returns true if an editor is currently open (or still opening) for {trackId, nodeId}.
     bool isPluginEditorOpen(int trackId, int nodeId) const;
+
+    // Where an editor open stands: "opening" | "open" | "failed" | "closed".
+    // openPluginEditor() returns before a third-party editor window is up; the
+    // UI polls this. On "failed", `error` says why (editor host's ERR_ text,
+    // "protocol-mismatch" or "editor-host-error"); the next open clears it.
+    std::string getPluginEditorStatus(int trackId, int nodeId, std::string& error) const;
 
     // Set the path to xleth-editor-host.exe. Call once after engine init.
     // Must be called before any openPluginEditor() on a VST node.
     void setEditorHostExe(const std::string& exePath);
 
     // Why the last openPluginEditor() returned false ("" after a success):
-    //   "protocol-mismatch"   stale xleth-editor-host.exe (rebuild: bridge-clean)
-    //   "editor-host-missing" | "editor-host-error" | "timeout" | "no-description"
+    //   "editor-host-missing" | "editor-host-error" | "no-description"
+    // Failures after it returned true (plugin load, protocol mismatch) arrive
+    // later through getPluginEditorStatus().
     // Message thread only. Surfaced additively by audio_openPluginEditor (P2).
     std::string getLastEditorOpenError() const { return lastEditorOpenError_; }
 
@@ -1769,7 +1776,9 @@ private:
     std::string                                                         editorHostExePath_;
     std::atomic<uintptr_t>                                              mainWindowHwnd_{0};
     std::map<std::pair<int,int>, std::unique_ptr<EditorProcessCoordinator>> vstEditorCoordinators_;
-    mutable std::mutex                                                  vstEditorCoordinatorsMutex_;
+    // Why an editor host died before its window came up, until the next open/close.
+    std::map<std::pair<int,int>, std::string>                           editorOpenFailures_;
+    mutable std::mutex                                                  vstEditorCoordinatorsMutex_;   // guards both maps
 
     // ── Coordinator reaper thread ─────────────────────────────────────────────
     // Dying coordinators are pushed here from the IPC poll thread (onClosed_)

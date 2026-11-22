@@ -2821,6 +2821,14 @@ const METHODS = [
     binary: null,
   },
   {
+    method: 'audio_getPluginEditorStatus',
+    channels: ['xleth:audio:getPluginEditorStatus'],
+    api: { 'audio.getPluginEditorStatus': 'xleth:audio:getPluginEditorStatus' },
+    handler: 'Audio_GetPluginEditorStatus',
+    returns: 'value',
+    binary: null,
+  },
+  {
     method: 'audio_getMissingPlugins',
     channels: ['xleth:audio:getMissingPlugins'],
     api: { 'audio.getMissingPlugins': 'xleth:audio:getMissingPlugins' },

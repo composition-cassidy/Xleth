@@ -23557,6 +23557,8 @@ JsonApi::Value Audio_SetMainWindowHandle(const JsonApi::CallbackInfo& info)
 // ── Plugin editor windows ─────────────────────────────────────────────────────
 
 // audio_openPluginEditor(trackId, nodeId) → { hasEditor: boolean }
+// For a third-party plugin hasEditor=true means the editor host was launched
+// (or is already opening/open); follow audio_getPluginEditorStatus to "open".
 // trackId = -1 for master chain.
 // hasEditor = true if the editor window was opened (or was already open),
 //             false if the plugin has no GUI.
@@ -23646,6 +23648,33 @@ JsonApi::Value Audio_IsPluginEditorOpen(const JsonApi::CallbackInfo& info)
     const int nodeId  = info[1].As<JsonApi::Number>().Int32Value();
     return JsonApi::Boolean::New(env,
         audioEngine->getMixEngine().isPluginEditorOpen(trackId, nodeId));
+}
+
+// audio_getPluginEditorStatus(trackId, nodeId)
+//   → { status: 'opening'|'open'|'failed'|'closed', error?: string }
+JsonApi::Value Audio_GetPluginEditorStatus(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !audioEngine) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
+        JsonApi::TypeError::New(env, "audio_getPluginEditorStatus(trackId: number, nodeId: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int trackId = info[0].As<JsonApi::Number>().Int32Value();
+    const int nodeId  = info[1].As<JsonApi::Number>().Int32Value();
+    std::string error;
+    const std::string status =
+        audioEngine->getMixEngine().getPluginEditorStatus(trackId, nodeId, error);
+
+    JsonApi::Object result = JsonApi::Object::New(env);
+    result.Set("status", JsonApi::String::New(env, status));
+    if (!error.empty())
+        result.Set("error", JsonApi::String::New(env, error));
+    return result;
 }
 
 // ── Missing-plugin helpers ────────────────────────────────────────────────────

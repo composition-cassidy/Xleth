@@ -396,12 +396,10 @@ void EditorProcessCoordinator::handleMessageFromWorker(const juce::MemoryBlock& 
         std::fprintf(stderr, "[EditorCoord] REDY received WxH=%dx%d\n",
                      editorWidth_, editorHeight_);
 
+        // Direct on the poll thread, like CLSD and PARM: the worker process never
+        // pumps the JUCE message queue, so a callAsync here would never run.
         if (onReady_)
-        {
-            const int w = editorWidth_, h = editorHeight_;
-            auto cb = onReady_;
-            juce::MessageManager::callAsync([cb, w, h]{ cb(w, h); });
-        }
+            onReady_(editorWidth_, editorHeight_);
     }
     else if (msg.startsWith("CLSD"))
     {

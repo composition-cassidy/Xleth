@@ -8,6 +8,7 @@ import useMixerStore, {
 import useVstStore from '../../stores/vstStore.js'
 import ContextMenu from '../ContextMenu.jsx'
 import { EFFECT_EDITORS, PLUGIN_NAMES, resolveTrackId } from './effectEditorOpeners.js'
+import { openPluginEditorWithLoading } from './pluginEditorLoader.js'
 import { iconComponent } from '../../ui-kit/icons'
 
 const IcDotsSixVertical = iconComponent('dots-six-vertical')
@@ -121,6 +122,7 @@ export async function runEffectModuleInlineAction(action, {
   removeEffect,
   storeKey,
   nodeId,
+  pluginId,
 }) {
   const trackId = resolveTrackId(storeKey)
 
@@ -133,7 +135,7 @@ export async function runEffectModuleInlineAction(action, {
       return fetchChain?.(storeKey)
 
     case 'edit':
-      return audio?.openPluginEditor?.(trackId, nodeId)
+      return openPluginEditorWithLoading({ trackId, nodeId, pluginId, audio })
 
     default:
       return undefined
@@ -194,6 +196,7 @@ export async function handleEffectModuleInlineActionClick(event, {
     removeEffect,
     storeKey,
     nodeId: effect.nodeId,
+    pluginId: effect.pluginId,
   })
   return true
 }
