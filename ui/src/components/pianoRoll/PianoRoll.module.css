@@ -30,7 +30,7 @@
   .toolbar {
     display: flex;
     align-items: center;
-    gap: var(--space-1);
+    gap: var(--space-3);
     min-height: 32px;
     padding: 0 var(--space-2);
     overflow-x: auto;
@@ -42,27 +42,111 @@
    * child keeps its natural size (the spacer below opts back in to growing). */
   .toolbar > * { flex: none; }
 
-  .title {
+  /* A group is a handful of related controls, 2px apart; the row's 12px gap is what
+   * separates groups, so there are no divider lines to read. */
+  .group {
     display: flex;
     flex: none;
     align-items: center;
-    gap: var(--space-1);
+    gap: 2px;
   }
 
-  .selectPattern { width: 136px; flex: none; }
-  .selectSample { width: 152px; flex: none; }
-  .selectSlot { width: 120px; flex: none; }
-  .selectSmall { width: 68px; flex: none; }
-  .selectRoot { width: 56px; flex: none; }
-  .selectMode { width: 132px; flex: none; }
-  /* Voice of the selected notes (Clones): wide enough for "Lead · Clone 1". */
-  .selectVoice { width: 132px; flex: none; }
+  /* The tools are one palette: a recessed rail, no box on any single button. The active
+   * tool is the only bright chip in the row. */
+  .toolbar .rail {
+    min-height: 0;
+    gap: 1px;
+    padding: 2px;
+    border: 1px solid var(--ui-g4);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g0);
+  }
+
+  /* Slide is a drawing mode, the three after it are settings; one hairline says so, since
+   * flat text alone would read "Slide Snap" as a phrase. */
+  .divider {
+    flex: none;
+    width: 1px;
+    height: 14px;
+    margin: 0 var(--space-2);
+    background: var(--ui-g4);
+  }
+
+  /* Selects in the bar are plain text until hovered or open: the value, a small chevron.
+   * Widths hug the text, so there is no empty box around a short word. */
+  .toolbar button.flat {
+    min-width: 0;
+    padding: 0 var(--space-1) 0 var(--space-2);
+    border-color: transparent;
+    background: transparent;
+    color: var(--ui-ink);
+  }
+
+  .toolbar button.flat svg { color: var(--ui-ink-3); }
+
+  .toolbar button.flat:hover:not(:disabled),
+  .toolbar button.flat[aria-expanded='true'] {
+    background: var(--ui-g3);
+  }
+
+  .toolbar button.flat[aria-expanded='true'] { border-color: var(--ui-value); }
+
+  /* The pattern is the panel's title. */
+  .toolbar button.flat.strong {
+    font-weight: var(--weight-semibold);
+  }
+
+  /* The sample and slot are context, one step quieter. */
+  .toolbar button.flat.dim { color: var(--ui-ink-2); }
+
+  .selectPattern { max-width: 180px; }
+  .selectSample { max-width: 200px; }
+  .selectSlot { max-width: 140px; }
+  /* Voice of the selected notes (Clones): room for "Lead · Clone 1". */
+  .selectVoice { max-width: 160px; }
+  input.textInput.selectPattern { width: 160px; }
+
+  /* The Scale toggle and the caret that opens its root and mode are one control. */
+  .split {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  /* Slide and Scale are off most of the time: plain text (Scale with a chevron); on, Slide is
+   * the kit chip (a mode you chose, so it is news) and Scale the quiet state, which names the
+   * scale in its label. */
+  .toolbar button.slideButton[aria-pressed='false'],
+  .toolbar button.scaleButton[aria-pressed='false'] {
+    border-color: transparent;
+    background: transparent;
+    color: var(--ui-ink);
+  }
+
+  .toolbar button.slideButton[aria-pressed='false']:hover:not(:disabled),
+  .toolbar button.scaleButton[aria-pressed='false']:hover:not(:disabled) {
+    background: var(--ui-g3);
+  }
+
+  /* Pitch / Sample: the selected one is underlined in the value colour, not an inverted chip
+   * (that is the active tool's job). */
+  .toolbar .viewSwitch {
+    border-color: var(--ui-g4);
+    background: transparent;
+  }
+
+  .toolbar .viewSwitch button { border-left-color: var(--ui-g4); }
+
+  .toolbar .viewSwitch button[data-checked='true'] {
+    background: var(--ui-g3);
+    color: var(--ui-ink);
+    box-shadow: inset 0 -2px 0 var(--ui-value);
+  }
 
   .field {
     display: flex;
     flex: none;
     align-items: center;
-    gap: var(--space-1);
+    gap: 2px;
   }
 
   .fieldLabel {
@@ -73,7 +157,7 @@
 
   .spacer {
     flex: 1 1 auto;
-    min-width: var(--space-2);
+    min-width: 0;
   }
 
   .textInput {
@@ -89,12 +173,10 @@
     outline: none;
   }
 
-  /* A narrow dock (1366 wide windows) drops the field captions first; the
-   * Selects keep their accessible names and hints. */
-  @container (max-width: 1240px) {
+  /* Below ~970px the row no longer fits with its captions (measured), so they go first; the
+   * Selects keep their accessible names and hints either way. Narrower still, the row scrolls. */
+  @container (max-width: 969px) {
     .fieldLabel { display: none; }
-    .selectPattern { width: 120px; }
-    .selectSample { width: 128px; }
   }
 
   /* ── Empty state (no pattern) ─────────────────────────────────────────── */
@@ -290,13 +372,35 @@
     border-right: 1px solid var(--ui-g4);
   }
 
+  /* The lane's header: a button that collapses the lane to this one row (FL's "Control" header). */
   .laneTarget {
     position: absolute;
-    left: var(--space-1);
-    top: max(12px, calc((5px + var(--pr-y64)) / 2 - 8px));
+    left: 0;
+    /* Open: centred where the old label sat, between the 127 and 64 guides. */
+    top: max(8px, calc((5px + var(--pr-y64)) / 2 - 12px));
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    height: 24px;
+    padding: 0 2px;
+    border: 0;
+    background: transparent;
+    font: inherit;
     font-size: var(--type-11);
     color: var(--ui-ink-2);
-    line-height: 16px;
+    cursor: pointer;
+  }
+
+  .laneTarget:is(:hover, :focus-visible) { color: var(--ui-ink); }
+  .laneTarget:focus-visible { outline: 1px solid var(--ui-select); outline-offset: -1px; }
+  .laneTarget[aria-expanded='false'] svg { transform: rotate(-90deg); }
+
+  /* Collapsed: just the header row; the axis numbers have nothing to label. */
+  .laneGutter[data-collapsed='true'] .laneAxis { display: none; }
+  .laneGutter[data-collapsed='true'] .laneTarget { top: 0; }
+
+  .laneClosed {
+    background: var(--ui-g1);
   }
 
   .laneAxis {

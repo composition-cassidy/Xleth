@@ -297,6 +297,14 @@
     background: var(--ui-g3);
   }
 
+  /* The sample under the pointer in the Piano Roll's sample list: the hover fill plus the
+   * selection outline (the outline is what carries it, not the fill). */
+  .row[data-marked="true"] {
+    background: var(--ui-g3);
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
   .row[data-selected="true"] {
     background: var(--ui-g2);
     outline: 1px solid var(--ui-select);

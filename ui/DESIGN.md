@@ -1066,12 +1066,26 @@ sample region, boundary outlines when they play another. Never hit-tested. Toggl
 tick; selected heads get a `--ui-select` ring; the dragged value is printed in 1..127. The drag reads values on the scale it
 draws. The only target is Velocity (slide shape is two values and has no 1-D lane).
 
-**Toolbar.** Pattern Select (its list holds New pattern and Rename pattern…; renaming no longer lives on a double-clicked
-title), Sample region Select, reference-slot Select, Sampler settings; tools Select S, Pencil P, Split C, Delete D (kit
-IconButtons, Xleth tool glyphs, hints naming the shortcut and the mouse grammar); Slide; Length; **Snap** (1/32 to Bar,
-default 1/16, which is what the editor always used; Alt and Ctrl keep their meaning); Scale; Pitch / Sample; Ghosts; zoom;
-Quick Notation; detach and close. Below 1240px of dock width the Length and Snap captions drop out (the Selects keep their
-names and hints). The piano roll's own floating title bar is gone: the window frame's title bar returns it to the dock.
+**Toolbar.** One 32px row in four groups, 12px apart (no divider lines between groups): a **menu** (☰: Edit, Select,
+Space, View, Quick notation, MIDI import; every row runs a command of the roll's own command table and prints its key
+combo, and selection-only commands grey out with nothing selected), the **title** (Pattern Select, whose list holds New
+pattern and Rename pattern…; Sample region Select, which lists swapped samples first under a "Swapped" header and, while open,
+tells the Sample Selector (when mounted) which sample is highlighted so it scrolls to and outlines that row; reference-slot Select when the region has several; Sampler settings);
+the **tool rail** (one recessed rail of kit IconButtons in FL's order, Pencil P, Paint B, Delete D, Slice C, Select S,
+with the Xleth tool glyphs and hints naming the shortcut and the mouse grammar); **grid settings** (Slide, then Snap
+1/32 to Bar, default 1/16, which is what the editor always used, with Alt and Ctrl keeping their meaning; Scale,
+a toggle that names the scale when on, plus a caret whose menu holds Snap to scale, Root and Mode); **playback and view** (Play
+pattern, Loop, Pitch / Sample); detach and close at the right edge. Hierarchy rule: the active tool is the only inverted
+chip at rest. Selects are flat text with a chevron until hovered or open, so a short value has no empty box around it;
+Loop and Scale use the quiet on-state (they sit on for long stretches); Pitch / Sample marks its choice with a value-colour
+underline. Ghost notes and zoom live in the menu's View submenu. Below 970px of dock width the Snap caption
+drop out (the Selects keep their names and hints). There is no note-length control: a new note is 1/16 until a touched or
+resized note sets the length (`adoptNoteProps`). The piano roll's own floating title bar is gone: the window frame's
+title bar returns it to the dock.
+
+**Velocity lane header.** The lane's left gutter holds a button, "Velocity" with a caret, that collapses the lane to this
+one 24px row (like the ruler) and opens it again; the state is persisted as `xleth.pianoRoll.laneOpen`, the open height
+stays `xleth.pianoRoll.laneHeight`, and the splitter is inert while collapsed.
 
 **Mouse grammar.** Unchanged except **middle-drag pans** both axes (approved at the step 12 checkpoint). Right-click deletes
 one note with any tool; there is no right-drag sweep (no batch remove exists, so it would make one undo entry per note).

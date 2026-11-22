@@ -7,6 +7,7 @@ import ContextMenu from './ContextMenu.jsx'
 import useSampleViewModeStore from '../stores/sampleViewModeStore.js'
 import useSandboxPanelStore from '../stores/sandboxPanelStore.js'
 import useBrowserStore from '../stores/browserStore.js'
+import useSampleHoverStore from '../stores/sampleHoverStore.js'
 import { usePanelRegistry } from '../windowing/registry/PanelRegistry.ts'
 import { getPickerPath, openFilePicker } from './filePicker/filePickerService.js'
 import { DrawToolIcon, EmptyState, SamplerIcon, SandboxIcon, SegmentedControl, SplitSyllablesIcon, Toggle } from '../ui-kit'
@@ -53,6 +54,16 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
   const setBrowserTab  = useBrowserStore(s => s.setTab)
   const [rootNotes,       setRootNotes]        = useState({})  // { [sourceId]: midiNote }
   const [renameError,      setRenameError]      = useState(null)
+
+  // The sample under the pointer in the Piano Roll's sample list: scrolled to and marked here.
+  // Instant scroll, and only as far as it takes to show the row. A row in a collapsed group or
+  // filtered out by the search is not there to show, so nothing happens for it.
+  const hoveredSampleId = useSampleHoverStore((s) => s.regionId)
+  const listRef = useRef(null)
+  useEffect(() => {
+    if (hoveredSampleId == null) return
+    listRef.current?.querySelector(`[data-region-id="${hoveredSampleId}"]`)?.scrollIntoView({ block: 'nearest' })
+  }, [hoveredSampleId])
 
   // Dedup pass runs once per mount even if regions-changed fires repeatedly.
   const dedupRanRef = useRef(false)
@@ -601,6 +612,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
 
       {/* ── Groups or empty state ──────────────────────────────────── */}
       <div
+        ref={listRef}
         className={styles.list}
         role="listbox"
         aria-label="Samples"
@@ -624,6 +636,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
                   collapsed={collapsedGroups.has(label)}
                   onToggle={() => toggleCollapse(label)}
                   activeSampleId={activeSampleId}
+                  hoveredSampleId={hoveredSampleId}
                   onSelect={handleSelect}
                   onContextMenu={handleContextMenu}
                   editingNameId={editingNameId}

@@ -144,10 +144,12 @@ export interface MenuItemProps {
   /** Draws a trailing glyph (for example a chevron) and does not close the menu on select. */
   trailing?: ReactNode;
   keepOpen?: boolean;
+  /** The command's key combo, printed dim at the right edge ("Ctrl + X"). Display only: the binding lives elsewhere. */
+  shortcut?: string;
   onMouseEnter?: (e: ReactMouseEvent<HTMLButtonElement>) => void;
 }
 
-export function MenuItem({ children, onSelect, icon, danger, disabled, checked, trailing, keepOpen, onMouseEnter }: MenuItemProps) {
+export function MenuItem({ children, onSelect, icon, danger, disabled, checked, trailing, keepOpen, shortcut, onMouseEnter }: MenuItemProps) {
   const close = useContext(CloseContext);
   const role = checked === undefined ? 'menuitem' : 'menuitemcheckbox';
   return (
@@ -172,6 +174,7 @@ export function MenuItem({ children, onSelect, icon, danger, disabled, checked, 
         <span className={styles.lead} aria-hidden="true">{icon}</span>
       ) : null}
       <span className={styles.text}>{children}</span>
+      {shortcut ? <span className={styles.shortcut} aria-hidden="true">{shortcut}</span> : null}
       {trailing ? <span className={styles.trail} aria-hidden="true">{trailing}</span> : null}
     </button>
   );

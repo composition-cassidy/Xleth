@@ -32,6 +32,7 @@ export default function SampleGroup({
   collapsed,
   onToggle,
   activeSampleId,
+  hoveredSampleId = null,
   onSelect,
   onContextMenu,
   editingNameId,
@@ -88,6 +89,7 @@ export default function SampleGroup({
                   key={region.id}
                   region={region}
                   isActive={region.id === activeSampleId}
+                  isHovered={region.id === hoveredSampleId}
                   onSelect={onSelect}
                   onContextMenu={onContextMenu}
                   sourceFilePath={src?.filePath || ''}
@@ -108,6 +110,7 @@ export default function SampleGroup({
                   key={region.id}
                   region={region}
                   isActive={region.id === activeSampleId}
+                  isHovered={region.id === hoveredSampleId}
                   onSelect={onSelect}
                   onContextMenu={onContextMenu}
                   isEditing={region.id === editingNameId}

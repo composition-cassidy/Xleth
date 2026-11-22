@@ -14,7 +14,7 @@ function joinClassNames(...classNames) {
  * Props:
  *   x, y      – page position (clientX/Y)
  *   items     – tree of menu items:
- *               { label, onClick?, danger?, disabled?, checked?, submenu?: items[] }
+ *               { label, onClick?, danger?, disabled?, checked?, shortcut?, submenu?: items[] }
  *               { type: 'separator' }
  *   onClose   – called on outside click / Escape / action
  *   menuClassName / submenuClassName – optional class hooks for variants
@@ -83,8 +83,11 @@ function MenuItems({ items, onOpenSub, onLeaveSub }) {
         key={`${item.label}-${i}`}
         danger={item.danger}
         disabled={item.disabled}
-        checked={anyChecked ? !!item.checked : undefined}
+        // A row that opens a submenu is not a checkbox: it only keeps the check column's width.
+        checked={anyChecked && !hasSub ? !!item.checked : undefined}
+        icon={anyChecked && hasSub ? <span /> : undefined}
         trailing={hasSub ? <IcCaretRight size={14} /> : undefined}
+        shortcut={item.shortcut}
         onMouseEnter={onOpenSub ? (e) => (hasSub ? onOpenSub(i, e) : onLeaveSub?.()) : undefined}
         onSelect={(e) => {
           if (hasSub) { onOpenSub?.(i, e); return }

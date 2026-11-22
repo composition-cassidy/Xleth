@@ -70,6 +70,7 @@ function releaseVideo(v) {
 function SampleThumbnail({
   region,
   isActive,
+  isHovered = false,
   onSelect,
   onContextMenu,
   sourceFilePath,
@@ -305,7 +306,9 @@ function SampleThumbnail({
     <div
       ref={tileRef}
       className={`sample-thumbnail ${isActive ? 'active' : ''}`}
-      style={isActive ? { boxShadow: `inset 0 0 0 2px ${accentHex}` } : undefined}
+      data-region-id={region.id}
+      style={isActive ? { boxShadow: `inset 0 0 0 2px ${accentHex}` }
+        : isHovered ? { boxShadow: 'inset 0 0 0 1px var(--ui-select)' } : undefined}
       onClick={() => onSelect(region.id)}
       onDoubleClick={() => onOpen?.(region)}
       onContextMenu={(e) => { e.preventDefault(); onContextMenu(e, region) }}

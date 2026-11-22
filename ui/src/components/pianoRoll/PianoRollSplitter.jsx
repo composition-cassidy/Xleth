@@ -30,7 +30,20 @@ function storeLaneHeight(h) {
   try { window.localStorage?.setItem(STORAGE_KEY, String(h)) } catch { /* private window / blocked storage */ }
 }
 
-export default function PianoRollSplitter({ laneHeight, onLaneHeightChange }) {
+// Collapsed, the lane keeps one header row (the Velocity toggle) so it can always be opened again;
+// the grid takes the rest. Same height as the ruler, so the two bands match.
+export const LANE_COLLAPSED = 24
+const OPEN_KEY = 'xleth.pianoRoll.laneOpen'
+
+export function readStoredLaneOpen() {
+  try { return window.localStorage?.getItem(OPEN_KEY) !== '0' } catch { return true }
+}
+
+export function storeLaneOpen(open) {
+  try { window.localStorage?.setItem(OPEN_KEY, open ? '1' : '0') } catch { /* private window / blocked storage */ }
+}
+
+export default function PianoRollSplitter({ laneHeight, onLaneHeightChange, disabled = false }) {
   const [dragging, setDragging] = useState(false)
   const dragRef = useRef(null)
 
@@ -41,12 +54,12 @@ export default function PianoRollSplitter({ laneHeight, onLaneHeightChange }) {
   }, [onLaneHeightChange])
 
   const onPointerDown = useCallback((e) => {
-    if (e.button !== 0) return
+    if (e.button !== 0 || disabled) return
     e.preventDefault()
     try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* jsdom */ }
     dragRef.current = { startY: e.clientY, startH: laneHeight }
     setDragging(true)
-  }, [laneHeight])
+  }, [laneHeight, disabled])
 
   const onPointerMove = useCallback((e) => {
     const d = dragRef.current
@@ -65,12 +78,13 @@ export default function PianoRollSplitter({ laneHeight, onLaneHeightChange }) {
   }, [commit])
 
   const onKeyDown = useCallback((e) => {
+    if (disabled) return
     const step = e.shiftKey ? 32 : 8
     if (e.key === 'ArrowUp') { e.preventDefault(); commit(laneHeight + step) }
     else if (e.key === 'ArrowDown') { e.preventDefault(); commit(laneHeight - step) }
     else if (e.key === 'Home') { e.preventDefault(); commit(LANE_MAX) }
     else if (e.key === 'End') { e.preventDefault(); commit(LANE_MIN) }
-  }, [commit, laneHeight])
+  }, [commit, laneHeight, disabled])
 
   return (
     <div
@@ -81,7 +95,8 @@ export default function PianoRollSplitter({ laneHeight, onLaneHeightChange }) {
       aria-valuemin={LANE_MIN}
       aria-valuemax={LANE_MAX}
       aria-valuenow={laneHeight}
-      tabIndex={0}
+      aria-disabled={disabled || undefined}
+      tabIndex={disabled ? -1 : 0}
       data-dragging={dragging ? 'true' : undefined}
       data-hint="Event lane height"
       data-hint-mods="Drag: resize · Arrows: nudge (Shift ×4) · Double-click: reset"
@@ -89,7 +104,7 @@ export default function PianoRollSplitter({ laneHeight, onLaneHeightChange }) {
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
-      onDoubleClick={() => commit(LANE_DEFAULT)}
+      onDoubleClick={() => { if (!disabled) commit(LANE_DEFAULT) }}
       onKeyDown={onKeyDown}
     />
   )

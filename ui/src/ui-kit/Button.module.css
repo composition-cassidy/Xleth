@@ -61,17 +61,39 @@
   .icon[data-size="sm"] { width: var(--ctl-h-sm); }
   .icon[data-size="lg"] { width: var(--ctl-h-lg); }
 
-  /* A tool picker's IconButton shows its one-letter shortcut beside the icon, always visible. */
-  .icon[data-key] {
-    width: auto;
-    gap: 2px;
-    padding: 0 var(--space-1);
+  /* A tool picker's IconButton is icon-sized at rest. Icon and shortcut letter are two stacked
+   * cells in a one-icon-high window; hover / focus slides the track up one cell (slot-machine
+   * roll). Duration is the popover channel, so the flat tier swaps instantly. */
+  .reel {
+    display: block;
+    height: var(--icon-md);
+    width: var(--icon-md);
+    overflow: hidden;
+  }
+
+  .track {
+    display: flex;
+    flex-direction: column;
+    transition: transform var(--mo-popover) var(--mo-ease-out);
+  }
+
+  .cell {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: var(--icon-md);
+    width: var(--icon-md);
   }
 
   .key {
     font-size: var(--type-11);
     font-weight: var(--weight-semibold);
     font-family: var(--ui-font-mono);
+  }
+
+  .btn:is(:hover, [data-state="hover"], :focus-visible):not(:disabled) .track {
+    transform: translateY(calc(-1 * var(--icon-md)));
   }
 
   .icon svg {

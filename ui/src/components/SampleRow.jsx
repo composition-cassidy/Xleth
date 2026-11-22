@@ -39,6 +39,7 @@ const IcStopFill = iconComponent('stop', 'fill')
 export default function SampleRow({
   region,
   isActive,
+  isHovered = false,
   onSelect,
   onContextMenu,
   isEditing,
@@ -132,6 +133,8 @@ export default function SampleRow({
       className={`${styles.row} sample-row`}
       data-browser-row=""
       data-selected={isActive ? 'true' : 'false'}
+      data-region-id={region.id}
+      data-marked={isHovered ? 'true' : undefined}
       role="option"
       aria-selected={isActive}
       tabIndex={0}

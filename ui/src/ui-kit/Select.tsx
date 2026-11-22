@@ -35,6 +35,8 @@ export interface SelectProps<T = unknown> extends HintProps, DataAttrs {
   /** Bump to pop the list open without a click (a middle-drag that commits a region). */
   openSignal?: number;
   size?: 'sm' | 'md' | 'lg';
+  /** The option under the pointer or the arrow keys while the list is open (its value), and null once it closes. */
+  onHighlight?: (value: T | null) => void;
   /** Fixed trigger width in px, so the control does not resize as the choice changes. */
   width?: number;
 }
@@ -72,7 +74,7 @@ interface Position {
 export default function Select<T = unknown>(props: SelectProps<T>) {
   const {
     id, value, options, onChange, disabled = false, ariaLabel, placeholder = 'Select…', className, openSignal = 0,
-    size = 'md', width, hint, hintMods, ...rest
+    size = 'md', width, hint, hintMods, onHighlight, ...rest
   } = props;
   const generatedId = useId();
   const triggerId = id || `ui-select-${generatedId}`;
@@ -159,6 +161,13 @@ export default function Select<T = unknown>(props: SelectProps<T>) {
   }, [highlighted, open]);
 
   useEffect(() => { if (disabled) close(); }, [close, disabled]);
+
+  const onHighlightRef = useRef(onHighlight);
+  onHighlightRef.current = onHighlight;
+  useEffect(() => {
+    onHighlightRef.current?.(open ? (options[highlighted]?.value ?? null) : null);
+  }, [open, highlighted, options]);
+  useEffect(() => () => onHighlightRef.current?.(null), []);
 
   const selectIndex = useCallback((index: number) => {
     const option = options[index];

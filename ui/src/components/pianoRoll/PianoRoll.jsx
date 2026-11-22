@@ -7,10 +7,13 @@ import PianoRollRuler from './PianoRollRuler.jsx'
 import VelocityLane from './VelocityLane.jsx'
 import PianoRollScrollbarV from './PianoRollScrollbarV.jsx'
 import PianoRollScrollbarH from './PianoRollScrollbarH.jsx'
-import PianoRollSplitter, { readStoredLaneHeight } from './PianoRollSplitter.jsx'
+import PianoRollSplitter, {
+  LANE_COLLAPSED, readStoredLaneHeight, readStoredLaneOpen, storeLaneOpen,
+} from './PianoRollSplitter.jsx'
 import styles from './PianoRoll.module.css'
 import usePatternContext from './usePatternContext.js'
 import { EmptyState } from '../../ui-kit'
+import { iconComponent } from '../../ui-kit/icons'
 import { timelineEvents } from '../../timelineEvents.js'
 import { PPQ, snapBeatToGrid, beatsToTicks } from '../../constants/timeline.js'
 import { registerEditorCommand } from '../../windowing/managers/EditorCommandRegistry'
@@ -155,6 +158,7 @@ export const PIANO_ROLL_KEYMAP = {
 let pianoRollClipboard = null
 
 const EMPTY_ID_SET = new Set()
+const IcCaret = iconComponent('caret-down')
 
 export function resetPianoRollClipboardForTest() {
   pianoRollClipboard = null
@@ -176,7 +180,7 @@ export default function PianoRoll({
   const [regions, setRegions] = useState([])
   const [activeTool, setActiveTool] = useState('pencil')
   const [slideMode, setSlideMode] = useState(false)
-  const [stickyNoteLength, setStickyNoteLength] = useState(240) // 1/16 default
+  const [stickyNoteLength, setStickyNoteLength] = useState(240) // 1/16: what a new note is until a touched or resized note sets it (adoptNoteProps)
   const [stickyVelocity, setStickyVelocity] = useState(1.0)
   // Slide bezier control point of the last-touched note (the toggle itself is
   // slideMode). Only ever read when a pencil click draws a new note.
@@ -219,6 +223,8 @@ export default function PianoRoll({
   // is derived by subtracting chrome constants (the old 40px dead band).
   const [size, setSize] = useState({ w: 800, h: 400 })
   const [laneHeight, setLaneHeight] = useState(readStoredLaneHeight)
+  const [laneOpen, setLaneOpen] = useState(readStoredLaneOpen)
+  const toggleLane = useCallback(() => setLaneOpen((open) => { storeLaneOpen(!open); return !open }), [])
   const containerRef = useRef(null)
   const gridCellRef = useRef(null)
   const selectedNoteIdsRef = useRef(selectedNoteIds)
@@ -925,6 +931,13 @@ export default function PianoRoll({
     return () => { unsubscribers.forEach((unsubscribe) => unsubscribe()) }
   }, [])
 
+  // The toolbar menu runs the same commands the keys do (keyCommandsRef is rebuilt each render).
+  const runCommand = useCallback((command) => {
+    try {
+      keyCommandsRef.current?.[command]?.({})?.catch?.((err) => console.warn('[PianoRoll] menu command failed:', err?.message || err))
+    } catch (err) { console.warn('[PianoRoll] menu command failed:', err?.message || err) }
+  }, [])
+
   const handleZoomIn = useCallback(() => {
     const animator = viewAnimatorRef.current
     animator.setTarget('ppb', Math.min(MAX_PX_PER_BEAT, animator.getTarget('ppb') * 1.25))
@@ -1127,11 +1140,13 @@ export default function PianoRoll({
         patternName={pattern?.name || 'Pattern'}
         activeTool={activeTool} onToolChange={setActiveTool}
         slideMode={slideMode} onSlideModeChange={setSlideMode}
-        stickyNoteLength={stickyNoteLength} onStickyNoteLengthChange={setStickyNoteLength}
         scale={scale} onScaleChange={setScale}
         onZoomIn={handleZoomIn} onZoomOut={handleZoomOut}
         onOpenSamplerSettings={handleOpenSamplerSettings}
         onOpenQuickNotation={handleOpenQuickNotation}
+        onCommand={runCommand}
+        keymap={PIANO_ROLL_KEYMAP}
+        selectionCount={selectedNoteIds.size}
         samplerSettingsDisabled={samplerSettingsDisabled}
         onClose={onClose}
         floating={floating}
@@ -1178,7 +1193,7 @@ export default function PianoRoll({
       <div
         ref={containerRef}
         className={styles.body}
-        style={{ '--pr-lane-h': `${laneHeight}px` }}
+        style={{ '--pr-lane-h': `${laneOpen ? laneHeight : LANE_COLLAPSED}px` }}
       >
         <div className={`${styles.cell} ${styles.rulerCorner}`} />
         <div className={`${styles.cell} ${styles.ruler}`}>
@@ -1279,26 +1294,38 @@ export default function PianoRoll({
         </div>
         <div className={`${styles.cell} ${styles.corner}`} />
 
-        <PianoRollSplitter laneHeight={laneHeight} onLaneHeightChange={setLaneHeight} />
+        <PianoRollSplitter laneHeight={laneHeight} onLaneHeightChange={setLaneHeight} disabled={!laneOpen} />
 
-        <div className={`${styles.cell} ${styles.laneGutter}`}>
-          <span className={styles.laneTarget}>Velocity</span>
+        <div className={`${styles.cell} ${styles.laneGutter}`} data-collapsed={laneOpen ? undefined : 'true'}>
+          <button
+            type="button"
+            className={styles.laneTarget}
+            aria-expanded={laneOpen}
+            onClick={toggleLane}
+            data-hint="Velocity lane"
+            data-hint-mods={laneOpen ? 'Click: collapse to give the grid the room' : 'Click: open the lane'}
+          >
+            <IcCaret size={12} />
+            Velocity
+          </button>
           <span className={`${styles.laneAxis} ${styles.laneAxisTop}`}>127</span>
           <span className={`${styles.laneAxis} ${styles.laneAxisMid}`}>64</span>
           <span className={`${styles.laneAxis} ${styles.laneAxisBottom}`}>1</span>
         </div>
-        <VelocityLane
-          ref={velocityLaneRef}
-          notes={notes}
-          selectedNoteIds={selectedNoteIds}
-          pixelsPerBeatRef={pixelsPerBeatRef}
-          scrollXRef={scrollXRef}
-          width={canvasWidth}
-          height={laneHeight}
-          onSetVelocity={handleSetVelocity}
-          onSetVelocities={handleSetVelocities}
-          noteColor={noteColor}
-        />
+        {laneOpen ? (
+          <VelocityLane
+            ref={velocityLaneRef}
+            notes={notes}
+            selectedNoteIds={selectedNoteIds}
+            pixelsPerBeatRef={pixelsPerBeatRef}
+            scrollXRef={scrollXRef}
+            width={canvasWidth}
+            height={laneHeight}
+            onSetVelocity={handleSetVelocity}
+            onSetVelocities={handleSetVelocities}
+            noteColor={noteColor}
+          />
+        ) : <div className={`${styles.cell} ${styles.laneClosed}`} />}
         <div className={`${styles.cell} ${styles.corner}`} />
       </div>
       )}

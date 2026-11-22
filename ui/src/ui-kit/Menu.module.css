@@ -79,6 +79,15 @@
     white-space: nowrap;
   }
 
+  .shortcut {
+    flex: none;
+    margin-left: var(--space-4);
+    color: var(--ui-ink-3);
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
   .trail {
     flex: none;
     display: inline-flex;

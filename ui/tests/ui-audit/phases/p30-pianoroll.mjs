@@ -36,12 +36,17 @@ export default async ({ page, sleep }) => {
   });
 
   await step('22', async () => {
-    const zi = page.locator(`${DOCK} button[aria-label="Zoom in"], ${DOCK} button[title="Zoom in"]`).first();
-    for (let i = 0; i < 3; i++) { await zi.click(); await sleep(250); }
+    // Zoom lives in the toolbar menu's View submenu (the row no longer holds zoom buttons).
+    const zoom = async (name) => {
+      await page.locator(`${DOCK} button[aria-label="Piano roll menu"]`).first().click();
+      await page.locator('[role^="menuitem"]', { hasText: /^View/ }).first().hover();
+      await page.locator('[role^="menuitem"]', { hasText: name }).first().click();
+      await sleep(250);
+    };
+    for (let i = 0; i < 3; i++) await zoom('Zoom in');
     await sleep(600);
     out.push(await shot(page, '22-pianoroll-zoomed-in', { surface: 'dock-pianoroll', scope: DOCK }));
-    const zo = page.locator(`${DOCK} button[aria-label="Zoom out"], ${DOCK} button[title="Zoom out"]`).first();
-    for (let i = 0; i < 3; i++) { await zo.click(); await sleep(250); }
+    for (let i = 0; i < 3; i++) await zoom('Zoom out');
   });
 
   await step('23', async () => {

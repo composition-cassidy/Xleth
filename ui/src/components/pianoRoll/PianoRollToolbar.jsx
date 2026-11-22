@@ -1,33 +1,45 @@
 import { useState } from 'react'
 import { timelineEvents } from '../../timelineEvents.js'
-import { SCALE_MODES, ROOT_NOTES, DEFAULT_SCALE, scaleLabel } from './scales.js'
+import { ROOT_NOTES, DEFAULT_SCALE } from './scales.js'
 import {
-  IconButton, SegmentedControl, Select, Toggle, Toolbar, ToolbarSeparator,
-  SelectToolIcon, DrawToolIcon, PaintToolIcon, SliceToolIcon, DeleteToolIcon, SamplerIcon, QuickNotationIcon,
+  IconButton, SegmentedControl, Select, Toggle, Toolbar,
+  SelectToolIcon, DrawToolIcon, PaintToolIcon, SliceToolIcon, DeleteToolIcon,
 } from '../../ui-kit'
 import { slotDisplayName } from '../sampler/SlotTabs.jsx'
+import useSampleHoverStore from '../../stores/sampleHoverStore.js'
+import TrackContextMenu from '../timeline/TrackContextMenu.jsx'
+import { buildPianoRollMenu, buildScaleMenu, shortModeLabel } from './pianoRollMenu.js'
 import styles from './PianoRoll.module.css'
 import { iconComponent } from '../../ui-kit/icons'
 
 const IcArrowLineDown = iconComponent('arrow-line-down')
 const IcArrowSquareOut = iconComponent('arrow-square-out')
-const IcMagnifyingGlassMinus = iconComponent('magnifying-glass-minus')
-const IcMagnifyingGlassPlus = iconComponent('magnifying-glass-plus')
+const IcList = iconComponent('list')
+const IcRepeat = iconComponent('repeat')
+const IcSliders = iconComponent('sliders-horizontal')
+const IcCaretDown = iconComponent('caret-down')
 const IcPlay = iconComponent('play')
 const IcStopFill = iconComponent('stop', 'fill')
 const IcX = iconComponent('x')
 
-// Piano Roll title and toolbar (round 2, step 12.5). One 32px row of kit
-// controls. Title: pattern Select (its list also holds New pattern and Rename
-// pattern…) and the sample region Select, plus a reference-slot Select when
-// the region has several slots. No duplicated label, no meta strings. Every
-// tool names its one-letter shortcut and its mouse grammar in the hint bar.
+// Piano Roll title and toolbar. One 32px row, four groups with room between them:
+//   menu + title       the menu, pattern Select (its list also holds New pattern and Rename
+//                      pattern…), sample region Select, reference slot when the region has
+//                      several, sampler settings
+//   tools              one rail: Pencil, Paint, Delete, Slice, Select
+//   grid               Slide, Snap, Scale (and Voice when the track has clones)
+//   playback and view  Play and Loop, Pitch / Sample, detach, close
+// Only the active tool is a bright chip; the Selects are flat text until hovered, and the
+// housekeeping toggles that sit on all the time (Loop, Scale) use the quiet on-state, so the
+// row reads as one tool palette plus plain settings instead of a dozen equal boxes.
+// The tool order is Pencil, Paint, Delete, Slice, Select (what an FL Studio hand reaches for).
+// Every tool names its one-letter shortcut and its mouse grammar in the hint bar.
+//
+// What is reached for less (edit and select commands, ghost notes, zoom, quick notation,
+// MIDI import) is one menu at the left end, each row printing its shortcut, and the scale's
+// root and mode sit behind the Scale button, so the row never grows when Scale is on.
 
 const TOOLS = [
-  {
-    id: 'select', key: 'S', name: 'Select', Icon: SelectToolIcon,
-    mods: 'Drag empty: lasso · Ctrl+click: select · Ctrl+Shift+click: add or remove · Drag a note: move (then Shift: keep pitch, Ctrl: keep time) · Shift+drag a note: copy · Drag its right edge: resize · Shift+drag the edge: resize without overlap · Alt: no snap · Right-click: delete',
-  },
   {
     id: 'pencil', key: 'P', name: 'Pencil', Icon: DrawToolIcon,
     mods: 'Click: add a note · Shift+drag: add and set its length · Drag a note: move · Shift+drag a note: copy · Drag its right edge: resize · Shift+drag the edge: resize without overlap · Ctrl+drag: select · Alt: no snap · Right-click: delete',
@@ -37,20 +49,17 @@ const TOOLS = [
     mods: 'Drag: paint notes along the stroke · Shift: one note per step · Alt: half-snap steps · Right-click: delete',
   },
   {
+    id: 'delete', key: 'D', name: 'Delete', Icon: DeleteToolIcon,
+    mods: 'Click a note: delete it · Right-click deletes with any tool',
+  },
+  {
     id: 'split', key: 'C', name: 'Slice', Icon: SliceToolIcon,
     mods: 'Drag a line: slice every note it crosses · Shift+click: slice one note, no drag · Alt: no snap · Right-Shift+click works in any tool',
   },
   {
-    id: 'delete', key: 'D', name: 'Delete', Icon: DeleteToolIcon,
-    mods: 'Click a note: delete it · Right-click deletes with any tool',
+    id: 'select', key: 'S', name: 'Select', Icon: SelectToolIcon,
+    mods: 'Drag empty: lasso · Ctrl+click: select · Ctrl+Shift+click: add or remove · Drag a note: move (then Shift: keep pitch, Ctrl: keep time) · Shift+drag a note: copy · Drag its right edge: resize · Shift+drag the edge: resize without overlap · Alt: no snap · Right-click: delete',
   },
-]
-
-const NOTE_LENGTHS = [
-  { value: 960, label: '1/4' },
-  { value: 480, label: '1/8' },
-  { value: 240, label: '1/16' },
-  { value: 120, label: '1/32' },
 ]
 
 // Granularities understood by snapBeatToGrid (constants/timeline.js).
@@ -62,6 +71,22 @@ export const SNAP_OPTIONS = [
   { value: 'Bar', label: 'Bar' },
 ]
 
+/**
+ * The sample list: "No sample", then the samples whose audio or video has been swapped (the ones
+ * being worked on), under their own header, then the rest in the engine's order.
+ */
+export function sampleOptions(regions) {
+  const all = Array.isArray(regions) ? regions : []
+  const isSwapped = (r) => !!(r.hasSwappedAudio || r.hasSwappedVideo)
+  const swapped = all.filter(isSwapped)
+  const group = (name) => (swapped.length ? { group: name } : {})
+  return [
+    { value: -1, label: 'No sample' },
+    ...swapped.map((r) => ({ value: r.id, label: r.name, ...group('Swapped') })),
+    ...all.filter((r) => !isSwapped(r)).map((r) => ({ value: r.id, label: r.name, ...group('Samples') })),
+  ]
+}
+
 const NEW_PATTERN = '__new__'
 const RENAME_PATTERN = '__rename__'
 
@@ -69,13 +94,14 @@ export default function PianoRollToolbar({
   patternName,
   activeTool, onToolChange,
   slideMode = false, onSlideModeChange,
-  stickyNoteLength, onStickyNoteLengthChange,
   snap = '1/16', onSnapChange,
   scale = DEFAULT_SCALE, onScaleChange,
   onZoomIn, onZoomOut,
   onOpenSamplerSettings,
   samplerSettingsDisabled = false,
   onOpenQuickNotation,
+  // Menu: runs a command of the roll's command table by id; keymap prints each row's combo.
+  onCommand, keymap, selectionCount = 0,
   onClose,
   floating = false, onDetach, onDock,
   availablePatterns, currentPatternId, onSwitchPattern, onNewPattern,
@@ -92,17 +118,26 @@ export default function PianoRollToolbar({
 }) {
   const [renaming, setRenaming] = useState(false)
   const [draft, setDraft] = useState('')
+  const [menu, setMenu] = useState(null) // { kind: 'main' | 'scale', x, y } under the button that opened it
   const hasPattern = currentPatternId != null
+
+  const openMenu = (kind) => (e) => {
+    const r = e.currentTarget.getBoundingClientRect()
+    setMenu({ kind, x: r.left, y: r.bottom + 2 })
+  }
+  const menuItems = !menu ? [] : menu.kind === 'scale'
+    ? buildScaleMenu({ scale, onScaleChange })
+    : buildPianoRollMenu({
+      keymap, run: (command) => onCommand?.(command), hasPattern, selectionCount,
+      showGhosts, onShowGhostsChange, onZoomIn, onZoomOut, onOpenQuickNotation,
+    })
 
   const patternOptions = [
     ...(Array.isArray(availablePatterns) ? availablePatterns : []).map((p) => ({ value: p.id, label: p.name })),
     { value: NEW_PATTERN, label: 'New pattern', group: 'Pattern' },
     ...(hasPattern ? [{ value: RENAME_PATTERN, label: 'Rename pattern…', group: 'Pattern' }] : []),
   ]
-  const regionOptions = [
-    { value: -1, label: 'No sample' },
-    ...(Array.isArray(regions) ? regions : []).map((r) => ({ value: r.id, label: r.name })),
-  ]
+  const regionOptions = sampleOptions(regions)
 
   const onPatternSelect = (value) => {
     if (value === NEW_PATTERN) { onNewPattern?.(); return }
@@ -124,9 +159,20 @@ export default function PianoRollToolbar({
     timelineEvents.dispatchEvent(new Event('timeline-patterns-changed'))
   }
 
+  const flat = styles.flat
   return (
     <div className={styles.toolbar}>
-      <div className={styles.title}>
+      <div className={styles.group}>
+        <IconButton
+          size="sm"
+          label="Piano roll menu"
+          aria-haspopup="menu"
+          onClick={openMenu('main')}
+          hint="Menu: edit, select, view, quick notation, MIDI import"
+          hintMods="Every row shows its shortcut"
+        >
+          <IcList size={16} />
+        </IconButton>
         {renaming ? (
           <input
             autoFocus
@@ -144,7 +190,7 @@ export default function PianoRollToolbar({
         ) : (
           <Select
             size="sm"
-            className={styles.selectPattern}
+            className={`${flat} ${styles.strong} ${styles.selectPattern}`}
             ariaLabel="Pattern"
             placeholder="Select a pattern"
             value={hasPattern ? currentPatternId : null}
@@ -156,18 +202,20 @@ export default function PianoRollToolbar({
         )}
         <Select
           size="sm"
-          className={styles.selectSample}
+          className={`${flat} ${styles.dim} ${styles.selectSample}`}
           ariaLabel="Sample region"
           value={currentRegionId ?? -1}
           options={regionOptions}
           onChange={(v) => onRegionChange?.(Number(v))}
+          onHighlight={(v) => useSampleHoverStore.getState().setRegionId(v != null && v >= 0 ? Number(v) : null)}
           disabled={!hasPattern}
           hint="Sample region this pattern plays through its sampler"
+          hintMods="Swapped samples come first · With the Samples tab open, the sample under the pointer is scrolled to and marked there"
         />
         {regionSlots.length > 1 ? (
           <Select
             size="sm"
-            className={styles.selectSlot}
+            className={`${flat} ${styles.dim} ${styles.selectSlot}`}
             ariaLabel="Reference slot"
             value={refSlotIndex}
             options={regionSlots.map((s, i) => ({ value: i, label: slotDisplayName(s, i) }))}
@@ -183,36 +231,11 @@ export default function PianoRollToolbar({
           disabled={samplerSettingsDisabled}
           hint={samplerSettingsDisabled ? 'Sampler settings: assign a sample region first' : 'Sampler settings for this sample region'}
         >
-          <SamplerIcon size={16} />
+          <IcSliders size={16} />
         </IconButton>
       </div>
 
-      <ToolbarSeparator />
-      <IconButton
-        size="sm"
-        label={auditioning ? 'Stop pattern' : 'Play pattern'}
-        pressed={auditioning}
-        onClick={onToggleAudition}
-        disabled={!auditionAvailable}
-        hint={auditioning ? 'Stop the pattern audition' : (
-          auditionAvailable
-            ? 'Play this pattern on its own, through its track effects'
-            : 'Play pattern: assign a sample region with notes first')}
-        hintMods="Plays only this pattern, not the arrangement · Starting normal playback stops it"
-      >
-        {auditioning ? <IcStopFill size={16} /> : <IcPlay size={16} />}
-      </IconButton>
-      <Toggle
-        size="sm"
-        on={auditionLoop}
-        onChange={(next) => onAuditionLoopChange?.(next)}
-        disabled={!hasPattern}
-        hint={auditionLoop ? 'Loop on: the pattern repeats until stopped' : 'Loop off: the pattern plays once'}
-        hintMods="Switching it off while playing lets the current pass finish"
-      >Loop</Toggle>
-
-      <ToolbarSeparator />
-      <Toolbar label="Piano roll tools">
+      <Toolbar label="Piano roll tools" className={styles.rail}>
         {TOOLS.map(({ id, key, name, Icon, mods }) => (
           <IconButton
             key={id}
@@ -228,75 +251,55 @@ export default function PianoRollToolbar({
           </IconButton>
         ))}
       </Toolbar>
-      <Toggle
-        size="sm"
-        on={slideMode}
-        onChange={(next) => onSlideModeChange?.(next)}
-        hint="Slide: new notes are drawn as slide notes"
-      >Slide</Toggle>
 
-      <ToolbarSeparator />
-      <label className={styles.field}>
-        <span className={styles.fieldLabel}>Length</span>
-        <Select
+      <div className={styles.group}>
+        <Toggle
           size="sm"
-          className={styles.selectSmall}
-          ariaLabel="Note length"
-          value={stickyNoteLength}
-          options={NOTE_LENGTHS}
-          onChange={(v) => onStickyNoteLengthChange(Number(v))}
-          hint="Length of new notes (resizing a note sets it too)"
-        />
-      </label>
-      <label className={styles.field}>
-        <span className={styles.fieldLabel}>Snap</span>
-        <Select
-          size="sm"
-          className={styles.selectSmall}
-          ariaLabel="Snap"
-          value={snap}
-          options={SNAP_OPTIONS}
-          onChange={(v) => onSnapChange?.(v)}
-          hint="Snap for drawing, moving and resizing notes"
-          hintMods="Alt: no snap"
-        />
-      </label>
-      <Toggle
-        size="sm"
-        on={scale.enabled}
-        onChange={(next) => onScaleChange?.({ ...scale, enabled: next })}
-        hint={scale.enabled ? `Snap to scale: ${scaleLabel(scale.root, scale.mode)}` : 'Snap to scale: restrict notes to one scale'}
-        hintMods="In-scale rows are lifted · ↑ ↓ step by scale degree"
-      >Scale</Toggle>
-      {scale.enabled ? (
-        <>
+          className={styles.slideButton}
+          on={slideMode}
+          onChange={(next) => onSlideModeChange?.(next)}
+          hint="Slide: new notes are drawn as slide notes"
+        >Slide</Toggle>
+        <span className={styles.divider} aria-hidden="true" />
+        <label className={styles.field}>
+          <span className={styles.fieldLabel}>Snap</span>
           <Select
             size="sm"
-            className={styles.selectRoot}
-            ariaLabel="Scale root"
-            value={scale.root}
-            options={ROOT_NOTES.map((n, i) => ({ value: i, label: n }))}
-            onChange={(v) => onScaleChange?.({ ...scale, root: Number(v) })}
+            className={flat}
+            ariaLabel="Snap"
+            value={snap}
+            options={SNAP_OPTIONS}
+            onChange={(v) => onSnapChange?.(v)}
+            hint="Snap for drawing, moving and resizing notes"
+            hintMods="Alt: no snap"
           />
-          <Select
+        </label>
+        <span className={styles.split}>
+          <Toggle
             size="sm"
-            className={styles.selectMode}
-            ariaLabel="Scale"
-            value={scale.mode}
-            options={SCALE_MODES.map((m) => ({ value: m.id, label: m.label }))}
-            onChange={(v) => onScaleChange?.({ ...scale, mode: v })}
-          />
-        </>
-      ) : null}
-
-      {Array.isArray(voicePinOptions) && voicePinOptions.length > 0 ? (
-        <>
-          <ToolbarSeparator />
+            tone="quiet"
+            className={styles.scaleButton}
+            on={scale.enabled}
+            onChange={(next) => onScaleChange?.({ ...scale, enabled: next })}
+            hint={scale.enabled ? 'Snap to scale: on' : 'Snap to scale: restrict notes to one scale'}
+            hintMods="Click: switch on or off · In-scale rows are lifted · ↑ ↓ step by scale degree"
+          >{scale.enabled ? `${ROOT_NOTES[scale.root] ?? 'C'} ${shortModeLabel(scale.mode)}` : 'Scale'}</Toggle>
+          <IconButton
+            size="sm"
+            label="Scale root and mode"
+            aria-haspopup="menu"
+            onClick={openMenu('scale')}
+            hint="Scale root and mode"
+          >
+            <IcCaretDown size={12} />
+          </IconButton>
+        </span>
+        {Array.isArray(voicePinOptions) && voicePinOptions.length > 0 ? (
           <label className={styles.field}>
             <span className={styles.fieldLabel}>Voice</span>
             <Select
               size="sm"
-              className={styles.selectVoice}
+              className={`${flat} ${styles.selectVoice}`}
               ariaLabel="Voice of the selected notes"
               value={Number.isInteger(voicePinValue) ? voicePinValue : null}
               placeholder={voicePinValue === 'mixed' ? 'Mixed' : 'No notes'}
@@ -309,12 +312,41 @@ export default function PianoRollToolbar({
               hintMods="Pinned notes show V0 (the source) or V1, V2… (a voice clone) · One undo step"
             />
           </label>
-        </>
-      ) : null}
+        ) : null}
+      </div>
 
-      <ToolbarSeparator />
+      <div className={styles.group}>
+        <IconButton
+          size="sm"
+          label={auditioning ? 'Stop pattern' : 'Play pattern'}
+          pressed={auditioning}
+          onClick={onToggleAudition}
+          disabled={!auditionAvailable}
+          hint={auditioning ? 'Stop the pattern audition' : (
+            auditionAvailable
+              ? 'Play this pattern on its own, through its track effects'
+              : 'Play pattern: assign a sample region with notes first')}
+          hintMods="Plays only this pattern, not the arrangement · Starting normal playback stops it"
+        >
+          {auditioning ? <IcStopFill size={16} /> : <IcPlay size={16} />}
+        </IconButton>
+        <IconButton
+          size="sm"
+          tone="quiet"
+          label="Loop"
+          pressed={auditionLoop}
+          onClick={() => onAuditionLoopChange?.(!auditionLoop)}
+          disabled={!hasPattern}
+          hint={auditionLoop ? 'Loop on: the pattern repeats until stopped' : 'Loop off: the pattern plays once'}
+          hintMods="Switching it off while playing lets the current pass finish"
+        >
+          <IcRepeat size={16} />
+        </IconButton>
+      </div>
+
       <SegmentedControl
         size="sm"
+        className={styles.viewSwitch}
         label="Note labels"
         value={labelMode}
         onChange={(v) => onLabelModeChange?.(v)}
@@ -330,46 +362,28 @@ export default function PianoRollToolbar({
           },
         ]}
       />
-      <Toggle
-        size="sm"
-        on={showGhosts}
-        onChange={(next) => onShowGhostsChange?.(next)}
-        hint="Ghost notes: other patterns playing at the same time"
-        hintMods="Solid grey: same sample · Outline: another sample"
-      >Ghosts</Toggle>
-
-      <ToolbarSeparator />
-      <IconButton size="sm" label="Zoom out" onClick={onZoomOut} hint="Zoom out" hintMods="Ctrl+wheel: time zoom · Alt+wheel on empty grid: pitch zoom · Alt+wheel on a note: velocity">
-        <IcMagnifyingGlassMinus size={16} />
-      </IconButton>
-      <IconButton size="sm" label="Zoom in" onClick={onZoomIn} hint="Zoom in" hintMods="Ctrl+wheel: time zoom · Alt+wheel on empty grid: pitch zoom · Alt+wheel on a note: velocity">
-        <IcMagnifyingGlassPlus size={16} />
-      </IconButton>
-      <IconButton
-        size="sm"
-        label="Quick notation"
-        onClick={onOpenQuickNotation}
-        disabled={!hasPattern}
-        hint="Quick notation: type chord tokens (Cmaj7, Dmin***) to place notes"
-      >
-        <QuickNotationIcon size={16} />
-      </IconButton>
 
       <span className={styles.spacer} />
-      {floating ? (
-        <IconButton size="sm" label="Dock" onClick={onDock} hint="Return the piano roll to the dock">
-          <IcArrowLineDown size={16} />
-        </IconButton>
-      ) : (
-        onDetach ? (
-          <IconButton size="sm" label="Detach" onClick={onDetach} hint="Float the piano roll in its own window">
-            <IcArrowSquareOut size={16} />
+
+      <div className={styles.group}>
+        {floating ? (
+          <IconButton size="sm" label="Dock" onClick={onDock} hint="Return the piano roll to the dock">
+            <IcArrowLineDown size={16} />
           </IconButton>
-        ) : null
-      )}
-      <IconButton size="sm" label={floating ? 'Close' : 'Back to timeline'} onClick={onClose} hint={floating ? 'Close the piano roll' : 'Close the piano roll and return to the timeline'}>
-        <IcX size={16} />
-      </IconButton>
+        ) : (
+          onDetach ? (
+            <IconButton size="sm" label="Detach" onClick={onDetach} hint="Float the piano roll in its own window">
+              <IcArrowSquareOut size={16} />
+            </IconButton>
+          ) : null
+        )}
+        <IconButton size="sm" label={floating ? 'Close' : 'Back to timeline'} onClick={onClose} hint={floating ? 'Close the piano roll' : 'Close the piano roll and return to the timeline'}>
+          <IcX size={16} />
+        </IconButton>
+      </div>
+      {menu ? (
+        <TrackContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} />
+      ) : null}
     </div>
   )
 }

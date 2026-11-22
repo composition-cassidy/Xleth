@@ -56,7 +56,7 @@ export interface IconButtonProps extends BaseProps {
   pressed?: boolean;
   /** `quiet`: an always-on housekeeping toggle (see OnTone). Only meaningful with `pressed`. */
   tone?: OnTone;
-  /** Tool pickers: the one-letter shortcut, shown beside the icon at rest (not only in the hint bar). */
+  /** Tool pickers: the one-letter shortcut. The button stays icon-sized; on hover or focus the icon rolls up and the letter rolls in. */
   keyHint?: string;
 }
 
@@ -81,8 +81,16 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
       {...hintAttrs({ hint, hintMods })}
     >
       {/* A pressed IconButton renders its icon in Fill (active = Fill, never colour alone). */}
-      <IconActive.Provider value={!!pressed}>{children}</IconActive.Provider>
-      {keyHint ? <span className={styles.key} aria-hidden="true">{keyHint}</span> : null}
+      <IconActive.Provider value={!!pressed}>
+        {keyHint ? (
+          <span className={styles.reel}>
+            <span className={styles.track}>
+              <span className={styles.cell}>{children}</span>
+              <span className={`${styles.cell} ${styles.key}`} aria-hidden="true">{keyHint}</span>
+            </span>
+          </span>
+        ) : children}
+      </IconActive.Provider>
     </button>
   );
 });
